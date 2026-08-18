@@ -22,12 +22,22 @@ def _env(display: str | None) -> dict[str, str]:
         (":10", ":10", "/tmp/.X11-unix/X10"),
     ],
 )
-def test_local_displays_resolve_to_their_socket(
-    tmp_path, mocker, display, expected_display, expected_socket
-):
+def test_local_displays_resolve_to_their_socket(mocker, display, expected_display, expected_socket):
     """The display number is canonicalised (screen suffix dropped) and mapped to
-    the filesystem socket the container needs bind-mounted."""
-    mocker.patch("jailbee.x11.Path.exists", return_value=True)
+    the filesystem socket the container needs bind-mounted.
+
+    The mock is keyed on the path, not just `return_value=True`: a bare
+    `return_value=True` would also pass for a `resolve_target` that checked
+    some fixed/wrong socket path and ignored the parsed display number, as
+    long as it still formatted the right string into the return value.
+    Keying on `self` makes the test fail unless the code actually probes
+    `expected_socket`.
+    """
+    mocker.patch(
+        "jailbee.x11.Path.exists",
+        autospec=True,
+        side_effect=lambda self: str(self) == expected_socket,
+    )
 
     target = resolve_target(_env(display))
 
@@ -36,13 +46,27 @@ def test_local_displays_resolve_to_their_socket(
 
 
 @pytest.mark.parametrize("display", ["localhost:10.0", "myhost:0", "192.168.1.5:0"])
-def test_tcp_displays_are_refused(tmp_path, mocker, display):
+def test_tcp_displays_are_refused(mocker, display):
     """An SSH-forwarded or remote display has no local socket to pass. Attaching
     nothing and saying why beats attaching something that cannot work."""
     mocker.patch("jailbee.x11.Path.exists", return_value=True)
 
-    with pytest.raises(X11Unavailable, match="another machine"):
+    with pytest.raises(X11Unavailable, match="TCP display"):
         resolve_target(_env(display))
+
+
+def test_tcp_refusal_does_not_claim_the_display_is_elsewhere(mocker):
+    """`ssh -X` sets DISPLAY=localhost:10.0 — forwarded over loopback on the
+    machine the user is already on. A message telling them to move to "the host
+    that owns the display" would send them in circles, so the wording must name
+    the missing local socket instead."""
+    mocker.patch("jailbee.x11.Path.exists", return_value=True)
+
+    with pytest.raises(X11Unavailable) as exc:
+        resolve_target(_env("localhost:10.0"))
+
+    assert "another machine" not in str(exc.value)
+    assert "/tmp/.X11-unix" in str(exc.value)
 
 
 def test_missing_display_is_refused():
