@@ -3394,7 +3394,14 @@ def test_load_path_repo_x11_veto_still_works_through_real_load(
     tmp_path, monkeypatch, mocker
 ) -> None:
     """The veto (repo `enabled: false` beats a globally-enabled host) must
-    hold through the real YAML load path, not just direct construction."""
+    hold through the real YAML load path, not just direct construction.
+
+    This does NOT discriminate on `x11` being a host-level key: `deep_merge`'s
+    scalar-override means the repo's `False` wins the merge regardless of
+    which layer `x11` lives in, and anything ANDed with `False` is `False`
+    either way. The wiring guard is
+    `test_load_path_global_x11_enable_reaches_effective_x11` above; don't read
+    this test as covering it too."""
     mocker.patch("jailbee.config.detect_default_branch", return_value="main")
     cfg_path, global_path = _write_layered(
         tmp_path,
@@ -3410,7 +3417,14 @@ def test_load_path_repo_x11_veto_still_works_through_real_load(
 
 
 def test_load_path_repo_x11_after_tightens_through_real_load(tmp_path, monkeypatch, mocker) -> None:
-    """Tightening `after` must also hold through the real YAML load path."""
+    """Tightening `after` must also hold through the real YAML load path.
+
+    This does NOT discriminate on `x11` being a host-level key either: the
+    repo's `30m` wins the scalar merge regardless of which layer `x11` lives
+    in, and `min(30m, ...)` is `30m` whether the base is the pre-fix `4h`
+    default or the post-fix `8h` host value. The wiring guard is
+    `test_load_path_global_x11_enable_reaches_effective_x11` above; don't read
+    this test as covering it too."""
     from datetime import timedelta
 
     mocker.patch("jailbee.config.detect_default_branch", return_value="main")

@@ -111,6 +111,22 @@ def test_load_global_config_unknown_key_in_host_block_raises(tmp_path):
         load_global_config(path)
 
 
+def test_load_global_config_unknown_key_in_x11_block_raises(tmp_path):
+    """Same treatment as `docker_registry_mirror`/`ls`/`dashboard`: `x11` is
+    host-level (`config._HOST_LEVEL_KEYS`), so a malformed block is caught by
+    `GlobalConfig.model_validate` in `_load_unsanitized` — before this fix,
+    `x11` deep_merged into the repo `Config` layer instead, so this typo
+    would have surfaced (if at all) from a different validator entirely. The
+    error must name the offending key so `jailbee config validate` output is
+    actually useful.
+    """
+    path = tmp_path / "global.yaml"
+    path.write_text(yaml.safe_dump({"x11": {"unknown_nested": True}}))
+
+    with pytest.raises(ConfigError, match="unknown_nested"):
+        load_global_config(path)
+
+
 def test_load_global_config_passes_through_overlay_keys(tmp_path):
     """Config-overlay keys in global.yaml don't trip GlobalConfig validation."""
     path = tmp_path / "global.yaml"
