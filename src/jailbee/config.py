@@ -1818,16 +1818,26 @@ class Config(BaseModel):
     def effective_x11(self, gcfg: GlobalConfig) -> X11Config:
         """Resolve the X11 policy: global grants, repo may only tighten.
 
-        Deliberately *not* the `model_fields_set` override used by
-        `effective_loose_auto_revert`. That pattern lets the repo layer set any
-        value, which here would let a repo widen a host's exposure: a veto the
-        host could override would not be a veto, and a repo that shortens the
-        window must not be lengthened by a host default. So `enabled` is an AND
-        and the durations are a `min`.
+        Deliberately *not* the `model_fields_set` *override* used by
+        `effective_loose_auto_revert` for combining values: that pattern lets the
+        repo layer replace the value outright, which here would let a repo widen
+        a host's exposure — a veto the host could override would not be a veto,
+        and a repo that shortens the window must not be lengthened by a host
+        default. So fields the repo has set are combined, not replaced:
+        `enabled` is an AND and the durations are a `min`. `model_fields_set` is
+        still used to *gate* each field (as the durations already did) — a repo
+        that says nothing about `enabled` must inherit the host's value rather
+        than have its unset `False` default read as a veto.
         """
         base = gcfg.x11
         repo = self.x11
-        enabled = base.enabled and repo.enabled
+        # The AND is gated on the repo having *said* something, exactly as the
+        # durations are. Ungated it would read a silent repo's `enabled=False`
+        # default as a veto, so a host that enables grants globally would get
+        # none until every repo opted in — the opposite of the intent.
+        enabled = base.enabled
+        if "enabled" in repo.model_fields_set:
+            enabled = base.enabled and repo.enabled
         window: str | int = base.window
         after: str | int = base.after
         if "window" in repo.model_fields_set:
