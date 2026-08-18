@@ -3267,3 +3267,100 @@ def test_load_config_from_text_rejects_github_block(tmp_path, mocker):
     )
     with pytest.raises(ConfigError, match="github"):
         load_config_from_text("github:\n  enabled: true\n", tmp_path / ".jailbee" / "config.yaml")
+
+
+def test_parse_ttl_is_the_canonical_name_and_the_alias_cannot_drift():
+    """`parse_loose_ttl` is kept as an alias so loose's callers stay untouched.
+    Asserting they are the same object is what stops the two from diverging."""
+    from jailbee.config import parse_loose_ttl, parse_ttl
+
+    assert parse_loose_ttl is parse_ttl
+
+
+def test_parse_x11_duration_rejects_never():
+    """`parse_ttl` maps `never` to None (no auto-revert), which for X11 would
+    mean an unbounded door reachable from a menu row. Unbounded access must
+    stay a deliberate `--no-revert` on the command line."""
+    from jailbee.config import parse_x11_duration
+
+    with pytest.raises(ValueError, match="never"):
+        parse_x11_duration("never")
+
+
+def test_parse_x11_duration_accepts_the_normal_syntax():
+    from datetime import timedelta
+
+    from jailbee.config import parse_x11_duration
+
+    assert parse_x11_duration("30s") == timedelta(seconds=30)
+    assert parse_x11_duration("10m") == timedelta(minutes=10)
+    assert parse_x11_duration("4h") == timedelta(hours=4)
+
+
+def test_x11_defaults_are_off_with_a_short_door(tmp_path):
+    from jailbee.global_config import GlobalConfig
+    from tests.conftest import make_cfg
+
+    cfg = make_cfg(tmp_path)
+    eff = cfg.effective_x11(GlobalConfig())
+
+    assert eff.enabled is False
+    assert eff.window == "1m"
+    assert eff.after == "4h"
+
+
+def test_effective_x11_takes_the_global_enable(tmp_path):
+    from jailbee.global_config import GlobalConfig
+    from tests.conftest import make_cfg
+
+    cfg = make_cfg(tmp_path)
+    gcfg = GlobalConfig.model_validate({"x11": {"enabled": True, "after": "8h"}})
+    eff = cfg.effective_x11(gcfg)
+
+    assert eff.enabled is True
+    assert eff.after == "8h"
+
+
+def test_repo_can_veto_x11_but_cannot_enable_it(tmp_path):
+    """A repo veto that global could override would not be a veto."""
+    from jailbee.global_config import GlobalConfig
+    from tests.conftest import make_cfg
+
+    gcfg = GlobalConfig.model_validate({"x11": {"enabled": True}})
+
+    vetoed = make_cfg(tmp_path, x11={"enabled": False})
+    assert vetoed.effective_x11(gcfg).enabled is False
+
+    # And the other direction: repo `true` cannot switch on a disabled host.
+    wishful = make_cfg(tmp_path, x11={"enabled": True})
+    assert wishful.effective_x11(GlobalConfig()).enabled is False
+
+
+def test_repo_durations_tighten_but_never_loosen(tmp_path):
+    from datetime import timedelta
+
+    from jailbee.global_config import GlobalConfig
+    from tests.conftest import make_cfg
+
+    gcfg = GlobalConfig.model_validate(
+        {"x11": {"enabled": True, "window": "5m", "after": "8h"}},
+    )
+
+    tighter = make_cfg(tmp_path, x11={"window": "1m", "after": "30m"})
+    eff = tighter.effective_x11(gcfg)
+    assert eff.window_duration() == timedelta(minutes=1)
+    assert eff.after_duration() == timedelta(minutes=30)
+
+    looser = make_cfg(tmp_path, x11={"window": "30m", "after": "24h"})
+    eff = looser.effective_x11(gcfg)
+    assert eff.window_duration() == timedelta(minutes=5)
+    assert eff.after_duration() == timedelta(hours=8)
+
+
+def test_x11_durations_reject_zero_and_over_24h(tmp_path):
+    from jailbee.config import X11Config
+
+    with pytest.raises(ValueError, match="> 0"):
+        X11Config(window="0m").window_duration()
+    with pytest.raises(ValueError, match="24h"):
+        X11Config(after="25h").after_duration()

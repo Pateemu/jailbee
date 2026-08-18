@@ -22,6 +22,7 @@ from jailbee.config import (
     ColumnConfig,
     ConfigError,
     LooseAutoRevert,
+    X11Config,
     _columns_already_sanitized,
 )
 from jailbee.paths import expand_path, xdg_data_home
@@ -68,6 +69,7 @@ class GlobalConfig(BaseModel):
     loose_auto_revert: LooseAutoRevert = Field(
         default_factory=LooseAutoRevert,
     )
+    x11: X11Config = Field(default_factory=X11Config)
     ls: ColumnConfig = Field(default_factory=ColumnConfig)
     dashboard: ColumnConfig = Field(
         default_factory=lambda: ColumnConfig(hide=list(DASHBOARD_DEFAULT_HIDE)),

@@ -668,19 +668,76 @@ class LooseAutoRevert(BaseModel):
 LOOSE_TTL_PRESETS: tuple[str, ...] = ("5m", "15m", "30m", "1h", "2h", "4h", "8h")
 
 
-def parse_loose_ttl(raw: str) -> timedelta | None:
-    """Parse a user-supplied loose TTL. ``never`` → None (no auto-revert).
+def parse_ttl(raw: str) -> timedelta | None:
+    """Parse a user-supplied TTL. ``never`` → None (no auto-revert).
 
     The single definition of the duration syntax accepted by `jailbee net loose
-    --for`, the CLI's interactive prompt and the Qt dashboard's dialog — all
-    three share it so a value one accepts can never be rejected by another.
-    Delegates to `LooseAutoRevert.duration()` so the units and the 24h cap stay
-    in one place; raises `ValueError` with its message.
+    --for`, `jailbee x11 grant`, both interactive prompts and the Qt dashboard's
+    dialog — they share it so a value one accepts can never be rejected by
+    another. Delegates to `LooseAutoRevert.duration()` so the units and the 24h
+    cap stay in one place; raises `ValueError` with its message.
     """
     value = raw.strip()
     if value.lower() == "never":
         return None
     return LooseAutoRevert(after=value).duration()
+
+
+# Pre-1.1 name. Kept as an alias rather than renamed at the call sites so
+# `net loose`'s code and tests stay untouched by the X11 feature.
+parse_loose_ttl = parse_ttl
+
+
+def parse_x11_duration(raw: str) -> timedelta:
+    """Parse an X11 window/session duration. Unlike `parse_ttl`, ``never`` is
+    rejected: an unbounded door must stay a deliberate `--no-revert` on the
+    command line, not a value reachable from an interactive menu.
+    """
+    if raw.strip().lower() == "never":
+        raise ValueError("`never` is not a valid X11 duration; use --no-revert")
+    parsed = parse_ttl(raw)
+    assert parsed is not None  # `never` is the only None case, rejected above
+    return parsed
+
+
+# Durations offered when jailbee asks how long to hold the X11 door open. Short
+# by design: the window only has to cover the seconds between launching an
+# application and that application connecting to the display.
+X11_WINDOW_PRESETS: tuple[str, ...] = ("1m", "2m", "5m", "10m", "30m")
+
+
+class X11Config(BaseModel):
+    """Policy for `jailbee x11` display grants.
+
+    Lives in both ``~/.config/jailbee/global.yaml`` and per-repo
+    ``.jailbee/config.yaml``. Unlike every other dual-layer block, the repo
+    layer may only *tighten* — see ``Config.effective_x11``.
+
+    Every field must stay scalar. The merge happens field-by-field outside
+    ``deep_merge``; a list field here would reintroduce the append bug that
+    ``ls``/``dashboard`` were split out to avoid (see the comment above
+    ``_HOST_LEVEL_KEYS``).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    window: str | int = "1m"
+    after: str | int = "4h"
+
+    def window_duration(self) -> timedelta:
+        return self._duration(self.window, "x11.window")
+
+    def after_duration(self) -> timedelta:
+        return self._duration(self.after, "x11.after")
+
+    @staticmethod
+    def _duration(raw: str | int, field: str) -> timedelta:
+        """Same units and 24h cap as `LooseAutoRevert.duration()`, reusing it so
+        the rules live in one place. A bare int means minutes."""
+        try:
+            return LooseAutoRevert(after=raw).duration()
+        except ValueError as e:
+            raise ValueError(str(e).replace("loose_auto_revert.after", field)) from e
 
 
 def format_loose_after(after: str | int) -> str:
@@ -1608,6 +1665,7 @@ class Config(BaseModel):
     autostart: Autostart = Autostart()
     docker_registry_mirror: DockerRegistryMirrorRepoConfig = DockerRegistryMirrorRepoConfig()
     loose_auto_revert: LooseAutoRevert = LooseAutoRevert()
+    x11: X11Config = X11Config()
     # Both default to empty so that, unset, `effective_*_columns` returns the
     # global value untouched. The repo's block overrides the global one
     # field-by-field, like loose_auto_revert.
@@ -1756,6 +1814,29 @@ class Config(BaseModel):
         overrides = {f: getattr(repo, f) for f in repo.model_fields_set}
         merged = base.model_copy(update=overrides)
         return merged if merged.enabled else None
+
+    def effective_x11(self, gcfg: GlobalConfig) -> X11Config:
+        """Resolve the X11 policy: global grants, repo may only tighten.
+
+        Deliberately *not* the `model_fields_set` override used by
+        `effective_loose_auto_revert`. That pattern lets the repo layer set any
+        value, which here would let a repo widen a host's exposure: a veto the
+        host could override would not be a veto, and a repo that shortens the
+        window must not be lengthened by a host default. So `enabled` is an AND
+        and the durations are a `min`.
+        """
+        base = gcfg.x11
+        repo = self.x11
+        enabled = base.enabled and repo.enabled
+        window: str | int = base.window
+        after: str | int = base.after
+        if "window" in repo.model_fields_set:
+            window_td = min(base.window_duration(), repo.window_duration())
+            window = f"{int(window_td.total_seconds())}s"
+        if "after" in repo.model_fields_set:
+            after_td = min(base.after_duration(), repo.after_duration())
+            after = f"{int(after_td.total_seconds())}s"
+        return X11Config(enabled=enabled, window=window, after=after)
 
     def _effective_columns(self, base: ColumnConfig, repo: ColumnConfig) -> ColumnConfig:
         """Merge fields explicitly set in this repo's YAML over the global block."""
