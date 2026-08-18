@@ -3364,3 +3364,64 @@ def test_x11_durations_reject_zero_and_over_24h(tmp_path):
         X11Config(window="0m").window_duration()
     with pytest.raises(ValueError, match="24h"):
         X11Config(after="25h").after_duration()
+
+
+def test_load_path_global_x11_enable_reaches_effective_x11(tmp_path, monkeypatch, mocker) -> None:
+    """Regression guard for the finding that `x11` must be a host-level key:
+    a global-only `x11: {enabled: true}` must reach `GlobalConfig.x11`, not
+    get deep_merged into `Config.x11` where it would be indistinguishable
+    from a repo override. This is the case that was silently broken (no
+    host could ever enable X11 grants) before `x11` was added to
+    `_HOST_LEVEL_KEYS`."""
+    from datetime import timedelta
+
+    mocker.patch("jailbee.config.detect_default_branch", return_value="main")
+    cfg_path, global_path = _write_layered(
+        tmp_path,
+        monkeypatch,
+        global_yaml="x11:\n  enabled: true\n  after: 8h\n",
+    )
+
+    cfg = load_config(cfg_path)
+    gcfg = _load_global_yaml(global_path)
+    eff = cfg.effective_x11(gcfg)
+
+    assert eff.enabled is True
+    assert eff.after_duration() == timedelta(hours=8)
+
+
+def test_load_path_repo_x11_veto_still_works_through_real_load(
+    tmp_path, monkeypatch, mocker
+) -> None:
+    """The veto (repo `enabled: false` beats a globally-enabled host) must
+    hold through the real YAML load path, not just direct construction."""
+    mocker.patch("jailbee.config.detect_default_branch", return_value="main")
+    cfg_path, global_path = _write_layered(
+        tmp_path,
+        monkeypatch,
+        global_yaml="x11:\n  enabled: true\n",
+        repo_yaml="x11:\n  enabled: false\n",
+    )
+
+    cfg = load_config(cfg_path)
+    gcfg = _load_global_yaml(global_path)
+
+    assert cfg.effective_x11(gcfg).enabled is False
+
+
+def test_load_path_repo_x11_after_tightens_through_real_load(tmp_path, monkeypatch, mocker) -> None:
+    """Tightening `after` must also hold through the real YAML load path."""
+    from datetime import timedelta
+
+    mocker.patch("jailbee.config.detect_default_branch", return_value="main")
+    cfg_path, global_path = _write_layered(
+        tmp_path,
+        monkeypatch,
+        global_yaml="x11:\n  after: 8h\n",
+        repo_yaml="x11:\n  after: 30m\n",
+    )
+
+    cfg = load_config(cfg_path)
+    gcfg = _load_global_yaml(global_path)
+
+    assert cfg.effective_x11(gcfg).after_duration() == timedelta(minutes=30)

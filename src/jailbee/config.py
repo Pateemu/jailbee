@@ -107,7 +107,26 @@ _DEFAULT_NODE_MAJOR = 24
 # field is added to `LooseAutoRevert`, it reintroduces the exact append bug
 # `ls`/`dashboard` were split out to avoid, and would need the same
 # treatment (its own merge method, kept out of `deep_merge`).
-_HOST_LEVEL_KEYS: frozenset[str] = frozenset({"docker_registry_mirror", "ls", "dashboard"})
+#
+# `x11` IS in this set, and `loose_auto_revert` is not a precedent for
+# leaving it out. `effective_loose_auto_revert` gets away with routing
+# through `deep_merge` because its override is idempotent: `deep_merge`
+# already does last-key-wins per scalar field, so folding global's values
+# into `Config.loose_auto_revert` and then re-applying `repo.model_fields_set`
+# as an override on top reproduces the same values, just redundantly.
+# `effective_x11` is not idempotent that way — `enabled` is an AND and the
+# durations are a `min`, not a replace — and it depends on
+# `Config.x11.model_fields_set` meaning "the repo file itself set this
+# field". If `x11` went through `deep_merge`, a global-only
+# `x11: {enabled: true}` would land in `Config.x11` with `enabled` in
+# `model_fields_set` even though the repo file never mentioned it, which
+# `effective_x11`'s enabled-gate (added to fix exactly this ambiguity) can no
+# longer tell apart from a real repo override. Keeping `x11` host-level makes
+# `GlobalConfig.x11` the only place a global block lands, so
+# `Config.x11.model_fields_set` stays a true signal of what the repo wrote.
+_HOST_LEVEL_KEYS: frozenset[str] = frozenset(
+    {"docker_registry_mirror", "ls", "dashboard", "x11"},
+)
 
 
 def _split_host_keys(
