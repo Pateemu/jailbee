@@ -70,17 +70,17 @@ def resolve_target(env: Mapping[str, str] | None = None) -> X11Target:
 
     host = m.group("host")
     if host not in _LOCAL_HOSTS:
-        # Covers both a genuinely remote display and `ssh -X`'s
-        # `localhost:10.0`, which is forwarded over loopback on *this* machine.
-        # The message must not claim the display lives elsewhere: under SSH
-        # forwarding the user is already on the right machine, and telling them
-        # to move would send them in circles.
+        # Framed on what jailbee needs, not on where the user should go. Under
+        # `ssh -X` the user is already on the right machine — it is the session
+        # that lacks a local socket — so any "run this elsewhere" instruction
+        # sends them in circles. Naming the mechanism lets both the SSH case and
+        # a genuinely remote display read correctly from one message.
         raise X11Unavailable(
-            f"DISPLAY={raw!r} is a TCP display, and only a local X socket "
-            f"({X11_SOCKET_DIR}/X<n>) can be passed into a container. If this is "
-            f"an SSH session with X11 forwarding, there is no local socket to "
-            f"forward — run jailbee from a session on the machine running the X "
-            f"server.",
+            f"DISPLAY={raw!r} is a TCP display. jailbee passes a display into a "
+            f"container by bind-mounting its socket file ({X11_SOCKET_DIR}/X<n>), "
+            f"and a TCP display has none — an SSH X11 forward included, even "
+            f"though jailbee is running on the right host. Use a session that "
+            f"owns a local X server: a direct login or a remote-desktop session.",
         )
 
     num = m.group("num")

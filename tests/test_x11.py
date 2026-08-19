@@ -55,18 +55,28 @@ def test_tcp_displays_are_refused(mocker, display):
         resolve_target(_env(display))
 
 
-def test_tcp_refusal_does_not_claim_the_display_is_elsewhere(mocker):
-    """`ssh -X` sets DISPLAY=localhost:10.0 — forwarded over loopback on the
-    machine the user is already on. A message telling them to move to "the host
-    that owns the display" would send them in circles, so the wording must name
-    the missing local socket instead."""
+def test_tcp_refusal_explains_the_mechanism_and_names_the_ssh_case(mocker):
+    """`ssh -X` sets DISPLAY=localhost:10.0 — forwarded over loopback on the host
+    the user is already on, so the refusal must not read as "you are on the wrong
+    machine". What makes it actionable is naming what jailbee needs (a socket file
+    to bind-mount) and saying outright that an SSH forward cannot supply one.
+
+    This asserts the message carries both of those, and that it does not issue a
+    relocate-and-retry instruction. Whether the resulting prose is *good* is a
+    review question, not something a unit test can settle — the assertions below
+    are a floor, not a proof.
+    """
     mocker.patch("jailbee.x11.Path.exists", return_value=True)
 
     with pytest.raises(X11Unavailable) as exc:
         resolve_target(_env("localhost:10.0"))
 
-    assert "another machine" not in str(exc.value)
-    assert "/tmp/.X11-unix" in str(exc.value)
+    message = str(exc.value)
+    assert "/tmp/.X11-unix" in message  # explains the mechanism
+    assert "SSH" in message  # names the case the user is actually in
+    # No relocate-and-retry instruction: every phrasing of it so far has been
+    # some form of "run jailbee <somewhere else>".
+    assert "run jailbee" not in message.lower()
 
 
 def test_missing_display_is_refused():
