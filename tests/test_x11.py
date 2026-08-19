@@ -112,3 +112,99 @@ def test_detection_does_not_consult_wayland(mocker):
     target = resolve_target({"DISPLAY": ":1", "WAYLAND_DISPLAY": "wayland-0"})
 
     assert target.display == ":1"
+
+
+def test_cookie_path_is_per_container_under_xdg_data_home(tmp_path, mocker):
+    """Not under cfg.shared_dir: that directory is bind-mounted read-write and
+    shared *between* containers, which is no place for auth cookies."""
+    mocker.patch("jailbee.x11.xdg_data_home", return_value=tmp_path)
+
+    from jailbee.x11 import cookie_path
+
+    assert cookie_path("myrepo-feat-x") == tmp_path / "jailbee/x11/myrepo-feat-x.Xauthority"
+
+
+def test_write_cookie_rewrites_the_family_to_wild(tmp_path, mocker):
+    """The container's hostname differs from the host's, so a FamilyLocal entry
+    keyed to the host would not be found. Rewriting the first field to `ffff`
+    (FamilyWild) is the portable form and carries the same cookie value."""
+    mocker.patch("jailbee.x11.xdg_data_home", return_value=tmp_path)
+    run = mocker.patch("jailbee.x11.subprocess.run")
+    run.side_effect = [
+        mocker.Mock(stdout="0100 0002 7470 0000  0012 4d49 0010 deadbeef\n", returncode=0),
+        mocker.Mock(stdout="", returncode=0),
+    ]
+
+    from jailbee.x11 import X11Target, write_cookie
+
+    path = write_cookie("myrepo-feat-x", X11Target(":1", "/tmp/.X11-unix/X1"))
+
+    assert path == tmp_path / "jailbee/x11/myrepo-feat-x.Xauthority"
+    nlist_cmd = run.call_args_list[0].args[0]
+    assert nlist_cmd == ["xauth", "nlist", ":1"]
+    merge_call = run.call_args_list[1]
+    assert merge_call.args[0] == ["xauth", "-f", str(path), "nmerge", "-"]
+    assert merge_call.kwargs["input"].startswith("ffff ")
+
+
+def test_write_cookie_sets_owner_only_permissions(tmp_path, mocker):
+    """The file holds a live X authorisation cookie, so it must not be readable
+    by other users on the host."""
+    mocker.patch("jailbee.x11.xdg_data_home", return_value=tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        # Stand in for the real `xauth -f <out> nmerge -`, which creates the
+        # file. Without this the chmod has nothing to act on and the assertion
+        # below would pass for the wrong reason.
+        if cmd[:2] == ["xauth", "-f"]:
+            out = tmp_path / "jailbee/x11/myrepo-feat-x.Xauthority"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text("cookie")
+            out.chmod(0o644)  # deliberately wrong, so the chmod must fix it
+            return mocker.Mock(stdout="")
+        return mocker.Mock(stdout="0100 0002 7470 0000  0012 4d49 0010 deadbeef\n")
+
+    mocker.patch("jailbee.x11.subprocess.run", side_effect=fake_run)
+
+    from jailbee.x11 import X11Target, write_cookie
+
+    path = write_cookie("myrepo-feat-x", X11Target(":1", "/tmp/.X11-unix/X1"))
+
+    assert path is not None
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_write_cookie_returns_none_when_the_host_has_no_cookie(tmp_path, mocker):
+    """Empty `xauth nlist` output means this display has no auth entry. The
+    grant still proceeds without the auth device, because a host whose xhost
+    list carries SI:localuser admits the container on UID alone."""
+    mocker.patch("jailbee.x11.xdg_data_home", return_value=tmp_path)
+    mocker.patch("jailbee.x11.subprocess.run", return_value=mocker.Mock(stdout="\n"))
+
+    from jailbee.x11 import X11Target, write_cookie
+
+    assert write_cookie("myrepo-feat-x", X11Target(":1", "/tmp/.X11-unix/X1")) is None
+
+
+def test_write_cookie_returns_none_when_xauth_is_missing(tmp_path, mocker):
+    mocker.patch("jailbee.x11.xdg_data_home", return_value=tmp_path)
+    mocker.patch("jailbee.x11.subprocess.run", side_effect=FileNotFoundError("xauth"))
+
+    from jailbee.x11 import X11Target, write_cookie
+
+    assert write_cookie("myrepo-feat-x", X11Target(":1", "/tmp/.X11-unix/X1")) is None
+
+
+def test_delete_cookie_is_idempotent(tmp_path, mocker):
+    mocker.patch("jailbee.x11.xdg_data_home", return_value=tmp_path)
+
+    from jailbee.x11 import cookie_path, delete_cookie
+
+    path = cookie_path("myrepo-feat-x")
+    path.parent.mkdir(parents=True)
+    path.write_text("cookie")
+
+    delete_cookie("myrepo-feat-x")
+    assert not path.exists()
+
+    delete_cookie("myrepo-feat-x")  # absent file must not raise

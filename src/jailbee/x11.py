@@ -22,9 +22,13 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+from jailbee.paths import xdg_data_home
+from jailbee.tui import warn
 
 X11_SOCKET_DIR = "/tmp/.X11-unix"
 
@@ -92,3 +96,76 @@ def resolve_target(env: Mapping[str, str] | None = None) -> X11Target:
         )
 
     return X11Target(display=f":{num}", socket_path=socket_path)
+
+
+COOKIE_MODE = 0o600
+"""Owner-only. The file holds a live X authorisation cookie."""
+
+
+def cookie_path(container: str) -> Path:
+    """Host path of a container's generated cookie file.
+
+    Under ``xdg_data_home()`` rather than ``cfg.shared_dir``: the shared dir is
+    bind-mounted read-write and shared *between* containers, which is no place
+    for auth cookies.
+    """
+    return xdg_data_home() / "jailbee" / "x11" / f"{container}.Xauthority"
+
+
+def write_cookie(container: str, target: X11Target) -> Path | None:
+    """Generate a per-container FamilyWild cookie for ``target``.
+
+    Equivalent to the standard portable recipe::
+
+        xauth nlist $DISPLAY | sed -e 's/^..../ffff/' | xauth -f <out> nmerge -
+
+    run without a shell so it is testable. The wildcard family is required
+    because the container's hostname differs from the host's, so a FamilyLocal
+    entry keyed to the host would never be found from inside. The cookie *value*
+    is unchanged, so this is not a weaker credential — and only this display's
+    entry is copied, unlike bind-mounting the host's whole ``$XAUTHORITY``.
+
+    Returns ``None`` when no cookie could be produced (no ``xauth`` on the host,
+    or no entry for this display). That is not fatal: on hosts whose ``xhost``
+    list carries ``SI:localuser:<user>``, ``raw.idmap uid N N`` means the server
+    admits the container's dev user on UID alone.
+    """
+    out = cookie_path(container)
+    try:
+        listed = subprocess.run(
+            ["xauth", "nlist", target.display],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        warn(f"Could not read an X cookie for {target.display} ({e}) — relying on host UID auth.")
+        return None
+
+    wild = "".join("ffff" + line[4:] + "\n" for line in listed.splitlines() if len(line) >= 4)
+    if not wild:
+        warn(f"No X cookie exists for {target.display} — relying on host UID auth.")
+        return None
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.unlink(missing_ok=True)  # nmerge appends; a stale entry must not survive
+    try:
+        subprocess.run(
+            ["xauth", "-f", str(out), "nmerge", "-"],
+            input=wild,
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        warn(f"Could not write {out} ({e}) — relying on host UID auth.")
+        return None
+
+    if out.exists():
+        out.chmod(COOKIE_MODE)
+    return out
+
+
+def delete_cookie(container: str) -> None:
+    """Remove a container's cookie file. Idempotent."""
+    cookie_path(container).unlink(missing_ok=True)
