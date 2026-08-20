@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from jailbee.x11 import X11Unavailable, resolve_target
@@ -144,7 +146,10 @@ def test_write_cookie_rewrites_the_family_to_wild(tmp_path, mocker):
     assert nlist_cmd == ["xauth", "nlist", ":1"]
     merge_call = run.call_args_list[1]
     assert merge_call.args[0] == ["xauth", "-f", str(path), "nmerge", "-"]
-    assert merge_call.kwargs["input"].startswith("ffff ")
+    # Full equality, not `startswith("ffff ")`: a prefix check passes even if
+    # everything after the family field is corrupted, truncated, duplicated, or
+    # missing its trailing newline — and the cookie value is the whole point.
+    assert merge_call.kwargs["input"] == "ffff 0002 7470 0000  0012 4d49 0010 deadbeef\n"
 
 
 def test_write_cookie_sets_owner_only_permissions(tmp_path, mocker):
@@ -189,6 +194,54 @@ def test_write_cookie_returns_none_when_the_host_has_no_cookie(tmp_path, mocker)
 def test_write_cookie_returns_none_when_xauth_is_missing(tmp_path, mocker):
     mocker.patch("jailbee.x11.xdg_data_home", return_value=tmp_path)
     mocker.patch("jailbee.x11.subprocess.run", side_effect=FileNotFoundError("xauth"))
+
+    from jailbee.x11 import X11Target, write_cookie
+
+    assert write_cookie("myrepo-feat-x", X11Target(":1", "/tmp/.X11-unix/X1")) is None
+
+
+def test_write_cookie_returns_none_when_xauth_nlist_exits_nonzero(tmp_path, mocker):
+    """A non-zero exit is a distinct failure from a missing binary, and it is one
+    of the three degraded-but-working paths the design requires."""
+    mocker.patch("jailbee.x11.xdg_data_home", return_value=tmp_path)
+    mocker.patch(
+        "jailbee.x11.subprocess.run",
+        side_effect=subprocess.CalledProcessError(1, ["xauth", "nlist", ":1"]),
+    )
+
+    from jailbee.x11 import X11Target, write_cookie
+
+    assert write_cookie("myrepo-feat-x", X11Target(":1", "/tmp/.X11-unix/X1")) is None
+
+
+def test_write_cookie_returns_none_when_nmerge_fails(tmp_path, mocker):
+    """The second subprocess call has its own failure handling, and nothing
+    reached it before this test — deleting that whole try/except broke no test."""
+    mocker.patch("jailbee.x11.xdg_data_home", return_value=tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["xauth", "-f"]:
+            raise subprocess.CalledProcessError(1, cmd)
+        return mocker.Mock(stdout="0100 0002 7470 0000  0012 4d49 0010 deadbeef\n")
+
+    mocker.patch("jailbee.x11.subprocess.run", side_effect=fake_run)
+
+    from jailbee.x11 import X11Target, write_cookie
+
+    assert write_cookie("myrepo-feat-x", X11Target(":1", "/tmp/.X11-unix/X1")) is None
+
+
+def test_write_cookie_returns_none_when_nmerge_binary_disappears(tmp_path, mocker):
+    """Same branch, the FileNotFoundError half — `xauth` vanishing between the
+    two calls is far-fetched, but the branch handles both and both are cheap."""
+    mocker.patch("jailbee.x11.xdg_data_home", return_value=tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["xauth", "-f"]:
+            raise FileNotFoundError("xauth")
+        return mocker.Mock(stdout="0100 0002 7470 0000  0012 4d49 0010 deadbeef\n")
+
+    mocker.patch("jailbee.x11.subprocess.run", side_effect=fake_run)
 
     from jailbee.x11 import X11Target, write_cookie
 

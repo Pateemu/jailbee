@@ -125,6 +125,12 @@ def write_cookie(container: str, target: X11Target) -> Path | None:
     is unchanged, so this is not a weaker credential — and only this display's
     entry is copied, unlike bind-mounting the host's whole ``$XAUTHORITY``.
 
+    One divergence from the ``sed`` recipe: ``sed -e 's/^..../ffff/'`` leaves a
+    line shorter than 4 characters untouched and still emits it, where this
+    drops it instead. Real ``xauth nlist`` output always zero-pads the family
+    field to 4 hex digits, so a short line is unreachable in practice —
+    recorded here as considered and dismissed, not overlooked.
+
     Returns ``None`` when no cookie could be produced (no ``xauth`` on the host,
     or no entry for this display). That is not fatal: on hosts whose ``xhost``
     list carries ``SI:localuser:<user>``, ``raw.idmap uid N N`` means the server
@@ -148,7 +154,10 @@ def write_cookie(container: str, target: X11Target) -> Path | None:
         return None
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.unlink(missing_ok=True)  # nmerge appends; a stale entry must not survive
+    # nmerge appends onto an existing file, so this guarantees a fresh start —
+    # not just so no stale entry survives, but so nmerge cannot inherit a
+    # leftover file's mode either (the chmod below still runs regardless).
+    out.unlink(missing_ok=True)
     try:
         subprocess.run(
             ["xauth", "-f", str(out), "nmerge", "-"],
@@ -162,6 +171,10 @@ def write_cookie(container: str, target: X11Target) -> Path | None:
         return None
 
     if out.exists():
+        # Stock xauth already creates new authority files at 0600 regardless of
+        # umask, so this isn't closing a live race against it — it's
+        # defence-in-depth across xauth implementations and platforms, per the
+        # binding 0600 constraint on COOKIE_MODE above.
         out.chmod(COOKIE_MODE)
     return out
 
