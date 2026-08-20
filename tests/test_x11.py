@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from jailbee.incus import Incus
 from jailbee.x11 import X11Unavailable, resolve_target
+from tests.conftest import make_cfg
 
 
 def _env(display: str | None) -> dict[str, str]:
@@ -261,3 +264,212 @@ def test_delete_cookie_is_idempotent(tmp_path, mocker):
     assert not path.exists()
 
     delete_cookie("myrepo-feat-x")  # absent file must not raise
+
+
+@pytest.fixture
+def now() -> datetime:
+    return datetime(2026, 8, 18, 12, 0, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def target():
+    from jailbee.x11 import X11Target
+
+    return X11Target(":1", "/tmp/.X11-unix/X1")
+
+
+def _grant_mocks(mocker, tmp_path, target, *, cookie=True):
+    mocker.patch("jailbee.x11.resolve_target", return_value=target)
+    mocker.patch(
+        "jailbee.x11.write_cookie",
+        return_value=(tmp_path / "cookie") if cookie else None,
+    )
+    return mocker.Mock(spec=Incus)
+
+
+def test_grant_attaches_socket_and_auth_devices(tmp_path, mocker, now, target):
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = _grant_mocks(mocker, tmp_path, target)
+
+    from jailbee.x11 import grant
+
+    grant(
+        cfg, incus, "myrepo-feat-x", window=timedelta(minutes=1), after=timedelta(hours=4), now=now
+    )
+
+    added = {c.args[1]: c.args for c in incus.config_device_add.call_args_list}
+    assert added["x11-socket"][2] == "disk"
+    assert added["x11-socket"][3] == {
+        "source": "/tmp/.X11-unix/X1",
+        "path": "/tmp/.X11-unix/X1",
+    }
+    uid = cfg.container_user.uid
+    assert added["x11-auth"][3] == {
+        "source": str(tmp_path / "cookie"),
+        "path": f"/run/user/{uid}/jailbee-Xauthority",
+        "readonly": "true",
+    }
+
+
+def test_grant_sets_display_and_xauthority_per_container(tmp_path, mocker, now, target):
+    """The base profile no longer carries DISPLAY, so a `jailbee shell` sees a
+    correct value exactly while a grant is live and none otherwise."""
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = _grant_mocks(mocker, tmp_path, target)
+
+    from jailbee.x11 import grant
+
+    grant(
+        cfg, incus, "myrepo-feat-x", window=timedelta(minutes=1), after=timedelta(hours=4), now=now
+    )
+
+    uid = cfg.container_user.uid
+    sets = {c.args[1]: c.args[2] for c in incus.config_set.call_args_list}
+    assert sets["environment.DISPLAY"] == ":1"
+    assert sets["environment.XAUTHORITY"] == f"/run/user/{uid}/jailbee-Xauthority"
+
+
+def test_grant_writes_both_deadlines(tmp_path, mocker, now, target):
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = _grant_mocks(mocker, tmp_path, target)
+
+    from jailbee.x11 import grant
+
+    door = grant(
+        cfg, incus, "myrepo-feat-x", window=timedelta(minutes=10), after=timedelta(hours=4), now=now
+    )
+
+    assert door == now + timedelta(minutes=10)
+    sets = {c.args[1]: c.args[2] for c in incus.config_set.call_args_list}
+    assert sets["user.jailbee.x11_window_until"] == (now + timedelta(minutes=10)).isoformat()
+    assert sets["user.jailbee.x11_until"] == (now + timedelta(hours=4)).isoformat()
+
+
+def test_grant_without_deadlines_writes_no_labels(tmp_path, mocker, now, target):
+    """`--no-revert`: the devices are attached and nothing expires them."""
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = _grant_mocks(mocker, tmp_path, target)
+
+    from jailbee.x11 import grant
+
+    grant(cfg, incus, "myrepo-feat-x", window=None, after=None, now=now)
+
+    keys = {c.args[1] for c in incus.config_set.call_args_list}
+    assert "user.jailbee.x11_window_until" not in keys
+    assert "user.jailbee.x11_until" not in keys
+    unset = {c.args[1] for c in incus.config_unset.call_args_list}
+    assert "user.jailbee.x11_window_until" in unset
+    assert "user.jailbee.x11_until" in unset
+
+
+def test_grant_skips_the_auth_device_when_there_is_no_cookie(tmp_path, mocker, now, target):
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = _grant_mocks(mocker, tmp_path, target, cookie=False)
+
+    from jailbee.x11 import grant
+
+    grant(
+        cfg, incus, "myrepo-feat-x", window=timedelta(minutes=1), after=timedelta(hours=4), now=now
+    )
+
+    added = {c.args[1] for c in incus.config_device_add.call_args_list}
+    assert added == {"x11-socket"}
+
+
+def test_grant_tolerates_an_already_attached_device(tmp_path, mocker, now, target):
+    """Re-granting over a live grant must not fail on the existing mount."""
+    from jailbee.incus import IncusError
+
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = _grant_mocks(mocker, tmp_path, target)
+    incus.config_device_add.side_effect = IncusError("Device already exists: x11-socket")
+
+    from jailbee.x11 import grant
+
+    grant(
+        cfg, incus, "myrepo-feat-x", window=timedelta(minutes=1), after=timedelta(hours=4), now=now
+    )  # must not raise
+
+
+def test_grant_propagates_other_incus_errors(tmp_path, mocker, now, target):
+    from jailbee.incus import IncusError
+
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = _grant_mocks(mocker, tmp_path, target)
+    incus.config_device_add.side_effect = IncusError("no such container")
+
+    from jailbee.x11 import grant
+
+    with pytest.raises(IncusError):
+        grant(
+            cfg,
+            incus,
+            "myrepo-feat-x",
+            window=timedelta(minutes=1),
+            after=timedelta(hours=4),
+            now=now,
+        )
+
+
+def test_revoke_detaches_unsets_and_deletes_the_cookie(tmp_path, mocker):
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = mocker.Mock(spec=Incus)
+    delete = mocker.patch("jailbee.x11.delete_cookie")
+
+    from jailbee.x11 import revoke
+
+    revoke(cfg, incus, "myrepo-feat-x")
+
+    removed = {c.args[1] for c in incus.config_device_remove.call_args_list}
+    assert removed == {"x11-socket", "x11-auth"}
+    unset = {c.args[1] for c in incus.config_unset.call_args_list}
+    assert unset == {
+        "environment.DISPLAY",
+        "environment.XAUTHORITY",
+        "user.jailbee.x11_window_until",
+        "user.jailbee.x11_until",
+    }
+    delete.assert_called_once_with("myrepo-feat-x")
+
+
+def test_revoke_tolerates_absent_devices(tmp_path, mocker):
+    """Steady state for a container that never had a grant."""
+    from jailbee.incus import IncusError
+
+    cfg = make_cfg(tmp_path)
+    incus = mocker.Mock(spec=Incus)
+    incus.config_device_remove.side_effect = IncusError("Device doesn't exist")
+    mocker.patch("jailbee.x11.delete_cookie")
+
+    from jailbee.x11 import revoke
+
+    revoke(cfg, incus, "myrepo-feat-x")  # must not raise
+
+
+def test_grant_state_reads_both_labels(tmp_path, mocker, now):
+    incus = mocker.Mock(spec=Incus)
+    incus.config_get.side_effect = lambda name, key: {
+        "user.jailbee.x11_window_until": (now + timedelta(minutes=1)).isoformat(),
+        "user.jailbee.x11_until": (now + timedelta(hours=4)).isoformat(),
+    }.get(key)
+
+    from jailbee.x11 import grant_state
+
+    state = grant_state(incus, "myrepo-feat-x")
+
+    assert state.window_until == now + timedelta(minutes=1)
+    assert state.session_until == now + timedelta(hours=4)
+    assert state.has_labels is True
+
+
+def test_grant_state_survives_an_unparseable_label(tmp_path, mocker):
+    incus = mocker.Mock(spec=Incus)
+    incus.config_get.side_effect = lambda name, key: "not-a-timestamp"
+
+    from jailbee.x11 import grant_state
+
+    state = grant_state(incus, "myrepo-feat-x")
+
+    assert state.window_until is None
+    assert state.session_until is None
+    assert state.has_labels is True  # labels exist; the sweeper must clean them

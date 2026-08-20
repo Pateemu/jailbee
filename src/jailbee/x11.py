@@ -25,10 +25,17 @@ import re
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+from jailbee.incus import IncusError
 from jailbee.paths import xdg_data_home
 from jailbee.tui import warn
+
+if TYPE_CHECKING:
+    from jailbee.config import Config
+    from jailbee.incus import Incus
 
 X11_SOCKET_DIR = "/tmp/.X11-unix"
 
@@ -182,3 +189,155 @@ def write_cookie(container: str, target: X11Target) -> Path | None:
 def delete_cookie(container: str) -> None:
     """Remove a container's cookie file. Idempotent."""
     cookie_path(container).unlink(missing_ok=True)
+
+
+SOCKET_DEVICE = "x11-socket"
+AUTH_DEVICE = "x11-auth"
+WINDOW_LABEL = "user.jailbee.x11_window_until"
+SESSION_LABEL = "user.jailbee.x11_until"
+DISPLAY_ENV = "environment.DISPLAY"
+XAUTHORITY_ENV = "environment.XAUTHORITY"
+
+
+def container_auth_path(cfg: Config) -> str:
+    """In-container path of the mounted cookie.
+
+    Under ``/run/user/<uid>`` because that is the logind-provisioned tmpfs the
+    existing socket devices already use: ownership and lifetime are understood,
+    and the file disappears when the container reboots.
+    """
+    return f"/run/user/{cfg.container_user.uid}/jailbee-Xauthority"
+
+
+@dataclass(frozen=True)
+class GrantState:
+    """What the container's labels say about its grant.
+
+    ``has_labels`` is True whenever either label carries a value, including one
+    that failed to parse — the sweeper needs to distinguish "nothing to do" from
+    "labels to clean up".
+    """
+
+    window_until: datetime | None
+    session_until: datetime | None
+    has_labels: bool
+
+
+def grant_state(incus: Incus, container: str) -> GrantState:
+    """Read both deadline labels. Unparseable values become None."""
+    raw_window = incus.config_get(container, WINDOW_LABEL)
+    raw_session = incus.config_get(container, SESSION_LABEL)
+    return GrantState(
+        window_until=_parse_label(raw_window),
+        session_until=_parse_label(raw_session),
+        has_labels=bool(raw_window) or bool(raw_session),
+    )
+
+
+def _parse_label(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def grant(
+    cfg: Config,
+    incus: Incus,
+    container: str,
+    *,
+    window: timedelta | None,
+    after: timedelta | None,
+    now: datetime,
+) -> datetime | None:
+    """Open X11 access to ``container``. Returns the door deadline, or None.
+
+    Both deadlines are rewritten on every call. That is safe because nothing
+    calls this without an explicit human act — an explicit ``jailbee x11 grant``
+    or an answered prompt. Nothing opens the door automatically, so extending
+    the session cannot happen behind the user's back; an abandoned container is
+    still evicted ``after`` its last answer.
+
+    ``window=None``/``after=None`` is ``--no-revert``: devices are attached and
+    no label expires them.
+    """
+    target = resolve_target()
+    cookie = write_cookie(container, target)
+
+    _add_device(
+        incus,
+        container,
+        SOCKET_DEVICE,
+        {"source": target.socket_path, "path": target.socket_path},
+    )
+    if cookie is not None:
+        auth_path = container_auth_path(cfg)
+        _add_device(
+            incus,
+            container,
+            AUTH_DEVICE,
+            {"source": str(cookie), "path": auth_path, "readonly": "true"},
+        )
+        incus.config_set(container, XAUTHORITY_ENV, auth_path)
+    incus.config_set(container, DISPLAY_ENV, target.display)
+
+    door = now + window if window is not None else None
+    if door is not None:
+        incus.config_set(container, WINDOW_LABEL, door.isoformat())
+    else:
+        incus.config_unset(container, WINDOW_LABEL)
+    if after is not None:
+        incus.config_set(container, SESSION_LABEL, (now + after).isoformat())
+    else:
+        incus.config_unset(container, SESSION_LABEL)
+    return door
+
+
+def _add_device(
+    incus: Incus,
+    container: str,
+    device: str,
+    properties: dict[str, str],
+) -> None:
+    """Attach a device, tolerating one that is already there.
+
+    Re-granting over a live grant is normal, and the existing mount is the right
+    one — the source path cannot have changed without DISPLAY changing.
+    """
+    try:
+        incus.config_device_add(container, device, "disk", properties)
+    except IncusError as e:
+        if "already exists" not in str(e).lower():
+            raise
+
+
+def _detach(incus: Incus, container: str, keys: tuple[str, ...]) -> None:
+    """Remove both display devices, unset ``keys``, and drop the cookie file.
+
+    Shared by ``revoke`` and the sweeper's door-close (``x11._close_door``),
+    which differ only in whether the session label goes with it. Tolerates
+    devices that are already absent — that is the steady state for a container
+    that never had a grant, and for a door that closed before this call.
+    """
+    for device in (SOCKET_DEVICE, AUTH_DEVICE):
+        try:
+            incus.config_device_remove(container, device)
+        except IncusError as e:
+            msg = str(e).lower()
+            if "doesn't exist" not in msg and "not found" not in msg:
+                raise
+    for key in keys:
+        incus.config_unset(container, key)
+    delete_cookie(container)
+
+
+def revoke(cfg: Config, incus: Incus, container: str) -> None:
+    """Close the door and end the session: devices, env, both labels, cookie.
+
+    Idempotent — the no-grant steady state must not raise. Does not evict: see
+    ``evict``. ``cfg`` is unused today and kept for symmetry with ``grant``.
+    """
+    _ = cfg
+    _detach(incus, container, (DISPLAY_ENV, XAUTHORITY_ENV, WINDOW_LABEL, SESSION_LABEL))
