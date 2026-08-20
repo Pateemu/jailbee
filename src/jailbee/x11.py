@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -341,3 +342,89 @@ def revoke(cfg: Config, incus: Incus, container: str) -> None:
     """
     _ = cfg
     _detach(incus, container, (DISPLAY_ENV, XAUTHORITY_ENV, WINDOW_LABEL, SESSION_LABEL))
+
+
+MARKER = "JAILBEE_X11"
+MARKER_VALUE = "1"
+EVICT_GRACE_S = 20.0
+"""Seconds between SIGTERM and SIGKILL.
+
+Generous on purpose: a JetBrains IDE flushes indices and saves editor state on
+SIGTERM, and Chrome persists session state. Killing either mid-write is how a
+user loses work.
+"""
+
+# NUL-delimited grep over every process's environment. `-l` prints the file,
+# `-Z` keeps the match NUL-safe, and the sed extracts the PID from the path.
+_MARKED_PIDS_SH = (
+    f"grep -lZ {MARKER}={MARKER_VALUE} /proc/[0-9]*/environ 2>/dev/null "
+    "| tr '\\0' '\\n' | sed -n 's#^/proc/\\([0-9]*\\)/environ$#\\1#p'"
+)
+
+
+def marked_pids(incus: Incus, container: str) -> list[int]:
+    """PIDs inside ``container`` carrying the grant marker.
+
+    Set only by ``gui._gui_env``, so this is exactly the set of GUI processes
+    jailbee launched under a grant — children included, since they inherit the
+    environment. A ``jailbee shell`` session and the user's own dev server never
+    carry it and are never touched.
+
+    Doubles as the liveness signal: an empty list means the grant is unused, so
+    the door can close early rather than waiting out the window.
+    """
+    try:
+        out = incus.exec(container, ["bash", "-c", _MARKED_PIDS_SH])
+    except IncusError:
+        # Stopped or mid-destroy: nothing is running, which is the honest answer.
+        return []
+    pids: list[int] = []
+    for line in out.splitlines():
+        stripped = line.strip()
+        if stripped.isdigit():
+            pids.append(int(stripped))
+    return pids
+
+
+def signal_pids(incus: Incus, container: str, pids: list[int], signal: str) -> None:
+    """Send ``signal`` (e.g. ``TERM``, ``KILL``) to ``pids``. Best effort."""
+    if not pids:
+        return
+    args = " ".join(str(p) for p in pids)
+    try:
+        incus.exec(container, ["bash", "-c", f"kill -{signal} {args} 2>/dev/null || true"])
+    except IncusError:
+        pass
+
+
+def evict(
+    incus: Incus,
+    containers: list[str],
+    *,
+    sleep_fn: object = time.sleep,
+) -> dict[str, list[int]]:
+    """Evict marked GUI processes from every container in one pass.
+
+    The grace period is waited **once for the whole pass**, not per container:
+    SIGTERM goes out everywhere first, then a single wait, then SIGKILL to
+    whatever survived. Evicting N containers therefore costs ``EVICT_GRACE_S``,
+    not N x that, which keeps a pass comfortably inside the 60 s timer tick.
+
+    Returns the pids that were signalled per container (empty dict when nothing
+    was marked). ``sleep_fn`` is for test injection only.
+    """
+    targeted = {c: marked_pids(incus, c) for c in containers}
+    targeted = {c: pids for c, pids in targeted.items() if pids}
+    if not targeted:
+        return {}
+
+    for container, pids in targeted.items():
+        signal_pids(incus, container, pids, "TERM")
+
+    sleep_fn(EVICT_GRACE_S)  # type: ignore[operator]  # typed object for injection, mirrors runtime_mounts._wait_for_logind_runtime_dir
+
+    for container in targeted:
+        survivors = marked_pids(incus, container)
+        signal_pids(incus, container, survivors, "KILL")
+
+    return targeted

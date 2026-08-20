@@ -473,3 +473,90 @@ def test_grant_state_survives_an_unparseable_label(tmp_path, mocker):
     assert state.window_until is None
     assert state.session_until is None
     assert state.has_labels is True  # labels exist; the sweeper must clean them
+
+
+def test_marked_pids_reads_the_marker_from_proc_environ(tmp_path, mocker):
+    """Children inherit the environment, so the whole Chrome/JBR tree matches —
+    and a `jailbee shell` session, which never gets the marker, does not."""
+    incus = mocker.Mock(spec=Incus)
+    incus.exec.return_value = "412\n413\n980\n"
+
+    from jailbee.x11 import marked_pids
+
+    assert marked_pids(incus, "myrepo-feat-x") == [412, 413, 980]
+    cmd = incus.exec.call_args.args[1]
+    assert "JAILBEE_X11=1" in " ".join(cmd)
+    assert "/proc" in " ".join(cmd)
+
+
+def test_marked_pids_is_empty_when_nothing_matches(tmp_path, mocker):
+    incus = mocker.Mock(spec=Incus)
+    incus.exec.return_value = "\n"
+
+    from jailbee.x11 import marked_pids
+
+    assert marked_pids(incus, "myrepo-feat-x") == []
+
+
+def test_marked_pids_survives_an_exec_failure(tmp_path, mocker):
+    """A stopped or mid-destroy container must read as 'nothing running', not
+    explode the sweeper."""
+    from jailbee.incus import IncusError
+
+    incus = mocker.Mock(spec=Incus)
+    incus.exec.side_effect = IncusError("container is not running")
+
+    from jailbee.x11 import marked_pids
+
+    assert marked_pids(incus, "myrepo-feat-x") == []
+
+
+def test_marked_pids_ignores_non_numeric_noise(tmp_path, mocker):
+    incus = mocker.Mock(spec=Incus)
+    incus.exec.return_value = "412\ngrep: /proc/self/environ: No such file\n980\n"
+
+    from jailbee.x11 import marked_pids
+
+    assert marked_pids(incus, "myrepo-feat-x") == [412, 980]
+
+
+def test_evict_waits_the_grace_period_once_for_all_containers(tmp_path, mocker):
+    """20 s per container would blow past the 60 s tick with three containers.
+    SIGTERM everything, wait once, then SIGKILL the survivors."""
+    incus = mocker.Mock(spec=Incus)
+    incus.exec.side_effect = [
+        "10\n11\n",  # marked_pids: container a
+        "20\n",  # marked_pids: container b
+        "",  # SIGTERM a
+        "",  # SIGTERM b
+        "10\n",  # survivors in a
+        "",  # survivors in b
+        "",  # SIGKILL a
+    ]
+    sleep_fn = mocker.Mock()
+
+    from jailbee.x11 import EVICT_GRACE_S, evict
+
+    killed = evict(incus, ["a", "b"], sleep_fn=sleep_fn)
+
+    sleep_fn.assert_called_once_with(EVICT_GRACE_S)
+    assert killed == {"a": [10, 11], "b": [20]}
+
+
+def test_evict_grace_period_is_twenty_seconds():
+    """A JetBrains IDE flushes indices and saves editor state on SIGTERM; a
+    token couple of seconds is how a user loses their workspace."""
+    from jailbee.x11 import EVICT_GRACE_S
+
+    assert EVICT_GRACE_S == 20.0
+
+
+def test_evict_does_nothing_when_no_process_is_marked(tmp_path, mocker):
+    incus = mocker.Mock(spec=Incus)
+    incus.exec.return_value = ""
+    sleep_fn = mocker.Mock()
+
+    from jailbee.x11 import evict
+
+    assert evict(incus, ["a"], sleep_fn=sleep_fn) == {}
+    sleep_fn.assert_not_called()
