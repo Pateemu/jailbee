@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from jailbee.incus import Incus
-from jailbee.x11 import X11Unavailable, resolve_target
+from jailbee.x11 import X11UnavailableError, resolve_target
 from tests.conftest import make_cfg
 
 
@@ -56,7 +57,7 @@ def test_tcp_displays_are_refused(mocker, display):
     nothing and saying why beats attaching something that cannot work."""
     mocker.patch("jailbee.x11.Path.exists", return_value=True)
 
-    with pytest.raises(X11Unavailable, match="TCP display"):
+    with pytest.raises(X11UnavailableError, match="TCP display"):
         resolve_target(_env(display))
 
 
@@ -73,7 +74,7 @@ def test_tcp_refusal_explains_the_mechanism_and_names_the_ssh_case(mocker):
     """
     mocker.patch("jailbee.x11.Path.exists", return_value=True)
 
-    with pytest.raises(X11Unavailable) as exc:
+    with pytest.raises(X11UnavailableError) as exc:
         resolve_target(_env("localhost:10.0"))
 
     message = str(exc.value)
@@ -85,19 +86,19 @@ def test_tcp_refusal_explains_the_mechanism_and_names_the_ssh_case(mocker):
 
 
 def test_missing_display_is_refused():
-    with pytest.raises(X11Unavailable, match="DISPLAY"):
+    with pytest.raises(X11UnavailableError, match="DISPLAY"):
         resolve_target(_env(None))
 
 
 def test_empty_display_is_refused():
-    with pytest.raises(X11Unavailable, match="DISPLAY"):
+    with pytest.raises(X11UnavailableError, match="DISPLAY"):
         resolve_target(_env(""))
 
 
 def test_unparseable_display_is_refused(mocker):
     mocker.patch("jailbee.x11.Path.exists", return_value=True)
 
-    with pytest.raises(X11Unavailable, match="could not be parsed"):
+    with pytest.raises(X11UnavailableError, match="could not be parsed"):
         resolve_target(_env(":abc"))
 
 
@@ -105,7 +106,7 @@ def test_absent_socket_is_refused(mocker):
     """The display parses but the server is not listening on a local socket."""
     mocker.patch("jailbee.x11.Path.exists", return_value=False)
 
-    with pytest.raises(X11Unavailable, match="/tmp/.X11-unix/X1"):
+    with pytest.raises(X11UnavailableError, match=re.escape("/tmp/.X11-unix/X1")):
         resolve_target(_env(":1"))
 
 
@@ -520,6 +521,24 @@ def test_marked_pids_ignores_non_numeric_noise(tmp_path, mocker):
     assert marked_pids(incus, "myrepo-feat-x") == [412, 980]
 
 
+def test_marked_pids_anchors_the_pattern_to_a_whole_env_entry(mocker):
+    """Without `-z` and the anchors, grep substring-matches the whole NUL-blob:
+    `MY_JAILBEE_X11=1`, or any value merely containing the literal text, would
+    match and get the process SIGKILLed. The shell semantics themselves are
+    verified by hand (see the task report) — this pins the command so the flags
+    cannot be dropped silently."""
+    incus = mocker.Mock(spec=Incus)
+    incus.exec.return_value = ""
+
+    from jailbee.x11 import marked_pids
+
+    marked_pids(incus, "myrepo-feat-x")
+
+    script = " ".join(incus.exec.call_args.args[1])
+    assert "-lZz" in script
+    assert "'^JAILBEE_X11=1$'" in script
+
+
 def test_evict_waits_the_grace_period_once_for_all_containers(tmp_path, mocker):
     """20 s per container would blow past the 60 s tick with three containers.
     SIGTERM everything, wait once, then SIGKILL the survivors."""
@@ -537,10 +556,10 @@ def test_evict_waits_the_grace_period_once_for_all_containers(tmp_path, mocker):
 
     from jailbee.x11 import EVICT_GRACE_S, evict
 
-    killed = evict(incus, ["a", "b"], sleep_fn=sleep_fn)
+    targeted = evict(incus, ["a", "b"], sleep_fn=sleep_fn)
 
     sleep_fn.assert_called_once_with(EVICT_GRACE_S)
-    assert killed == {"a": [10, 11], "b": [20]}
+    assert targeted == {"a": [10, 11], "b": [20]}
 
 
 def test_evict_grace_period_is_twenty_seconds():

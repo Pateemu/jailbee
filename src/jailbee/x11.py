@@ -46,7 +46,7 @@ _DISPLAY_RE = re.compile(r"^(?P<host>[^:]*):(?P<num>\d+)(?:\.\d+)?$")
 _LOCAL_HOSTS = frozenset({"", "unix", "unix/"})
 
 
-class X11Unavailable(Exception):
+class X11UnavailableError(Exception):
     """The host has no local X display that can be passed into a container."""
 
 
@@ -66,7 +66,7 @@ class X11Target:
 def resolve_target(env: Mapping[str, str] | None = None) -> X11Target:
     """Resolve the host's ``$DISPLAY`` into a passable target.
 
-    Raises ``X11Unavailable`` with an actionable message when there is nothing
+    Raises ``X11UnavailableError`` with an actionable message when there is nothing
     to pass. Deliberately independent of ``gui.host_is_wayland()``: a Wayland
     host running Xwayland satisfies both, and granting X11 there to run
     X11-only applications is supported rather than special-cased.
@@ -74,11 +74,11 @@ def resolve_target(env: Mapping[str, str] | None = None) -> X11Target:
     environ = os.environ if env is None else env
     raw = environ.get("DISPLAY", "").strip()
     if not raw:
-        raise X11Unavailable("DISPLAY is not set — this is not an X11 session")
+        raise X11UnavailableError("DISPLAY is not set — this is not an X11 session")
 
     m = _DISPLAY_RE.match(raw)
     if not m:
-        raise X11Unavailable(f"DISPLAY={raw!r} could not be parsed as an X display")
+        raise X11UnavailableError(f"DISPLAY={raw!r} could not be parsed as an X display")
 
     host = m.group("host")
     if host not in _LOCAL_HOSTS:
@@ -87,7 +87,7 @@ def resolve_target(env: Mapping[str, str] | None = None) -> X11Target:
         # that lacks a local socket — so any "run this elsewhere" instruction
         # sends them in circles. Naming the mechanism lets both the SSH case and
         # a genuinely remote display read correctly from one message.
-        raise X11Unavailable(
+        raise X11UnavailableError(
             f"DISPLAY={raw!r} is a TCP display. jailbee passes a display into a "
             f"container by bind-mounting its socket file ({X11_SOCKET_DIR}/X<n>), "
             f"and a TCP display has none — an SSH X11 forward included, even "
@@ -98,7 +98,7 @@ def resolve_target(env: Mapping[str, str] | None = None) -> X11Target:
     num = m.group("num")
     socket_path = f"{X11_SOCKET_DIR}/X{num}"
     if not Path(socket_path).exists():
-        raise X11Unavailable(
+        raise X11UnavailableError(
             f"DISPLAY={raw!r} parses but {socket_path} does not exist — the X "
             f"server is not listening on a local socket",
         )
@@ -354,10 +354,19 @@ SIGTERM, and Chrome persists session state. Killing either mid-write is how a
 user loses work.
 """
 
-# NUL-delimited grep over every process's environment. `-l` prints the file,
-# `-Z` keeps the match NUL-safe, and the sed extracts the PID from the path.
+# Grep every process's environment for the marker, then extract the PIDs.
+#
+# `-z` is load-bearing, not tidiness: it makes NUL the record separator, so
+# `^`/`$` anchor to one `key=value` entry. Without it grep sees `environ` as a
+# single newline-free line and does a raw substring search — which matches a
+# *different* variable whose name merely ends in the marker (`MY_JAILBEE_X11=1`)
+# and any variable whose *value* happens to contain the literal text. Either
+# false positive gets an unrelated process SIGTERMed and then SIGKILLed.
+#
+# `-l` prints the filename, `-Z` NUL-terminates that filename so the `tr`
+# conversion is unambiguous, and the `sed` pulls the PID out of the path.
 _MARKED_PIDS_SH = (
-    f"grep -lZ {MARKER}={MARKER_VALUE} /proc/[0-9]*/environ 2>/dev/null "
+    f"grep -lZz '^{MARKER}={MARKER_VALUE}$' /proc/[0-9]*/environ 2>/dev/null "
     "| tr '\\0' '\\n' | sed -n 's#^/proc/\\([0-9]*\\)/environ$#\\1#p'"
 )
 
@@ -410,8 +419,12 @@ def evict(
     whatever survived. Evicting N containers therefore costs ``EVICT_GRACE_S``,
     not N x that, which keeps a pass comfortably inside the 60 s timer tick.
 
-    Returns the pids that were signalled per container (empty dict when nothing
-    was marked). ``sleep_fn`` is for test injection only.
+    Returns the pids that were *targeted* per container (empty dict when
+    nothing was marked) — captured before either signal is sent, not a
+    confirmation that TERM or KILL actually landed. A container whose
+    ``incus.exec`` fails transiently on both passes still shows up here;
+    ``signal_pids`` is best-effort and does not report per-pid outcomes.
+    ``sleep_fn`` is for test injection only.
     """
     targeted = {c: marked_pids(incus, c) for c in containers}
     targeted = {c: pids for c, pids in targeted.items() if pids}
