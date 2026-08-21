@@ -1083,10 +1083,11 @@ def _finalize_new(
             else:
                 from jailbee.gui import open_chrome, open_ide
 
+                gcfg = _load_global()
                 if launch_ide:
-                    open_ide(cfg, incus, created, cfg.jetbrains.ide)
+                    open_ide(cfg, incus, created, cfg.jetbrains.ide, gcfg=gcfg)
                 if launch_chrome:
-                    open_chrome(cfg, incus, created, cfg.chrome.url)
+                    open_chrome(cfg, incus, created, cfg.chrome.url, gcfg=gcfg)
 
 
 @app.command("_new-worker", hidden=True)
@@ -1692,10 +1693,11 @@ def _post_start_actions(
         else:
             from jailbee.gui import open_chrome, open_ide
 
+            gcfg = _load_global()
             if launch_ide:
-                open_ide(cfg, incus, name, cfg.jetbrains.ide)
+                open_ide(cfg, incus, name, cfg.jetbrains.ide, gcfg=gcfg)
             if launch_chrome:
-                open_chrome(cfg, incus, name, cfg.chrome.url)
+                open_chrome(cfg, incus, name, cfg.chrome.url, gcfg=gcfg)
 
 
 @app.command()
@@ -5765,7 +5767,7 @@ def ide_cmd(
         raise typer.Exit(2)
     resolved = app_name or cfg.jetbrains.ide
     incus, name = _resolve_attachable(cfg, name, force=force, attach_cmd="ide")
-    open_ide(cfg, incus, name, resolved)
+    open_ide(cfg, incus, name, resolved, gcfg=_load_global())
 
 
 @app.command("chrome")
@@ -5796,7 +5798,7 @@ def chrome_cmd(
         error("Chrome integration disabled in config (chrome.enabled: false).")
         raise typer.Exit(2)
     incus, name = _resolve_attachable(cfg, name, force=force, attach_cmd="chrome")
-    open_chrome(cfg, incus, name, url or cfg.chrome.url)
+    open_chrome(cfg, incus, name, url or cfg.chrome.url, gcfg=_load_global())
 
 
 chrome_pool_app = typer.Typer(

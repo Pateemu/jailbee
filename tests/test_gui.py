@@ -8,15 +8,19 @@ visible, missing libs, crash on startup, etc.).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from jailbee.config import load_config
+from jailbee.global_config import GlobalConfig
 from jailbee.gui import open_chrome, open_ide
 from jailbee.incus import Incus
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+NOW = datetime(2026, 8, 18, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture(autouse=True)
@@ -44,9 +48,10 @@ def test_open_ide_redirects_to_log_file_not_dev_null(mocker):
         "exec",
         return_value="/opt/jetbrains-toolbox/apps/intellij-idea-ultimate/bin/idea\n",
     )
+    mocker.patch("jailbee.gui.ensure_display", return_value=True)
     popen = mocker.patch("jailbee.gui.subprocess.Popen")
 
-    open_ide(cfg, incus, "feat-smoke", "idea")
+    open_ide(cfg, incus, "feat-smoke", "idea", gcfg=GlobalConfig())
 
     script = _popen_bash_command(popen)
     # stdout+stderr go to the log, not to /dev/null
@@ -69,9 +74,10 @@ def test_open_ide_uses_app_specific_log_for_webstorm(mocker):
         "exec",
         return_value="/opt/jetbrains-toolbox/apps/webstorm/bin/webstorm\n",
     )
+    mocker.patch("jailbee.gui.ensure_display", return_value=True)
     popen = mocker.patch("jailbee.gui.subprocess.Popen")
 
-    open_ide(cfg, incus, "feat-smoke", "webstorm")
+    open_ide(cfg, incus, "feat-smoke", "webstorm", gcfg=GlobalConfig())
 
     script = _popen_bash_command(popen)
     assert "/tmp/jailbee-ide-webstorm.log" in script
@@ -86,9 +92,10 @@ def test_open_ide_announces_log_path_in_info_message(mocker, capsys):
         "exec",
         return_value="/opt/jetbrains-toolbox/apps/intellij-idea-ultimate/bin/idea\n",
     )
+    mocker.patch("jailbee.gui.ensure_display", return_value=True)
     mocker.patch("jailbee.gui.subprocess.Popen")
 
-    open_ide(cfg, incus, "feat-smoke", "idea")
+    open_ide(cfg, incus, "feat-smoke", "idea", gcfg=GlobalConfig())
 
     out = capsys.readouterr().out
     assert "/tmp/jailbee-ide-idea.log" in out
@@ -98,9 +105,10 @@ def test_open_ide_skips_launch_when_no_launcher_found(mocker):
     cfg = load_config(FIXTURES / "full_config.yaml")
     incus = Incus()
     mocker.patch.object(incus, "exec", return_value="\n")
+    mocker.patch("jailbee.gui.ensure_display", return_value=True)
     popen = mocker.patch("jailbee.gui.subprocess.Popen")
 
-    open_ide(cfg, incus, "feat-smoke", "idea")
+    open_ide(cfg, incus, "feat-smoke", "idea", gcfg=GlobalConfig())
 
     popen.assert_not_called()
 
@@ -108,10 +116,11 @@ def test_open_ide_skips_launch_when_no_launcher_found(mocker):
 def test_open_chrome_redirects_to_log_file_not_dev_null(mocker):
     cfg = load_config(FIXTURES / "full_config.yaml")
     incus = Incus()
+    mocker.patch("jailbee.gui.ensure_display", return_value=True)
     mocker.patch("jailbee.chrome_pool.allocate", return_value=Path("/x"))
     popen = mocker.patch("jailbee.gui.subprocess.Popen")
 
-    open_chrome(cfg, incus, "feat-smoke", None)
+    open_chrome(cfg, incus, "feat-smoke", None, gcfg=GlobalConfig())
 
     script = _popen_bash_command(popen)
     assert ">/tmp/jailbee-chrome.log" in script
@@ -125,10 +134,11 @@ def test_open_chrome_redirects_to_log_file_not_dev_null(mocker):
 def test_open_chrome_announces_log_path_in_info_message(mocker, capsys):
     cfg = load_config(FIXTURES / "full_config.yaml")
     incus = Incus()
+    mocker.patch("jailbee.gui.ensure_display", return_value=True)
     mocker.patch("jailbee.chrome_pool.allocate", return_value=Path("/x"))
     mocker.patch("jailbee.gui.subprocess.Popen")
 
-    open_chrome(cfg, incus, "feat-smoke", "https://example.com")
+    open_chrome(cfg, incus, "feat-smoke", "https://example.com", gcfg=GlobalConfig())
 
     out = capsys.readouterr().out
     assert "/tmp/jailbee-chrome.log" in out
@@ -137,10 +147,11 @@ def test_open_chrome_announces_log_path_in_info_message(mocker, capsys):
 def test_open_chrome_passes_url_when_provided(mocker):
     cfg = load_config(FIXTURES / "full_config.yaml")
     incus = Incus()
+    mocker.patch("jailbee.gui.ensure_display", return_value=True)
     mocker.patch("jailbee.chrome_pool.allocate", return_value=Path("/x"))
     popen = mocker.patch("jailbee.gui.subprocess.Popen")
 
-    open_chrome(cfg, incus, "feat-smoke", "https://example.com")
+    open_chrome(cfg, incus, "feat-smoke", "https://example.com", gcfg=GlobalConfig())
 
     script = _popen_bash_command(popen)
     assert "https://example.com" in script
@@ -173,9 +184,10 @@ def test_open_ide_passes_home_env_var(mocker):
         "exec",
         return_value="/opt/jetbrains-toolbox/apps/intellij-idea-ultimate/bin/idea\n",
     )
+    mocker.patch("jailbee.gui.ensure_display", return_value=True)
     popen = mocker.patch("jailbee.gui.subprocess.Popen")
 
-    open_ide(cfg, incus, "feat-smoke", "idea")
+    open_ide(cfg, incus, "feat-smoke", "idea", gcfg=GlobalConfig())
 
     env = _popen_env_args(popen)
     assert env.get("HOME") == "/home/dev"
@@ -184,10 +196,11 @@ def test_open_ide_passes_home_env_var(mocker):
 def test_open_chrome_passes_home_env_var(mocker):
     cfg = load_config(FIXTURES / "full_config.yaml")
     incus = Incus()
+    mocker.patch("jailbee.gui.ensure_display", return_value=True)
     mocker.patch("jailbee.chrome_pool.allocate", return_value=Path("/x"))
     popen = mocker.patch("jailbee.gui.subprocess.Popen")
 
-    open_chrome(cfg, incus, "feat-smoke", None)
+    open_chrome(cfg, incus, "feat-smoke", None, gcfg=GlobalConfig())
 
     env = _popen_env_args(popen)
     assert env.get("HOME") == "/home/dev"
@@ -203,7 +216,7 @@ def test_open_chrome_passes_ozone_wayland_on_wayland_host(mocker, monkeypatch):
     mocker.patch("jailbee.chrome_pool.allocate", return_value=Path("/x"))
     popen = mocker.patch("jailbee.gui.subprocess.Popen")
 
-    open_chrome(cfg, incus, "feat-smoke", None)
+    open_chrome(cfg, incus, "feat-smoke", None, gcfg=GlobalConfig())
 
     script = _popen_bash_command(popen)
     assert "--ozone-platform=wayland" in script
@@ -214,10 +227,11 @@ def test_open_chrome_passes_dark_mode_flags_when_enabled(mocker):
     cfg = load_config(FIXTURES / "full_config.yaml")
     cfg = cfg.model_copy(update={"chrome": cfg.chrome.model_copy(update={"dark_mode": True})})
     incus = Incus()
+    mocker.patch("jailbee.gui.ensure_display", return_value=True)
     mocker.patch("jailbee.chrome_pool.allocate", return_value=Path("/x"))
     popen = mocker.patch("jailbee.gui.subprocess.Popen")
 
-    open_chrome(cfg, incus, "feat-smoke", None)
+    open_chrome(cfg, incus, "feat-smoke", None, gcfg=GlobalConfig())
 
     script = _popen_bash_command(popen)
     assert "--force-dark-mode" in script
@@ -228,10 +242,11 @@ def test_open_chrome_omits_dark_mode_flags_by_default(mocker):
     """Chrome.dark_mode defaults to False — no forced dark mode."""
     cfg = load_config(FIXTURES / "full_config.yaml")
     incus = Incus()
+    mocker.patch("jailbee.gui.ensure_display", return_value=True)
     mocker.patch("jailbee.chrome_pool.allocate", return_value=Path("/x"))
     popen = mocker.patch("jailbee.gui.subprocess.Popen")
 
-    open_chrome(cfg, incus, "feat-smoke", None)
+    open_chrome(cfg, incus, "feat-smoke", None, gcfg=GlobalConfig())
 
     script = _popen_bash_command(popen)
     assert "--force-dark-mode" not in script
@@ -242,10 +257,11 @@ def test_open_chrome_omits_ozone_wayland_on_x11_host(mocker, monkeypatch):
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     cfg = load_config(FIXTURES / "full_config.yaml")
     incus = Incus()
+    mocker.patch("jailbee.gui.ensure_display", return_value=True)
     mocker.patch("jailbee.chrome_pool.allocate", return_value=Path("/x"))
     popen = mocker.patch("jailbee.gui.subprocess.Popen")
 
-    open_chrome(cfg, incus, "feat-smoke", None)
+    open_chrome(cfg, incus, "feat-smoke", None, gcfg=GlobalConfig())
 
     script = _popen_bash_command(popen)
     assert "--ozone-platform=wayland" not in script
@@ -254,13 +270,14 @@ def test_open_chrome_omits_ozone_wayland_on_x11_host(mocker, monkeypatch):
 def test_open_chrome_calls_allocate_before_popen(mocker):
     cfg = load_config(FIXTURES / "full_config.yaml")
     incus = Incus()
+    mocker.patch("jailbee.gui.ensure_display", return_value=True)
     allocate = mocker.patch(
         "jailbee.chrome_pool.allocate",
         return_value=Path("/x/slot-0"),
     )
     popen = mocker.patch("jailbee.gui.subprocess.Popen")
 
-    open_chrome(cfg, incus, "feat-smoke", None)
+    open_chrome(cfg, incus, "feat-smoke", None, gcfg=GlobalConfig())
 
     allocate.assert_called_once_with(cfg, incus, "feat-smoke")
     assert popen.called
@@ -279,9 +296,10 @@ def test_open_ide_popen_fully_detaches_from_parent(mocker):
         "exec",
         return_value="/opt/jetbrains-toolbox/apps/intellij-idea-ultimate/bin/idea\n",
     )
+    mocker.patch("jailbee.gui.ensure_display", return_value=True)
     popen = mocker.patch("jailbee.gui.subprocess.Popen")
 
-    open_ide(cfg, incus, "feat-smoke", "idea")
+    open_ide(cfg, incus, "feat-smoke", "idea", gcfg=GlobalConfig())
 
     import subprocess as sp
 
@@ -295,10 +313,11 @@ def test_open_ide_popen_fully_detaches_from_parent(mocker):
 def test_open_chrome_popen_fully_detaches_from_parent(mocker):
     cfg = load_config(FIXTURES / "full_config.yaml")
     incus = Incus()
+    mocker.patch("jailbee.gui.ensure_display", return_value=True)
     mocker.patch("jailbee.chrome_pool.allocate", return_value=Path("/x"))
     popen = mocker.patch("jailbee.gui.subprocess.Popen")
 
-    open_chrome(cfg, incus, "feat-smoke", None)
+    open_chrome(cfg, incus, "feat-smoke", None, gcfg=GlobalConfig())
 
     import subprocess as sp
 
@@ -340,9 +359,10 @@ def test_open_ide_supports_additional_jetbrains_launchers(mocker, ide_name):
         "exec",
         return_value=f"/opt/jetbrains-toolbox/apps/{ide_name}/bin/{ide_name}\n",
     )
+    mocker.patch("jailbee.gui.ensure_display", return_value=True)
     popen = mocker.patch("jailbee.gui.subprocess.Popen")
 
-    open_ide(cfg, incus, "feat-smoke", ide_name)
+    open_ide(cfg, incus, "feat-smoke", ide_name, gcfg=GlobalConfig())
 
     # find_cmd issued to incus.exec must search for the IDE-specific launcher.
     find_argv = exec_mock.call_args.args[1]
@@ -359,6 +379,189 @@ def test_open_ide_rejects_unknown_app_name(mocker):
     mocker.patch.object(incus, "exec")
     popen = mocker.patch("jailbee.gui.subprocess.Popen")
 
-    open_ide(cfg, incus, "feat-smoke", "vim")
+    open_ide(cfg, incus, "feat-smoke", "vim", gcfg=GlobalConfig())
 
     popen.assert_not_called()
+
+
+# --- Task 8: the closed-door gate (`ensure_display`) -------------------------
+
+
+def test_gui_env_carries_the_grant_marker(tmp_path):
+    """Children inherit the environment, so the whole Chrome/JBR tree becomes
+    identifiable — which is what makes precise eviction and the liveness signal
+    possible without inspecting sockets."""
+    from jailbee.gui import _gui_env
+    from tests.conftest import make_cfg
+
+    cfg = make_cfg(tmp_path)
+    env = _gui_env(cfg)
+
+    assert env["JAILBEE_X11"] == "1"
+
+
+def test_wayland_host_needs_no_grant(tmp_path, mocker):
+    """Wayland behaviour is unchanged: no prompt, no grant, straight to launch."""
+    from jailbee.gui import ensure_display
+    from tests.conftest import make_cfg
+
+    mocker.patch("jailbee.gui.host_is_wayland", return_value=True)
+    grant = mocker.patch("jailbee.x11.grant")
+
+    cfg = make_cfg(tmp_path)
+    assert ensure_display(cfg, mocker.MagicMock(), "c", gcfg=GlobalConfig(), now=NOW) is True
+    grant.assert_not_called()
+
+
+def test_open_door_launches_without_prompting(tmp_path, mocker):
+    from jailbee.gui import ensure_display
+    from jailbee.x11 import GrantState
+    from tests.conftest import make_cfg
+
+    mocker.patch("jailbee.gui.host_is_wayland", return_value=False)
+    mocker.patch(
+        "jailbee.x11.grant_state",
+        return_value=GrantState(
+            window_until=NOW + timedelta(seconds=30),
+            session_until=NOW + timedelta(hours=4),
+            has_labels=True,
+        ),
+    )
+    grant = mocker.patch("jailbee.x11.grant")
+    select = mocker.patch("questionary.select")
+
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    gcfg = GlobalConfig.model_validate({"x11": {"enabled": True}})
+
+    assert ensure_display(cfg, mocker.MagicMock(), "c", gcfg=gcfg, now=NOW) is True
+    grant.assert_not_called()
+    select.assert_not_called()
+
+
+def test_closed_door_prompts_and_the_answer_becomes_the_window(tmp_path, mocker):
+    """The prompt is not yes/no — the answer IS the window length, which is the
+    ergonomic fix for an app whose child process connects late."""
+    from jailbee.gui import ensure_display
+    from jailbee.x11 import GrantState
+    from tests.conftest import make_cfg
+
+    mocker.patch("jailbee.gui.host_is_wayland", return_value=False)
+    mocker.patch("jailbee.gui.sys.stdin.isatty", return_value=True)
+    mocker.patch(
+        "jailbee.x11.grant_state",
+        return_value=GrantState(window_until=None, session_until=None, has_labels=False),
+    )
+    grant = mocker.patch("jailbee.x11.grant")
+    select_mock = mocker.patch("questionary.select")
+    select_mock.return_value.ask.return_value = "10m"
+
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    gcfg = GlobalConfig.model_validate({"x11": {"enabled": True}})
+
+    assert ensure_display(cfg, mocker.MagicMock(), "c", gcfg=gcfg, now=NOW) is True
+    assert grant.call_args.kwargs["window"] == timedelta(minutes=10)
+
+
+def test_a_chosen_window_above_the_session_raises_the_session(tmp_path, mocker):
+    """One number was typed, so nothing contradicts anything; `window <= after`
+    is preserved by moving the end the user did not name. The flag path does the
+    opposite and rejects — see test_cli_x11."""
+    from jailbee.gui import ensure_display
+    from jailbee.x11 import GrantState
+    from tests.conftest import make_cfg
+
+    mocker.patch("jailbee.gui.host_is_wayland", return_value=False)
+    mocker.patch("jailbee.gui.sys.stdin.isatty", return_value=True)
+    mocker.patch(
+        "jailbee.x11.grant_state",
+        return_value=GrantState(window_until=None, session_until=None, has_labels=False),
+    )
+    grant = mocker.patch("jailbee.x11.grant")
+    select_mock = mocker.patch("questionary.select")
+    select_mock.return_value.ask.return_value = "8h"
+
+    cfg = make_cfg(tmp_path, x11={"enabled": True, "after": "30m"})
+    gcfg = GlobalConfig.model_validate({"x11": {"enabled": True, "after": "30m"}})
+
+    ensure_display(cfg, mocker.MagicMock(), "c", gcfg=gcfg, now=NOW)
+
+    assert grant.call_args.kwargs["window"] == timedelta(hours=8)
+    assert grant.call_args.kwargs["after"] == timedelta(hours=8)
+
+
+def test_cancelling_the_prompt_attaches_nothing(tmp_path, mocker):
+    from jailbee.gui import ensure_display
+    from jailbee.x11 import GrantState
+    from tests.conftest import make_cfg
+
+    mocker.patch("jailbee.gui.host_is_wayland", return_value=False)
+    mocker.patch("jailbee.gui.sys.stdin.isatty", return_value=True)
+    mocker.patch(
+        "jailbee.x11.grant_state",
+        return_value=GrantState(window_until=None, session_until=None, has_labels=False),
+    )
+    grant = mocker.patch("jailbee.x11.grant")
+    select_mock = mocker.patch("questionary.select")
+    select_mock.return_value.ask.return_value = None  # Ctrl-C
+
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    gcfg = GlobalConfig.model_validate({"x11": {"enabled": True}})
+
+    assert ensure_display(cfg, mocker.MagicMock(), "c", gcfg=gcfg, now=NOW) is False
+    grant.assert_not_called()
+
+
+def test_no_tty_fails_with_a_hint_and_opens_nothing(tmp_path, mocker):
+    from jailbee.gui import ensure_display
+    from jailbee.x11 import GrantState
+    from tests.conftest import make_cfg
+
+    mocker.patch("jailbee.gui.host_is_wayland", return_value=False)
+    mocker.patch("jailbee.gui.sys.stdin.isatty", return_value=False)
+    mocker.patch(
+        "jailbee.x11.grant_state",
+        return_value=GrantState(window_until=None, session_until=None, has_labels=False),
+    )
+    grant = mocker.patch("jailbee.x11.grant")
+    error = mocker.patch("jailbee.gui.error")
+
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    gcfg = GlobalConfig.model_validate({"x11": {"enabled": True}})
+
+    assert ensure_display(cfg, mocker.MagicMock(), "c", gcfg=gcfg, now=NOW) is False
+    grant.assert_not_called()
+    assert "jailbee x11 grant" in " ".join(str(a) for a in error.call_args.args)
+
+
+def test_disabled_x11_explains_the_config_switch(tmp_path, mocker):
+    from jailbee.gui import ensure_display
+    from tests.conftest import make_cfg
+
+    mocker.patch("jailbee.gui.host_is_wayland", return_value=False)
+    error = mocker.patch("jailbee.gui.error")
+
+    cfg = make_cfg(tmp_path)
+    assert ensure_display(cfg, mocker.MagicMock(), "c", gcfg=GlobalConfig(), now=NOW) is False
+    assert "x11.enabled" in " ".join(str(a) for a in error.call_args.args)
+
+
+def test_unavailable_display_is_reported_not_prompted(tmp_path, mocker):
+    from jailbee.gui import ensure_display
+    from jailbee.x11 import GrantState, X11UnavailableError
+    from tests.conftest import make_cfg
+
+    mocker.patch("jailbee.gui.host_is_wayland", return_value=False)
+    mocker.patch("jailbee.gui.sys.stdin.isatty", return_value=True)
+    mocker.patch(
+        "jailbee.x11.grant_state",
+        return_value=GrantState(window_until=None, session_until=None, has_labels=False),
+    )
+    mocker.patch("questionary.select").return_value.ask.return_value = "1m"
+    mocker.patch("jailbee.x11.grant", side_effect=X11UnavailableError("no local socket"))
+    error = mocker.patch("jailbee.gui.error")
+
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    gcfg = GlobalConfig.model_validate({"x11": {"enabled": True}})
+
+    assert ensure_display(cfg, mocker.MagicMock(), "c", gcfg=gcfg, now=NOW) is False
+    error.assert_called()
