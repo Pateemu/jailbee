@@ -138,6 +138,38 @@ def test_base_profile_emits_no_render_devices_when_host_has_none(mocker):
     assert "fonts" in devices
 
 
+def test_base_profile_does_not_hardcode_display(tmp_path):
+    """`environment.DISPLAY: ":0"` was wrong on every host whose display is not
+    :0, and wrong for Wayland users too — it pointed at an X socket that is not
+    in the container, so GUI apps attempted X11 and failed before falling back.
+    `x11.grant` sets it per container, for exactly as long as a grant lives."""
+    import yaml
+
+    from jailbee.profiles import base_profile_yaml
+    from tests.conftest import make_cfg
+
+    cfg = make_cfg(tmp_path)
+    profile = yaml.safe_load(base_profile_yaml(cfg))
+
+    assert "environment.DISPLAY" not in profile["config"]
+
+
+def test_base_profile_still_sets_the_wayland_env(tmp_path):
+    """Wayland behaviour must not change."""
+    import yaml
+
+    from jailbee.profiles import base_profile_yaml
+    from tests.conftest import make_cfg
+
+    cfg = make_cfg(tmp_path)
+    profile = yaml.safe_load(base_profile_yaml(cfg))
+
+    assert profile["config"]["environment.WAYLAND_DISPLAY"] == "wayland-0"
+    assert profile["config"]["environment.XDG_RUNTIME_DIR"] == (
+        f"/run/user/{cfg.container_user.uid}"
+    )
+
+
 def test_base_profile_has_env_vars():
     cfg = _cfg()
     out = base_profile_yaml(cfg)

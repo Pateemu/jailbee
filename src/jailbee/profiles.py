@@ -68,7 +68,13 @@ def base_profile_yaml(cfg: Config) -> str:
     """Generate <repo>-base profile YAML.
 
     Includes security flags, UID/GID mapping, GPU passthrough, fonts,
-    and environment variables for Wayland/X11/SSH-via-GPG.
+    and environment variables for Wayland/SSH-via-GPG.
+
+    NOTE: ``environment.DISPLAY`` is intentionally absent. X11 access is an
+    ephemeral per-container grant (see ``x11.grant``), which sets DISPLAY for
+    exactly as long as the grant lives. A profile-level default was wrong on any
+    host whose display is not ``:0`` and misleading on Wayland hosts, where it
+    named a socket the container does not have.
 
     NOTE: The four ``/run/user/<uid>/*`` socket bind mounts (wayland-0,
     pulse, bus, gnupg) are intentionally NOT in this profile. Profile-
@@ -130,7 +136,6 @@ def base_profile_yaml(cfg: Config) -> str:
         "raw.idmap": f"uid {uid} {uid}\ngid {gid} {gid}",
         "environment.WAYLAND_DISPLAY": "wayland-0",
         "environment.XDG_RUNTIME_DIR": runtime,
-        "environment.DISPLAY": ":0",
     }
     if cfg.gpg.enabled:
         profile_config["environment.SSH_AUTH_SOCK"] = f"{runtime}/gnupg/S.gpg-agent.ssh"
