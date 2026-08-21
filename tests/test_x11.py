@@ -827,3 +827,34 @@ def test_one_broken_container_does_not_break_the_loop(tmp_path, mocker, now):
         c for c in incus.config_device_remove.call_args_list if c.args[0] == f"{prefix}-a"
     ] == []
     assert [c for c in incus.config_unset.call_args_list if c.args[0] == f"{prefix}-a"] == []
+
+
+def test_failed_eviction_pass_leaves_the_grant_intact_for_the_next_tick(tmp_path, mocker, now):
+    """A wiped label plus a surviving X connection is the one outcome this
+    feature must never produce: the next tick would see nothing to do while the
+    GUI process still held the display."""
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = mocker.Mock(spec=Incus)
+    incus.list_containers.return_value = [_raw(cfg.container_prefix, "feat-x")]
+    _labels(
+        mocker,
+        incus,
+        {
+            "user.jailbee.x11_until": (now - timedelta(seconds=1)).isoformat(),
+        },
+    )
+    mocker.patch("jailbee.x11.evict", side_effect=RuntimeError("boom"))
+    mocker.patch("jailbee.x11.marked_pids", return_value=[42])
+
+    from jailbee.x11 import check_and_revert_x11
+
+    results = check_and_revert_x11(cfg, incus, now=now)
+
+    assert [r.action for r in results] == ["error"]
+    assert results[0].error is not None
+    incus.config_device_remove.assert_not_called()
+    assert [
+        c
+        for c in incus.config_unset.call_args_list
+        if c.args[1] in ("user.jailbee.x11_until", "user.jailbee.x11_window_until")
+    ] == []

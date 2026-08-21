@@ -452,9 +452,13 @@ class X11RevertResult:
 
     ``action`` is ``"closed"`` (door shut, session intact), ``"evicted"``
     (session over, processes signalled), ``"cleaned"`` (labels removed without a
-    live grant behind them) or ``"error"`` (the container raised; its labels are
-    preserved for the next tick). ``error`` carries the message for the last one,
-    and may also be set on ``"evicted"`` when the post-eviction revoke failed.
+    live grant behind them) or ``"error"`` (the container raised; its *labels*
+    are preserved so the next tick retries — device detachment may still have
+    been partial, since ``_detach`` removes devices one at a time before
+    unsetting labels, but that self-heals on the next pass and only closes off
+    future connections, not a live one). ``error`` carries the message for the
+    last one, and may also be set on ``"evicted"`` when the post-eviction
+    revoke failed.
     """
 
     container: str
@@ -535,16 +539,26 @@ def check_and_revert_x11(
         try:
             evict(incus, to_evict, sleep_fn=sleep_fn)
         except Exception as e:
-            log.warning("x11: eviction pass failed: %s", e)
-        for name in to_evict:
-            try:
-                revoke(cfg, incus, name)
-                out.append(X11RevertResult(container=name, action="evicted"))
-            except Exception as e:
-                log.warning("x11: revoke after eviction failed for %s: %s", name, e)
-                out.append(
-                    X11RevertResult(container=name, action="evicted", error=str(e)),
-                )
+            # Deliberately do NOT revoke here. The labels are the only record
+            # that these containers still owe an eviction, and a still-mounted
+            # socket with a live connection is exactly what the session deadline
+            # exists to end. Wiping them would make the next tick see nothing to
+            # do while the GUI process kept its X connection — reporting success
+            # for work that did not happen. Leave everything and retry.
+            log.warning("x11: eviction pass failed, deferring cleanup: %s", e)
+            out.extend(
+                X11RevertResult(container=name, action="error", error=str(e)) for name in to_evict
+            )
+        else:
+            for name in to_evict:
+                try:
+                    revoke(cfg, incus, name)
+                    out.append(X11RevertResult(container=name, action="evicted"))
+                except Exception as e:
+                    log.warning("x11: revoke after eviction failed for %s: %s", name, e)
+                    out.append(
+                        X11RevertResult(container=name, action="evicted", error=str(e)),
+                    )
 
     return out
 
