@@ -819,6 +819,11 @@ def test_one_broken_container_does_not_break_the_loop(tmp_path, mocker, now):
     assert actions[f"{prefix}-a"] == "error"
     broken = next(r for r in results if r.container == f"{prefix}-a")
     assert broken.error is not None
-    # The labels must survive so the next tick retries rather than losing the
-    # grant's deadlines to a transient failure.
-    assert incus.config_device_remove.call_count == 0
+    # Container a's labels must survive so the next tick retries rather than
+    # losing the grant's deadlines to a transient failure. Filter per
+    # container: b legitimately evicts and revokes in the same pass, so a
+    # global call count would be tripped by b's correct behaviour.
+    assert [
+        c for c in incus.config_device_remove.call_args_list if c.args[0] == f"{prefix}-a"
+    ] == []
+    assert [c for c in incus.config_unset.call_args_list if c.args[0] == f"{prefix}-a"] == []
