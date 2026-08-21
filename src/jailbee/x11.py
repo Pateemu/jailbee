@@ -20,6 +20,7 @@ operation, so the "only incus.py shells out" rule does not apply.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import subprocess
@@ -37,6 +38,8 @@ from jailbee.tui import warn
 if TYPE_CHECKING:
     from jailbee.config import Config
     from jailbee.incus import Incus
+
+log = logging.getLogger(__name__)
 
 X11_SOCKET_DIR = "/tmp/.X11-unix"
 
@@ -441,3 +444,117 @@ def evict(
         signal_pids(incus, container, survivors, "KILL")
 
     return targeted
+
+
+@dataclass(frozen=True)
+class X11RevertResult:
+    """Outcome of one container's grant check.
+
+    ``action`` is ``"closed"`` (door shut, session intact), ``"evicted"``
+    (session over, processes signalled), ``"cleaned"`` (labels removed without a
+    live grant behind them) or ``"error"`` (the container raised; its labels are
+    preserved for the next tick). ``error`` carries the message for the last one,
+    and may also be set on ``"evicted"`` when the post-eviction revoke failed.
+    """
+
+    container: str
+    action: str
+    error: str | None = None
+
+
+def check_and_revert_x11(
+    cfg: Config,
+    incus: Incus,
+    *,
+    now: datetime,
+    sleep_fn: object = time.sleep,
+) -> list[X11RevertResult]:
+    """Enforce both grant deadlines across this repo's containers.
+
+    Called once per registered repo per ``jailbee-net-refresh.timer`` tick from
+    ``egress_pool.refresh_all``, alongside ``check_and_revert_loose``. Shares
+    that function's defensive shape: per-container isolation, orphan cleanup, and
+    labels preserved on failure so the next tick retries.
+
+    Eviction is collected and performed in a single batch so the 20 s grace
+    period is waited once for the whole pass.
+    """
+    prefix = cfg.container_prefix
+    out: list[X11RevertResult] = []
+    to_evict: list[str] = []
+
+    for raw in incus.list_containers():
+        name = raw["name"]
+        # A container mid-destroy can be reported with "profiles": null, which
+        # bypasses the `.get(..., [])` default (key present, value None).
+        profiles = raw.get("profiles") or []
+        if f"{prefix}-base" not in profiles:
+            continue
+
+        try:
+            if incus.config_get(name, "user.jailbee.autostart_in_progress"):
+                continue
+
+            state = grant_state(incus, name)
+            if not state.has_labels:
+                continue
+
+            if state.window_until is None and state.session_until is None:
+                log.warning("x11: %s — unparseable deadline labels, cleaning up", name)
+                revoke(cfg, incus, name)
+                out.append(X11RevertResult(container=name, action="cleaned"))
+                continue
+
+            if raw.get("status", "Stopped") != "Running":
+                # Devices survive a stop and would be mounted at the next boot
+                # before systemd's tmpfs lands on /tmp, shadowing the socket.
+                revoke(cfg, incus, name)
+                out.append(X11RevertResult(container=name, action="cleaned"))
+                continue
+
+            if state.session_until is not None and state.session_until <= now:
+                to_evict.append(name)
+                continue
+
+            if state.window_until is None:
+                continue
+
+            # Liveness: an unused grant closes early rather than waiting out the
+            # window. Nothing carries the marker means nothing was launched.
+            unused = not marked_pids(incus, name)
+            if state.window_until <= now or unused:
+                _close_door(cfg, incus, name)
+                out.append(X11RevertResult(container=name, action="closed"))
+        except Exception as e:  # never let one container break the loop
+            # `action="error"`, not "cleaned": nothing was cleaned, and the
+            # labels stay put so the next tick retries.
+            log.warning("x11: %s raised: %s", name, e)
+            out.append(X11RevertResult(container=name, action="error", error=str(e)))
+
+    if to_evict:
+        try:
+            evict(incus, to_evict, sleep_fn=sleep_fn)
+        except Exception as e:
+            log.warning("x11: eviction pass failed: %s", e)
+        for name in to_evict:
+            try:
+                revoke(cfg, incus, name)
+                out.append(X11RevertResult(container=name, action="evicted"))
+            except Exception as e:
+                log.warning("x11: revoke after eviction failed for %s: %s", name, e)
+                out.append(
+                    X11RevertResult(container=name, action="evicted", error=str(e)),
+                )
+
+    return out
+
+
+def _close_door(cfg: Config, incus: Incus, container: str) -> None:
+    """Detach the devices and clear the door label, leaving the session intact.
+
+    The session label must survive: it is what eviction later fires on. Reuses
+    ``_detach`` (Task 4) with the session label withheld — the two paths differ
+    in exactly that one key, so they must not be two copies of the same loop.
+    """
+    _ = cfg
+    _detach(incus, container, (DISPLAY_ENV, XAUTHORITY_ENV, WINDOW_LABEL))

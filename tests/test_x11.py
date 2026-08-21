@@ -579,3 +579,246 @@ def test_evict_does_nothing_when_no_process_is_marked(tmp_path, mocker):
 
     assert evict(incus, ["a"], sleep_fn=sleep_fn) == {}
     sleep_fn.assert_not_called()
+
+
+def _raw(prefix: str, name: str, *, status: str = "Running") -> dict:
+    return {"name": f"{prefix}-{name}", "profiles": [f"{prefix}-base"], "status": status}
+
+
+def _labels(mocker, incus, mapping):
+    incus.config_get.side_effect = lambda name, key: mapping.get(key)
+
+
+def test_unlabelled_container_is_left_alone(tmp_path, mocker, now):
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = mocker.Mock(spec=Incus)
+    incus.list_containers.return_value = [_raw(cfg.container_prefix, "feat-x")]
+    _labels(mocker, incus, {})
+
+    from jailbee.x11 import check_and_revert_x11
+
+    assert check_and_revert_x11(cfg, incus, now=now) == []
+    incus.config_device_remove.assert_not_called()
+
+
+def test_container_without_the_base_profile_is_skipped(tmp_path, mocker, now):
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = mocker.Mock(spec=Incus)
+    incus.list_containers.return_value = [{"name": "other", "profiles": ["default"]}]
+
+    from jailbee.x11 import check_and_revert_x11
+
+    assert check_and_revert_x11(cfg, incus, now=now) == []
+    incus.config_get.assert_not_called()
+
+
+def test_null_profiles_do_not_crash_the_sweeper(tmp_path, mocker, now):
+    """A container mid-destroy is reported with "profiles": null, which bypasses
+    a .get(..., []) default because the key is present with value None."""
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = mocker.Mock(spec=Incus)
+    incus.list_containers.return_value = [{"name": "x", "profiles": None}]
+
+    from jailbee.x11 import check_and_revert_x11
+
+    assert check_and_revert_x11(cfg, incus, now=now) == []
+
+
+def test_autostart_in_progress_is_skipped(tmp_path, mocker, now):
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = mocker.Mock(spec=Incus)
+    incus.list_containers.return_value = [_raw(cfg.container_prefix, "feat-x")]
+    _labels(mocker, incus, {"user.jailbee.autostart_in_progress": "1"})
+
+    from jailbee.x11 import check_and_revert_x11
+
+    assert check_and_revert_x11(cfg, incus, now=now) == []
+
+
+def test_unexpired_door_is_left_open(tmp_path, mocker, now):
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = mocker.Mock(spec=Incus)
+    incus.list_containers.return_value = [_raw(cfg.container_prefix, "feat-x")]
+    _labels(
+        mocker,
+        incus,
+        {
+            "user.jailbee.x11_window_until": (now + timedelta(seconds=30)).isoformat(),
+            "user.jailbee.x11_until": (now + timedelta(hours=4)).isoformat(),
+        },
+    )
+    mocker.patch("jailbee.x11.marked_pids", return_value=[42])
+
+    from jailbee.x11 import check_and_revert_x11
+
+    assert check_and_revert_x11(cfg, incus, now=now) == []
+    incus.config_device_remove.assert_not_called()
+
+
+def test_expired_door_detaches_but_keeps_the_session(tmp_path, mocker, now):
+    """The door closing must not clear x11_until — the session deadline is what
+    eviction later fires on."""
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = mocker.Mock(spec=Incus)
+    incus.list_containers.return_value = [_raw(cfg.container_prefix, "feat-x")]
+    session = (now + timedelta(hours=4)).isoformat()
+    _labels(
+        mocker,
+        incus,
+        {
+            "user.jailbee.x11_window_until": (now - timedelta(seconds=1)).isoformat(),
+            "user.jailbee.x11_until": session,
+        },
+    )
+    mocker.patch("jailbee.x11.marked_pids", return_value=[42])
+
+    from jailbee.x11 import check_and_revert_x11
+
+    results = check_and_revert_x11(cfg, incus, now=now)
+
+    assert [r.action for r in results] == ["closed"]
+    removed = {c.args[1] for c in incus.config_device_remove.call_args_list}
+    assert removed == {"x11-socket", "x11-auth"}
+    unset = {c.args[1] for c in incus.config_unset.call_args_list}
+    assert "user.jailbee.x11_window_until" in unset
+    assert "user.jailbee.x11_until" not in unset
+
+
+def test_unused_grant_closes_the_door_early(tmp_path, mocker, now):
+    """No marked process means the grant is unused, so exposure ends now rather
+    than at the end of the window."""
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = mocker.Mock(spec=Incus)
+    incus.list_containers.return_value = [_raw(cfg.container_prefix, "feat-x")]
+    _labels(
+        mocker,
+        incus,
+        {
+            "user.jailbee.x11_window_until": (now + timedelta(seconds=45)).isoformat(),
+            "user.jailbee.x11_until": (now + timedelta(hours=4)).isoformat(),
+        },
+    )
+    mocker.patch("jailbee.x11.marked_pids", return_value=[])
+
+    from jailbee.x11 import check_and_revert_x11
+
+    results = check_and_revert_x11(cfg, incus, now=now)
+
+    assert [r.action for r in results] == ["closed"]
+
+
+def test_expired_session_evicts_and_clears_everything(tmp_path, mocker, now):
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = mocker.Mock(spec=Incus)
+    incus.list_containers.return_value = [_raw(cfg.container_prefix, "feat-x")]
+    _labels(
+        mocker,
+        incus,
+        {
+            "user.jailbee.x11_until": (now - timedelta(seconds=1)).isoformat(),
+        },
+    )
+    evict = mocker.patch("jailbee.x11.evict", return_value={f"{cfg.container_prefix}-feat-x": [42]})
+    mocker.patch("jailbee.x11.marked_pids", return_value=[42])
+
+    from jailbee.x11 import check_and_revert_x11
+
+    results = check_and_revert_x11(cfg, incus, now=now)
+
+    assert [r.action for r in results] == ["evicted"]
+    evict.assert_called_once()
+    unset = {c.args[1] for c in incus.config_unset.call_args_list}
+    assert "user.jailbee.x11_until" in unset
+
+
+def test_eviction_batches_across_containers(tmp_path, mocker, now):
+    """Two containers expiring on the same tick must share one grace period."""
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    prefix = cfg.container_prefix
+    incus = mocker.Mock(spec=Incus)
+    incus.list_containers.return_value = [_raw(prefix, "a"), _raw(prefix, "b")]
+    _labels(
+        mocker,
+        incus,
+        {
+            "user.jailbee.x11_until": (now - timedelta(seconds=1)).isoformat(),
+        },
+    )
+    evict = mocker.patch("jailbee.x11.evict", return_value={})
+    mocker.patch("jailbee.x11.marked_pids", return_value=[])
+
+    from jailbee.x11 import check_and_revert_x11
+
+    check_and_revert_x11(cfg, incus, now=now)
+
+    evict.assert_called_once()
+    assert sorted(evict.call_args.args[1]) == [f"{prefix}-a", f"{prefix}-b"]
+
+
+def test_stopped_container_with_labels_is_cleaned(tmp_path, mocker, now):
+    """Devices are container config and survive a stop. Left in place they get
+    mounted at the next boot *before* systemd's tmpfs lands on /tmp, shadowing
+    the socket and leaving a grant that looks live but cannot work."""
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = mocker.Mock(spec=Incus)
+    incus.list_containers.return_value = [
+        _raw(cfg.container_prefix, "feat-x", status="Stopped"),
+    ]
+    _labels(
+        mocker,
+        incus,
+        {
+            "user.jailbee.x11_window_until": (now + timedelta(hours=1)).isoformat(),
+            "user.jailbee.x11_until": (now + timedelta(hours=4)).isoformat(),
+        },
+    )
+
+    from jailbee.x11 import check_and_revert_x11
+
+    results = check_and_revert_x11(cfg, incus, now=now)
+
+    assert [r.action for r in results] == ["cleaned"]
+    removed = {c.args[1] for c in incus.config_device_remove.call_args_list}
+    assert removed == {"x11-socket", "x11-auth"}
+
+
+def test_unparseable_labels_are_cleared_rather_than_retried(tmp_path, mocker, now):
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    incus = mocker.Mock(spec=Incus)
+    incus.list_containers.return_value = [_raw(cfg.container_prefix, "feat-x")]
+    _labels(mocker, incus, {"user.jailbee.x11_until": "garbage"})
+
+    from jailbee.x11 import check_and_revert_x11
+
+    results = check_and_revert_x11(cfg, incus, now=now)
+
+    assert [r.action for r in results] == ["cleaned"]
+
+
+def test_one_broken_container_does_not_break_the_loop(tmp_path, mocker, now):
+    cfg = make_cfg(tmp_path, x11={"enabled": True})
+    prefix = cfg.container_prefix
+    incus = mocker.Mock(spec=Incus)
+    incus.list_containers.return_value = [_raw(prefix, "a"), _raw(prefix, "b")]
+
+    def config_get(name, key):
+        if name == f"{prefix}-a":
+            raise RuntimeError("boom")
+        return {"user.jailbee.x11_until": (now - timedelta(seconds=1)).isoformat()}.get(key)
+
+    incus.config_get.side_effect = config_get
+    mocker.patch("jailbee.x11.evict", return_value={})
+    mocker.patch("jailbee.x11.marked_pids", return_value=[])
+
+    from jailbee.x11 import check_and_revert_x11
+
+    results = check_and_revert_x11(cfg, incus, now=now)
+
+    actions = {r.container: r.action for r in results}
+    assert actions[f"{prefix}-b"] == "evicted"
+    assert actions[f"{prefix}-a"] == "error"
+    broken = next(r for r in results if r.container == f"{prefix}-a")
+    assert broken.error is not None
+    # The labels must survive so the next tick retries rather than losing the
+    # grant's deadlines to a transient failure.
+    assert incus.config_device_remove.call_count == 0

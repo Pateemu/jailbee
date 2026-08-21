@@ -21,6 +21,7 @@ from jailbee.db.models import PoolIP, RefreshState, RegisteredRepo
 from jailbee.egress import NetworkResolveError, resolve_hostnames
 from jailbee.loose_revert import check_and_revert_loose
 from jailbee.paths import repo_config_path
+from jailbee.x11 import check_and_revert_x11
 
 if TYPE_CHECKING:
     from jailbee.config import Config
@@ -525,6 +526,18 @@ def refresh_all(
         except Exception as e:
             log.warning(
                 "refresh_all: loose_revert failed for %s: %s",
+                repo.container_prefix,
+                e,
+            )
+
+        # TTL-driven enforcement of `jailbee x11 grant` deadlines. Same shape as
+        # the loose revert above: one call per registered repo, acting on
+        # whatever labels exist.
+        try:
+            check_and_revert_x11(cfg, incus, now=now)
+        except Exception as e:
+            log.warning(
+                "refresh_all: x11 revert failed for %s: %s",
                 repo.container_prefix,
                 e,
             )

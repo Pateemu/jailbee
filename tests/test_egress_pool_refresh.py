@@ -609,3 +609,102 @@ def test_refresh_all_continues_when_loose_revert_raises(
     # Should not raise — the loop swallows the error and logs it.
     results = egress_pool.refresh_all(db_session, gcfg, incus, now=frozen_now)
     assert "A" in results
+
+
+def test_refresh_all_invokes_x11_revert_per_repo(
+    db_session: Session,
+    gcfg: Any,
+    incus: Any,
+    frozen_now: datetime,
+    tmp_path: Path,
+    mocker: MockerFixture,
+) -> None:
+    """Each registered repo gets one `check_and_revert_x11` call, next to the
+    loose sweeper."""
+    from jailbee import egress_pool
+
+    repo_a = tmp_path / "a"
+    (repo_a / ".jailbee").mkdir(parents=True)
+    (repo_a / ".jailbee" / "config.yaml").write_text("# placeholder")
+
+    db_session.add(
+        RegisteredRepo(
+            container_prefix="A",
+            repo_root=str(repo_a),
+            registered_at=frozen_now,
+        )
+    )
+    db_session.commit()
+
+    def fake_load(path: Path) -> Any:
+        m = mocker.Mock()
+        m.container_prefix = "A"
+        m.repo_root = path.parent.parent
+        m.effective_egress_allow.return_value = []
+        return m
+
+    mocker.patch("jailbee.egress_pool.load_config", side_effect=fake_load)
+    mocker.patch.object(
+        egress_pool,
+        "refresh_pool",
+        return_value=egress_pool.RefreshResult(container_prefix="A", status="ok"),
+    )
+    mocker.patch.object(egress_pool, "check_and_revert_loose")
+    revert = mocker.patch.object(egress_pool, "check_and_revert_x11")
+
+    egress_pool.refresh_all(db_session, gcfg, incus, now=frozen_now)
+
+    assert revert.call_count == 1
+    args, kwargs = revert.call_args
+    assert args[1] is incus
+    assert kwargs["now"] == frozen_now
+
+
+def test_refresh_all_continues_when_x11_revert_raises(
+    db_session: Session,
+    gcfg: Any,
+    incus: Any,
+    frozen_now: datetime,
+    tmp_path: Path,
+    mocker: MockerFixture,
+) -> None:
+    """A broken X11 sweep must not abort the egress refresh for other repos."""
+    from jailbee import egress_pool
+
+    repo_a = tmp_path / "a"
+    (repo_a / ".jailbee").mkdir(parents=True)
+    (repo_a / ".jailbee" / "config.yaml").write_text("# placeholder")
+
+    db_session.add(
+        RegisteredRepo(
+            container_prefix="A",
+            repo_root=str(repo_a),
+            registered_at=frozen_now,
+        )
+    )
+    db_session.commit()
+
+    def fake_load(path: Path) -> Any:
+        m = mocker.Mock()
+        m.container_prefix = "A"
+        m.repo_root = path.parent.parent
+        m.effective_egress_allow.return_value = []
+        return m
+
+    mocker.patch("jailbee.egress_pool.load_config", side_effect=fake_load)
+    refresh = mocker.patch.object(
+        egress_pool,
+        "refresh_pool",
+        return_value=egress_pool.RefreshResult(container_prefix="A", status="ok"),
+    )
+    mocker.patch.object(egress_pool, "check_and_revert_loose")
+    mocker.patch.object(
+        egress_pool,
+        "check_and_revert_x11",
+        side_effect=RuntimeError("boom"),
+    )
+
+    result = egress_pool.refresh_all(db_session, gcfg, incus, now=frozen_now)
+
+    assert refresh.call_count == 1
+    assert result["A"].status == "ok"
