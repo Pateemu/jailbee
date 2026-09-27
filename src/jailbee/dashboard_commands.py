@@ -37,7 +37,14 @@ def check_dashboard_command(
         return
     if policy is None:
         raise RouteError("remote SSH dashboard has no server policy")
-    router.policy_allows(argv, policy.commands, restrict_host=policy.restrict_host)
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+
+    router.policy_allows(
+        argv,
+        policy.commands,
+        restrict_host=policy.restrict_host,
+        scope=RemoteRepoScope(frozenset(policy.excluded_repos)),
+    )
 
 
 def command_argv(text: str, selected_container: str | None) -> list[str]:

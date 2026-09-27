@@ -27,6 +27,7 @@ from sqlmodel import Session, select
 from jailbee.config.models_remote import RemoteSSHConfig
 from jailbee.db import get_engine, state_dir
 from jailbee.db.models import RegisteredRepo
+from jailbee.remote_ssh.repo_scope import RemoteRepoScope, scope_for_session
 from jailbee.remote_ssh.router import (
     RouteError,
     allowed_command_paths,
@@ -53,7 +54,9 @@ class RepoChoice:
     root: Path
 
 
-def registered_repos(*, engine: Engine | None = None) -> list[RepoChoice]:
+def registered_repos(
+    *, engine: Engine | None = None, scope: RemoteRepoScope | None = None
+) -> list[RepoChoice]:
     """Return registered repositories whose host directories still exist."""
     with Session(engine or get_engine()) as session:
         rows = session.exec(select(RegisteredRepo)).all()
@@ -62,6 +65,7 @@ def registered_repos(*, engine: Engine | None = None) -> list[RepoChoice]:
             RepoChoice(row.container_prefix, Path(row.repo_root))
             for row in rows
             if Path(row.repo_root).is_dir()
+            and (scope is None or scope.allows(row.container_prefix))
         ],
         key=lambda repo: repo.prefix,
     )
@@ -243,8 +247,10 @@ def _session(
     )
 
 
-def _resolve_choice(prefix: str) -> RepoChoice:
-    return RepoChoice(prefix, resolve_repo(prefix))
+def _resolve_choice(prefix: str, scope: RemoteRepoScope | None = None) -> RepoChoice:
+    if scope is None or not scope.excluded:
+        return RepoChoice(prefix, resolve_repo(prefix))
+    return RepoChoice(prefix, resolve_repo(prefix, scope=scope))
 
 
 def _select_repo(repos: Sequence[RepoChoice], **kwargs: Any) -> RepoChoice | None:
@@ -338,7 +344,13 @@ def run(initial_repo: str | None = None, policy_json: str | None = None) -> int:
     ssh_config = _load_policy(policy_json)
     if ssh_config is None:
         return 1
-    repos = registered_repos()
+    try:
+        scope = scope_for_session()
+    except ValueError as error:
+        _error(str(error))
+        return 1
+    scope = RemoteRepoScope(frozenset(ssh_config.excluded_repos))
+    repos = registered_repos(scope=scope)
     if not repos:
         _error("No registered repositories are available.")
         return 1
@@ -355,7 +367,7 @@ def run(initial_repo: str | None = None, policy_json: str | None = None) -> int:
             current = selected
     else:
         try:
-            current = _resolve_choice(initial_repo)
+            current = _resolve_choice(initial_repo, scope if scope.excluded else None)
         except RouteError as error:
             _error(str(error))
             return 1
@@ -400,11 +412,11 @@ def run(initial_repo: str | None = None, policy_json: str | None = None) -> int:
             if len(argv) != 1:
                 _error("usage: repos")
                 continue
-            _print_repos(registered_repos())
+            _print_repos(registered_repos(scope=scope))
             continue
         if command == "use":
             if len(argv) == 1:
-                candidates = registered_repos()
+                candidates = registered_repos(scope=scope)
                 if not candidates:
                     _error("No registered repositories are available.")
                     continue
@@ -416,7 +428,7 @@ def run(initial_repo: str | None = None, policy_json: str | None = None) -> int:
                 _error("usage: use [PREFIX]")
                 continue
             try:
-                current = _resolve_choice(argv[1])
+                current = _resolve_choice(argv[1], scope if scope.excluded else None)
             except RouteError as error:
                 _error(str(error))
             continue
@@ -442,7 +454,9 @@ def run(initial_repo: str | None = None, policy_json: str | None = None) -> int:
             continue
 
         try:
-            policy_allows(argv, ssh_config.commands, restrict_host=ssh_config.restrict_host)
+            policy_allows(
+                argv, ssh_config.commands, restrict_host=ssh_config.restrict_host, scope=scope
+            )
         except RouteError as error:
             _error(str(error))
             continue

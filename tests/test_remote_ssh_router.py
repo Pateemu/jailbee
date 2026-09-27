@@ -10,6 +10,7 @@ from sqlmodel import Session
 
 from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
 from jailbee.db.models import RegisteredRepo
+from jailbee.remote_ssh.repo_scope import RemoteRepoScope
 from jailbee.remote_ssh.router import (
     Route,
     RouteError,
@@ -142,6 +143,16 @@ def test_one_shot_resolves_repo_and_drops_remote_selector(engine, repo) -> None:
     assert result.repo_root == repo
 
 
+@pytest.mark.parametrize("raw", ["--repo project ls", "shell --repo project"])
+def test_excluded_repo_is_indistinguishable_from_unknown(raw: str, engine, repo) -> None:
+    cfg = RemoteSSHConfig(
+        exec=True, shell=True, excluded_repos=["project"], commands=RemoteCommandPolicy(mode="full")
+    )
+    with pytest.raises(RouteError) as excluded:
+        route(raw, cfg, engine=engine)
+    assert str(excluded.value) == "unknown registered repo: project"
+
+
 @pytest.mark.parametrize(
     "raw",
     ["ls", "--repo project", "--repo /tmp ls", "--repo project --repo other ls"],
@@ -226,6 +237,14 @@ def test_command_path_rejects_options_before_the_leaf() -> None:
     assert command_path(("git", "pull", "--ff-only")) == "git pull"
     with pytest.raises(RouteError, match="unknown Jailbee command"):
         command_path(("--verbose", "ls"))
+
+
+def test_exclusions_fail_closed_for_unclassified_command_and_aggregate_option() -> None:
+    policy = RemoteCommandPolicy(mode="full")
+    with pytest.raises(RouteError, match="unavailable when SSH repository exclusions"):
+        policy_allows(("version",), policy, scope=RemoteRepoScope(frozenset({"secret"})))
+    with pytest.raises(RouteError, match="aggregate options are unavailable"):
+        policy_allows(("ls", "--all"), policy, scope=RemoteRepoScope(frozenset({"secret"})))
 
 
 def test_allowlist_matches_the_exact_leaf_path() -> None:
