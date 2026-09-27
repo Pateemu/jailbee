@@ -45,7 +45,14 @@ def test_set_groups_forwards_a_non_default_columns_to_headers(qtbot):
 
 
 def test_menu_labels_match_menu_actions_for_running(qtbot):
-    from jailbee.dashboard import AppMenuEntry, MenuContext, MenuGroup, RepoGroup, group_menu_actions, menu_actions
+    from jailbee.dashboard import (
+        AppMenuEntry,
+        MenuContext,
+        MenuGroup,
+        RepoGroup,
+        group_menu_actions,
+        menu_actions,
+    )
 
     running = ContainerInfo(
         name="p-foo", state="Running", network="strict", ip="10.0.0.5", memory_limit="2GB", repo="p"
@@ -72,14 +79,16 @@ def test_menu_labels_match_menu_actions_for_running(qtbot):
     win.set_groups(groups, now=datetime.now().astimezone())
     expected = [
         item.label if isinstance(item, MenuGroup) else item[0]
-        for item in group_menu_actions(menu_actions(
-            MenuContext(
-                state="Running",
-                has_repo=True,
-                apps=[ide_entry],
-                current_network="strict",
+        for item in group_menu_actions(
+            menu_actions(
+                MenuContext(
+                    state="Running",
+                    has_repo=True,
+                    apps=[ide_entry],
+                    current_network="strict",
+                )
             )
-        ))
+        )
     ]
     assert win.menu_labels_for("p-foo") == expected
     assert expected[:5] == ["Attach tmux", "Open shell", "Launch JetBrains idea", "PR →", "Git →"]
