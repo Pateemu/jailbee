@@ -570,6 +570,20 @@ def test_remote_actions_filter_against_canonical_policy_and_argv():
     assert "--config" not in dashboard_action_argv("git push --pr", "alpha-1")
 
 
+def test_remote_policy_filters_all_git_leaves_without_hiding_other_actions():
+    from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
+
+    groups = [dashboard.RepoGroup("alpha", "/alpha", None, [_ci("alpha-1", "alpha")])]
+    policy = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="allowlist", allow=["shell"]))
+
+    permitted = dashboard.actions_for_container(
+        groups, "alpha-1", over_ssh=True, ssh_policy=policy
+    )
+
+    assert permitted == [("Open shell", "shell")]
+    assert dashboard.group_menu_actions(permitted) == [("Open shell", "shell")]
+
+
 def test_remote_full_and_disabled_actions_follow_policy():
     from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
 
