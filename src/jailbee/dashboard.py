@@ -1300,7 +1300,7 @@ def _hint_line(overlay: Overlay | None) -> str:
                 "[bold]↑/↓[/bold] move  ·  [bold]Enter[/bold] run  ·  "
                 "[bold]Esc[/bold] back  ·  [bold]q[/bold] close"
             )
-        return "[bold]↑/↓[/bold] move  ·  [bold]Enter[/bold] run  ·  [bold]Esc[/bold] cancel"
+        return "[bold]↑/↓[/bold] move  ·  [bold]Enter[/bold] open/run  ·  [bold]Esc[/bold] cancel"
     if isinstance(overlay, SettingsState):
         return (
             "[bold]↑/↓[/bold] move  ·  [bold]Space[/bold] toggle  ·  "

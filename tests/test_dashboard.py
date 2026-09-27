@@ -3324,7 +3324,7 @@ def test_render_swaps_the_hint_line_while_the_menu_is_open(tmp_path):
             overlay=dashboard.MenuState("alpha-one", [("Attach tmux", "tmux")]),
         )
     )
-    assert "Enter run" in out and "Esc cancel" in out
+    assert "Enter open/run" in out and "Esc cancel" in out
     assert "h/? help" in out.splitlines()[0]
 
 
@@ -3347,9 +3347,11 @@ def test_render_menu_submenu_title_and_contextual_back_hint(tmp_path):
         )
 
     assert "PR →" in frame(root) and "Git →" in frame(root)
+    assert "Enter open/run" in frame(root)
     assert "Esc cancel" in frame(root)
     assert "alpha-x → PR" in frame(submenu)
     assert "Create/update PR" in frame(submenu)
+    assert "Enter run" in frame(submenu)
     assert "Esc back" in frame(submenu)
     assert "Git →" not in frame(submenu)
 
