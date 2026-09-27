@@ -1010,3 +1010,38 @@ def test_migrate_to_v11_is_idempotent() -> None:
     with engine.begin() as conn:
         _migrate_to_v11(conn)
         _migrate_to_v11(conn)
+
+
+def test_v13_db_migrates_view_prefs_and_preserves_existing_values() -> None:
+    from jailbee.db import _ensure_schema
+    from jailbee.db.models import SchemaMeta, ViewPrefs
+
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(SchemaMeta(id=1, version=13))
+        session.add(ViewPrefs(frontend="tui", columns='["name"]', folded_repos='["alpha"]'))
+        session.commit()
+    with engine.begin() as conn:
+        conn.exec_driver_sql("ALTER TABLE view_prefs DROP COLUMN hidden_repos")
+        conn.exec_driver_sql("ALTER TABLE view_prefs DROP COLUMN show_empty_repos")
+
+    _ensure_schema(engine)
+    with Session(engine) as session:
+        row = session.get(ViewPrefs, "tui")
+        meta = session.get(SchemaMeta, 1)
+    assert row is not None
+    assert row.columns == '["name"]'
+    assert row.folded_repos == '["alpha"]'
+    assert row.show_empty_repos is True
+    assert row.hidden_repos is None
+    assert meta is not None and meta.version == CURRENT_SCHEMA_VERSION == 14
+
+    _ensure_schema(engine)
+    with Session(engine) as session:
+        row = session.get(ViewPrefs, "tui")
+        meta = session.get(SchemaMeta, 1)
+    assert row is not None and row.columns == '["name"]'
+    assert row.folded_repos == '["alpha"]'
+    assert row.show_empty_repos is True and row.hidden_repos is None
+    assert meta is not None and meta.version == 14

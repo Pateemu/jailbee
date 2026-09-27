@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Column, DateTime, Dialect, TypeDecorator
+from sqlalchemy import Boolean, Column, DateTime, Dialect, TypeDecorator
 from sqlmodel import Field, SQLModel
 
 
@@ -208,6 +208,10 @@ class ViewPrefs(SQLModel, table=True):
     frontend: str = Field(primary_key=True)
     columns: str | None = None
     folded_repos: str | None = None
+    show_empty_repos: bool = Field(
+        default=True, sa_column=Column(Boolean, nullable=False, server_default="1")
+    )
+    hidden_repos: str | None = None
 
 
 class RepoUpgradeState(SQLModel, table=True):
