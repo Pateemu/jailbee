@@ -624,6 +624,7 @@ def test_compact_card_omits_an_idle_containers_activity(qtbot):
 
 def test_empty_actionable_group_has_new_control_but_orphan_does_not(qtbot):
     from PySide6.QtWidgets import QPushButton
+
     from jailbee.qtui.cards import _GroupHeader
 
     view = CardView()

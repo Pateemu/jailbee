@@ -651,7 +651,9 @@ def test_repository_visibility_menu_filters_and_tracks_registered_prefixes(qtbot
     assert win.hidden_repos() == frozenset({"empty"})
     assert win.tree.topLevelItemCount() == 1
 
-    win.set_groups([*_groups(), empty, RepoGroup("later", "/later", None, [])], now=datetime.now().astimezone())
+    win.set_groups(
+        [*_groups(), empty, RepoGroup("later", "/later", None, [])], now=datetime.now().astimezone()
+    )
     actions = {a.text(): a for a in win.repositories_menu.actions()}
     assert "later" in actions and actions["empty"].isChecked() is False
 

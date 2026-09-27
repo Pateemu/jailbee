@@ -121,7 +121,7 @@ def test_malformed_hidden_repos_degrades_without_losing_other_preferences() -> N
                 columns='["name"]',
                 folded_repos='["folded"]',
                 show_empty_repos=False,
-                hidden_repos="[1, {\"bad\": true}]",
+                hidden_repos='[1, {"bad": true}]',
             )
         )
         session.commit()

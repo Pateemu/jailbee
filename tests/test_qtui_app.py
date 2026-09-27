@@ -535,14 +535,10 @@ def test_run_restores_qt_visibility_without_changing_tui_state(mocker):
     assert kwargs["hidden_repos"] == frozenset({"alpha"})
 
 
-def test_visibility_persistence_saves_complete_qt_view_and_survives_write_failure(
-    mocker, caplog
-):
+def test_visibility_persistence_saves_complete_qt_view_and_survives_write_failure(mocker, caplog):
     import logging
 
-    save = mocker.patch(
-        "jailbee.db.view_prefs.save_view_state", side_effect=OSError("disk full")
-    )
+    save = mocker.patch("jailbee.db.view_prefs.save_view_state", side_effect=OSError("disk full"))
     window = mocker.Mock()
     window.enabled_columns.return_value = ("name", "state")
     window.collapsed_repos.return_value = {"beta"}
@@ -579,7 +575,6 @@ def test_on_groups_keeps_new_and_hidden_repositories_in_menu_snapshot(mocker):
 
 
 def test_on_groups_refresh_keeps_hidden_prefix_available_in_repository_menu(qtbot, mocker):
-    from datetime import datetime
 
     window = MainWindow(
         git_enabled=False,

@@ -228,7 +228,9 @@ class MainWindow(QMainWindow):
         self._visibility_changed()
 
     def _toggle_repo(self, prefix: str, checked: bool) -> None:
-        self._hidden_repos = self._hidden_repos - {prefix} if checked else self._hidden_repos | {prefix}
+        self._hidden_repos = (
+            self._hidden_repos - {prefix} if checked else self._hidden_repos | {prefix}
+        )
         self._visibility_changed()
 
     def _visibility_changed(self) -> None:

@@ -2391,8 +2391,12 @@ def test_render_empty_repo_shows_header_without_table(tmp_path):
 def test_render_all_filtered_repos_explains_visibility_settings(tmp_path):
     out = _render_text(
         dashboard.render(
-            [], selected=None, now=datetime(2026, 6, 8, tzinfo=UTC),
-            last_refresh_age=1.0, interval=3.0, git_enabled=True,
+            [],
+            selected=None,
+            now=datetime(2026, 6, 8, tzinfo=UTC),
+            last_refresh_age=1.0,
+            interval=3.0,
+            git_enabled=True,
             hidden_by_preferences=True,
         )
     )
@@ -4193,16 +4197,20 @@ def test_run_visibility_tab_uses_raw_prefixes_and_persists_complete_state(mocker
     save = mocker.patch.object(dashboard, "save_view_state")
     render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
 
-    assert _drive_run(
-        mocker,
-        [b"S", b"\t", b"\t", b"\x1b[B", b" "],
-        [alpha, empty],
-        view_state=dashboard.ViewState(("name",), frozenset({"vanished"})),
-    ) == 0
+    assert (
+        _drive_run(
+            mocker,
+            [b"S", b"\t", b"\t", b"\x1b[B", b" "],
+            [alpha, empty],
+            view_state=dashboard.ViewState(("name",), frozenset({"vanished"})),
+        )
+        == 0
+    )
 
     overlays = [call.kwargs.get("overlay") for call in render.call_args_list]
     visibility = next(
-        overlay for overlay in overlays
+        overlay
+        for overlay in overlays
         if isinstance(overlay, SettingsState) and overlay.tab == "visibility"
     )
     assert visibility.visibility_repo_prefixes == ("alpha", "empty")
@@ -4234,9 +4242,10 @@ def test_run_cannot_create_from_a_row_hidden_by_visibility_settings(mocker, tmp_
     child = mocker.patch.object(dashboard.subprocess, "run")
     render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
 
-    assert _drive_run(
-        mocker, [b"\x1b[B", b"S", b"\t", b"\t", b"\x1b[B", b" ", b"\x1b", b"n"], [group]
-    ) == 0
+    assert (
+        _drive_run(mocker, [b"\x1b[B", b"S", b"\t", b"\t", b"\x1b[B", b" ", b"\x1b", b"n"], [group])
+        == 0
+    )
 
     prompt.assert_not_called()
     child.assert_not_called()
