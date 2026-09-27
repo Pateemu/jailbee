@@ -1321,6 +1321,45 @@ def test_menu_verb_returns_the_highlighted_verb():
     assert dashboard.menu_verb(dashboard.MenuState("alpha-x", [], index=0)) is None
 
 
+def _grouped_menu():
+    return dashboard.MenuState(
+        "alpha-x",
+        [("Attach tmux", "tmux"), ("Create/update PR", "pr"), ("Show diff (git diff)", "git diff")],
+    )
+
+
+def test_menu_enters_groups_and_returns_to_saved_root_cursor():
+    root = _grouped_menu()
+    assert dashboard.back_menu(root) is None
+    assert dashboard.menu_verb(dashboard.move_menu(root, 1)) is None
+    assert dashboard.move_menu(root, -1).index == 0
+
+    pr, verb = dashboard.enter_menu(dashboard.move_menu(root, 1))
+    assert verb is None
+    assert pr.active_group == "PR →" and pr.index == 0 and pr.parent_index == 1
+    assert dashboard.menu_verb(pr) == "pr"
+    assert dashboard.enter_menu(pr) == (pr, "pr")
+    assert dashboard.move_menu(pr, 1).index == 0
+
+    parent = dashboard.back_menu(pr)
+    assert parent is not None
+    assert parent.active_group is None and parent.index == 1
+    git, verb = dashboard.enter_menu(dashboard.move_menu(parent, 1))
+    assert verb is None
+    assert git.active_group == "Git →" and git.index == 0
+    assert dashboard.enter_menu(git) == (git, "git diff")
+    assert dashboard.back_menu(git).index == 2
+    assert root.index == 0 and root.active_group is None
+
+
+def test_menu_group_cursor_clamps_within_visible_entries():
+    root = _grouped_menu()
+    assert dashboard.move_menu(root, 10).index == 2
+    git, _ = dashboard.enter_menu(dashboard.move_menu(root, 2))
+    assert dashboard.move_menu(git, 10).index == 0
+    assert dashboard.move_menu(git, -10).index == 0
+
+
 # --- RepoTarget: how a spawned `jailbee` child is pointed at one repo --------
 
 
@@ -3289,6 +3328,34 @@ def test_render_swaps_the_hint_line_while_the_menu_is_open(tmp_path):
     assert "h/? help" in out.splitlines()[0]
 
 
+def test_render_menu_submenu_title_and_contextual_back_hint(tmp_path):
+    g = dashboard.RepoGroup(
+        "alpha", "/repos/alpha", tmp_path / "a.yaml", [_ci("alpha-x", "alpha")]
+    )
+    root = _grouped_menu()
+    submenu, _ = dashboard.enter_menu(dashboard.move_menu(root, 1))
+
+    def frame(menu):
+        return _render_text(
+            dashboard.render(
+                [g],
+                selected=dashboard.Row("container", "alpha-x"),
+                now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
+                last_refresh_age=1.0,
+                interval=3.0,
+                git_enabled=True,
+                overlay=menu,
+            )
+        )
+
+    assert "PR →" in frame(root) and "Git →" in frame(root)
+    assert "Esc cancel" in frame(root)
+    assert "alpha-x → PR" in frame(submenu)
+    assert "Create/update PR" in frame(submenu)
+    assert "Esc back" in frame(submenu)
+    assert "Git →" not in frame(submenu)
+
+
 def test_parse_key_separates_escape_from_interrupt():
     """Esc/q close an overlay; Ctrl-C and EOF must always end the dashboard.
 
@@ -4064,6 +4131,83 @@ def _drive_run(
         over_ssh=over_ssh,
         ssh_policy=ssh_policy,
     )
+
+
+def test_run_enters_pr_submenu_and_dispatches_leaf(mocker, tmp_path):
+    group = dashboard.RepoGroup(
+        "alpha", str(tmp_path), None, [_ci("alpha-x", "alpha", pr_number=7)]
+    )
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    rc = _drive_run(
+        mocker,
+        [b"j", b"\r", b"\x1b[B", b"\x1b[B", b"\r", b"\x1b[B", b"\r"],
+        groups=[group],
+    )
+
+    assert rc == 0
+    assert any(
+        isinstance(call.kwargs.get("overlay"), dashboard.MenuState)
+        and call.kwargs["overlay"].active_group == "PR →"
+        for call in render.call_args_list
+    )
+    assert any(call.args[0] == ["jailbee", "pr", "alpha-x"] for call in child.call_args_list)
+
+
+def test_run_escape_backs_out_but_q_closes_submenu(mocker, tmp_path):
+    group = dashboard.RepoGroup(
+        "alpha", str(tmp_path), None, [_ci("alpha-x", "alpha", pr_number=7)]
+    )
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+
+    _drive_run(
+        mocker,
+        [b"j", b"\r", b"\x1b[B", b"\x1b[B", b"\r", b"\x1b", b"\r", b"q"],
+        groups=[group],
+    )
+
+    overlays = [call.kwargs.get("overlay") for call in render.call_args_list]
+    menus = [item for item in overlays if isinstance(item, dashboard.MenuState)]
+    assert [menu.active_group for menu in menus] == [None, None, None, "PR →", None, "PR →"]
+    assert menus[4].index == 2
+    assert overlays[-1] is None
+    child.assert_not_called()
+
+
+def test_run_vanished_container_closes_submenu(mocker, tmp_path):
+    group = dashboard.RepoGroup(
+        "alpha", str(tmp_path), None, [_ci("alpha-x", "alpha", pr_number=7)]
+    )
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    _mock_terminal(mocker)
+    mocker.patch.object(dashboard, "gather_live", return_value=[group])
+    turns = 0
+
+    def ready(*args, **kwargs):
+        nonlocal turns
+        turns += 1
+        if turns == 6:
+            group.containers.clear()
+        return ([True], [], [])
+
+    mocker.patch.object(dashboard.select, "select", side_effect=ready)
+    keys = itertools.chain(
+        [b"j", b"\r", b"\x1b[B", b"\x1b[B", b"\r", b"\x1b[B", b"\x03"],
+        itertools.repeat(b"\x03"),
+    )
+    mocker.patch.object(dashboard.os, "read", side_effect=lambda fd, n: next(keys))
+
+    assert dashboard.run(mocker.Mock(), None, interval=0.5, git_interval=1.0, no_git=True) == 0
+    assert any(
+        isinstance(call.kwargs.get("overlay"), dashboard.MenuState)
+        and call.kwargs["overlay"].active_group == "PR →"
+        for call in render.call_args_list
+    )
+    assert any("menu closed" in str(call.kwargs.get("notice")) for call in render.call_args_list)
 
 
 def test_ssh_disabled_policy_rejects_new_before_prompt_or_spawn(mocker, tmp_path):

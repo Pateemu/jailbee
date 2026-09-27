@@ -1078,6 +1078,8 @@ class MenuState:
     container: str
     actions: list[tuple[str, str]]
     index: int = 0
+    active_group: str | None = None
+    parent_index: int = 0
 
 
 # What occupies the slot under the table. All three overlays are mutually
@@ -1146,17 +1148,48 @@ def open_menu(
     return MenuState(name, actions)
 
 
+def _menu_entries(menu: MenuState) -> Sequence[MenuItem]:
+    """Visible entries at this level, derived only from captured leaves."""
+    items = group_menu_actions(menu.actions)
+    if menu.active_group is None:
+        return items
+    return next(
+        (item.actions for item in items if isinstance(item, MenuGroup) and item.label == menu.active_group),
+        (),
+    )
+
+
+def enter_menu(menu: MenuState) -> tuple[MenuState, str | None]:
+    """Enter a selected group or return its selected executable verb."""
+    entries = _menu_entries(menu)
+    if not 0 <= menu.index < len(entries):
+        return menu, None
+    selected = entries[menu.index]
+    if isinstance(selected, MenuGroup):
+        return replace(menu, active_group=selected.label, parent_index=menu.index, index=0), None
+    return menu, selected[1]
+
+
+def back_menu(menu: MenuState) -> MenuState | None:
+    """Go back to the highlighted parent group; close at the root."""
+    if menu.active_group is None:
+        return None
+    return replace(menu, active_group=None, index=menu.parent_index)
+
+
 def move_menu(menu: MenuState, delta: int) -> MenuState:
-    """Move the menu cursor by ``delta``, clamped at both ends."""
-    last = max(0, len(menu.actions) - 1)
+    """Move the cursor within the visible level, clamped at both ends."""
+    last = max(0, len(_menu_entries(menu)) - 1)
     return replace(menu, index=max(0, min(last, menu.index + delta)))
 
 
 def menu_verb(menu: MenuState) -> str | None:
-    """The highlighted entry's ``jailbee`` verb (None for an empty menu)."""
-    if not menu.actions:
+    """Selected leaf verb, or None for a group or an empty menu."""
+    entries = _menu_entries(menu)
+    if not 0 <= menu.index < len(entries):
         return None
-    return menu.actions[menu.index][1]
+    entry = entries[menu.index]
+    return None if isinstance(entry, MenuGroup) else entry[1]
 
 
 def _render_menu(menu: MenuState) -> RenderableType:
@@ -1164,11 +1197,13 @@ def _render_menu(menu: MenuState) -> RenderableType:
     highlighted one."""
     lines = [
         f"[bold cyan]▸[/] [bold bright_white]{label}[/]" if i == menu.index else f"  {label}"
-        for i, (label, _verb) in enumerate(menu.actions)
+        for i, item in enumerate(_menu_entries(menu))
+        for label in [item.label if isinstance(item, MenuGroup) else item[0]]
     ]
+    title = f"{menu.container} → {menu.active_group.removesuffix(' →')}" if menu.active_group else f"{menu.container} →"
     return Panel(
         "\n".join(lines),
-        title=f"[bold]{menu.container}[/] →",
+        title=f"[bold]{title}[/]",
         title_align="left",
         box=box.ROUNDED,
         padding=(0, 1),
@@ -1252,6 +1287,11 @@ def quick_reject_note(
 def _hint_line(overlay: Overlay | None) -> str:
     """Contextual controls shown only while an overlay is open."""
     if isinstance(overlay, MenuState):
+        if overlay.active_group is not None:
+            return (
+                "[bold]↑/↓[/bold] move  ·  [bold]Enter[/bold] run  ·  "
+                "[bold]Esc[/bold] back  ·  [bold]q[/bold] close"
+            )
         return "[bold]↑/↓[/bold] move  ·  [bold]Enter[/bold] run  ·  [bold]Esc[/bold] cancel"
     if isinstance(overlay, SettingsState):
         return (
@@ -2625,8 +2665,10 @@ def run(
                 if key == "interrupt":
                     break
                 if overlay is not None:
-                    if key in ("cancel", "quit"):
+                    if key == "quit":
                         overlay = None
+                    elif key == "cancel":
+                        overlay = back_menu(overlay) if isinstance(overlay, MenuState) else None
                     elif key == "help":
                         # One slot, so help replaces the menu rather than
                         # stacking on it — and toggles itself shut.
@@ -2654,11 +2696,13 @@ def run(
                         if key in ("up", "down"):
                             overlay = move_menu(overlay, -1 if key == "up" else 1)
                         elif key == "enter":
-                            verb = menu_verb(overlay)
+                            next_menu, verb = enter_menu(overlay)
                             target = overlay.container
-                            overlay = None
                             if verb is not None:
+                                overlay = None
                                 dispatch(target, verb)
+                            else:
+                                overlay = next_menu
                     continue
                 if key == "quit":
                     break
