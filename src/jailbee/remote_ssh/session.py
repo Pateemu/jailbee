@@ -21,8 +21,8 @@ it runs under (see `host_restricted`).
 
 from __future__ import annotations
 
-import os
 import json
+import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -38,7 +38,10 @@ SSH_EXCLUDED_REPOS_ENV = "JAILBEE_SSH_EXCLUDED_REPOS"
 
 
 def child_environment(
-    base: Mapping[str, str], *, term: str | None = None, restricted: bool = True,
+    base: Mapping[str, str],
+    *,
+    term: str | None = None,
+    restricted: bool = True,
     excluded_repos: Sequence[str] = (),
 ) -> dict[str, str]:
     """The environment for a child of the SSH server, built from ``base``.

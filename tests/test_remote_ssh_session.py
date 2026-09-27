@@ -56,7 +56,9 @@ def test_an_unrestricted_child_carries_only_the_ssh_session_marker() -> None:
     env = child_environment({"PATH": "/bin"}, term="xterm", restricted=False)
 
     assert env == {
-        "PATH": "/bin", "TERM": "xterm", SSH_SESSION_ENV: "1",
+        "PATH": "/bin",
+        "TERM": "xterm",
+        SSH_SESSION_ENV: "1",
         "JAILBEE_SSH_EXCLUDED_REPOS": "[]",
     }
 
