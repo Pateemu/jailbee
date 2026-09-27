@@ -1397,6 +1397,10 @@ DERIVED=<derived-container-name>
 jailbee git push $DERIVED --pr
 # expect: "PR #<N> '<head_ref>' refreshed (<old>..<new>)." then the push summary
 
+# No name: select a single PR container (or auto-select if it is the only one)
+jailbee git push --pr
+# expect: no ordinary, stopped or mount-mode containers in the selection
+
 # Interactive: source picker offers the PR head first/default
 jailbee git push $DERIVED          # with push.default_source=ask
 # expect: first choice "<head_ref> (PR #<N> head — refresh from GitHub)"

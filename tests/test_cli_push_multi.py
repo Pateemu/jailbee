@@ -48,6 +48,149 @@ def _wire(mocker, tmp_path, *, containers, picked, action="plain", source="defau
     return cfg_mock
 
 
+def test_push_pr_without_name_picks_only_running_clone_pr_containers(mocker, tmp_path):
+    from jailbee.pr import FetchResult, PrInfo
+    from jailbee.sync import PushResult
+
+    _wire(
+        mocker,
+        tmp_path,
+        containers=[
+            _info("myrepo-ordinary"),
+            _info("myrepo-pr-one"),
+            _info("myrepo-pr-stopped", state="Stopped"),
+            _info("myrepo-pr-mounted", mode="mount"),
+            _info("myrepo-pr-bad-label"),
+            _info("myrepo-pr-two"),
+        ],
+        picked=None,
+    )
+    incus = mocker.patch("jailbee.incus.Incus").return_value
+
+    def label(name, key):
+        labels = {
+            "myrepo-pr-one": ("21", "feat/one"),
+            "myrepo-pr-stopped": ("22", "feat/stopped"),
+            "myrepo-pr-mounted": ("23", "feat/mounted"),
+            "myrepo-pr-bad-label": ("invalid", "feat/bad"),
+            "myrepo-pr-two": ("42", "feat/two"),
+        }
+        pr, branch = labels.get(name, (None, None))
+        return {"user.jailbee.pr": pr, "user.jailbee.branch": branch}.get(key)
+
+    incus.config_get.side_effect = label
+    picked = mocker.patch("jailbee.tui.pick_container", return_value="myrepo-pr-two")
+    mocker.patch(
+        "jailbee.pr.resolve_pr",
+        return_value=PrInfo(
+            number=42, head_ref="feat/two", head_sha="sha", state="OPEN", base_ref="main"
+        ),
+    )
+    mocker.patch(
+        "jailbee.pr.fetch_pr_head",
+        return_value=FetchResult(
+            updated=True, prev_sha=None, new_sha="sha", ref="refs/jailbee/pr/42/head"
+        ),
+    )
+    pushed = mocker.patch(
+        "jailbee.sync.push_to_container",
+        return_value=PushResult(
+            source="feat/two",
+            source_ref="refs/jailbee/pr/42/head",
+            container_ref="refs/jailbee/host/feat/two",
+            old_oid=None,
+            new_oid="sha",
+        ),
+    )
+
+    result = CliRunner().invoke(app, ["push", "--pr"])
+
+    assert result.exit_code == 0, result.output
+    assert [c.name for c in picked.call_args.args[0]] == ["myrepo-pr-one", "myrepo-pr-two"]
+    assert pushed.call_args.args[2] == "pr-two"
+    assert pushed.call_args.kwargs["source_ref"] == "refs/jailbee/pr/42/head"
+
+
+def test_push_pr_without_name_uses_only_eligible_container_without_picker(mocker, tmp_path):
+    _wire(
+        mocker,
+        tmp_path,
+        containers=[_info("myrepo-ordinary"), _info("myrepo-pr-one")],
+        picked=None,
+    )
+    incus = mocker.patch("jailbee.incus.Incus").return_value
+    incus.config_get.side_effect = lambda name, key: {
+        "user.jailbee.pr": "21" if name == "myrepo-pr-one" else None,
+        "user.jailbee.branch": "feat/one" if name == "myrepo-pr-one" else None,
+    }.get(key)
+    pick = mocker.patch("jailbee.tui.pick_container")
+    refresh = mocker.patch(
+        "jailbee.cli._refresh_pr_source", return_value=("feat/one", "refs/jailbee/pr/21/head")
+    )
+    pushed = mocker.patch("jailbee.cli._do_single_push")
+
+    result = CliRunner().invoke(app, ["git", "push", "--pr"])
+
+    assert result.exit_code == 0, result.output
+    assert "Only one eligible PR container" in result.output
+    pick.assert_not_called()
+    assert refresh.call_args.args[2] == "myrepo-pr-one"
+    assert pushed.call_args.args[2] == "pr-one"
+    assert pushed.call_args.kwargs["source_ref"] == "refs/jailbee/pr/21/head"
+
+
+def test_push_pr_without_name_reports_when_no_eligible_pr_containers(mocker, tmp_path):
+    _wire(mocker, tmp_path, containers=[_info("myrepo-ordinary")], picked=None)
+    incus = mocker.patch("jailbee.incus.Incus").return_value
+    incus.config_get.return_value = None
+    refresh = mocker.patch("jailbee.cli._refresh_pr_source")
+
+    result = CliRunner().invoke(app, ["git", "push", "--pr"])
+
+    assert result.exit_code == 1
+    assert "No running clone-mode PR containers" in result.output
+    refresh.assert_not_called()
+
+
+@pytest.mark.parametrize("pr_label", ["0", "-12"])
+def test_push_pr_without_name_excludes_nonpositive_pr_numbers(mocker, tmp_path, pr_label):
+    _wire(mocker, tmp_path, containers=[_info("myrepo-invalid")], picked=None)
+    incus = mocker.patch("jailbee.incus.Incus").return_value
+    incus.config_get.side_effect = lambda name, key: {
+        "user.jailbee.pr": pr_label,
+        "user.jailbee.branch": "feat/invalid",
+    }.get(key)
+    refresh = mocker.patch("jailbee.cli._refresh_pr_source")
+
+    result = CliRunner().invoke(app, ["git", "push", "--pr"])
+
+    assert result.exit_code == 1
+    assert "No running clone-mode PR containers" in result.output
+    refresh.assert_not_called()
+
+
+def test_push_pr_without_name_cancel_does_not_fetch_or_push(mocker, tmp_path):
+    _wire(
+        mocker,
+        tmp_path,
+        containers=[_info("myrepo-pr-one"), _info("myrepo-pr-two")],
+        picked=None,
+    )
+    incus = mocker.patch("jailbee.incus.Incus").return_value
+    incus.config_get.side_effect = lambda name, key: {
+        "user.jailbee.pr": "21" if name == "myrepo-pr-one" else "42",
+        "user.jailbee.branch": "feat/one" if name == "myrepo-pr-one" else "feat/two",
+    }.get(key)
+    mocker.patch("jailbee.tui.pick_container", return_value=None)
+    refresh = mocker.patch("jailbee.cli._refresh_pr_source")
+
+    result = CliRunner().invoke(app, ["git", "push", "--pr"])
+
+    assert result.exit_code != 0
+    assert "Aborted" in result.output
+    refresh.assert_not_called()
+
+
 def test_push_multi_continue_on_error_with_summary(mocker, tmp_path):
     from jailbee.sync import SyncError
 

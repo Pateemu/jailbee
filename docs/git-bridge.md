@@ -757,9 +757,10 @@ fetch runs **on the host**, so no `jailbee net loose` is needed:
 jailbee git push <name> --pr --rebase    # or --merge
 ```
 
-The container name is required here — `--pr` reads the container's own
-`user.jailbee.pr` label, so there is no picker to fall back on. The action
-flag is not: drop it and the merge/rebase/plain choice follows
+Without a name on a TTY, `--pr` selects one running clone-mode container
+with a `user.jailbee.pr` label (or uses the only eligible container). Name
+the container explicitly in scripts. The action flag is optional: drop it
+and the merge/rebase/plain choice follows
 `push.default_action`, which defaults to `ask` (see
 [Configuration](config.md#push)) — a prompt on a TTY, and an error naming
 the config key off one. Pass the flag in scripts.

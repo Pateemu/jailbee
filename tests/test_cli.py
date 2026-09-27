@@ -7842,17 +7842,22 @@ def test_cli_push_pr_and_current_are_mutex(mocker):
     assert "mutually exclusive" in result.output.lower()
 
 
-def test_cli_push_pr_without_name_errors(mocker):
+def test_cli_push_pr_without_name_requires_tty(mocker):
     from typer.testing import CliRunner
 
     from jailbee.cli import app
 
     mocker.patch("jailbee.cli._load_or_exit", return_value=mocker.MagicMock())
+    incus = mocker.patch("jailbee.incus.Incus")
+    picker = mocker.patch("jailbee.tui.pick_container")
 
     result = CliRunner().invoke(app, ["git", "push", "--pr"])
 
     assert result.exit_code == 1
-    assert "explicit container name" in result.output
+    assert "Pass a PR container name" in result.output
+    assert "TTY" in result.output
+    incus.assert_not_called()
+    picker.assert_not_called()
 
 
 def test_cli_push_pr_flag_with_merge_passes_head_to_push_and_merge(mocker):
