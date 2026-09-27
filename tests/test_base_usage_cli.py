@@ -79,3 +79,18 @@ def test_usage_all_aggregates_across_repos(mocker, db_engine):
     assert result.exit_code == 0, result.stdout
     assert "foo-base" in result.stdout
     assert "bar-base" in result.stdout
+
+
+def test_usage_all_filters_excluded_repos_before_incus_probe(mocker, db_engine):
+    from jailbee.remote_ssh.session import SSH_EXCLUDED_REPOS_ENV
+
+    _register(db_engine, "foo", "bar")
+    mocker.patch("jailbee.db.get_engine", return_value=db_engine)
+    mocker.patch.dict("os.environ", {SSH_EXCLUDED_REPOS_ENV: '["bar"]', "JAILBEE_SSH_SESSION": "1"})
+    mocker.patch("jailbee.incus.Incus")
+    gather = mocker.patch("jailbee.golden.gather_golden_usage", return_value=[])
+
+    result = CliRunner().invoke(app, ["base", "usage", "--all"])
+
+    assert result.exit_code == 0, result.stdout
+    assert gather.call_args.args[1] == ["foo-base"]

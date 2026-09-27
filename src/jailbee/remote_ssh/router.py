@@ -531,6 +531,7 @@ def policy_allows(
         # whose scope is inherently the selected/specified single repo pass.
         safe = {
             "shell",
+            "config show",
             "tmux",
             "git diff",
             "git pull",
@@ -553,6 +554,7 @@ def policy_allows(
             "job ls",
             "review ls",
             "prune",
+            "net status",
         }
         if path not in safe and path != "ls":
             raise RouteError(
@@ -579,6 +581,23 @@ def policy_allows(
                     raise RouteError(
                         "aggregate options are unavailable when SSH repository exclusions are "
                         f"active: {path}"
+                    )
+        if path == "config show":
+            _, typed = _resolve_leaf(argv)
+            command = _command_tree().leaf_commands[typed]
+
+            words = typed.split()
+            try:
+                ctx = command.make_context(
+                    words[-1], list(argv[len(words) :]), resilient_parsing=True
+                )
+            except Exception as error:
+                raise RouteError(f"cannot parse remote command arguments: {path}") from error
+            with ctx:
+                if ctx.params.get("layer", "effective") == "global":
+                    raise RouteError(
+                        "config show --layer global is unavailable when SSH repository "
+                        "exclusions are active"
                     )
     if path in {"dashboard", "tui"}:
         raise RouteError(
