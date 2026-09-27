@@ -29,6 +29,7 @@ from jailbee.dashboard import (
     view_only_note,
     visible_fields,
 )
+from jailbee.dashboard_visibility import visible_repo_groups
 from jailbee.qtui.cards import CardView
 from jailbee.qtui.model import (
     STATE_COLORS,
@@ -86,6 +87,7 @@ class MainWindow(QMainWindow):
     columnsChanged = Signal()  # noqa: N815 - Qt signal naming convention (camelCase); the enabled column set changed
     newContainerRequested = Signal(str)  # noqa: N815 - Qt signal naming convention (camelCase); payload: repo prefix, "" when nothing is selected
     configEditRequested = Signal(str, bool)  # noqa: N815 - Qt signal naming convention (camelCase); payload: (repo prefix, edit the global layer)
+    repoVisibilityChanged = Signal()  # noqa: N815 - repository visibility preference changed
 
     def __init__(
         self,
@@ -97,10 +99,15 @@ class MainWindow(QMainWindow):
         card_style: str = "compact",
         header_state: str | None = None,
         enabled_columns: Sequence[str] | None = None,
+        show_empty_repos: bool = True,
+        hidden_repos: frozenset[str] = frozenset(),
     ) -> None:
         super().__init__()
         self._git_enabled = git_enabled
         self._groups: list[RepoGroup] = []
+        self._all_groups: list[RepoGroup] = []
+        self._show_empty_repos = show_empty_repos
+        self._hidden_repos = hidden_repos
         self._layout = layout if layout in _LAYOUT_INDEX else "cards"
         self._card_style = card_style if card_style in ("compact", "grid") else "compact"
         self._pending_header_state = header_state
@@ -118,6 +125,7 @@ class MainWindow(QMainWindow):
 
         self.card_view = CardView()
         self.card_view.actionRequested.connect(self.actionRequested)  # re-emit
+        self.card_view.newContainerRequested.connect(self.newContainerRequested)
         self.card_view.set_card_style(self._card_style)
 
         self.stack = QStackedWidget()
@@ -129,6 +137,7 @@ class MainWindow(QMainWindow):
         self.statusBar()
         self._build_view_menu(self._layout)
         self._build_columns_menu()
+        self._build_repositories_menu()
         self._build_card_style_menu(self._card_style)
         self._build_refresh_menu(interval, paused=paused)
         self._build_container_menu()
@@ -182,6 +191,58 @@ class MainWindow(QMainWindow):
             act.setChecked(name in self._enabled_columns)
             act.triggered.connect(lambda checked=False, n=name: self._toggle_column(n, checked))
             self._column_actions[name] = act
+
+    def _build_repositories_menu(self) -> None:
+        self.repositories_menu = self.view_menu.addMenu("&Repositories")
+        self._show_empty_action = self.repositories_menu.addAction("Show empty repos")
+        self._show_empty_action.setCheckable(True)
+        self._show_empty_action.setChecked(self._show_empty_repos)
+        self._show_empty_action.triggered.connect(self._toggle_show_empty)
+        self._repo_actions: dict[str, QAction] = {}
+
+    def _update_repo_menu(self) -> None:
+        prefixes = list(dict.fromkeys([*(g.prefix for g in self._all_groups), *self._hidden_repos]))
+        if prefixes == list(self._repo_actions):
+            return
+        for action in self._repo_actions.values():
+            self.repositories_menu.removeAction(action)
+            action.deleteLater()
+        self._repo_actions.clear()
+        for prefix in prefixes:
+            action = self.repositories_menu.addAction(prefix)
+            action.setCheckable(True)
+            action.setChecked(prefix not in self._hidden_repos)
+            action.triggered.connect(lambda checked=False, p=prefix: self._toggle_repo(p, checked))
+            self._repo_actions[prefix] = action
+
+    def _render_visible_groups(self, *, now: datetime, columns: Sequence[str] | None) -> None:
+        self._groups = visible_repo_groups(
+            self._all_groups,
+            show_empty_repos=self._show_empty_repos,
+            hidden_repos=self._hidden_repos,
+        )
+        self._render_groups(self._groups, now=now, columns=columns)
+
+    def _toggle_show_empty(self, checked: bool) -> None:
+        self._show_empty_repos = checked
+        self._visibility_changed()
+
+    def _toggle_repo(self, prefix: str, checked: bool) -> None:
+        self._hidden_repos = self._hidden_repos - {prefix} if checked else self._hidden_repos | {prefix}
+        self._visibility_changed()
+
+    def _visibility_changed(self) -> None:
+        self.repoVisibilityChanged.emit()
+        self._show_empty_action.setChecked(self._show_empty_repos)
+        self._update_repo_menu()
+        if hasattr(self, "_last_now"):
+            self._render_visible_groups(now=self._last_now, columns=self._last_columns)
+
+    def show_empty_repos(self) -> bool:
+        return self._show_empty_repos
+
+    def hidden_repos(self) -> frozenset[str]:
+        return self._hidden_repos
 
     def _toggle_column(self, name: str, checked: bool) -> None:
         """Flip one column, refusing to leave the table with none.
@@ -388,6 +449,19 @@ class MainWindow(QMainWindow):
         takes effect on the next refresh without the caller having to know
         about it.
         """
+        self._all_groups = groups
+        self._last_now = now
+        self._last_columns = columns
+        self._update_repo_menu()
+        self._render_visible_groups(now=now, columns=columns)
+
+    def _render_groups(
+        self,
+        groups: list[RepoGroup],
+        *,
+        now: datetime,
+        columns: Sequence[str] | None,
+    ) -> None:
         self._groups = groups
         prev = self._selected_name()
         active_columns = columns if columns is not None else self._enabled_columns

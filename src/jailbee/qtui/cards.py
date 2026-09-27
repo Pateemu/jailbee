@@ -15,12 +15,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QLayout,
     QMenu,
+    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
-from jailbee.dashboard import actions_for_container, view_only_note, visible_fields
+from jailbee.dashboard import RepoTarget, actions_for_container, view_only_note, visible_fields
 from jailbee.qtui.flow_layout import FlowLayout
 from jailbee.qtui.model import (
     STATE_COLORS,
@@ -239,22 +240,37 @@ class _Card(QFrame):
         self.contextRequested.emit(self._name, event.globalPos())
 
 
-class _GroupHeader(QLabel):
+class _GroupHeader(QWidget):
     """Clickable repo section header that toggles its group's cards."""
 
     clicked = Signal(str)  # Qt signal; payload: repo prefix
+    newContainerRequested = Signal(str)  # noqa: N815 - payload: repo prefix
 
-    def __init__(self, prefix: str, label: str, count: int, *, collapsed: bool) -> None:
+    def __init__(
+        self, prefix: str, label: str, count: int, *, collapsed: bool, actionable: bool
+    ) -> None:
         super().__init__()
         self._prefix = prefix
         self._label = label
         self._count = count
-        self.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        self._row = QHBoxLayout(self)
+        self._row.setContentsMargins(0, 8, 0, 0)
+        self._title = QLabel()
+        self._title.setStyleSheet("font-weight: bold;")
+        self._row.addWidget(self._title)
+        self._row.addStretch(1)
+        if actionable:
+            button = QPushButton("New…")
+            button.clicked.connect(lambda: self.newContainerRequested.emit(self._prefix))
+            self._row.addWidget(button)
         self.set_collapsed(collapsed)
 
     def set_collapsed(self, collapsed: bool) -> None:
         arrow = "▸" if collapsed else "▾"
-        self.setText(f"{arrow}  {self._label}   {self._count} containers")
+        self._title.setText(f"{arrow}  {self._label}   {self._count} containers")
+
+    def text(self) -> str:
+        return self._title.text()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt override
         if event.button() == Qt.MouseButton.LeftButton:
@@ -267,6 +283,7 @@ class CardView(QScrollArea):
 
     actionRequested = Signal(str, str)  # noqa: N815 - (verb, container_name)
     collapsedChanged = Signal()  # noqa: N815 - Qt signal; a group was expanded/collapsed
+    newContainerRequested = Signal(str)  # noqa: N815 - payload: repo prefix
 
     def __init__(self) -> None:
         super().__init__()
@@ -396,8 +413,16 @@ class CardView(QScrollArea):
             seen: set[str] = set()
             for prefix, label, entries in desired:
                 collapsed = prefix in self._collapsed
-                header = _GroupHeader(prefix, label, len(entries), collapsed=collapsed)
+                group = next(g for g in self._groups if g.prefix == prefix)
+                header = _GroupHeader(
+                    prefix,
+                    label,
+                    len(entries),
+                    collapsed=collapsed,
+                    actionable=RepoTarget.of(group) is not None,
+                )
                 header.clicked.connect(self._toggle_group)
+                header.newContainerRequested.connect(self.newContainerRequested)
                 self._headers[prefix] = header
                 self._insert(header)
 
