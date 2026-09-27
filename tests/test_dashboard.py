@@ -4243,6 +4243,46 @@ def test_run_cannot_create_from_a_row_hidden_by_visibility_settings(mocker, tmp_
     assert any("Select a repo" in str(call.kwargs.get("notice")) for call in render.call_args_list)
 
 
+def test_open_menu_closes_when_its_container_becomes_hidden(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-one", "alpha")])
+    _mock_terminal(mocker)
+    mocker.patch.object(dashboard, "gather_live", return_value=[group])
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    hiding = False
+    filter_groups = dashboard.visible_repo_groups
+
+    def hide_after_menu_opens(groups, *, show_empty_repos, hidden_repos):
+        active_hidden = hidden_repos | ({"alpha"} if hiding else set())
+        return filter_groups(
+            groups, show_empty_repos=show_empty_repos, hidden_repos=frozenset(active_hidden)
+        )
+
+    mocker.patch.object(dashboard, "visible_repo_groups", side_effect=hide_after_menu_opens)
+    selections = 0
+
+    def advance_to_hidden_snapshot(*args, **kwargs):
+        nonlocal hiding, selections
+        selections += 1
+        if selections == 3:  # menu is open; hide its selected repo before the next frame
+            hiding = True
+        return ([True], [], [])
+
+    mocker.patch.object(dashboard.select, "select", side_effect=advance_to_hidden_snapshot)
+    keys = itertools.chain([b"\x1b[B", b"\r", b"x", b"\r", b"\x03"], itertools.repeat(b"\x03"))
+    mocker.patch.object(dashboard.os, "read", side_effect=lambda fd, size: next(keys))
+
+    assert dashboard.run(mocker.Mock(), None, interval=0.5, git_interval=1.0, no_git=True) == 0
+
+    overlays = [call.kwargs.get("overlay") for call in render.call_args_list]
+    menu_frames = [overlay for overlay in overlays if isinstance(overlay, dashboard.MenuState)]
+    assert menu_frames  # the selected container really did have an open action menu
+    closed_at = overlays.index(None, overlays.index(menu_frames[-1]) + 1)
+    assert not any(isinstance(overlay, dashboard.MenuState) for overlay in overlays[closed_at:])
+    assert any("menu closed" in str(call.kwargs.get("notice")) for call in render.call_args_list)
+    child.assert_not_called()
+
+
 def test_settings_key_switches_from_another_overlay_instead_of_closing(mocker):
     """F2/S must mirror ``h``'s own toggle: pressing it while another
     overlay (the action menu, help) is open switches to settings, not just
