@@ -6529,7 +6529,9 @@ def push(
         from jailbee.lifecycle import list_containers
 
         if not _stdin_is_interactive():
-            error("No container name given. Pass a PR container name, or run in a TTY to select one.")
+            error(
+                "No container name given. Pass a PR container name, or run in a TTY to select one."
+            )
             raise typer.Exit(1)
 
         pr_incus = Incus()
