@@ -1154,7 +1154,11 @@ def _menu_entries(menu: MenuState) -> Sequence[MenuItem]:
     if menu.active_group is None:
         return items
     return next(
-        (item.actions for item in items if isinstance(item, MenuGroup) and item.label == menu.active_group),
+        (
+            item.actions
+            for item in items
+            if isinstance(item, MenuGroup) and item.label == menu.active_group
+        ),
         (),
     )
 
@@ -1200,7 +1204,11 @@ def _render_menu(menu: MenuState) -> RenderableType:
         for i, item in enumerate(_menu_entries(menu))
         for label in [item.label if isinstance(item, MenuGroup) else item[0]]
     ]
-    title = f"{menu.container} → {menu.active_group.removesuffix(' →')}" if menu.active_group else f"{menu.container} →"
+    title = (
+        f"{menu.container} → {menu.active_group.removesuffix(' →')}"
+        if menu.active_group
+        else f"{menu.container} →"
+    )
     return Panel(
         "\n".join(lines),
         title=f"[bold]{title}[/]",

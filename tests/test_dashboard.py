@@ -3329,9 +3329,7 @@ def test_render_swaps_the_hint_line_while_the_menu_is_open(tmp_path):
 
 
 def test_render_menu_submenu_title_and_contextual_back_hint(tmp_path):
-    g = dashboard.RepoGroup(
-        "alpha", "/repos/alpha", tmp_path / "a.yaml", [_ci("alpha-x", "alpha")]
-    )
+    g = dashboard.RepoGroup("alpha", "/repos/alpha", tmp_path / "a.yaml", [_ci("alpha-x", "alpha")])
     root = _grouped_menu()
     submenu, _ = dashboard.enter_menu(dashboard.move_menu(root, 1))
 
