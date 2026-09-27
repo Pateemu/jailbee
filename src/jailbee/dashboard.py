@@ -9,6 +9,7 @@ behaviour and the target repo's own config.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import logging
 import os
 import select
@@ -78,7 +79,7 @@ from jailbee.remote_ssh.session import host_restricted
 from jailbee.tui import console, error
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Iterator
 
     from sqlalchemy.engine import Engine
 
@@ -621,6 +622,45 @@ class MenuContext:
     remote: bool = False
 
 
+@dataclass(frozen=True)
+class MenuGroup:
+    """A presentation-only submenu of already permitted action leaves."""
+
+    label: str
+    actions: tuple[tuple[str, str], ...]
+
+
+MenuItem = tuple[str, str] | MenuGroup
+
+_PR_MENU_VERBS = frozenset({"pr --open", "pr", "review apply"})
+_GIT_MENU_VERBS = frozenset({"merge", "git pull", "git push", "git push --pr", "git diff"})
+
+
+def group_menu_actions(actions: Sequence[tuple[str, str]]) -> list[MenuItem]:
+    """Group filtered PR and Git leaves at their first occurrence.
+
+    Relative order within each submenu and among ungrouped leaves is retained;
+    this function never changes eligibility or adds executable verbs.
+    """
+    pr_actions = tuple(action for action in actions if action[1] in _PR_MENU_VERBS)
+    git_actions = tuple(action for action in actions if action[1] in _GIT_MENU_VERBS)
+    result: list[MenuItem] = []
+    seen: set[str] = set()
+    for action in actions:
+        verb = action[1]
+        if verb in _PR_MENU_VERBS:
+            if "pr" not in seen:
+                result.append(MenuGroup("PR →", pr_actions))
+                seen.add("pr")
+        elif verb in _GIT_MENU_VERBS:
+            if "git" not in seen:
+                result.append(MenuGroup("Git →", git_actions))
+                seen.add("git")
+        else:
+            result.append(action)
+    return result
+
+
 # The GitStatus cell values that mean "there is provably nothing to do". Every
 # other value — including "—" and "?" — means unknown, and an unknown answer
 # never hides an entry.
@@ -680,14 +720,11 @@ def menu_actions(ctx: MenuContext) -> list[tuple[str, str]]:
     other than ``ctx.current_network`` (sourced from ``ContainerInfo.network``),
     dispatching the two-token ``jailbee net <mode>`` subcommand.
 
-    The head of the list is the diagnostic/workflow block, deliberately far
-    from "Destroy" at the bottom: "Clear failed job" (the corrective action),
-    "Job log", "Open PR", then the four verbs that carry the actual workflow —
-    create/update the PR, update the container from its base, send its commits
-    back to the host, and read its diff. The last two are hidden when the git
-    status proves they would do nothing; an unknown status (base-tier refresh,
-    ``--no-git``, failed probe) still offers them, because a missing column is
-    not evidence of a clean tree.
+    Running rows lead with session and app actions, followed by job diagnostics,
+    PR leaves, Git leaves, issue actions, network modes and lifecycle actions.
+    Git pull and diff are hidden when status proves they would do nothing;
+    unknown status still offers them. Stopped rows lead with Start, followed
+    by eligible diagnostics and Open PR, then Destroy.
 
     A review container — one carrying a PR that jailbee did not open from its
     own branch (``pr_number`` set, ``pr_author`` false) — gains "Refresh from
@@ -706,7 +743,7 @@ def menu_actions(ctx: MenuContext) -> list[tuple[str, str]]:
     can genuinely accumulate manifests, so excluding it here would hide the
     one route to acting on them. Also not gated by ``pr_number is not None``:
     a container can hold a description for a PR ``jailbee pr`` has not opened
-    yet. Directly after it, "Apply N issue action(s)" (``issue apply``)
+    yet. After the Git leaves, "Apply N issue action(s)" (``issue apply``)
     appears under the identical rule for the container's separate issue
     outbox (``ctx.git_status.pending_issue_actions``) — same fixed in-container
     path, same no-mode-check probe, same mount-mode reachability.
@@ -718,37 +755,38 @@ def menu_actions(ctx: MenuContext) -> list[tuple[str, str]]:
     """
     if not ctx.has_repo:
         return []
-    prefix: list[tuple[str, str]] = []
-    if ctx.job_clearable:
-        prefix.append(("Clear failed job", "job clear"))
-    if ctx.has_job:
-        prefix.append(("Job log", "job log --follow" if ctx.job_running else "job log"))
-    if ctx.pr_number is not None and not ctx.remote:
-        # `pr --open` is a browser on the host's display.
-        prefix.append(("Open PR", "pr --open"))
-    if _bridge_possible(ctx):
-        prefix.append(("Merge into…", "merge"))
-        prefix.append(("Create/update PR", "pr"))
-        prefix.append(("Update from base (git push)", "git push"))
-        if ctx.pr_number is not None and not ctx.pr_author:
-            prefix.append(("Refresh from PR head (git push --pr)", "git push --pr"))
-        if _has_commits_for_host(ctx.git_status):
-            prefix.append(("Send commits to host (git pull)", "git pull"))
-        if _has_diff_to_show(ctx.git_status):
-            prefix.append(("Show diff (git diff)", "git diff"))
-    pending = _pending_pr_actions(ctx.git_status)
-    if ctx.state == "Running" and pending:
-        prefix.append((f"Apply {pending} PR action(s) (review apply)", "review apply"))
-    pending_issues = _pending_issue_actions(ctx.git_status)
-    if ctx.state == "Running" and pending_issues:
-        prefix.append((f"Apply {pending_issues} issue action(s) (issue apply)", "issue apply"))
+    actions: list[tuple[str, str]] = []
     if ctx.state == "Running":
-        actions = [
-            ("Attach tmux", "tmux"),
-            ("Open shell", "shell"),
-        ]
+        actions.extend([("Attach tmux", "tmux"), ("Open shell", "shell")])
         for app in [] if ctx.remote else ctx.apps:
             actions.append((f"Launch {app.label}", app.verb))
+    elif ctx.state == "Stopped":
+        actions.append(("Start", "start"))
+    if ctx.job_clearable:
+        actions.append(("Clear failed job", "job clear"))
+    if ctx.has_job:
+        actions.append(("Job log", "job log --follow" if ctx.job_running else "job log"))
+    if ctx.pr_number is not None and not ctx.remote:
+        # `pr --open` is a browser on the host's display.
+        actions.append(("Open PR", "pr --open"))
+    if _bridge_possible(ctx):
+        actions.append(("Create/update PR", "pr"))
+    pending = _pending_pr_actions(ctx.git_status)
+    if ctx.state == "Running" and pending:
+        actions.append((f"Apply {pending} PR action(s) (review apply)", "review apply"))
+    if _bridge_possible(ctx):
+        actions.append(("Merge into…", "merge"))
+        if _has_commits_for_host(ctx.git_status):
+            actions.append(("Send commits to host (git pull)", "git pull"))
+        actions.append(("Update from base (git push)", "git push"))
+        if ctx.pr_number is not None and not ctx.pr_author:
+            actions.append(("Refresh from PR head (git push --pr)", "git push --pr"))
+        if _has_diff_to_show(ctx.git_status):
+            actions.append(("Show diff (git diff)", "git diff"))
+    pending_issues = _pending_issue_actions(ctx.git_status)
+    if ctx.state == "Running" and pending_issues:
+        actions.append((f"Apply {pending_issues} issue action(s) (issue apply)", "issue apply"))
+    if ctx.state == "Running":
         for mode in _NETWORK_MODES:
             if mode != ctx.current_network:
                 actions.append((f"Network: {mode}", f"net {mode}"))
@@ -757,10 +795,8 @@ def menu_actions(ctx: MenuContext) -> list[tuple[str, str]]:
             ("Stop", "stop"),
             ("Destroy", "destroy"),
         ]
-        return prefix + actions
-    if ctx.state == "Stopped":
-        return [*prefix, ("Start", "start"), ("Destroy", "destroy")]
-    return [*prefix, ("Destroy", "destroy")]
+        return actions
+    return [*actions, ("Destroy", "destroy")]
 
 
 def default_columns() -> tuple[str, ...]:

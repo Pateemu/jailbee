@@ -563,6 +563,9 @@ def test_remote_actions_filter_against_canonical_policy_and_argv():
             groups, "alpha-1", over_ssh=True, ssh_policy=policy
         )
     ] == ["merge"]
+    assert dashboard.group_menu_actions(
+        dashboard.actions_for_container(groups, "alpha-1", over_ssh=True, ssh_policy=policy)
+    ) == [dashboard.MenuGroup("Git →", (("Merge into…", "merge"),))]
     assert dashboard_action_argv("tmux", "alpha-1", force=True) == ["tmux", "alpha-1", "--force"]
     assert "--config" not in dashboard_action_argv("git push --pr", "alpha-1")
 
@@ -583,6 +586,12 @@ def test_remote_full_and_disabled_actions_follow_policy():
     assert {"merge", "shell", "tmux"} <= set(full_verbs)
     assert (
         dashboard.actions_for_container(groups, "alpha-1", over_ssh=True, ssh_policy=disabled) == []
+    )
+    assert (
+        dashboard.group_menu_actions(
+            dashboard.actions_for_container(groups, "alpha-1", over_ssh=True, ssh_policy=disabled)
+        )
+        == []
     )
 
 
@@ -761,15 +770,14 @@ def test_container_of_narrows_a_header_row_to_none():
 
 
 def _session_verbs(actions: list[tuple[str, str]]) -> list[str]:
-    """The verbs from "Attach tmux" onwards — the session/lifecycle block.
-
-    The tests below are about the IDE, Chrome and network entries, so they
-    assert on this block rather than on the whole menu: the workflow block that
-    precedes it is pinned once, by
-    `test_menu_actions_running_offers_the_workflow_verbs`.
-    """
-    verbs = [verb for _label, verb in actions]
-    return verbs[verbs.index("tmux") :]
+    """Session, app, network and lifecycle verbs, omitting workflow leaves."""
+    return [
+        verb
+        for label, verb in actions
+        if verb in {"tmux", "shell", "restart", "stop", "destroy"}
+        or verb.startswith("net ")
+        or label.startswith("Launch ")
+    ]
 
 
 def test_menu_actions_running_default_hides_ide_and_chrome():
@@ -841,6 +849,7 @@ def test_action_menu_lists_every_registry_app():
     assert "figma" in verbs
     assert ("Launch firefox", "firefox") in actions
     assert ("Launch figma", "figma") in actions
+    assert verbs.index("firefox") < verbs.index("figma") < verbs.index("pr")
 
 
 def test_remote_action_menu_offers_no_app_launches():
@@ -852,6 +861,7 @@ def test_remote_action_menu_offers_no_app_launches():
     assert {verb for _label, verb in local} >= {"ide", "chrome", "figma"}
     assert not {verb for _label, verb in remote} & {"ide", "chrome", "figma"}
     assert [a for a in local if a[1] not in {"ide", "chrome", "figma"}] == remote
+    assert [item.label for item in dashboard.group_menu_actions(remote) if isinstance(item, dashboard.MenuGroup)] == ["PR →", "Git →"]
 
 
 def test_remote_quick_keys_refuse_gui_apps_and_say_why():
@@ -950,14 +960,17 @@ def test_menu_actions_network_entries_ordered_after_chrome_before_restart():
 
 def test_menu_actions_running_includes_open_pr_when_pr_known():
     actions = dashboard.menu_actions(_ctx(pr_number=123))
-    assert actions[0] == ("Open PR", "pr --open")
+    assert [verb for _, verb in actions[:4]] == ["tmux", "shell", "pr --open", "pr"]
 
 
 def test_menu_actions_stopped_includes_open_pr_when_pr_known():
     actions = dashboard.menu_actions(_ctx(state="Stopped", pr_number=7))
-    assert ("Open PR", "pr --open") in actions
-    # still offers the stopped-state actions
-    assert [a for _, a in actions if a != "pr --open"] == ["start", "destroy"]
+    assert actions == [("Start", "start"), ("Open PR", "pr --open"), ("Destroy", "destroy")]
+    assert dashboard.group_menu_actions(actions) == [
+        ("Start", "start"),
+        dashboard.MenuGroup("PR →", (("Open PR", "pr --open"),)),
+        ("Destroy", "destroy"),
+    ]
 
 
 def test_menu_actions_omits_open_pr_when_no_pr():
@@ -972,22 +985,85 @@ def test_menu_actions_orphan_stays_empty_even_with_pr():
 
 
 def test_menu_actions_running_offers_the_workflow_verbs():
-    """The workflow verbs come before the session verbs, and an unknown git
-    status shows both git-bridge entries (hide only a *known* no-op)."""
+    """Sessions lead, then PR and Git; unknown Git status retains its leaves."""
     verbs = [v for _, v in dashboard.menu_actions(_ctx())]
     assert verbs == [
-        "merge",
-        "pr",
-        "git push",
-        "git pull",
-        "git diff",
         "tmux",
         "shell",
+        "pr",
+        "merge",
+        "git pull",
+        "git push",
+        "git diff",
         "net loose",
         "restart",
         "stop",
         "destroy",
     ]
+
+
+def test_group_menu_actions_separates_git_and_pr():
+    leaves = [
+        ("Attach tmux", "tmux"),
+        ("Open PR", "pr --open"),
+        ("Create/update PR", "pr"),
+        ("Apply PR actions", "review apply"),
+        ("Merge into…", "merge"),
+        ("Send commits to host", "git pull"),
+        ("Update from base", "git push"),
+        ("Refresh from PR head", "git push --pr"),
+        ("Show diff", "git diff"),
+    ]
+    grouped = dashboard.group_menu_actions(leaves)
+    assert [item.label if isinstance(item, dashboard.MenuGroup) else item[0] for item in grouped] == [
+        "Attach tmux", "PR →", "Git →"
+    ]
+    assert grouped[1] == dashboard.MenuGroup("PR →", tuple(leaves[1:4]))
+    assert grouped[2] == dashboard.MenuGroup("Git →", tuple(leaves[4:]))
+    assert dashboard.group_menu_actions([]) == []
+
+
+def test_group_menu_actions_keeps_relative_order_and_unclassified_leaves():
+    leaves = [
+        ("Show diff", "git diff"),
+        ("Launch git-tool", "apps run git-tool --container"),
+        ("Apply issue actions", "issue apply"),
+        ("Open PR", "pr --open"),
+        ("Merge into…", "merge"),
+        ("Create/update PR", "pr"),
+    ]
+    assert dashboard.group_menu_actions(leaves) == [
+        dashboard.MenuGroup("Git →", (leaves[0], leaves[4])),
+        leaves[1],
+        leaves[2],
+        dashboard.MenuGroup("PR →", (leaves[3], leaves[5])),
+    ]
+
+
+def test_menu_actions_mount_mode_groups_pending_pr_but_not_git():
+    actions = dashboard.menu_actions(
+        _ctx(mode="mount", git_status=_dirty(pending_pr_actions=2, pending_issue_actions=1))
+    )
+    grouped = dashboard.group_menu_actions(actions)
+    assert [item.label for item in grouped if isinstance(item, dashboard.MenuGroup)] == ["PR →"]
+    assert grouped[0] == ("Attach tmux", "tmux")
+    assert grouped[2] == dashboard.MenuGroup(
+        "PR →", (("Apply 2 PR action(s) (review apply)", "review apply"),)
+    )
+    assert ("Apply 1 issue action(s) (issue apply)", "issue apply") in grouped
+
+
+def test_grouped_git_leaves_respect_known_clean_and_unknown_status():
+    clean = _dirty(wt="clean", ahead_diff="clean", ahead_count="0")
+    unknown = _dirty(wt="?", ahead_diff="?", ahead_count="?")
+    for status, expected in (
+        (clean, ["merge", "git push"]),
+        (unknown, ["merge", "git pull", "git push", "git diff"]),
+        (None, ["merge", "git pull", "git push", "git diff"]),
+    ):
+        grouped = dashboard.group_menu_actions(dashboard.menu_actions(_ctx(git_status=status)))
+        git_group = next(item for item in grouped if isinstance(item, dashboard.MenuGroup) and item.label == "Git →")
+        assert [verb for _, verb in git_group.actions] == expected
 
 
 def test_menu_actions_workflow_labels_name_their_verb():
@@ -1081,7 +1157,8 @@ def test_menu_offers_apply_issue_actions_directly_after_pr_actions():
         _ctx(git_status=_dirty(pending_pr_actions=1, pending_issue_actions=1))
     )
     verbs = [v for _, v in actions]
-    assert verbs.index("issue apply") == verbs.index("review apply") + 1
+    assert verbs.index("review apply") < verbs.index("merge")
+    assert verbs.index("issue apply") == verbs.index("git diff") + 1
 
 
 def test_menu_offers_apply_pr_actions_on_a_running_mount_mode_container():
@@ -1152,12 +1229,11 @@ def test_menu_actions_job_log_only_when_there_is_a_job():
 
 
 def test_menu_actions_job_log_precedes_the_pr_entries():
-    """Diagnostics first: the corrective and diagnostic entries head the list,
-    far from Destroy at the bottom."""
+    """Sessions first, then diagnostics before PR and Git leaves."""
     verbs = [
         v for _, v in dashboard.menu_actions(_ctx(job_clearable=True, has_job=True, pr_number=7))
     ]
-    assert verbs[:5] == ["job clear", "job log", "pr --open", "merge", "pr"]
+    assert verbs[:6] == ["tmux", "shell", "job clear", "job log", "pr --open", "pr"]
 
 
 def test_menu_actions_orphan_ignores_every_workflow_field():
@@ -3543,9 +3619,13 @@ def test_tui_command_is_an_alias_for_the_dashboard(mocker):
     assert kwargs["no_git"] is True
 
 
-def test_menu_actions_clear_job_entry_is_first_when_clearable():
+def test_menu_actions_clear_job_entry_follows_session_when_clearable():
     actions = dashboard.menu_actions(_ctx(job_clearable=True))
-    assert actions[0] == ("Clear failed job", "job clear")
+    assert actions[:3] == [
+        ("Attach tmux", "tmux"),
+        ("Open shell", "shell"),
+        ("Clear failed job", "job clear"),
+    ]
 
 
 def test_menu_actions_no_clear_entry_when_not_clearable():
@@ -3585,7 +3665,7 @@ def test_actions_for_container_offers_clear_for_a_failed_job(mocker):
 
     verbs = [verb for _, verb in dashboard.actions_for_container(groups, "p-foo")]
 
-    assert verbs[0] == "job clear"
+    assert verbs[:4] == ["tmux", "shell", "job clear", "job log"]
 
 
 def test_actions_for_container_offers_clear_for_a_dead_worker(mocker):
@@ -3608,7 +3688,7 @@ def test_actions_for_container_offers_clear_for_a_dead_worker(mocker):
 
     verbs = [verb for _, verb in dashboard.actions_for_container(groups, "p-foo")]
 
-    assert verbs[0] == "job clear"
+    assert verbs[:4] == ["tmux", "shell", "job clear", "job log"]
 
 
 def test_actions_for_container_no_clear_for_a_live_job(mocker):
