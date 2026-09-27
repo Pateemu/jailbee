@@ -727,11 +727,10 @@ def test_selectable_rows_skips_a_folded_groups_containers():
     ]
 
 
-def test_selectable_rows_omits_an_empty_group():
-    """An empty group draws no header either — `render` already skips it, and
-    a cursor stop on an invisible row would be a dead keypress."""
+def test_selectable_rows_includes_an_empty_group():
     groups = [dashboard.RepoGroup("a", "/a", None, [])]
-    assert dashboard.selectable_rows(groups) == []
+    assert dashboard.selectable_rows(groups) == [dashboard.Row("repo", "a")]
+    assert dashboard.new_container_target(groups, dashboard.Row("repo", "a")) is groups[0]
 
 
 def test_move_selection_clamps_at_edges():
@@ -2371,7 +2370,7 @@ def test_header_uses_more_than_first_column_at_narrow_width(tmp_path):
         assert heading_line.index("▾") < data_line.index("Running")
 
 
-def test_render_empty_repo_data_shows_placeholder(tmp_path):
+def test_render_empty_repo_shows_header_without_table(tmp_path):
     group = dashboard.RepoGroup("empty", str(tmp_path), None, [])
     out = _render_text(
         dashboard.render(
@@ -2383,7 +2382,22 @@ def test_render_empty_repo_data_shows_placeholder(tmp_path):
             git_enabled=True,
         )
     )
-    assert "no containers found" in out
+    assert "empty" in out
+    assert "(0)" in out
+    assert "no containers found" not in out
+    assert "NAME" not in out
+
+
+def test_render_all_filtered_repos_explains_visibility_settings(tmp_path):
+    out = _render_text(
+        dashboard.render(
+            [], selected=None, now=datetime(2026, 6, 8, tzinfo=UTC),
+            last_refresh_age=1.0, interval=3.0, git_enabled=True,
+            hidden_by_preferences=True,
+        )
+    )
+    assert "visibility" in out.lower()
+    assert "settings" in out.lower()
 
 
 def test_narrow_multi_column_render_stays_within_available_content_width(tmp_path):
@@ -3861,7 +3875,7 @@ def test_settings_repo_prefixes_keeps_a_folded_repo_that_is_not_on_screen():
 
     assert "alpha" in prefixes
     assert "vanished" in prefixes  # folded but absent — still reachable
-    assert "empty" not in prefixes  # draws nothing, folds nothing
+    assert "empty" in prefixes
     assert len(prefixes) == len(set(prefixes))  # no duplicate for a folded on-screen repo
 
 
@@ -3934,6 +3948,7 @@ def _drive_run(
     remote: bool = False,
     over_ssh: bool = False,
     ssh_policy=None,
+    view_state: dashboard.ViewState | None = None,
 ) -> int:
     """Run the real ``dashboard.run()`` key loop with a fake terminal.
 
@@ -3948,6 +3963,8 @@ def _drive_run(
     that needs a real, dispatchable container passes its own ``groups``.
     """
     _mock_terminal(mocker)
+    if view_state is not None:
+        mocker.patch.object(dashboard, "seed_view_state", return_value=view_state)
     mocker.patch.object(dashboard, "gather_live", return_value=groups or [])
     mocker.patch.object(dashboard.select, "select", return_value=([True], [], []))
 
@@ -4166,6 +4183,64 @@ def test_run_persists_view_state_when_the_write_succeeds(mocker):
     _engine, frontend, state = save.call_args.args
     assert frontend == FRONTEND_TUI
     assert isinstance(state, dashboard.ViewState)
+
+
+def test_run_visibility_tab_uses_raw_prefixes_and_persists_complete_state(mocker, tmp_path):
+    from jailbee.dashboard_settings import SettingsState
+
+    alpha = dashboard.RepoGroup("alpha", str(tmp_path / "a"), None, [_ci("alpha-one", "alpha")])
+    empty = dashboard.RepoGroup("empty", str(tmp_path / "e"), None, [])
+    save = mocker.patch.object(dashboard, "save_view_state")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(
+        mocker,
+        [b"S", b"\t", b"\t", b"\x1b[B", b" "],
+        [alpha, empty],
+        view_state=dashboard.ViewState(("name",), frozenset({"vanished"})),
+    ) == 0
+
+    overlays = [call.kwargs.get("overlay") for call in render.call_args_list]
+    visibility = next(
+        overlay for overlay in overlays
+        if isinstance(overlay, SettingsState) and overlay.tab == "visibility"
+    )
+    assert visibility.visibility_repo_prefixes == ("alpha", "empty")
+    state = save.call_args.args[2]
+    assert state.columns == ("name",)
+    assert state.folded == frozenset({"vanished"})
+    assert state.hidden_repos == frozenset({"alpha"})
+
+
+def test_run_new_from_empty_repo_header_dispatches_to_repo_root(mocker, tmp_path):
+    group = dashboard.RepoGroup("empty", str(tmp_path), None, [])
+    prompt = mocker.patch("typer.prompt", side_effect=["feature", "main"])
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "new_container_base_default", return_value="main")
+    mocker.patch.object(dashboard, "_wait_for_return")
+
+    assert _drive_run(mocker, [b"n"], [group]) == 0
+
+    assert prompt.call_count == 2
+    child.assert_called_once_with(
+        ["jailbee", "new", "--", "feature", "main"], check=False, cwd=tmp_path
+    )
+
+
+def test_run_cannot_create_from_a_row_hidden_by_visibility_settings(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-one", "alpha")])
+    prompt = mocker.patch("typer.prompt")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(
+        mocker, [b"\x1b[B", b"S", b"\t", b"\t", b"\x1b[B", b" ", b"\x1b", b"n"], [group]
+    ) == 0
+
+    prompt.assert_not_called()
+    child.assert_not_called()
+    assert any("Select a repo" in str(call.kwargs.get("notice")) for call in render.call_args_list)
 
 
 def test_settings_key_switches_from_another_overlay_instead_of_closing(mocker):
