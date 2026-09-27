@@ -2381,7 +2381,24 @@ remote:
       mode: full
       allow: []
     restrict_host: true
+    excluded_repos: [private-app]
 ```
+
+`excluded_repos` is an optional host-only list of exact registered
+`container_prefix` values. It defaults to `[]` (no exclusions); for example,
+`[private-app]` hides and blocks that repository through SSH. These are not
+checkout paths, globs, or client-key identifiers. A well-formed prefix may be
+listed before it is registered. The key is accepted only in the
+`~/.config/jailbee/global.yaml` `remote.ssh` block, never in committed repo
+config or `repos/<prefix>.yaml` host-local overlays. Exclusions require
+`restrict_host: true`; validation rejects a nonempty list with host
+restrictions disabled, including `jb remote ssh serve --no-restrict-host`.
+
+The policy is loaded when each SSH channel opens. That channel's console,
+dashboard, and child commands retain the same exclusion snapshot for their
+lifetime; editing `global.yaml` affects new channels, not sessions already
+running. This setting changes SSH visibility only: local CLI, TUI, and Qt
+behavior is unchanged.
 
 To restrict command execution to selected public command leaves, replace
 `full` with an exact-leaf allowlist (entry points remain independently
@@ -2413,6 +2430,7 @@ remote:
 | `default_entrypoint` | `help` \| `dashboard` \| `shell` | `help` | Route a commandless SSH login to this entry point. `help` prints the enabled remote forms; `dashboard` and `shell` require their corresponding entry point to be enabled and a PTY. An explicit `ssh jailbee@host help` always prints the list, even with a different default. |
 | `commands.mode` | `disabled` \| `allowlist` \| `full` | `full` | Policy for JailBee command execution in the console and dashboard. `disabled` blocks command-running dashboard actions while dashboard/console navigation remains available; `allowlist` accepts exact leaves from `commands.allow`; `full` accepts classified public leaves. In restricted sessions, unknown/unclassified command paths fail closed. In every mode a remote command may not set a path-typed option or argument (such as `--config`) nor `new --mount` — see [Security](security.md#remote-ssh). |
 | `restrict_host` | bool | `true` | Keep remote sessions off the host itself: no path-typed arguments (`--config`, ...) or `new --mount` on any command; no config editor, diff pager or GUI app launches in the dashboard; a git bridge that moves refs but never the host's checked-out tree; no `shell`/`tmux`/`exec` into a mount-mode container (it shares the host's working tree); no approving a branch's privilege-widening autostart config; and no host-management command (`config edit`, `remote ...`, `setup`, `apply`, `net egress add`, `port to-container`, the GUI launchers, ...) in any `commands.mode`, `full` included. `false` lifts all of these at once, so an allowed command behaves exactly as it does locally; the startup log then says `host restrictions: OFF`. A server started from inside a restricted session stays restricted whatever this says. See [Security](security.md#remote-ssh). |
+| `excluded_repos` | list[string] | `[]` | Host-controlled exact registered `container_prefix` values unavailable through SSH. Filters repo routes, dashboard/console listings and supported aggregate views. Requires `restrict_host: true`; see [Security](security.md#remote-ssh). |
 | `commands.allow` | list[str] | `[]` | Public command leaves retained for allowlist mode, for example `ls` or `git pull`. Entries must be unique lowercase command paths made of letters, digits and hyphens, separated by single spaces. Every entry is validated against the current public CLI even when another mode is active. |
 
 An allowlist matches the exact public command leaf, not a prefix and not its
@@ -2455,6 +2473,8 @@ Validation rejects all of these combinations:
 - `commands.mode: allowlist` with an empty `allow` list;
 - duplicate, malformed, or unknown command paths; unknown fields; a non-IP
   `listen` value; and a port outside `1..65535`.
+- malformed or duplicate `excluded_repos` prefixes, or a nonempty
+  `excluded_repos` list with `restrict_host: false`.
 
 The `allow` list may remain populated in `disabled` or `full` mode so a later
 switch back to `allowlist` does not discard policy. Listener address and port
