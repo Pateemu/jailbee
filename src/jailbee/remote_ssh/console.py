@@ -473,7 +473,11 @@ def run(initial_repo: str | None = None, policy_json: str | None = None) -> int:
 
         try:
             policy_allows(
-                argv, ssh_config.commands, restrict_host=ssh_config.restrict_host, scope=scope
+                argv,
+                ssh_config.commands,
+                restrict_host=ssh_config.restrict_host,
+                scope=scope,
+                allow_scoped_aggregates=True,
             )
         except RouteError as error:
             _error(str(error))

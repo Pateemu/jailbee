@@ -2623,6 +2623,7 @@ def run(
                                 allowed_paths = ssh_router.allowed_command_paths(
                                     ssh_policy.commands,
                                     restrict_host=ssh_policy.restrict_host,
+                                    scope=scope,
                                 )
                         candidates = completion_candidates(
                             overlay.text,

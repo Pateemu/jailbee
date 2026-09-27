@@ -243,21 +243,14 @@ def test_exclusions_fail_closed_for_unclassified_command_but_allow_scoped_aggreg
     policy = RemoteCommandPolicy(mode="full")
     with pytest.raises(RouteError, match="unavailable when SSH repository exclusions"):
         policy_allows(("version",), policy, scope=RemoteRepoScope(frozenset({"secret"})))
-    assert (
-        policy_allows(
-            ("ls", "--all"),
-            policy,
-            scope=RemoteRepoScope(frozenset({"secret"})),
-            allow_scoped_aggregates=True,
-        )
-        == "ls"
-    )
+    scope = RemoteRepoScope(frozenset({"secret"}))
+    assert policy_allows(("ls", "--all"), policy, scope=scope) == "ls"
+    assert policy_allows(("base", "usage", "--all"), policy, scope=scope) == "base usage"
     assert (
         policy_allows(
             ("job", "ls", "--all-repos"),
             policy,
             scope=RemoteRepoScope(frozenset({"secret"})),
-            allow_scoped_aggregates=True,
         )
         == "job ls"
     )
@@ -617,6 +610,19 @@ def test_allowed_paths_uses_policy_and_host_restriction() -> None:
     assert allowed_command_paths(policy, restrict_host=False) == frozenset(
         {"git merge", "config edit"}
     )
+
+
+def test_completion_paths_respect_exclusions_like_command_gate() -> None:
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+    from jailbee.remote_ssh.router import allowed_command_paths
+
+    paths = allowed_command_paths(
+        RemoteCommandPolicy(mode="full"), scope=RemoteRepoScope(frozenset({"secret"}))
+    )
+
+    assert "version" not in paths
+    assert "ls" in paths
+    assert "base usage" in paths
 
 
 def test_nested_dashboard_and_tui_are_never_commands() -> None:

@@ -492,7 +492,7 @@ def policy_allows(
     *,
     restrict_host: bool = True,
     scope: RemoteRepoScope | None = None,
-    allow_scoped_aggregates: bool = False,
+    allow_scoped_aggregates: bool = True,
 ) -> str:
     """Return the public command path when the remote policy permits it.
 
@@ -557,6 +557,7 @@ def policy_allows(
             "job ls",
             "review ls",
             "prune",
+            "base usage",
             "net status",
         }
         if path not in safe and path != "ls":

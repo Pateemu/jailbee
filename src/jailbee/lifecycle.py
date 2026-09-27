@@ -462,6 +462,24 @@ def resolve_container_name(cfg: Config, incus: Incus, name: str) -> str:
     2. Else try ``f"{cfg.container_prefix}-{name}"``; return if it exists.
     3. Else raise ValueError listing both attempts.
     """
+    from jailbee.remote_ssh.repo_scope import scope_for_session
+
+    scope = scope_for_session()
+    if scope.excluded:
+        prefixed_candidate = f"{cfg.container_prefix}-{name}"
+        candidates = {name, prefixed_candidate}
+        for raw in incus.list_containers(fast=True):
+            container_name = raw.get("name")
+            if container_name not in candidates:
+                continue
+            profiles = raw.get("profiles") or []
+            repo = next(
+                (profile[: -len("-base")] for profile in profiles if profile.endswith("-base")),
+                None,
+            )
+            if not scope.allows(repo):
+                raise ValueError(f"no such container: '{name}' (also tried '{prefixed_candidate}')")
+
     if incus.exists(name):
         return name
     prefixed = f"{cfg.container_prefix}-{name}"

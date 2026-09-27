@@ -3502,6 +3502,7 @@ def test_local_dashboard_is_not_remote(mocker, monkeypatch) -> None:
 def test_remote_session_never_gets_the_qt_dashboard(mocker, monkeypatch, argv) -> None:
     """A Qt window would open on the host's display, not the SSH client's."""
     monkeypatch.setenv("JAILBEE_REMOTE_SSH", "1")
+    monkeypatch.setenv("JAILBEE_SSH_EXCLUDED_REPOS", "[]")
     mocker.patch("jailbee.cli._advise_setup")
     mocker.patch("jailbee.incus.Incus")
     preflight = mocker.patch("jailbee.qtui.app.preflight", return_value=[Path("/tmp/x")])

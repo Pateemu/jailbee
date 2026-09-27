@@ -564,6 +564,22 @@ def test_net_status_lists_containers_carrying_overrides(tmp_path, mocker, capsys
     assert "myrepo-feat" in capsys.readouterr().out
 
 
+def test_ssh_net_status_keeps_allowed_egress_names_with_prefix_overlap(tmp_path, mocker, capsys):
+    from jailbee.cli import _print_egress_override_status
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+
+    cfg, _incus = _repo(tmp_path, mocker, extras=[])
+    mocker.patch("jailbee.egress_scope.legacy_repo_extras", return_value=[])
+    mocker.patch("jailbee.cli.load_config", return_value=cfg)
+    mocker.patch("jailbee.cli.find_repo_config", return_value=tmp_path / "unused.yaml")
+    mocker.patch("jailbee.cli._list_containers_for_status", return_value=["secretary-feature"])
+    mocker.patch("jailbee.egress_scope.container_extras", return_value=["allowed.example:443"])
+
+    _print_egress_override_status(RemoteRepoScope(frozenset({"secret"})))
+
+    assert "secretary-feature" in capsys.readouterr().out
+
+
 def test_net_status_survives_and_reports_a_mid_fetch_failure(tmp_path, mocker):
     """Fix round 1: the per-container `container_extras` loop can legitimately
     raise partway through (a container destroyed between the listing and its

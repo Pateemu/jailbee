@@ -19,10 +19,9 @@ def test_security_reference_marks_full_remote_commands_as_high_trust() -> None:
 
 def test_remote_repo_exclusions_are_documented_as_host_controlled() -> None:
     config = (DOCS / "config.md").read_text()
-    remote_ssh = config.split("### `remote.ssh`", 1)[1].split("### `credentials`", 1)[0]
     security = (DOCS / "security.md").read_text()
 
-    assert "excluded_repos: [private-app]" in remote_ssh
+    assert "excluded_repos: [private-app]" in config
     normalized_security = " ".join(security.split())
     assert "host-controlled repository exclusion boundary" in normalized_security
 

@@ -83,8 +83,7 @@ def test_ssh_dashboard_exclusions_gate_aggregate_option(monkeypatch) -> None:
     monkeypatch.setenv(SSH_EXCLUDED_REPOS_ENV, '["secret"]')
     policy = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="full"))
 
-    with pytest.raises(RouteError, match="aggregate options"):
-        check_dashboard_command(["ls", "--all"], policy, over_ssh=True)
+    check_dashboard_command(["ls", "--all"], policy, over_ssh=True)
     # Canonical/hidden aliases are classified through the same remote policy.
     check_dashboard_command(["merge", "--into=main"], policy, over_ssh=True)
     # Value-form path options are parsed by Click and rejected by host policy.

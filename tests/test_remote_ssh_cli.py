@@ -39,7 +39,7 @@ def test_remote_dashboard_fails_closed_on_invalid_exclusion_snapshot(
     result = CliRunner().invoke(app, ["dashboard", "--remote-policy-json", policy])
 
     assert result.exit_code != 0
-    assert "snapshot" in str(result.exception).lower()
+    assert "snapshot" in result.output.lower()
     incus.assert_not_called()
     run.assert_not_called()
 
@@ -100,8 +100,28 @@ def test_ssh_ls_all_fails_closed_before_listing_without_snapshot(
     result = CliRunner().invoke(app, ["ls", "--all"])
 
     assert result.exit_code != 0
-    assert "snapshot" in str(result.exception).lower()
+    assert "snapshot" in result.output.lower()
     listing.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "argv", [["version"], ["remote", "ssh", "status"], ["exec", "foo", "true"]]
+)
+@pytest.mark.parametrize("snapshot", [None, "not-json"])
+def test_every_ssh_cli_leaf_requires_a_valid_scope_snapshot(
+    argv: list[str], snapshot: str | None, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+) -> None:
+    monkeypatch.setenv("JAILBEE_SSH_SESSION", "1")
+    if snapshot is None:
+        monkeypatch.delenv("JAILBEE_SSH_EXCLUDED_REPOS", raising=False)
+    else:
+        monkeypatch.setenv("JAILBEE_SSH_EXCLUDED_REPOS", snapshot)
+    mocker.patch("jailbee.cli._load_or_exit", return_value=make_cfg(Path("/repo")))
+
+    result = CliRunner().invoke(app, argv)
+
+    assert result.exit_code == 2
+    assert "snapshot" in flat_output(result.stderr).lower()
 
 
 def test_local_ls_all_keeps_all_rows_with_empty_scope(
@@ -137,6 +157,31 @@ def test_local_ls_all_keeps_all_rows_with_empty_scope(
 
     assert result.exit_code == 0, result.output
     assert len(json.loads(result.stdout)) == 2
+
+
+def test_prune_never_destroys_a_hidden_stale_candidate(
+    tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jailbee.lifecycle import ContainerInfo
+
+    root = tmp_path / "myrepo"
+    root.mkdir()
+    cfg = make_cfg(root)
+    mocker.patch("jailbee.cli._load_or_exit", return_value=cfg)
+    mocker.patch("jailbee.incus.Incus")
+    mocker.patch("jailbee.maintenance.find_stale_stopped", return_value=["secret-stale"])
+    mocker.patch(
+        "jailbee.lifecycle.list_containers",
+        return_value=[ContainerInfo("public-stale", "Stopped", None, None, None, repo="public")],
+    )
+    destroy = mocker.patch("jailbee.lifecycle.destroy_container")
+    monkeypatch.setenv("JAILBEE_SSH_SESSION", "1")
+    monkeypatch.setenv("JAILBEE_SSH_EXCLUDED_REPOS", '["secret"]')
+
+    result = CliRunner().invoke(app, ["prune", "--yes-to-all"])
+
+    assert result.exit_code == 0, result.output
+    destroy.assert_not_called()
 
 
 def test_remote_ssh_help_exposes_the_management_surface() -> None:

@@ -5225,6 +5225,25 @@ def test_resolve_container_name_full_match_other_repo(make_cfg, tmp_path):
     assert resolve_container_name(cfg, incus, "other-feat-x") == "other-feat-x"
 
 
+def test_ssh_resolve_rejects_excluded_exact_container_before_exists_probe(
+    make_cfg, tmp_path, monkeypatch
+):
+    from jailbee.remote_ssh.session import SSH_EXCLUDED_REPOS_ENV, SSH_SESSION_ENV
+
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    cfg = make_cfg(repo)
+    incus = MagicMock()
+    incus.list_containers.return_value = [{"name": "secret-feat", "profiles": ["secret-base"]}]
+    monkeypatch.setenv(SSH_SESSION_ENV, "1")
+    monkeypatch.setenv(SSH_EXCLUDED_REPOS_ENV, '["secret"]')
+
+    with pytest.raises(ValueError, match="no such container"):
+        resolve_container_name(cfg, incus, "secret-feat")
+
+    incus.exists.assert_not_called()
+
+
 def test_resolve_container_name_not_found_lists_attempts(make_cfg, tmp_path):
     repo = tmp_path / "myrepo"
     repo.mkdir()

@@ -541,6 +541,7 @@ def test_remote_apps_ls_still_inspects_a_mount_mode_container(tmp_path, mocker, 
     from tests.conftest import make_cfg
 
     monkeypatch.setenv("JAILBEE_REMOTE_SSH", "1")
+    monkeypatch.setenv("JAILBEE_SSH_EXCLUDED_REPOS", "[]")
     cfg = make_cfg(tmp_path, apps={"figma": {"command": "/opt/f/f"}})
     mocker.patch("jailbee.cli._load_or_exit", return_value=cfg)
     incus = mocker.MagicMock()

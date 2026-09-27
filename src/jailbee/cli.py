@@ -785,7 +785,13 @@ def main(
 ) -> None:
     # No docstring: `help=` on the Typer() above is the command's help text,
     # and a docstring here would silently replace it.
-    pass
+    from jailbee.remote_ssh.repo_scope import RepoScopeError, scope_for_session
+
+    try:
+        scope_for_session()
+    except RepoScopeError as exc:
+        error(str(exc))
+        raise typer.Exit(2) from exc
 
 
 @app.command()
@@ -9678,12 +9684,6 @@ def _print_egress_override_status(scope: "RemoteRepoScope | None" = None) -> Non
         return
 
     per_container = {k: v for k, v in per_container.items() if v}
-    if scope is not None and scope.excluded:
-        per_container = {
-            name: values
-            for name, values in per_container.items()
-            if any(name.startswith(f"{prefix}-") for prefix in scope.excluded)
-        }
     if not repo_rows and not per_container:
         return
 
@@ -15297,14 +15297,20 @@ def prune(
 ) -> None:
     """Interactively clean up stopped containers older than 30 days."""
     from jailbee.incus import Incus
-    from jailbee.lifecycle import destroy_container, short_name
+    from jailbee.lifecycle import destroy_container, list_containers, short_name
     from jailbee.maintenance import find_stale_stopped
 
     cfg = _load_or_exit(config)
     incus = Incus()
     from jailbee.remote_ssh.repo_scope import scope_for_session
 
-    stale = find_stale_stopped(cfg, incus, days=30, scope=scope_for_session())
+    scope = scope_for_session()
+    stale = find_stale_stopped(cfg, incus, days=30, scope=scope)
+    if scope.excluded:
+        visible = {
+            container.name for container in list_containers(cfg, incus, all_repos=True, scope=scope)
+        }
+        stale = [name for name in stale if name in visible]
     if not stale:
         info("Nothing to prune.")
         return
