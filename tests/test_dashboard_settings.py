@@ -7,6 +7,7 @@ from rich.console import Console
 
 FIELDS = ("name", "state", "network", "pr", "ip")
 REPOS = ("alpha", "beta")
+VISIBILITY_REPOS = ("alpha", "beta", "gamma")
 
 
 def _state(**over):
@@ -17,6 +18,9 @@ def _state(**over):
         enabled=frozenset({"name", "state"}),
         repo_prefixes=REPOS,
         folded=frozenset({"beta"}),
+        visibility_repo_prefixes=VISIBILITY_REPOS,
+        show_empty_repos=True,
+        hidden_repos=frozenset(),
     )
     kwargs.update(over)
     return open_settings(**kwargs)
@@ -40,8 +44,8 @@ def test_move_clamps_within_the_current_tabs_list():
     assert bottom.index == len(FIELDS) - 1  # clamp at bottom, not past it
 
 
-def test_switching_tab_resets_the_cursor():
-    """The two lists have different lengths, so carrying an index across
+def test_switching_tab_cycles_through_visibility_and_resets_the_cursor():
+    """The tab lists have different lengths, so carrying an index across
     would let the cursor land past the end of the shorter one."""
     from jailbee.dashboard_settings import move_settings, switch_tab
 
@@ -50,7 +54,11 @@ def test_switching_tab_resets_the_cursor():
     switched = switch_tab(state)
     assert switched.tab == "repos"
     assert switched.index == 0
-    assert switch_tab(switched).tab == "fields"
+    visibility = switch_tab(move_settings(switched, 1))
+    assert visibility.tab == "visibility"
+    assert visibility.index == 0
+    assert switch_tab(visibility).tab == "fields"
+    assert switch_tab(visibility).index == 0
 
 
 def test_toggle_flips_the_field_under_the_cursor():
@@ -69,6 +77,42 @@ def test_toggle_flips_the_repo_under_the_cursor():
     flipped = toggle_current(state)
     assert "alpha" in flipped.folded
     assert "beta" in flipped.folded  # untouched
+
+
+def test_visibility_global_toggle_only_changes_show_empty_repos():
+    """A missing first-row branch would toggle a made-up repo instead."""
+    from jailbee.dashboard_settings import switch_tab, toggle_current
+
+    visibility = switch_tab(switch_tab(_state(hidden_repos=frozenset({"beta"}))))
+    toggled = toggle_current(visibility)
+
+    assert not toggled.show_empty_repos
+    assert toggled.hidden_repos == frozenset({"beta"})
+
+
+def test_visibility_repo_toggle_only_changes_the_selected_hidden_prefix():
+    """A prefix toggle must not alter the independent global empty setting."""
+    from jailbee.dashboard_settings import move_settings, switch_tab, toggle_current
+
+    visibility = switch_tab(switch_tab(_state(show_empty_repos=False)))
+    alpha = move_settings(visibility, 1)
+    toggled = toggle_current(alpha)
+
+    assert toggled.show_empty_repos is False
+    assert toggled.hidden_repos == frozenset({"alpha"})
+
+
+def test_visibility_keeps_hidden_repos_listed_when_empty_repos_are_off():
+    """Turning off empty groups must not remove their restoration control."""
+    from jailbee.dashboard_settings import render_settings, switch_tab
+
+    state = _state(show_empty_repos=False, hidden_repos=frozenset({"gamma"}))
+    visibility = switch_tab(switch_tab(state))
+    console = Console(width=90, no_color=True)
+    with console.capture() as cap:
+        console.print(render_settings(visibility, dynamic=frozenset()))
+
+    assert "gamma" in cap.get()
 
 
 def test_enabled_names_is_canonical_order_not_toggle_order():
@@ -101,7 +145,7 @@ def test_render_marks_state_and_flags_dynamic_columns():
 
     assert "name" in out and "state" in out
     assert "only when it applies" in out  # the `pr` row explains its pruning
-    assert "Fields" in out and "Repos" in out  # both tabs are discoverable
+    assert "Fields" in out and "Repos" in out and "Visibility" in out
 
 
 def test_render_repos_tab_shows_folded_state():
@@ -126,6 +170,51 @@ def test_render_repos_tab_shows_folded_state():
     assert "[x]  alpha" in alpha_line
     # beta is folded → checkbox is [ ]
     assert "[ ]  beta" in beta_line
+
+
+def test_render_visibility_shows_global_and_repo_checkboxes():
+    """A wrong polarity or omitted global control would hide visibility state."""
+    from jailbee.dashboard_settings import render_settings, switch_tab
+
+    state = _state(show_empty_repos=False, hidden_repos=frozenset({"beta"}))
+    visibility = switch_tab(switch_tab(state))
+    console = Console(width=90, no_color=True)
+    with console.capture() as cap:
+        console.print(render_settings(visibility, dynamic=frozenset()))
+    lines = cap.get().split("\n")
+
+    global_line = next(line for line in lines if "Show empty repos" in line)
+    alpha_line = next(line for line in lines if " alpha " in line)
+    beta_line = next(line for line in lines if " beta " in line)
+    assert "[ ]  Show empty repos" in global_line
+    assert "[x]  alpha" in alpha_line
+    assert "[ ]  beta" in beta_line
+
+
+def test_render_visibility_windows_long_repo_list_and_keeps_cursor_visible():
+    """An unwindowed visibility list would grow the overlay beyond its budget."""
+    from jailbee.dashboard_settings import move_settings, render_settings, switch_tab
+
+    prefixes = tuple(f"repo{i}" for i in range(40))
+    state = _state(visibility_repo_prefixes=prefixes)
+    visibility = move_settings(switch_tab(switch_tab(state)), 38)
+    console = Console(width=90, no_color=True)
+    with console.capture() as cap:
+        console.print(render_settings(visibility, dynamic=frozenset()))
+    out = cap.get()
+
+    assert "repo37" in out
+    assert "repo0" not in out
+
+
+def test_visibility_toggles_do_not_change_folded_repos():
+    """Visibility and folding remain distinct preference families."""
+    from jailbee.dashboard_settings import move_settings, switch_tab, toggle_current
+
+    visibility = move_settings(switch_tab(switch_tab(_state())), 1)
+    toggled = toggle_current(visibility)
+
+    assert toggled.folded == frozenset({"beta"})
 
 
 def test_render_windows_a_long_field_vocabulary():
