@@ -297,13 +297,7 @@ def test_gather_rows_includes_a_repo_with_no_config_file(tmp_path, monkeypatch, 
     (repo / ".git").mkdir(parents=True)
     prefix = _scratch_prefix(repo)  # slug plus a digest of the path
 
-    mocker.patch.object(
-        dashboard,
-        "list_containers",
-        side_effect=lambda cfg, incus, **kw: (
-            [] if kw.get("all_repos") else [_ci(f"{prefix}-x", prefix)]
-        ),
-    )
+    mocker.patch.object(dashboard, "list_containers", return_value=[])
 
     groups = dashboard.gather_rows(mocker.MagicMock(), [repo], cwd_root=repo, with_git=False)
 
@@ -311,6 +305,10 @@ def test_gather_rows_includes_a_repo_with_no_config_file(tmp_path, monkeypatch, 
     assert groups[0].repo_root == str(repo)
     # No file on disk -> no config path. Task 10b is what re-enables its menu.
     assert groups[0].config_path is None
+    assert groups[0].containers == []
+    target = dashboard.RepoTarget.of(groups[0])
+    assert target is not None
+    assert target.repo_root == repo
 
 
 def test_gather_rows_carries_the_repos_loose_ttl_default(tmp_path, mocker, make_cfg):
@@ -470,7 +468,7 @@ def test_gather_rows_cwd_none_orphans_sort_last(tmp_path, mocker, make_cfg):
     assert groups[-1].config_path is None
 
 
-def test_gather_rows_hides_repo_with_no_containers(tmp_path, mocker, make_cfg):
+def test_gather_rows_includes_empty_repo_for_targeting(tmp_path, mocker, make_cfg):
     empty_root = tmp_path / "alpha"
     populated_root = tmp_path / "beta"
     empty_cfg = make_cfg(empty_root)  # container_prefix == "alpha"
@@ -492,8 +490,10 @@ def test_gather_rows_hides_repo_with_no_containers(tmp_path, mocker, make_cfg):
     groups = dashboard.gather_rows(
         mocker.MagicMock(), [empty_root, populated_root], cwd_root=None, with_git=False
     )
-    # The empty repo produces no group at all; the populated one still appears.
-    assert [g.prefix for g in groups] == ["beta"]
+    assert [g.prefix for g in groups] == ["alpha", "beta"]
+    alpha = groups[0]
+    assert alpha.containers == []
+    assert dashboard.RepoTarget.of(alpha) is not None
 
 
 def test_gather_rows_empty_repo_roots_returns_empty(mocker):

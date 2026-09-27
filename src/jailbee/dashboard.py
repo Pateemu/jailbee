@@ -398,22 +398,21 @@ def gather_rows(
             with_background=True,
         )
         covered.add(cfg.container_prefix)
-        if containers:
-            groups.append(
-                RepoGroup(
-                    cfg.container_prefix,
-                    str(cfg.repo_root),
-                    repo_config_path(root),
-                    containers,
-                    apps=[
-                        AppMenuEntry(_app_menu_verb(spec), spec.description or spec.name)
-                        for spec in resolve_apps(cfg)
-                    ],
-                    loose_ttl_default=_loose_ttl_default(cfg, gcfg),
-                    push_action_default=cfg.push.default_action,
-                    push_source_default=cfg.push.default_source,
-                )
+        groups.append(
+            RepoGroup(
+                cfg.container_prefix,
+                str(cfg.repo_root),
+                repo_config_path(root),
+                containers,
+                apps=[
+                    AppMenuEntry(_app_menu_verb(spec), spec.description or spec.name)
+                    for spec in resolve_apps(cfg)
+                ],
+                loose_ttl_default=_loose_ttl_default(cfg, gcfg),
+                push_action_default=cfg.push.default_action,
+                push_source_default=cfg.push.default_source,
             )
+        )
 
     if base_cfg is not None:
         all_rows = list_containers(
