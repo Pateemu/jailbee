@@ -20,6 +20,7 @@ from jailbee.db.models import RegisteredRepo
 from jailbee.global_config import GlobalConfig
 from jailbee.remote_ssh import console
 from jailbee.remote_ssh.router import RouteError
+from jailbee.remote_ssh.session import SSH_EXCLUDED_REPOS_ENV, SSH_SESSION_ENV
 
 
 @dataclass
@@ -45,11 +46,19 @@ def console_env(tmp_path: Path, mocker) -> ConsoleEnv:
     ]
     prompt = mocker.Mock()
     mocker.patch("jailbee.remote_ssh.console.PromptSession", return_value=prompt)
-    mocker.patch("jailbee.remote_ssh.console.registered_repos", return_value=repos)
     mocker.patch(
-        "jailbee.remote_ssh.console.resolve_repo",
-        side_effect=lambda prefix: {repo.prefix: repo.root for repo in repos}[prefix],
+        "jailbee.remote_ssh.console.registered_repos",
+        side_effect=lambda scope=None: [
+            repo for repo in repos if scope is None or scope.allows(repo.prefix)
+        ],
     )
+
+    def resolve(prefix, scope=None):
+        if scope is not None and not scope.allows(prefix):
+            raise RouteError(f"unknown registered repo: {prefix}")
+        return {repo.prefix: repo.root for repo in repos}[prefix]
+
+    mocker.patch("jailbee.remote_ssh.console.resolve_repo", side_effect=resolve)
     config = GlobalConfig(
         remote=RemoteConfig(
             ssh=RemoteSSHConfig(
@@ -97,6 +106,41 @@ def test_registered_repos_returns_only_existing_directories_sorted(
         console.RepoChoice("alpha", alpha),
         console.RepoChoice("beta", beta),
     ]
+
+
+def test_registered_repos_filters_excluded_prefix_before_choices(
+    tmp_path: Path, db_engine: Engine
+) -> None:
+    public = tmp_path / "public"
+    secret = tmp_path / "secret"
+    public.mkdir()
+    secret.mkdir()
+    with Session(db_engine) as session:
+        for prefix, root in [("public", public), ("secret", secret)]:
+            session.add(
+                RegisteredRepo(
+                    container_prefix=prefix,
+                    repo_root=str(root),
+                    registered_at=datetime(2026, 9, 17, tzinfo=UTC),
+                )
+            )
+        session.commit()
+
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+
+    assert console.registered_repos(
+        engine=db_engine, scope=RemoteRepoScope(frozenset({"secret"}))
+    ) == [console.RepoChoice("public", public)]
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+
+    completer = console._completer(frozenset(), [console.RepoChoice("public", public)])
+    assert [
+        item.text for item in completer.get_completions(Document("use s"), CompleteEvent())
+    ] == []
+    assert [
+        item.text for item in completer.get_completions(Document("use p"), CompleteEvent())
+    ] == ["public"]
 
 
 def test_parse_console_line_uses_shell_quoting_without_interpreting_operators() -> None:
@@ -275,8 +319,70 @@ def test_console_reports_when_no_registered_repos(console_env: ConsoleEnv, mocke
     mocker.patch("jailbee.remote_ssh.console.registered_repos", return_value=[])
 
     assert console.run(policy_json=console_env.policy_json) == 1
-    assert "No registered repositories" in capsys.readouterr().err
-    console_env.prompt.prompt.assert_not_called()
+
+
+@pytest.mark.parametrize("snapshot", [None, "not-json"])
+def test_console_fails_closed_without_valid_ssh_scope_snapshot(
+    console_env: ConsoleEnv, monkeypatch, snapshot: str | None, capsys
+) -> None:
+    monkeypatch.setenv(SSH_SESSION_ENV, "1")
+    if snapshot is None:
+        monkeypatch.delenv(SSH_EXCLUDED_REPOS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(SSH_EXCLUDED_REPOS_ENV, snapshot)
+
+    assert console.run("project", console_env.policy_json) == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "Invalid SSH repository policy snapshot" in output or "missing" in output
+
+
+def test_console_uses_snapshot_to_filter_repos_and_reject_explicit_use(
+    console_env: ConsoleEnv, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv(SSH_SESSION_ENV, "1")
+    monkeypatch.setenv(SSH_EXCLUDED_REPOS_ENV, '["other"]')
+    console_env.lines(["use other", "exit"])
+
+    assert console.run("project", console_env.policy_json) == 0
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "unknown registered repo: other" in output
+    assert "jb[other]" not in output
+    console_env.prompt.prompt.assert_called()
+
+
+def test_console_picker_and_repos_command_never_show_snapshot_exclusion(
+    console_env: ConsoleEnv, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv(SSH_SESSION_ENV, "1")
+    monkeypatch.setenv(SSH_EXCLUDED_REPOS_ENV, '["other"]')
+    console_env.lines(["repos", "exit"])
+
+    assert console.run(policy_json=console_env.policy_json) == 0
+    output = capsys.readouterr().out
+    assert "project" in output
+    assert "other" not in output
+    assert "Only one registered repository" in output
+
+
+def test_console_empty_state_uses_union_of_policy_and_snapshot_exclusions(
+    console_env: ConsoleEnv, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv(SSH_SESSION_ENV, "1")
+    monkeypatch.setenv(SSH_EXCLUDED_REPOS_ENV, '["other"]')
+    policy = RemoteSSHConfig(
+        shell=True,
+        excluded_repos=["project"],
+        commands=RemoteCommandPolicy(mode="full"),
+    ).model_dump_json()
+
+    assert console.run(policy_json=policy) == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "No registered repositories are available." in output
+    assert "other" not in output
+    assert "project" not in output
 
 
 def test_initial_stale_repo_is_rejected(console_env: ConsoleEnv, mocker, capsys) -> None:

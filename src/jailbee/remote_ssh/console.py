@@ -345,11 +345,11 @@ def run(initial_repo: str | None = None, policy_json: str | None = None) -> int:
     if ssh_config is None:
         return 1
     try:
-        scope = scope_for_session()
+        snapshot_scope = scope_for_session()
     except ValueError as error:
         _error(str(error))
         return 1
-    scope = RemoteRepoScope(frozenset(ssh_config.excluded_repos))
+    scope = RemoteRepoScope(snapshot_scope.excluded | frozenset(ssh_config.excluded_repos))
     repos = registered_repos(scope=scope)
     if not repos:
         _error("No registered repositories are available.")

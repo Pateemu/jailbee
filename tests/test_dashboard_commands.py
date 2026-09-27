@@ -13,6 +13,7 @@ from jailbee.dashboard_commands import (
     insert_options_before_separator,
 )
 from jailbee.remote_ssh.router import RouteError
+from jailbee.remote_ssh.session import SSH_EXCLUDED_REPOS_ENV, SSH_SESSION_ENV
 
 
 def test_completion_respects_default_and_disabled_remote_policy() -> None:
@@ -60,6 +61,35 @@ def test_ssh_dashboard_merge_alias_uses_canonical_allowlist() -> None:
         exec=True, commands=RemoteCommandPolicy(mode="allowlist", allow=["git merge"])
     )
     check_dashboard_command(["merge", "alpha"], policy, over_ssh=True)
+
+
+@pytest.mark.parametrize("snapshot", [None, "not-json"])
+def test_ssh_dashboard_fails_closed_without_valid_scope_snapshot(
+    monkeypatch, snapshot: str | None
+) -> None:
+    monkeypatch.setenv(SSH_SESSION_ENV, "1")
+    if snapshot is None:
+        monkeypatch.delenv(SSH_EXCLUDED_REPOS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(SSH_EXCLUDED_REPOS_ENV, snapshot)
+    policy = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="full"))
+
+    with pytest.raises(ValueError, match="Invalid SSH repository policy snapshot"):
+        check_dashboard_command(["git", "pull"], policy, over_ssh=True)
+
+
+def test_ssh_dashboard_exclusions_gate_aggregate_option(monkeypatch) -> None:
+    monkeypatch.setenv(SSH_SESSION_ENV, "1")
+    monkeypatch.setenv(SSH_EXCLUDED_REPOS_ENV, '["secret"]')
+    policy = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="full"))
+
+    with pytest.raises(RouteError, match="aggregate options"):
+        check_dashboard_command(["ls", "--all"], policy, over_ssh=True)
+    # Canonical/hidden aliases are classified through the same remote policy.
+    check_dashboard_command(["merge", "--into=main"], policy, over_ssh=True)
+    # Value-form path options are parsed by Click and rejected by host policy.
+    with pytest.raises(RouteError, match="--config"):
+        check_dashboard_command(["ls", "--config=/etc/passwd"], policy, over_ssh=True)
 
 
 def test_ssh_dashboard_commands_policy_is_independent_of_exec_flag() -> None:
