@@ -9621,9 +9621,7 @@ def _list_containers_for_status(
 
     return [
         c.name
-        for c in list_containers(
-            cfg, incus, all_repos=bool(scope and scope.excluded), scope=scope
-        )
+        for c in list_containers(cfg, incus, all_repos=bool(scope and scope.excluded), scope=scope)
     ]
 
 

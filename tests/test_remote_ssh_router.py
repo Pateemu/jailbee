@@ -263,7 +263,9 @@ def test_exclusions_fail_closed_for_unclassified_command_but_allow_scoped_aggreg
     )
 
 
-@pytest.mark.parametrize("argv", [("config", "show", "--layer", "global"), ("config", "show", "--layer=global")])
+@pytest.mark.parametrize(
+    "argv", [("config", "show", "--layer", "global"), ("config", "show", "--layer=global")]
+)
 def test_global_config_layer_is_denied_with_active_exclusions(argv) -> None:
     with pytest.raises(RouteError, match="config show --layer global is unavailable"):
         policy_allows(
@@ -275,12 +277,15 @@ def test_global_config_layer_is_denied_with_active_exclusions(argv) -> None:
 
 
 def test_repo_config_layer_remains_available_with_active_exclusions() -> None:
-    assert policy_allows(
-        ("config", "show", "--layer=repo"),
-        RemoteCommandPolicy(mode="full"),
-        scope=RemoteRepoScope(frozenset({"hidden"})),
-        allow_scoped_aggregates=True,
-    ) == "config show"
+    assert (
+        policy_allows(
+            ("config", "show", "--layer=repo"),
+            RemoteCommandPolicy(mode="full"),
+            scope=RemoteRepoScope(frozenset({"hidden"})),
+            allow_scoped_aggregates=True,
+        )
+        == "config show"
+    )
 
 
 @pytest.mark.parametrize("argv", [("account", "ls"), ("account", "group", "ls"), ("doctor",)])
