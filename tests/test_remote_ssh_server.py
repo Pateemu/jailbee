@@ -449,6 +449,17 @@ def test_console_receives_the_session_effective_policy_including_overrides(child
     assert sent.commands.mode == "full"
 
 
+def test_server_child_spec_carries_effective_exclusion_snapshot(child, mocker, repo):
+    configured = RemoteSSHConfig(excluded_repos=["secret"])
+    mocker.patch.object(
+        server,
+        "load_global_config",
+        return_value=(GlobalConfig(remote=RemoteConfig(ssh=configured)), []),
+    )
+    session("--repo project ls")
+    assert child.await_args.args[1].excluded_repos == ("secret",)
+
+
 def test_optional_pty_remains_available_to_one_shot_child(child, configured, repo):
     process, channel = session("--repo project ls", term="xterm")
     assert child.await_args.args[0] is process

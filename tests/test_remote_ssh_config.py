@@ -18,6 +18,7 @@ def test_remote_ssh_defaults_enable_all_routes_with_full_commands() -> None:
     assert ssh.exec is True
     assert ssh.commands.mode == "full"
     assert ssh.commands.allow == []
+    assert ssh.excluded_repos == []
 
 
 @pytest.mark.parametrize(
@@ -143,3 +144,18 @@ def test_restrict_host_defaults_on_and_accepts_false() -> None:
 
     assert RemoteSSHConfig().restrict_host is True
     assert RemoteSSHConfig(restrict_host=False).restrict_host is False
+
+
+def test_excluded_repos_accepts_valid_unregistered_prefix() -> None:
+    assert RemoteSSHConfig(excluded_repos=["future-repo-2"]).excluded_repos == ["future-repo-2"]
+
+
+@pytest.mark.parametrize("prefixes", [["secret", "secret"], ["Project"]])
+def test_excluded_repos_reject_duplicates_and_invalid_prefixes(prefixes: list[str]) -> None:
+    with pytest.raises(ValidationError):
+        RemoteSSHConfig(excluded_repos=prefixes)
+
+
+def test_excluded_repos_require_host_restrictions() -> None:
+    with pytest.raises(ValidationError, match="restrict_host"):
+        RemoteSSHConfig(excluded_repos=["secret"], restrict_host=False)

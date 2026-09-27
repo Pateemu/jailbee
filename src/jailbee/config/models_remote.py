@@ -6,6 +6,8 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from jailbee.config.models_host import _PREFIX_RE
+
 CommandMode = Literal["disabled", "allowlist", "full"]
 _COMMAND_PATH_RE = re.compile(r"^[a-z][a-z0-9-]*(?: [a-z][a-z0-9-]*)*$")
 
@@ -81,6 +83,10 @@ class RemoteSSHConfig(BaseModel):
             "`false` makes an allowed command behave exactly as it does locally."
         ),
     )
+    excluded_repos: list[str] = Field(
+        default_factory=list,
+        description="Registered repository prefixes unavailable through remote SSH.",
+    )
 
     @field_validator("listen")
     @classmethod
@@ -90,11 +96,22 @@ class RemoteSSHConfig(BaseModel):
 
     @model_validator(mode="after")
     def _entrypoints_are_usable(self) -> Self:
+        if self.excluded_repos and not self.restrict_host:
+            raise ValueError("remote.ssh.excluded_repos requires restrict_host=true")
         if not (self.dashboard or self.shell or self.exec):
             raise ValueError("remote.ssh must enable at least one entry point")
         if self.default_entrypoint != "help" and not getattr(self, self.default_entrypoint):
             raise ValueError("remote.ssh.default_entrypoint must be an enabled entry point")
         return self
+
+    @field_validator("excluded_repos")
+    @classmethod
+    def _validate_excluded_repos(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("remote.ssh.excluded_repos contains duplicates")
+        if any(not _PREFIX_RE.fullmatch(value) for value in values):
+            raise ValueError("remote.ssh.excluded_repos entries must be valid container prefixes")
+        return values
 
 
 class RemoteConfig(BaseModel):

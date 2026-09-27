@@ -21,6 +21,7 @@ def test_child_environment_marks_the_session_and_disarms_less() -> None:
         REMOTE_SESSION_ENV: "1",
         "LESSSECURE": "1",
         "TERM": "xterm",
+        "JAILBEE_SSH_EXCLUDED_REPOS": "[]",
     }
 
 
@@ -54,7 +55,10 @@ def test_is_remote_session_defaults_to_the_process_environment(monkeypatch) -> N
 def test_an_unrestricted_child_carries_only_the_ssh_session_marker() -> None:
     env = child_environment({"PATH": "/bin"}, term="xterm", restricted=False)
 
-    assert env == {"PATH": "/bin", "TERM": "xterm", SSH_SESSION_ENV: "1"}
+    assert env == {
+        "PATH": "/bin", "TERM": "xterm", SSH_SESSION_ENV: "1",
+        "JAILBEE_SSH_EXCLUDED_REPOS": "[]",
+    }
 
 
 def test_is_ssh_session_covers_restricted_and_unrestricted_sessions() -> None:
