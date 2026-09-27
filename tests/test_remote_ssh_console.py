@@ -1065,9 +1065,9 @@ def test_active_exclusions_filter_completion_through_command_policy(mocker) -> N
 
     assert "ls" in offered
     assert "version" not in offered
-    assert console._allowed_paths(policy, scope=RemoteRepoScope(frozenset())) == console._allowed_paths(
-        policy
-    )
+    assert console._allowed_paths(
+        policy, scope=RemoteRepoScope(frozenset())
+    ) == console._allowed_paths(policy)
 
 
 def test_full_help_renders_only_policy_allowed_leaves_with_exclusions(
