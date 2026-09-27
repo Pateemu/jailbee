@@ -239,12 +239,15 @@ def test_command_path_rejects_options_before_the_leaf() -> None:
         command_path(("--verbose", "ls"))
 
 
-def test_exclusions_fail_closed_for_unclassified_command_and_aggregate_option() -> None:
+def test_exclusions_fail_closed_for_unclassified_command_but_allow_scoped_aggregate() -> None:
     policy = RemoteCommandPolicy(mode="full")
     with pytest.raises(RouteError, match="unavailable when SSH repository exclusions"):
         policy_allows(("version",), policy, scope=RemoteRepoScope(frozenset({"secret"})))
-    with pytest.raises(RouteError, match="aggregate options are unavailable"):
-        policy_allows(("ls", "--all"), policy, scope=RemoteRepoScope(frozenset({"secret"})))
+    assert policy_allows(("ls", "--all"), policy, scope=RemoteRepoScope(frozenset({"secret"})),
+                         allow_scoped_aggregates=True) == "ls"
+    assert policy_allows(("job", "ls", "--all-repos"), policy,
+                         scope=RemoteRepoScope(frozenset({"secret"})),
+                         allow_scoped_aggregates=True) == "job ls"
 
 
 def test_allowlist_matches_the_exact_leaf_path() -> None:

@@ -489,6 +489,7 @@ def policy_allows(
     *,
     restrict_host: bool = True,
     scope: RemoteRepoScope | None = None,
+    allow_scoped_aggregates: bool = False,
 ) -> str:
     """Return the public command path when the remote policy permits it.
 
@@ -549,25 +550,29 @@ def policy_allows(
             "snapshot restore",
             "branch",
             "exec",
+            "job ls",
+            "review ls",
+            "prune",
         }
         if path not in safe and path != "ls":
             raise RouteError(
                 f"command is unavailable when SSH repository exclusions are active: {path}"
             )
-        _, typed = _resolve_leaf(argv)
-        command = _command_tree().leaf_commands[typed]
-        from typer._click.core import ParameterSource
+        if not allow_scoped_aggregates:
+            _, typed = _resolve_leaf(argv)
+            command = _command_tree().leaf_commands[typed]
+            from typer._click.core import ParameterSource
 
-        words = typed.split()
-        try:
-            ctx = command.make_context(words[-1], list(argv[len(words) :]), resilient_parsing=True)
-        except Exception as error:
-            raise RouteError(f"cannot parse remote command arguments: {path}") from error
-        with ctx:
-            for param in command.params:
-                if (
+            words = typed.split()
+            try:
+                ctx = command.make_context(words[-1], list(argv[len(words) :]), resilient_parsing=True)
+            except Exception as error:
+                raise RouteError(f"cannot parse remote command arguments: {path}") from error
+            with ctx:
+                if any(
                     param.name in {"all", "all_repos"}
                     and ctx.get_parameter_source(param.name) is ParameterSource.COMMANDLINE
+                    for param in command.params
                 ):
                     raise RouteError(
                         "aggregate options are unavailable when SSH repository exclusions are "
@@ -664,7 +669,13 @@ def route(
 
     prefix = argv[1]
     command_argv = argv[2:]
-    policy_allows(command_argv, config.commands, restrict_host=config.restrict_host, scope=scope)
+    policy_allows(
+        command_argv,
+        config.commands,
+        restrict_host=config.restrict_host,
+        scope=scope,
+        allow_scoped_aggregates=True,
+    )
     root = resolve_repo(prefix, engine=engine, scope=scope)
     return Route("command", command_argv, prefix, root, False)
 

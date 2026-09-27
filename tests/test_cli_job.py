@@ -95,6 +95,22 @@ def test_job_ls_hides_other_repos_unless_all_repos(tmp_path, mocker) -> None:
     assert "other-feat-y" in everything.stdout
 
 
+def test_job_ls_all_repos_applies_ssh_scope(tmp_path, mocker) -> None:
+    from jailbee import background
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+
+    cfg = _cfg(tmp_path, mocker)
+    _seed("other-feat-y", prefix="other", phase=background.PHASE_FAILED)
+    _seed("myrepo-feat-z", phase=background.PHASE_FAILED)
+    mocker.patch("jailbee.remote_ssh.repo_scope.scope_for_session", return_value=RemoteRepoScope(frozenset({"other"})))
+
+    result = CliRunner().invoke(app, ["job", "ls", "--all-repos"])
+
+    assert result.exit_code == 0, _out(result)
+    assert "feat-z" in result.stdout
+    assert "other-feat-y" not in result.stdout
+
+
 def test_job_ls_json_emits_the_untruncated_error(tmp_path, mocker) -> None:
     import json
 

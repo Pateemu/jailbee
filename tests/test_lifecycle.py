@@ -175,6 +175,26 @@ def test_list_containers_all_repos(make_cfg, tmp_path):
     assert by_name["other-feat-bar"] == "other"
 
 
+def test_list_containers_scope_filters_before_git_probe(make_cfg, tmp_path, mocker):
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    cfg = make_cfg(repo)
+    incus = MagicMock()
+    incus.list_containers.return_value = [
+        _container(name="allowed-feat", profiles=["allowed-base"], user_config={"user.jailbee.repo_dir": "/allowed"}),
+        _container(name="secret-feat", profiles=["secret-base"], user_config={"user.jailbee.repo_dir": "/secret"}),
+    ]
+    probe = mocker.patch("jailbee.lifecycle.probe_many_parallel", return_value={})
+
+    result = list_containers(cfg, incus, all_repos=True, with_git_status=True,
+                             scope=RemoteRepoScope(frozenset({"secret"})))
+
+    assert [container.name for container in result] == ["allowed-feat"]
+    assert probe.call_args.args[1] == [("allowed-feat", "/allowed", None)]
+
+
 def test_list_containers_parses_created_at(make_cfg, tmp_path):
     from datetime import datetime
 

@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from jailbee.config import Autostart
     from jailbee.db.models import BackgroundJob
     from jailbee.procstat import ProcessActivity
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
 
 
 @dataclass
@@ -198,6 +199,7 @@ def list_containers(
     with_background: bool = False,
     fast: bool = False,
     timeout: int | None = None,
+    scope: "RemoteRepoScope | None" = None,
 ) -> list[ContainerInfo]:
     """Return container infos for jailbee-managed containers.
 
@@ -233,6 +235,8 @@ def list_containers(
             continue  # not jailbee-managed
 
         if not all_repos and repo != cfg.container_prefix:
+            continue
+        if scope is not None and not scope.allows(repo):
             continue
 
         # Determine network mode from profile names. For own-repo we have a

@@ -36,6 +36,19 @@ def _gcfg(data_dir: Path) -> GlobalConfig:
     return GlobalConfig(docker_registry_mirror=DockerRegistryMirror(data_dir=data_dir))
 
 
+def test_find_stale_stopped_passes_repo_scope_to_container_source(mocker) -> None:
+    from jailbee.maintenance import find_stale_stopped
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+
+    cfg = MagicMock()
+    incus = MagicMock()
+    scope = RemoteRepoScope(frozenset({"secret"}))
+    listing = mocker.patch("jailbee.maintenance.list_containers", return_value=[])
+
+    assert find_stale_stopped(cfg, incus, scope=scope) == []
+    listing.assert_called_once_with(cfg, incus, all_repos=True, scope=scope)
+
+
 # ---------- humanize ----------
 
 

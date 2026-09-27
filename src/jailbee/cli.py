@@ -1622,8 +1622,11 @@ def list_cmd(
     _advise_setup(offer=fmt == "table")
     show_submodules = submodules and repo_has_submodules(cfg)
 
+    from jailbee.remote_ssh.repo_scope import scope_for_session
+
     containers = list_containers(
-        cfg, Incus(), all_repos=all_repos, with_git_status=True, with_background=True
+        cfg, Incus(), all_repos=all_repos, with_git_status=True, with_background=True,
+        scope=scope_for_session(),
     )
     now = _now()
     all_fields = ls_field_specs(now=now, all_repos=all_repos, show_submodules=show_submodules)
@@ -3651,6 +3654,7 @@ if TYPE_CHECKING:
     from jailbee.issue_manifest import IssueManifest
     from jailbee.issue_outbox import ApplyReport, OutboxSnapshot, PreparedBatch
     from jailbee.lifecycle import ContainerInfo, NewContainerOptions, ResolvedContainer
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
     from jailbee.outbox_io import IssueJournal
     from jailbee.pool import Pool
     from jailbee.pr_outbox import Manifest, Outbox
@@ -9717,16 +9721,27 @@ job_app = typer.Typer(
 app.add_typer(job_app)
 
 
-def _jobs_for_repo(cfg: "Config", *, all_repos: bool) -> dict[str, "BackgroundJob"]:
+def _jobs_for_repo(
+    cfg: "Config", *, all_repos: bool, scope: "RemoteRepoScope | None" = None
+) -> dict[str, "BackgroundJob"]:
     """Job rows for this repo, or for every repo with ``all_repos``."""
     from sqlmodel import Session
 
     from jailbee import background
     from jailbee.db import get_engine
+    from jailbee.remote_ssh.repo_scope import scope_for_session
+
+    if scope is None:
+        scope = scope_for_session()
 
     with Session(get_engine()) as session:
         if all_repos:
-            return background.list_all_jobs(session)
+            rows = background.list_all_jobs(session)
+            return {
+                name: row
+                for name, row in rows.items()
+                if scope.allows(row.container_prefix)
+            }
         return background.list_jobs(session, cfg.container_prefix)
 
 
@@ -11369,7 +11384,10 @@ def review_ls_cmd(
     rows: list[_ReviewRow] = []
     skipped: list[str] = []
 
-    for ci in list_containers(cfg, incus, all_repos=all_repos, with_git_status=True):
+    from jailbee.remote_ssh.repo_scope import scope_for_session
+
+    for ci in list_containers(cfg, incus, all_repos=all_repos, with_git_status=True,
+                              scope=scope_for_session()):
         short = short_name(cfg, ci.name)
         if ci.state != "Running":
             skipped.append(short)
@@ -15245,7 +15263,9 @@ def prune(
 
     cfg = _load_or_exit(config)
     incus = Incus()
-    stale = find_stale_stopped(cfg, incus, days=30)
+    from jailbee.remote_ssh.repo_scope import scope_for_session
+
+    stale = find_stale_stopped(cfg, incus, days=30, scope=scope_for_session())
     if not stale:
         info("Nothing to prune.")
         return
