@@ -20,7 +20,7 @@ from jailbee.remote_ssh.keys import (
     SSHKeyError,
 )
 from jailbee.remote_ssh.service import Problem, ProblemSeverity, ServiceStatus
-from tests.conftest import flat_output
+from tests.conftest import flat_output, make_cfg
 
 
 @pytest.mark.parametrize("snapshot", [None, "not-json", '["bad prefix"]'])
@@ -42,6 +42,101 @@ def test_remote_dashboard_fails_closed_on_invalid_exclusion_snapshot(
     assert "snapshot" in str(result.exception).lower()
     incus.assert_not_called()
     run.assert_not_called()
+
+
+@pytest.mark.parametrize("fmt", ["table", "json"])
+def test_ls_all_renders_only_rows_allowed_by_ssh_scope(
+    fmt: str, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    from jailbee.lifecycle import ContainerInfo
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+
+    root = tmp_path / "myrepo"
+    root.mkdir()
+    cfg = make_cfg(root)
+    mocker.patch("jailbee.cli._load_or_exit", return_value=cfg)
+    mocker.patch("jailbee.cli._advise_upgrade")
+    mocker.patch("jailbee.cli._advise_ssh_restart")
+    mocker.patch("jailbee.cli._advise_update")
+    mocker.patch("jailbee.cli._advise_setup")
+    mocker.patch("jailbee.cli._load_global", return_value=MagicMock())
+    mocker.patch("jailbee.lifecycle.repo_has_submodules", return_value=False)
+    scope = RemoteRepoScope(frozenset({"secret"}))
+    mocker.patch("jailbee.remote_ssh.repo_scope.scope_for_session", return_value=scope)
+    records = [
+        ContainerInfo("allowed-feat", "Stopped", None, None, None, repo="allowed"),
+        ContainerInfo("secret-feat", "Stopped", None, None, None, repo="secret"),
+    ]
+
+    def scoped_rows(*args, **kwargs):
+        assert kwargs["scope"] == scope
+        return [row for row in records if kwargs["scope"].allows(row.repo)]
+
+    mocker.patch("jailbee.lifecycle.list_containers", side_effect=scoped_rows)
+
+    result = CliRunner().invoke(app, ["ls", "--all", "--format", fmt, "--fields", "name,repo"])
+
+    assert result.exit_code == 0, result.output
+    assert "feat" in result.stdout
+    assert "secret-feat" not in result.stdout
+    if fmt == "json":
+        import json
+
+        payload = json.loads(result.stdout)
+        assert len(payload) == 1
+        assert payload[0]["name"] == "feat"
+
+
+def test_ssh_ls_all_fails_closed_before_listing_without_snapshot(
+    tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "myrepo"
+    root.mkdir()
+    mocker.patch("jailbee.cli._load_or_exit", return_value=make_cfg(root))
+    monkeypatch.setenv("JAILBEE_SSH_SESSION", "1")
+    monkeypatch.delenv("JAILBEE_SSH_EXCLUDED_REPOS", raising=False)
+    listing = mocker.patch("jailbee.lifecycle.list_containers")
+
+    result = CliRunner().invoke(app, ["ls", "--all"])
+
+    assert result.exit_code != 0
+    assert "snapshot" in str(result.exception).lower()
+    listing.assert_not_called()
+
+
+def test_local_ls_all_keeps_all_rows_with_empty_scope(
+    tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from jailbee.lifecycle import ContainerInfo
+
+    root = tmp_path / "myrepo"
+    root.mkdir()
+    cfg = make_cfg(root)
+    mocker.patch("jailbee.cli._load_or_exit", return_value=cfg)
+    mocker.patch("jailbee.cli._advise_upgrade")
+    mocker.patch("jailbee.cli._advise_ssh_restart")
+    mocker.patch("jailbee.cli._advise_update")
+    mocker.patch("jailbee.cli._advise_setup")
+    mocker.patch("jailbee.cli._load_global", return_value=MagicMock())
+    mocker.patch("jailbee.lifecycle.repo_has_submodules", return_value=False)
+    monkeypatch.delenv("JAILBEE_SSH_SESSION", raising=False)
+    monkeypatch.delenv("JAILBEE_SSH_EXCLUDED_REPOS", raising=False)
+    records = [
+        ContainerInfo("allowed-feat", "Stopped", None, None, None, repo="allowed"),
+        ContainerInfo("secret-feat", "Stopped", None, None, None, repo="secret"),
+    ]
+
+    def scoped_rows(*args, **kwargs):
+        return [row for row in records if kwargs["scope"].allows(row.repo)]
+
+    mocker.patch("jailbee.lifecycle.list_containers", side_effect=scoped_rows)
+
+    result = CliRunner().invoke(app, ["ls", "--all", "--format", "json", "--fields", "name,repo"])
+
+    assert result.exit_code == 0, result.output
+    assert len(json.loads(result.stdout)) == 2
 
 
 def test_remote_ssh_help_exposes_the_management_surface() -> None:
