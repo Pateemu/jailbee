@@ -177,6 +177,67 @@ def test_registered_repo_roots_skips_a_missing_directory(db_session, tmp_path, m
     assert dashboard.registered_repo_roots() == [live]
 
 
+def test_registered_repo_roots_filters_excluded_prefix_before_loading(db_session, tmp_path, mocker):
+    from jailbee.db.models import RegisteredRepo
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+
+    roots = [tmp_path / "allowed", tmp_path / "secret"]
+    for root in roots:
+        root.mkdir()
+        db_session.add(
+            RegisteredRepo(
+                container_prefix=root.name,
+                repo_root=str(root),
+                registered_at=datetime.now(UTC),
+            )
+        )
+    db_session.commit()
+    mocker.patch("jailbee.db.get_engine", return_value=db_session.get_bind())
+
+    scope = RemoteRepoScope(frozenset({"secret"}))
+    assert dashboard.registered_repo_roots(scope=scope) == [roots[0]]
+
+
+def test_gather_rows_filters_excluded_orphan_prefix_and_keeps_allowed(tmp_path, mocker, make_cfg):
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+
+    root = _repo_dir(tmp_path, "allowed")
+    cfg = make_cfg(root)
+    mocker.patch.object(dashboard, "load_repo_config", return_value=cfg)
+    mocker.patch.object(
+        dashboard,
+        "list_containers",
+        side_effect=lambda c, i, **kw: (
+            [_ci("hidden-one", "secret"), _ci("allowed-one", "allowed")]
+            if kw["all_repos"]
+            else [_ci("allowed-one", "allowed")]
+        ),
+    )
+
+    groups = dashboard.gather_rows(
+        mocker.MagicMock(),
+        [root],
+        cwd_root=root,
+        with_git=False,
+        scope=RemoteRepoScope(frozenset({"secret"})),
+    )
+
+    assert [group.prefix for group in groups] == ["allowed"]
+
+
+def test_gather_live_threads_scope_into_roots_and_rows(mocker):
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+
+    scope = RemoteRepoScope(frozenset({"secret"}))
+    roots = mocker.patch.object(dashboard, "collect_repo_roots", return_value=[])
+    gather = mocker.patch.object(dashboard, "gather_rows", return_value=[])
+
+    dashboard.gather_live(mocker.MagicMock(), None, with_git=False, scope=scope)
+
+    assert roots.call_args.kwargs["scope"] is scope
+    assert gather.call_args.kwargs["scope"] is scope
+
+
 def _ci(
     name: str,
     repo: str,
@@ -3381,6 +3442,7 @@ def test_remote_dashboard_never_loads_the_cwd_and_runs_restricted(mocker, monkey
     """A remote SSH session: registered repos only, no setup offer (its steps
     run on the host), and `run` told it is remote."""
     monkeypatch.setenv("JAILBEE_REMOTE_SSH", "1")
+    monkeypatch.setenv("JAILBEE_SSH_EXCLUDED_REPOS", '["snapshot"]')
     load = mocker.patch("jailbee.config.load_repo_config")
     advise = mocker.patch("jailbee.cli._advise_setup")
     run = mocker.patch("jailbee.dashboard.run", return_value=0)
@@ -3389,7 +3451,9 @@ def test_remote_dashboard_never_loads_the_cwd_and_runs_restricted(mocker, monkey
     from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
 
     policy_json = RemoteSSHConfig(
-        exec=True, commands=RemoteCommandPolicy(mode="full")
+        exec=True,
+        excluded_repos=["policy"],
+        commands=RemoteCommandPolicy(mode="full"),
     ).model_dump_json()
     result = CliRunner().invoke(app, ["dashboard", "--remote-policy-json", policy_json])
 
@@ -3400,11 +3464,13 @@ def test_remote_dashboard_never_loads_the_cwd_and_runs_restricted(mocker, monkey
     assert run.call_args.kwargs["remote"] is True
     assert run.call_args.kwargs["over_ssh"] is True
     assert run.call_args.kwargs["ssh_policy"].model_dump_json() == policy_json
+    assert run.call_args.kwargs["scope"].excluded == frozenset({"snapshot", "policy"})
 
 
 @pytest.mark.parametrize("policy_json", [None, "not-json"])
 def test_ssh_dashboard_fails_closed_without_valid_policy(mocker, monkeypatch, policy_json):
     monkeypatch.setenv("JAILBEE_SSH_SESSION", "1")
+    monkeypatch.setenv("JAILBEE_SSH_EXCLUDED_REPOS", "[]")
     run = mocker.patch("jailbee.dashboard.run")
     popen = mocker.patch("subprocess.Popen")
     argv = ["dashboard"]
@@ -4601,6 +4667,7 @@ def test_unrestricted_ssh_dashboard_is_registered_only_but_not_restricted(mocker
     someone at the host, and a Qt window would still open on its display."""
     monkeypatch.delenv("JAILBEE_REMOTE_SSH", raising=False)
     monkeypatch.setenv("JAILBEE_SSH_SESSION", "1")
+    monkeypatch.setenv("JAILBEE_SSH_EXCLUDED_REPOS", "[]")
     load = mocker.patch("jailbee.config.load_repo_config")
     advise = mocker.patch("jailbee.cli._advise_setup")
     run = mocker.patch("jailbee.dashboard.run", return_value=0)

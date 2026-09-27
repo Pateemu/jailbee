@@ -3520,6 +3520,7 @@ def _run_dashboard(
         error("The graphical dashboard is not available over remote SSH.")
         return 2
     ssh_policy: RemoteSSHConfig | None = None
+    scope = None
     if over_ssh:
         if remote_policy_json is None:
             error("remote SSH dashboard has no server policy")
@@ -3529,6 +3530,10 @@ def _run_dashboard(
         except ValidationError as exc:
             error(f"invalid remote SSH policy: {exc}")
             return 2
+        from jailbee.remote_ssh.repo_scope import RemoteRepoScope, scope_for_session
+
+        session_scope = scope_for_session()
+        scope = RemoteRepoScope(session_scope.excluded | frozenset(ssh_policy.excluded_repos))
     if over_ssh:
         cwd_root = None
     else:
@@ -3620,6 +3625,7 @@ def _run_dashboard(
         remote=remote,
         over_ssh=over_ssh,
         ssh_policy=ssh_policy,
+        scope=scope,
     )
 
 
