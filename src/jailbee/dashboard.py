@@ -9,7 +9,6 @@ behaviour and the target repo's own config.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 import logging
 import os
 import select
@@ -21,6 +20,7 @@ import termios
 import threading
 import time
 import tty
+from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime

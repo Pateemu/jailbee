@@ -861,7 +861,11 @@ def test_remote_action_menu_offers_no_app_launches():
     assert {verb for _label, verb in local} >= {"ide", "chrome", "figma"}
     assert not {verb for _label, verb in remote} & {"ide", "chrome", "figma"}
     assert [a for a in local if a[1] not in {"ide", "chrome", "figma"}] == remote
-    assert [item.label for item in dashboard.group_menu_actions(remote) if isinstance(item, dashboard.MenuGroup)] == ["PR →", "Git →"]
+    assert [
+        item.label
+        for item in dashboard.group_menu_actions(remote)
+        if isinstance(item, dashboard.MenuGroup)
+    ] == ["PR →", "Git →"]
 
 
 def test_remote_quick_keys_refuse_gui_apps_and_say_why():
@@ -1015,9 +1019,9 @@ def test_group_menu_actions_separates_git_and_pr():
         ("Show diff", "git diff"),
     ]
     grouped = dashboard.group_menu_actions(leaves)
-    assert [item.label if isinstance(item, dashboard.MenuGroup) else item[0] for item in grouped] == [
-        "Attach tmux", "PR →", "Git →"
-    ]
+    assert [
+        item.label if isinstance(item, dashboard.MenuGroup) else item[0] for item in grouped
+    ] == ["Attach tmux", "PR →", "Git →"]
     assert grouped[1] == dashboard.MenuGroup("PR →", tuple(leaves[1:4]))
     assert grouped[2] == dashboard.MenuGroup("Git →", tuple(leaves[4:]))
     assert dashboard.group_menu_actions([]) == []
@@ -1062,7 +1066,11 @@ def test_grouped_git_leaves_respect_known_clean_and_unknown_status():
         (None, ["merge", "git pull", "git push", "git diff"]),
     ):
         grouped = dashboard.group_menu_actions(dashboard.menu_actions(_ctx(git_status=status)))
-        git_group = next(item for item in grouped if isinstance(item, dashboard.MenuGroup) and item.label == "Git →")
+        git_group = next(
+            item
+            for item in grouped
+            if isinstance(item, dashboard.MenuGroup) and item.label == "Git →"
+        )
         assert [verb for _, verb in git_group.actions] == expected
 
 
