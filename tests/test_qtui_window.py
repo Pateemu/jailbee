@@ -45,7 +45,7 @@ def test_set_groups_forwards_a_non_default_columns_to_headers(qtbot):
 
 
 def test_menu_labels_match_menu_actions_for_running(qtbot):
-    from jailbee.dashboard import AppMenuEntry, MenuContext, RepoGroup, menu_actions
+    from jailbee.dashboard import AppMenuEntry, MenuContext, MenuGroup, RepoGroup, group_menu_actions, menu_actions
 
     running = ContainerInfo(
         name="p-foo", state="Running", network="strict", ip="10.0.0.5", memory_limit="2GB", repo="p"
@@ -71,17 +71,18 @@ def test_menu_labels_match_menu_actions_for_running(qtbot):
     qtbot.addWidget(win)
     win.set_groups(groups, now=datetime.now().astimezone())
     expected = [
-        label
-        for label, _ in menu_actions(
+        item.label if isinstance(item, MenuGroup) else item[0]
+        for item in group_menu_actions(menu_actions(
             MenuContext(
                 state="Running",
                 has_repo=True,
                 apps=[ide_entry],
                 current_network="strict",
             )
-        )
+        ))
     ]
     assert win.menu_labels_for("p-foo") == expected
+    assert expected[:5] == ["Attach tmux", "Open shell", "Launch JetBrains idea", "PR →", "Git →"]
     assert "Launch JetBrains idea" in expected
     assert "Launch chrome" not in expected
     assert "Network: loose" in expected
@@ -93,6 +94,38 @@ def test_menu_labels_empty_for_unknown_container(qtbot):
     qtbot.addWidget(win)
     win.set_groups(_groups(), now=datetime.now().astimezone())
     assert win.menu_labels_for("does-not-exist") == []
+
+
+def test_table_context_menu_submenus_dispatch_leaf_verb(qtbot):
+    from PySide6.QtCore import QPoint, QTimer
+    from PySide6.QtWidgets import QApplication, QMenu
+
+    win = MainWindow(git_enabled=True, interval=3.0, layout="table")
+    qtbot.addWidget(win)
+    win.set_groups(_groups(), now=datetime.now().astimezone())
+    win.tree.setCurrentItem(win.tree.topLevelItem(0).child(0))
+    seen = []
+    win.actionRequested.connect(lambda verb, name: seen.append((verb, name)))
+    root_labels = []
+    git_labels = []
+
+    def interact():
+        popup = QApplication.activePopupWidget()
+        if not isinstance(popup, QMenu):
+            return
+        root = popup.actions()
+        root_labels.extend(action.text() for action in root)
+        git_action = next((action for action in root if action.text() == "Git →"), None)
+        if git_action is not None and (git := git_action.menu()) is not None:
+            git_labels.extend(action.text() for action in git.actions())
+            git.actions()[0].trigger()
+        popup.close()
+
+    QTimer.singleShot(0, interact)
+    win._on_context_menu(QPoint(0, 0))
+    assert root_labels[:4] == ["Attach tmux", "Open shell", "PR →", "Git →"]
+    assert git_labels[:2] == ["Merge into…", "Send commits to host (git pull)"]
+    assert seen == [("merge", "p-foo")]
 
 
 def test_context_menu_on_a_view_only_row_explains_itself(qtbot):

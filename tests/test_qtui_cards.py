@@ -308,6 +308,39 @@ def test_context_menu_emits_action_requested(qtbot):
     assert isinstance(verb, str) and verb
 
 
+def test_card_context_menu_submenus_dispatch_leaf_verb(qtbot):
+    from PySide6.QtCore import QPoint, QTimer
+    from PySide6.QtWidgets import QApplication, QMenu
+
+    groups = _groups()
+    groups[0].containers[0].pr_number = 482
+    view = CardView()
+    qtbot.addWidget(view)
+    view.set_groups(groups, now=datetime.now().astimezone())
+    seen = []
+    view.actionRequested.connect(lambda verb, name: seen.append((verb, name)))
+    root_labels = []
+    pr_labels = []
+
+    def interact():
+        popup = QApplication.activePopupWidget()
+        if not isinstance(popup, QMenu):
+            return
+        root = popup.actions()
+        root_labels.extend(action.text() for action in root)
+        pr_action = next((action for action in root if action.text() == "PR →"), None)
+        if pr_action is not None and (pr := pr_action.menu()) is not None:
+            pr_labels.extend(action.text() for action in pr.actions())
+            pr.actions()[0].trigger()
+        popup.close()
+
+    QTimer.singleShot(0, interact)
+    view._on_context("p-foo", QPoint(0, 0))
+    assert root_labels[:4] == ["Attach tmux", "Open shell", "PR →", "Git →"]
+    assert pr_labels == ["Open PR", "Create/update PR"]
+    assert seen == [("pr --open", "p-foo")]
+
+
 def _orphan_groups():
     """A view-only group: gather_rows builds these (config_path=None) for
     every jailbee container whose repo config it could not load."""

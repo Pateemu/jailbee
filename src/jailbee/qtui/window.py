@@ -22,13 +22,16 @@ from PySide6.QtWidgets import (
 )
 
 from jailbee.dashboard import (
+    MenuGroup,
     RepoTarget,
     all_column_names,
     default_columns,
     dynamic_column_names,
+    group_menu_actions,
     view_only_note,
     visible_fields,
 )
+from jailbee.qtui.action_menu import populate_action_menu
 from jailbee.qtui.cards import CardView
 from jailbee.qtui.model import (
     STATE_COLORS,
@@ -429,7 +432,10 @@ class MainWindow(QMainWindow):
 
     def menu_labels_for(self, container_name: str) -> list[str]:
         """Action labels for ``container_name`` (empty if unknown/orphan)."""
-        return [label for label, _ in self._actions_for(container_name)]
+        return [
+            item.label if isinstance(item, MenuGroup) else item[0]
+            for item in group_menu_actions(self._actions_for(container_name))
+        ]
 
     def _actions_for(self, container_name: str) -> list[tuple[str, str]]:
         from jailbee.dashboard import actions_for_container
@@ -462,11 +468,7 @@ class MainWindow(QMainWindow):
             if note is None:
                 return
             menu.addAction(note).setEnabled(False)
-        for label, verb in actions:
-            act = menu.addAction(label)
-            act.triggered.connect(
-                lambda _checked=False, v=verb, n=name: self.actionRequested.emit(v, n)
-            )
+        populate_action_menu(menu, actions, lambda verb: self.actionRequested.emit(verb, name))
         # pos comes through as QPoint at runtime; PySide6's stub overload set
         # for the signal's `object` parameter doesn't narrow to QPoint here.
         menu.exec(self.tree.viewport().mapToGlobal(pos))  # type: ignore[call-overload]

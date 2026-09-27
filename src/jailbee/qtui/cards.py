@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from jailbee.dashboard import actions_for_container, view_only_note, visible_fields
+from jailbee.qtui.action_menu import populate_action_menu
 from jailbee.qtui.flow_layout import FlowLayout
 from jailbee.qtui.model import (
     STATE_COLORS,
@@ -476,9 +477,5 @@ class CardView(QScrollArea):
             if note is None:
                 return
             menu.addAction(note).setEnabled(False)
-        for label, verb in actions:
-            act = menu.addAction(label)
-            act.triggered.connect(
-                lambda _checked=False, v=verb, n=name: self.actionRequested.emit(v, n)
-            )
+        populate_action_menu(menu, actions, lambda verb: self.actionRequested.emit(verb, name))
         menu.exec(pos)
