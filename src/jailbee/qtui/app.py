@@ -181,7 +181,7 @@ class AppController(QObject):
         )
 
     def _persist_view_state(self) -> None:
-        """Write the Qt dashboard's own view state — columns and folded repos.
+        """Write the Qt dashboard's own view state — columns, folds and visibility.
 
         Separate from `_persist`, which owns the Qt widget state in
         `gui_state`. Two writers, two rows: nothing here can clobber the
@@ -197,8 +197,19 @@ class AppController(QObject):
             ViewState(
                 columns=self._window.enabled_columns(),
                 folded=frozenset(self._window.collapsed_repos()),
+                show_empty_repos=self._show_empty_repos(),
+                hidden_repos=self._hidden_repos(),
             ),
         )
+
+    @Slot()
+    def on_repo_visibility_changed(self) -> None:
+        """Persist menu visibility choices without disrupting the live view."""
+        try:
+            self._persist_view_state()
+        except Exception as exc:
+            log.warning("could not save Qt repository visibility preferences: %s", exc)
+            self._window.set_status(f"Could not save repository visibility: {exc}")
 
     @Slot(str)
     def on_layout_changed(self, name: str) -> None:
@@ -399,6 +410,8 @@ class AppController(QObject):
         group = _group_for(self._latest, name)
         if group is None:
             return
+        if not self._is_group_visible(group):
+            return
         target = RepoTarget.of(group)
         if target is None:
             return  # an orphan group: no repo root to address a child at
@@ -438,6 +451,9 @@ class AppController(QObject):
         verb.
         """
         note = new_container_reject_note_for_prefix(self._latest, prefix)
+        group = next((g for g in self._latest if g.prefix == prefix), None)
+        if group is not None and not self._is_group_visible(group):
+            return
         if note is not None:
             # Same wording the TUI uses for the same state (dashboard.py's
             # `new_container_reject_note`) — an orphan group's real prefix
@@ -445,7 +461,6 @@ class AppController(QObject):
             # this dialog's one hardcoded message regardless of cause.
             QMessageBox.warning(self._window, "No repo selected", note)
             return
-        group = next((g for g in self._latest if g.prefix == prefix), None)
         # `note` being None guarantees a matching group with a repo root;
         # mypy --strict doesn't narrow that through the helper call, so this
         # spells it out again where the type checker can see it.
@@ -477,6 +492,20 @@ class AppController(QObject):
             QMessageBox.warning(self._window, "Launch failed", str(exc))
             return
         self._worker.force()
+
+    def _is_group_visible(self, group: RepoGroup) -> bool:
+        """Gate stale UI actions against the window's current filtered view."""
+        return group.prefix not in self._hidden_repos() and (
+            bool(group.containers) or self._show_empty_repos()
+        )
+
+    def _show_empty_repos(self) -> bool:
+        value = self._window.show_empty_repos()
+        return value if isinstance(value, bool) else True
+
+    def _hidden_repos(self) -> frozenset[str]:
+        value = self._window.hidden_repos()
+        return frozenset(value) if isinstance(value, (set, frozenset)) else frozenset()
 
     @Slot(str, bool)
     def on_config_edit(self, prefix: str, global_layer: bool) -> None:
@@ -562,6 +591,7 @@ def _wire(window: MainWindow, worker: RefreshWorker, controller: AppController) 
     window.cardStyleChanged.connect(controller.on_card_style_changed)
     window.card_view.collapsedChanged.connect(controller.on_collapsed_changed)
     window.columnsChanged.connect(controller.on_columns_changed)
+    window.repoVisibilityChanged.connect(controller.on_repo_visibility_changed)
 
 
 def run(
@@ -603,6 +633,8 @@ def run(
         header_state=state.table_header_state,
         card_style=state.card_style,
         enabled_columns=view_state.columns,
+        show_empty_repos=view_state.show_empty_repos,
+        hidden_repos=view_state.hidden_repos,
     )
     window.card_view.set_collapsed(set(view_state.folded))
 
