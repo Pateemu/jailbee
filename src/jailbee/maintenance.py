@@ -140,7 +140,7 @@ def humanize(n: int | None) -> str:
 
 
 def find_stale_stopped(
-    cfg: Config, incus: Incus, days: int = 30, *, scope: "RemoteRepoScope | None" = None
+    cfg: Config, incus: Incus, days: int = 30, *, scope: RemoteRepoScope | None = None
 ) -> list[str]:
     """Return names of containers stopped for more than ``days`` days.
 

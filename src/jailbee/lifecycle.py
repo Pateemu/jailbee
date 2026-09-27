@@ -199,7 +199,7 @@ def list_containers(
     with_background: bool = False,
     fast: bool = False,
     timeout: int | None = None,
-    scope: "RemoteRepoScope | None" = None,
+    scope: RemoteRepoScope | None = None,
 ) -> list[ContainerInfo]:
     """Return container infos for jailbee-managed containers.
 

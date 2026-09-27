@@ -565,7 +565,9 @@ def policy_allows(
 
             words = typed.split()
             try:
-                ctx = command.make_context(words[-1], list(argv[len(words) :]), resilient_parsing=True)
+                ctx = command.make_context(
+                    words[-1], list(argv[len(words) :]), resilient_parsing=True
+                )
             except Exception as error:
                 raise RouteError(f"cannot parse remote command arguments: {path}") from error
             with ctx:

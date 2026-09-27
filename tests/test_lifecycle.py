@@ -183,13 +183,26 @@ def test_list_containers_scope_filters_before_git_probe(make_cfg, tmp_path, mock
     cfg = make_cfg(repo)
     incus = MagicMock()
     incus.list_containers.return_value = [
-        _container(name="allowed-feat", profiles=["allowed-base"], user_config={"user.jailbee.repo_dir": "/allowed"}),
-        _container(name="secret-feat", profiles=["secret-base"], user_config={"user.jailbee.repo_dir": "/secret"}),
+        _container(
+            name="allowed-feat",
+            profiles=["allowed-base"],
+            user_config={"user.jailbee.repo_dir": "/allowed"},
+        ),
+        _container(
+            name="secret-feat",
+            profiles=["secret-base"],
+            user_config={"user.jailbee.repo_dir": "/secret"},
+        ),
     ]
     probe = mocker.patch("jailbee.lifecycle.probe_many_parallel", return_value={})
 
-    result = list_containers(cfg, incus, all_repos=True, with_git_status=True,
-                             scope=RemoteRepoScope(frozenset({"secret"})))
+    result = list_containers(
+        cfg,
+        incus,
+        all_repos=True,
+        with_git_status=True,
+        scope=RemoteRepoScope(frozenset({"secret"})),
+    )
 
     assert [container.name for container in result] == ["allowed-feat"]
     assert probe.call_args.args[1] == [("allowed-feat", "/allowed", None)]

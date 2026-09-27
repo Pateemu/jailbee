@@ -99,10 +99,13 @@ def test_job_ls_all_repos_applies_ssh_scope(tmp_path, mocker) -> None:
     from jailbee import background
     from jailbee.remote_ssh.repo_scope import RemoteRepoScope
 
-    cfg = _cfg(tmp_path, mocker)
+    _cfg(tmp_path, mocker)
     _seed("other-feat-y", prefix="other", phase=background.PHASE_FAILED)
     _seed("myrepo-feat-z", phase=background.PHASE_FAILED)
-    mocker.patch("jailbee.remote_ssh.repo_scope.scope_for_session", return_value=RemoteRepoScope(frozenset({"other"})))
+    mocker.patch(
+        "jailbee.remote_ssh.repo_scope.scope_for_session",
+        return_value=RemoteRepoScope(frozenset({"other"})),
+    )
 
     result = CliRunner().invoke(app, ["job", "ls", "--all-repos"])
 

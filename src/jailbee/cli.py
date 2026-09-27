@@ -1625,7 +1625,11 @@ def list_cmd(
     from jailbee.remote_ssh.repo_scope import scope_for_session
 
     containers = list_containers(
-        cfg, Incus(), all_repos=all_repos, with_git_status=True, with_background=True,
+        cfg,
+        Incus(),
+        all_repos=all_repos,
+        with_git_status=True,
+        with_background=True,
         scope=scope_for_session(),
     )
     now = _now()
@@ -3654,11 +3658,11 @@ if TYPE_CHECKING:
     from jailbee.issue_manifest import IssueManifest
     from jailbee.issue_outbox import ApplyReport, OutboxSnapshot, PreparedBatch
     from jailbee.lifecycle import ContainerInfo, NewContainerOptions, ResolvedContainer
-    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
     from jailbee.outbox_io import IssueJournal
     from jailbee.pool import Pool
     from jailbee.pr_outbox import Manifest, Outbox
     from jailbee.registry_cache import CacheProgress, CacheReport
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
     from jailbee.setup_command import StepKey
     from jailbee.submodule_pr import SubCandidate, SubmodulePrPlan
     from jailbee.sync import (
@@ -9737,11 +9741,7 @@ def _jobs_for_repo(
     with Session(get_engine()) as session:
         if all_repos:
             rows = background.list_all_jobs(session)
-            return {
-                name: row
-                for name, row in rows.items()
-                if scope.allows(row.container_prefix)
-            }
+            return {name: row for name, row in rows.items() if scope.allows(row.container_prefix)}
         return background.list_jobs(session, cfg.container_prefix)
 
 
@@ -11386,8 +11386,9 @@ def review_ls_cmd(
 
     from jailbee.remote_ssh.repo_scope import scope_for_session
 
-    for ci in list_containers(cfg, incus, all_repos=all_repos, with_git_status=True,
-                              scope=scope_for_session()):
+    for ci in list_containers(
+        cfg, incus, all_repos=all_repos, with_git_status=True, scope=scope_for_session()
+    ):
         short = short_name(cfg, ci.name)
         if ci.state != "Running":
             skipped.append(short)

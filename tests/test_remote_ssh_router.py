@@ -243,11 +243,24 @@ def test_exclusions_fail_closed_for_unclassified_command_but_allow_scoped_aggreg
     policy = RemoteCommandPolicy(mode="full")
     with pytest.raises(RouteError, match="unavailable when SSH repository exclusions"):
         policy_allows(("version",), policy, scope=RemoteRepoScope(frozenset({"secret"})))
-    assert policy_allows(("ls", "--all"), policy, scope=RemoteRepoScope(frozenset({"secret"})),
-                         allow_scoped_aggregates=True) == "ls"
-    assert policy_allows(("job", "ls", "--all-repos"), policy,
-                         scope=RemoteRepoScope(frozenset({"secret"})),
-                         allow_scoped_aggregates=True) == "job ls"
+    assert (
+        policy_allows(
+            ("ls", "--all"),
+            policy,
+            scope=RemoteRepoScope(frozenset({"secret"})),
+            allow_scoped_aggregates=True,
+        )
+        == "ls"
+    )
+    assert (
+        policy_allows(
+            ("job", "ls", "--all-repos"),
+            policy,
+            scope=RemoteRepoScope(frozenset({"secret"})),
+            allow_scoped_aggregates=True,
+        )
+        == "job ls"
+    )
 
 
 def test_allowlist_matches_the_exact_leaf_path() -> None:
