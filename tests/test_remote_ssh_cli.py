@@ -23,6 +23,27 @@ from jailbee.remote_ssh.service import Problem, ProblemSeverity, ServiceStatus
 from tests.conftest import flat_output
 
 
+@pytest.mark.parametrize("snapshot", [None, "not-json", '["bad prefix"]'])
+def test_remote_dashboard_fails_closed_on_invalid_exclusion_snapshot(
+    snapshot: str | None, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("JAILBEE_SSH_SESSION", "1")
+    if snapshot is not None:
+        monkeypatch.setenv("JAILBEE_SSH_EXCLUDED_REPOS", snapshot)
+    else:
+        monkeypatch.delenv("JAILBEE_SSH_EXCLUDED_REPOS", raising=False)
+    run = mocker.patch("jailbee.dashboard.run")
+    incus = mocker.patch("jailbee.incus.Incus")
+    policy = '{"exec":true,"commands":{"mode":"full"}}'
+
+    result = CliRunner().invoke(app, ["dashboard", "--remote-policy-json", policy])
+
+    assert result.exit_code != 0
+    assert "snapshot" in str(result.exception).lower()
+    incus.assert_not_called()
+    run.assert_not_called()
+
+
 def test_remote_ssh_help_exposes_the_management_surface() -> None:
     runner = CliRunner()
 
