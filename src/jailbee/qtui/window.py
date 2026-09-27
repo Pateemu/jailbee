@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QByteArray, Qt, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence
 from PySide6.QtWidgets import (
+    QLabel,
     QMainWindow,
     QMenu,
     QStackedWidget,
@@ -131,6 +132,9 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.addWidget(self.tree)  # index 0 = table
         self.stack.addWidget(self.card_view)  # index 1 = cards
+        self.empty_state_label = QLabel()
+        self.empty_state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.stack.addWidget(self.empty_state_label)
         self.stack.setCurrentIndex(_LAYOUT_INDEX[self._layout])
         self.setCentralWidget(self.stack)
 
@@ -221,6 +225,15 @@ class MainWindow(QMainWindow):
             show_empty_repos=self._show_empty_repos,
             hidden_repos=self._hidden_repos,
         )
+        if not self._groups:
+            self.empty_state_label.setText(
+                "No repositories are visible. Change visibility in View > Repositories."
+                if self._all_groups
+                else "No repositories found."
+            )
+            self.stack.setCurrentWidget(self.empty_state_label)
+        else:
+            self.stack.setCurrentIndex(_LAYOUT_INDEX[self._layout])
         self._render_groups(self._groups, now=now, columns=columns)
 
     def _toggle_show_empty(self, checked: bool) -> None:
@@ -484,6 +497,8 @@ class MainWindow(QMainWindow):
         to_reselect: QTreeWidgetItem | None = None
         for g in groups:
             label, _is_orphan = group_header(g)
+            if not g.containers:
+                label = f"{label}  (0 containers)"
             group_item = QTreeWidgetItem([label])
             group_item.setFirstColumnSpanned(True)
             group_item.setData(0, _PREFIX_ROLE, g.prefix)
@@ -519,6 +534,9 @@ class MainWindow(QMainWindow):
             # container in that repo.
             prefix = self._selected_prefix()
             if prefix is None:
+                return
+            group = next((g for g in self._groups if g.prefix == prefix), None)
+            if group is None or RepoTarget.of(group) is None:
                 return
             group_menu = QMenu(self)
             act = group_menu.addAction("New container…")
