@@ -1049,3 +1049,60 @@ def test_allowlist_help_omits_a_refused_host_command(capsys, tmp_path) -> None:
     out = capsys.readouterr().out
     assert "ls" in out
     assert "config edit" not in out
+
+
+def test_active_exclusions_filter_completion_through_command_policy(mocker) -> None:
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+    from jailbee.remote_ssh.router import allowed_command_paths
+
+    mocker.patch("jailbee.remote_ssh.console.allowed_command_paths", allowed_command_paths)
+    policy = RemoteCommandPolicy(mode="full")
+    scope = RemoteRepoScope(frozenset({"hidden"}))
+
+    active = console._allowed_paths(policy, scope=scope)
+    completer = console._completer(active, [])
+    offered = _completions(completer, "")
+
+    assert "ls" in offered
+    assert "version" not in offered
+    assert console._allowed_paths(policy, scope=RemoteRepoScope(frozenset())) == console._allowed_paths(
+        policy
+    )
+
+
+def test_full_help_renders_only_policy_allowed_leaves_with_exclusions(
+    mocker, capsys, tmp_path
+) -> None:
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+    from jailbee.remote_ssh.router import allowed_command_paths
+
+    mocker.patch("jailbee.remote_ssh.console.allowed_command_paths", allowed_command_paths)
+    run = mocker.patch("jailbee.remote_ssh.console.subprocess.run")
+
+    console._print_help(
+        RemoteCommandPolicy(mode="full"),
+        dashboard_enabled=False,
+        repo_root=tmp_path,
+        scope=RemoteRepoScope(frozenset({"hidden"})),
+    )
+
+    run.assert_not_called()
+    output = capsys.readouterr().out
+    assert "ls" in output
+    assert "version" not in output
+
+
+def test_full_help_keeps_generic_cli_help_without_exclusions(mocker, capsys, tmp_path) -> None:
+    run = mocker.patch(
+        "jailbee.remote_ssh.console.subprocess.run",
+        return_value=CompletedProcess([], 0),
+    )
+
+    console._print_help(
+        RemoteCommandPolicy(mode="full"), dashboard_enabled=False, repo_root=tmp_path
+    )
+
+    run.assert_called_once_with(
+        [sys.executable, "-m", "jailbee", "--help"], cwd=tmp_path, check=False
+    )
+    assert "Allowed Jailbee commands" not in capsys.readouterr().out

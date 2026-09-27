@@ -128,6 +128,7 @@ def _print_help(
     dashboard_enabled: bool,
     repo_root: Path,
     restrict_host: bool = True,
+    scope: RemoteRepoScope | None = None,
 ) -> int:
     """Render the console-local command panel, then this policy's Jailbee help.
 
@@ -162,12 +163,12 @@ def _print_help(
         return 0
 
     status = 0
-    if policy.mode == "full":
+    if policy.mode == "full" and not (scope is not None and scope.excluded):
         completed = _run_foreground([sys.executable, "-m", "jailbee", "--help"], repo_root)
         status = _returncode(completed)
     else:
         short_help = known_command_short_help()
-        allowed = _allowed_paths(policy, restrict_host=restrict_host)
+        allowed = _allowed_paths(policy, restrict_host=restrict_host, scope=scope)
         rows = [(path, short_help.get(path, "")) for path in sorted(allowed)]
         _render_command_panel(rich_console, "[bold]Allowed Jailbee commands[/bold]", rows)
 
@@ -197,12 +198,17 @@ def _history() -> FileHistory:
     return FileHistory(str(path))
 
 
-def _allowed_paths(policy: RemoteCommandPolicy, *, restrict_host: bool = True) -> frozenset[str]:
+def _allowed_paths(
+    policy: RemoteCommandPolicy,
+    *,
+    restrict_host: bool = True,
+    scope: RemoteRepoScope | None = None,
+) -> frozenset[str]:
     """Command paths this session may complete, per its own command policy.
 
     Paths are filtered by the same policy decision used when dispatching.
     """
-    return allowed_command_paths(policy, restrict_host=restrict_host)
+    return allowed_command_paths(policy, restrict_host=restrict_host, scope=scope)
 
 
 def _command_tree(paths: Sequence[str]) -> dict[str, Any]:
@@ -239,11 +245,17 @@ def _completer(paths: frozenset[str], repos: Sequence[RepoChoice]) -> NestedComp
 
 
 def _session(
-    repos: Sequence[RepoChoice], policy: RemoteCommandPolicy, *, restrict_host: bool = True
+    repos: Sequence[RepoChoice],
+    policy: RemoteCommandPolicy,
+    *,
+    restrict_host: bool = True,
+    scope: RemoteRepoScope | None = None,
 ) -> PromptSession[str]:
     return PromptSession(
         history=_history(),
-        completer=_completer(_allowed_paths(policy, restrict_host=restrict_host), repos),
+        completer=_completer(
+            _allowed_paths(policy, restrict_host=restrict_host, scope=scope), repos
+        ),
     )
 
 
@@ -355,7 +367,12 @@ def run(initial_repo: str | None = None, policy_json: str | None = None) -> int:
         _error("No registered repositories are available.")
         return 1
 
-    session = _session(repos, ssh_config.commands, restrict_host=ssh_config.restrict_host)
+    session = _session(
+        repos,
+        ssh_config.commands,
+        restrict_host=ssh_config.restrict_host,
+        scope=scope,
+    )
     if initial_repo is None:
         if len(repos) == 1:
             current = repos[0]
@@ -406,6 +423,7 @@ def run(initial_repo: str | None = None, policy_json: str | None = None) -> int:
                 dashboard_enabled=ssh_config.dashboard,
                 repo_root=current.root,
                 restrict_host=ssh_config.restrict_host,
+                scope=scope,
             )
             continue
         if command == "repos":

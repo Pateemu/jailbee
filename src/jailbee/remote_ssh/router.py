@@ -175,13 +175,16 @@ def known_command_paths() -> frozenset[str]:
 
 
 def allowed_command_paths(
-    policy: RemoteCommandPolicy, *, restrict_host: bool = True
+    policy: RemoteCommandPolicy,
+    *,
+    restrict_host: bool = True,
+    scope: RemoteRepoScope | None = None,
 ) -> frozenset[str]:
     """Return public leaf paths accepted by the common command decision."""
     allowed: set[str] = set()
     for path in known_command_paths():
         try:
-            policy_allows(path.split(), policy, restrict_host=restrict_host)
+            policy_allows(path.split(), policy, restrict_host=restrict_host, scope=scope)
         except RouteError:
             continue
         allowed.add(path)
