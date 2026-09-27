@@ -2647,7 +2647,11 @@ def run(
                             overlay = move_menu(overlay, -1 if key == "up" else 1)
                         elif key == "enter":
                             verb = menu_verb(overlay)
-                            target = overlay.container if isinstance(overlay, MenuState) else overlay.repo
+                            target = (
+                                overlay.container
+                                if isinstance(overlay, MenuState)
+                                else overlay.repo
+                            )
                             repo_menu = isinstance(overlay, RepoMenuState)
                             overlay = None
                             if repo_menu and verb == "new":
