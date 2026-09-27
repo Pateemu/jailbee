@@ -2965,8 +2965,11 @@ jailbee shell feat-dashsmoke -- bash -lc 'cd ~/*/ && echo x >> README.md && git 
 #  Ctrl-C -> always quits, restoring the terminal, even with an overlay open
 
 # Folding a repo group:
-#  Enter on a repo header -> the header collapses to "▸ <prefix> (N)" and its
-#     container rows disappear; Enter again (▾) unfolds and the rows return.
+#  Enter on a repo header -> opens a menu below the table with "New container…"
+#     and "Fold". Select Fold -> the header collapses to "▸ <prefix> (N)" and
+#     its container rows disappear; Enter again, then Unfold -> rows return.
+#  Select New container… -> asks for branch/base, then runs `jailbee new` in
+#     the selected repo. On an orphan header the menu offers only Fold/Unfold.
 #  Enter on a container row -> opens that container's action menu; Space does
 #     not fold groups from the live table.
 #  Fold a group, then jailbee new inside it in another terminal -> the new
@@ -2995,7 +2998,7 @@ jailbee dashboard
 #  Try to turn off the last enabled column -> refused (the checkbox stays
 #     checked); there is no such thing as a table with zero columns.
 #  Switch to the Repos tab (Tab) -> toggle a repo's fold state from here too;
-#     confirm it matches the folding behavior of Enter on a live-table header.
+#     confirm it matches Fold/Unfold from the live-table header's menu.
 #  A field vocabulary this long does not fit under a normal terminal height:
 #     confirm the panel shows only a window of rows around the cursor (not
 #     all ~20+ fields at once), with a dim "↑ N more" / "↓ N more" line when
