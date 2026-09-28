@@ -32,8 +32,8 @@ from jailbee.dashboard import (
     view_only_note,
     visible_fields,
 )
-from jailbee.qtui.action_menu import populate_action_menu
 from jailbee.dashboard_visibility import visible_repo_groups
+from jailbee.qtui.action_menu import populate_action_menu
 from jailbee.qtui.cards import CardView
 from jailbee.qtui.model import (
     STATE_COLORS,
