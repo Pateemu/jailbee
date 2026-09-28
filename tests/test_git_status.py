@@ -993,3 +993,31 @@ def test_submodule_commit_counts_preserve_both_orientations():
 
     assert changes[0].ahead_commits == 2
     assert changes[0].behind_commits == 1
+
+
+@pytest.mark.parametrize(
+    "line,target_ins,target_del,ahead_commits,behind_commits",
+    [
+        ("deps/lib\tmodified\t?\t?\t?", None, None, None, None),
+        (
+            "deps/lib\tmodified\t?\t?\t 1 file changed, 3 insertions(+)\n",
+            3,
+            0,
+            None,
+            None,
+        ),
+        ("deps/lib\tmodified\t2\t1\t?", None, None, 2, 1),
+    ],
+)
+def test_submodule_probe_failures_preserve_unknown_fields_and_keep_the_row(
+    line, target_ins, target_del, ahead_commits, behind_commits
+):
+    from jailbee.git_status import _parse_submodules
+
+    changes = _parse_submodules(f"{line}\n", "")
+
+    assert len(changes) == 1
+    assert changes[0].target_ins == target_ins
+    assert changes[0].target_del == target_del
+    assert changes[0].ahead_commits == ahead_commits
+    assert changes[0].behind_commits == behind_commits

@@ -2337,11 +2337,20 @@ def repo_has_submodules(cfg: Config) -> bool:
     return (cfg.repo_root / ".gitmodules").exists()
 
 
-def _sub_stat_str(ins: int, dels: int) -> str:
+def _sub_stat_str(ins: int | None, dels: int | None) -> str:
     """Render an ``(ins, del)`` pair as the table shows it."""
+    if ins is None or dels is None:
+        return "?"
     if ins == 0 and dels == 0:
         return "clean"
     return f"+{ins} -{dels}"
+
+
+def _sub_count_str(count: int | None) -> str:
+    """Render a submodule commit count, preserving unknown probe results."""
+    if count is None:
+        return "?"
+    return str(count) if count else ""
 
 
 def submodule_sub_rows(c: ContainerInfo) -> list[dict[str, str]]:
@@ -2360,7 +2369,7 @@ def submodule_sub_rows(c: ContainerInfo) -> list[dict[str, str]]:
                 "name": f"  └ {s.path}",
                 "wt": _sub_stat_str(s.wt_ins, s.wt_del),
                 "ahead_diff": _sub_stat_str(s.ahead_ins, s.ahead_del),
-                "ahead_count": str(s.ahead_commits) if s.ahead_commits else "",
+                "ahead_count": _sub_count_str(s.ahead_commits),
             }
         )
     return rows

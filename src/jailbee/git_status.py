@@ -37,24 +37,24 @@ class SubmoduleChange:
     """
 
     path: str
-    target_ins: int
-    target_del: int
-    ahead_commits: int
-    wt_ins: int
-    wt_del: int
+    target_ins: int | None
+    target_del: int | None
+    ahead_commits: int | None
+    wt_ins: int | None
+    wt_del: int | None
     status: str
-    behind_commits: int = 0
+    behind_commits: int | None = 0
 
     def __init__(
         self,
         path: str,
-        target_ins: int = 0,
-        target_del: int = 0,
-        ahead_commits: int = 0,
-        wt_ins: int = 0,
-        wt_del: int = 0,
+        target_ins: int | None = 0,
+        target_del: int | None = 0,
+        ahead_commits: int | None = 0,
+        wt_ins: int | None = 0,
+        wt_del: int | None = 0,
         status: str = "modified",
-        behind_commits: int = 0,
+        behind_commits: int | None = 0,
         *,
         ahead_ins: int | None = None,
         ahead_del: int | None = None,
@@ -70,12 +70,12 @@ class SubmoduleChange:
         object.__setattr__(self, "status", status)
 
     @property
-    def ahead_ins(self) -> int:
+    def ahead_ins(self) -> int | None:
         """Compatibility alias for consumers not yet migrated to target names."""
         return self.target_ins
 
     @property
-    def ahead_del(self) -> int:
+    def ahead_del(self) -> int | None:
         """Compatibility alias for consumers not yet migrated to target names."""
         return self.target_del
 
@@ -169,11 +169,15 @@ def merge_label(status: GitStatus | None) -> tuple[str, str]:
     return "?", "unknown"
 
 
-def _shortstat_ints(raw: str) -> tuple[int, int]:
+def _shortstat_values(raw: str) -> tuple[int | None, int | None]:
     """Parse a single ``git diff --shortstat`` line into ``(ins, del)``.
 
-    Empty or unrecognised input yields ``(0, 0)``.
+    Empty input is a known-clean diff; unrecognised output remains unknown.
     """
+    if not raw.strip():
+        return 0, 0
+    if "file changed" not in raw and "files changed" not in raw:
+        return None, None
     ins = 0
     dels = 0
     for m in _SHORTSTAT_RE.finditer(raw):
@@ -182,6 +186,12 @@ def _shortstat_ints(raw: str) -> tuple[int, int]:
         elif m.group("del"):
             dels = int(m.group("del"))
     return ins, dels
+
+
+def _shortstat_ints(raw: str) -> tuple[int, int]:
+    """Compatibility parser for callers that intentionally coerce unknown to zero."""
+    ins, dels = _shortstat_values(raw)
+    return ins or 0, dels or 0
 
 
 def parse_shortstat(raw: str) -> str:
@@ -218,12 +228,12 @@ def parse_shortstat(raw: str) -> str:
 
 
 class _SubAcc(TypedDict):
-    target_ins: int
-    target_del: int
-    ahead_commits: int
-    behind_commits: int
-    wt_ins: int
-    wt_del: int
+    target_ins: int | None
+    target_del: int | None
+    ahead_commits: int | None
+    behind_commits: int | None
+    wt_ins: int | None
+    wt_del: int | None
     status: str
 
 
@@ -264,12 +274,12 @@ def _parse_submodules(committed_raw: str, wt_raw: str) -> tuple[SubmoduleChange,
         else:
             ahead_s, behind_s = cols[2], "0"
             shortstat = cols[3] if len(cols) > 3 else ""
-        ins, dels = _shortstat_ints(shortstat)
+        ins, dels = _shortstat_values(shortstat)
         entry = acc.setdefault(path, _blank())
         entry["target_ins"] = ins
         entry["target_del"] = dels
-        entry["ahead_commits"] = int(ahead_s) if ahead_s.strip().isdigit() else 0
-        entry["behind_commits"] = int(behind_s) if behind_s.strip().isdigit() else 0
+        entry["ahead_commits"] = int(ahead_s) if ahead_s.strip().isdigit() else None
+        entry["behind_commits"] = int(behind_s) if behind_s.strip().isdigit() else None
         entry["status"] = status or "modified"
 
     # Nested-submodule WT entries (from `git submodule foreach --recursive`,
@@ -287,7 +297,7 @@ def _parse_submodules(committed_raw: str, wt_raw: str) -> tuple[SubmoduleChange,
         if not path.strip():
             continue
         shortstat = cols[1] if len(cols) > 1 else ""
-        ins, dels = _shortstat_ints(shortstat)
+        ins, dels = _shortstat_values(shortstat)
         entry = acc.setdefault(path, _blank())
         entry["wt_ins"] = ins
         entry["wt_del"] = dels
@@ -296,7 +306,13 @@ def _parse_submodules(committed_raw: str, wt_raw: str) -> tuple[SubmoduleChange,
     for path in sorted(acc):
         e = acc[path]
         changed = (
-            e["target_ins"]
+            e["target_ins"] is None
+            or e["target_del"] is None
+            or e["ahead_commits"] is None
+            or e["behind_commits"] is None
+            or e["wt_ins"] is None
+            or e["wt_del"] is None
+            or e["target_ins"]
             or e["target_del"]
             or e["ahead_commits"]
             or e["behind_commits"]
@@ -437,21 +453,21 @@ if [ -n "$BASE" ]; then
       os_zero=1; case "$os" in *[!0]*) os_zero=0 ;; esac
       ns_zero=1; case "$ns" in *[!0]*) ns_zero=0 ;; esac
       if [ "$os_zero" = "1" ] && [ "$ns_zero" = "0" ]; then
-        status=new; commits=0; ss=""
+        status=new; ahead=0; behind=0; ss=""
       elif [ "$ns_zero" = "1" ]; then
-        status=removed; commits=0; ss=""
+        status=removed; ahead=0; behind=0; ss=""
       else
         status=modified
         if [ "$TARGET_MODE" = "1" ]; then
           counts=$(git -C "$sub_path" rev-list --left-right --count "$os...$ns" 2>/dev/null) \
             || counts="?"
-          if [ "$counts" = "?" ]; then ahead=0; behind=0
+          if [ "$counts" = "?" ]; then ahead="?"; behind="?"
           else set -- $counts; behind=$1; ahead=$2; fi
           ss=$(git -C "$sub_path" diff --shortstat "$os" "$ns" 2>/dev/null) || ss="?"
         else
-          ahead=$(git -C "$sub_path" rev-list --count "$os..$ns" 2>/dev/null) || ahead=0
+          ahead=$(git -C "$sub_path" rev-list --count "$os..$ns" 2>/dev/null) || ahead="?"
           behind=0
-          ss=$(git -C "$sub_path" diff --shortstat "$os".."$ns" 2>/dev/null) || ss=""
+          ss=$(git -C "$sub_path" diff --shortstat "$os".."$ns" 2>/dev/null) || ss="?"
         fi
       fi
       if [ "$TARGET_MODE" = "1" ]; then

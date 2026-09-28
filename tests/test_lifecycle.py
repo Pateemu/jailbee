@@ -6908,6 +6908,45 @@ def test_submodule_sub_rows_empty_when_no_status():
     assert submodule_sub_rows(c) == []
 
 
+def test_submodule_sub_rows_render_unknown_probe_data_as_question_marks():
+    from jailbee.git_status import GitStatus, SubmoduleChange
+    from jailbee.lifecycle import ContainerInfo, submodule_sub_rows
+
+    c = ContainerInfo(
+        name="p-feat-x",
+        state="Running",
+        network=None,
+        ip=None,
+        memory_limit=None,
+    )
+    c.git_status = GitStatus(
+        wt="clean",
+        ahead_diff="clean",
+        ahead_count="0",
+        conflict="ok",
+        submodules=(
+            SubmoduleChange(
+                "deps/lib",
+                target_ins=None,
+                target_del=None,
+                ahead_commits=None,
+                behind_commits=None,
+            ),
+        ),
+    )
+
+    rows = submodule_sub_rows(c)
+
+    assert rows == [
+        {
+            "name": "  └ deps/lib",
+            "wt": "clean",
+            "ahead_diff": "?",
+            "ahead_count": "?",
+        }
+    ]
+
+
 def test_ls_field_specs_json_includes_submodules_when_enabled():
     from datetime import UTC, datetime
 
