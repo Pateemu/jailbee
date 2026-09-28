@@ -6060,6 +6060,10 @@ def git_diff_cmd(
         bool,
         typer.Option("--all", help="Show WT and committed diffs."),
     ] = False,
+    incoming: Annotated[
+        bool,
+        typer.Option("--incoming", help="Show changes introduced on the container side."),
+    ] = False,
     stat: Annotated[
         bool,
         typer.Option("--stat", help="Use --stat instead of full patch."),
@@ -6079,10 +6083,9 @@ def git_diff_cmd(
 ) -> None:
     """Show diff between container and host.
 
-    Default: commits in the container that would be brought by
-    `jailbee git pull` (3-dot diff against the container's base branch:
-    origin/<base_branch>; fallback origin/<default_branch>).
-    Use --wt for working-tree-only, --all for both.
+    Default: compare the container tree directly with the host's live target
+    branch. Use --incoming for the contribution-only 3-dot diff, --wt for
+    working-tree-only, or --all for both committed and working-tree changes.
 
     Colour follows stdout by default. `--color` forces it on for a consumer
     that pages the output (a pipe is not a TTY, so autodetection would drop
@@ -6116,6 +6119,7 @@ def git_diff_cmd(
             short,
             branch=branch,
             mode=mode,
+            incoming=incoming,
             stat_only=stat,
             color=sys.stdout.isatty() if color is None else color,
         )

@@ -4878,7 +4878,9 @@ def _stub_diff_env(mocker, cfg, full: str, *, mode: str = "clone", running: bool
     incus.config_get.side_effect = lambda n, k: {
         "user.jailbee.mode": mode,
         "user.jailbee.repo_dir": "/home/dev/repo",
+        "user.jailbee.base_branch": "main",
     }.get(k)
+    _patch_diff_target(mocker, "main")
     if running:
         _mock_container_running(incus, full)
     else:
@@ -4886,22 +4888,35 @@ def _stub_diff_env(mocker, cfg, full: str, *, mode: str = "clone", running: bool
     return incus
 
 
-def test_diff_from_container_committed_falls_back_to_origin_default(mocker, make_cfg, tmp_path):
-    """When no user.jailbee.base_branch label is set, base falls back to refs/remotes/origin/<default>."""  # noqa: E501
+def _patch_diff_target(mocker, branch: str, sha: str | None = "live-target-sha"):
+    from jailbee.host_target import TargetSnapshot
+
+    return mocker.patch(
+        "jailbee.host_target.resolve_target",
+        return_value=TargetSnapshot(
+            branch=branch,
+            sha=sha,
+            source="local" if sha else "unavailable",
+            upstream_ref=f"refs/remotes/origin/{branch}",
+            tracking_relation="equal" if sha else "unavailable",
+        ),
+    )
+
+
+def test_diff_from_container_committed_uses_live_target_and_two_endpoints(mocker, make_cfg, tmp_path):
     from jailbee.sync import diff_from_container
 
     cfg = make_cfg(tmp_path, default_branch="main")
     full = f"{cfg.container_prefix}-feat"
     incus = _stub_diff_env(mocker, cfg, full)
-    # No base_branch label → _stub_diff_env returns None for user.jailbee.base_branch.
-    # First exec: _resolves(refs/remotes/origin/main) → truthy; second: diff output.
-    incus.exec.side_effect = ["abc1234\n", "diff --git output"]
+    incus.exec.side_effect = ["", "diff --git output"]
 
     out = diff_from_container(cfg, incus, "feat", mode="committed", color=False)
 
     cmd = incus.exec.call_args_list[-1].args[1]
     assert "diff" in cmd
-    assert "refs/remotes/origin/main...HEAD" in cmd
+    assert "live-target-sha" in cmd
+    assert "live-target-sha...HEAD" not in cmd
     assert "--color=always" not in cmd
     assert "--stat" not in cmd
     assert out == "diff --git output"
@@ -4914,8 +4929,6 @@ def test_diff_from_container_wt_uses_head_only(mocker, make_cfg, tmp_path):
     full = f"{cfg.container_prefix}-feat"
     incus = _stub_diff_env(mocker, cfg, full)
     incus.exec.return_value = "wt diff"
-    mocker.patch("jailbee.sync.git.rev_parse", return_value="abc")
-
     diff_from_container(cfg, incus, "feat", mode="wt", color=False)
 
     cmd = incus.exec.call_args.args[1]
@@ -4930,8 +4943,7 @@ def test_diff_from_container_stat_only_uses_snippet(mocker, make_cfg, tmp_path):
     cfg = make_cfg(tmp_path, default_branch="main")
     full = f"{cfg.container_prefix}-feat"
     incus = _stub_diff_env(mocker, cfg, full)
-    mocker.patch("jailbee.sync.git.rev_parse", return_value="abc")
-    incus.exec.side_effect = ["abc\n", " app.py | 1 +\n"]
+    incus.exec.side_effect = ["", " app.py | 1 +\n"]
 
     diff_from_container(cfg, incus, "feat", mode="committed", stat_only=True, color=False)
     cmd = incus.exec.call_args_list[-1].args[1]
@@ -4947,8 +4959,7 @@ def test_diff_from_container_includes_submodule_diff(mocker, make_cfg, tmp_path)
     cfg = make_cfg(tmp_path, default_branch="main")
     full = f"{cfg.container_prefix}-feat"
     incus = _stub_diff_env(mocker, cfg, full)
-    # No base_branch label → base resolves via incus.exec (origin/main check), not git.rev_parse.
-    incus.exec.side_effect = ["abc1234\n", "diff output"]
+    incus.exec.side_effect = ["", "diff output"]
 
     diff_from_container(cfg, incus, "feat", mode="committed", color=False)
 
@@ -4977,8 +4988,7 @@ def test_diff_from_container_color_adds_color_always(mocker, make_cfg, tmp_path)
     cfg = make_cfg(tmp_path, default_branch="main")
     full = f"{cfg.container_prefix}-feat"
     incus = _stub_diff_env(mocker, cfg, full)
-    mocker.patch("jailbee.sync.git.rev_parse", return_value="abc")
-    incus.exec.side_effect = ["abc\n", ""]
+    incus.exec.side_effect = ["", ""]
 
     diff_from_container(cfg, incus, "feat", mode="committed", color=True)
     cmd = incus.exec.call_args_list[-1].args[1]
@@ -5013,9 +5023,8 @@ def test_diff_from_container_all_mode_combines_wt_and_committed(mocker, make_cfg
     cfg = make_cfg(tmp_path, default_branch="main")
     full = f"{cfg.container_prefix}-feat"
     incus = _stub_diff_env(mocker, cfg, full)
-    mocker.patch("jailbee.sync.git.rev_parse", return_value="abc")
-    # base-check + committed diff + WT diff
-    incus.exec.side_effect = ["abc\n", "COMMITTED_DIFF\n", "WT_DIFF\n"]
+    # target object check + committed diff + WT diff
+    incus.exec.side_effect = ["", "COMMITTED_DIFF\n", "WT_DIFF\n"]
 
     out = diff_from_container(cfg, incus, "feat", mode="all", color=False)
 
@@ -5030,10 +5039,9 @@ def test_diff_from_container_no_base_raises(mocker, make_cfg, tmp_path):
     cfg = make_cfg(tmp_path, default_branch="main")
     full = f"{cfg.container_prefix}-feat"
     incus = _stub_diff_env(mocker, cfg, full)
-    mocker.patch("jailbee.sync.git.rev_parse", return_value="abc")
     incus.exec.side_effect = IncusError("nope")
 
-    with pytest.raises(SyncError, match="Cannot resolve base"):
+    with pytest.raises(SyncError, match="main"):
         diff_from_container(cfg, incus, "feat", mode="committed")
 
 
@@ -5050,20 +5058,20 @@ def test_diff_committed_uses_base_branch(mocker, make_cfg, tmp_path):
         "user.jailbee.repo_dir": "/home/dev/repo",
         "user.jailbee.base_branch": "dev",
     }.get(k)
+    _patch_diff_target(mocker, "dev")
     _mock_container_running(incus, full)
-    # first exec: _resolves(refs/jailbee/base/dev) → empty (absent); second:
-    # _resolves(origin/dev) → succeeds; third: the diff
-    incus.exec.side_effect = ["", "abc123\n", "DIFFTEXT"]
+    incus.exec.side_effect = ["", "DIFFTEXT"]
 
     out = diff_from_container(cfg, incus, "feat-x", mode="committed", color=False)
 
     assert out == "DIFFTEXT"
     diff_cmd = incus.exec.call_args_list[-1].args[1]
-    assert any("refs/remotes/origin/dev...HEAD" in part for part in diff_cmd)
+    assert "live-target-sha" in diff_cmd
+    assert "live-target-sha...HEAD" not in diff_cmd
 
 
-def test_diff_prefers_gie_base_ref(mocker, make_cfg, tmp_path):
-    """diff_from_container resolves base to refs/jailbee/base/<base> first."""
+def test_diff_uses_live_host_target_sha(mocker, make_cfg, tmp_path):
+    """diff_from_container compares against the live host SHA."""
     from jailbee.sync import diff_from_container
 
     cfg = make_cfg(tmp_path, default_branch="main")
@@ -5075,15 +5083,15 @@ def test_diff_prefers_gie_base_ref(mocker, make_cfg, tmp_path):
         "user.jailbee.repo_dir": "/home/dev/repo",
         "user.jailbee.base_branch": "dev",
     }.get(k)
+    _patch_diff_target(mocker, "dev")
     _mock_container_running(incus, full)
-    # first exec: _resolves(refs/jailbee/base/dev) → succeeds; second exec: the diff
-    incus.exec.side_effect = ["abc123\n", "DIFFTEXT"]
+    incus.exec.side_effect = ["", "DIFFTEXT"]
 
     out = diff_from_container(cfg, incus, "feat-x", mode="committed", color=False)
 
     assert out == "DIFFTEXT"
     diff_cmd = incus.exec.call_args_list[-1].args[1]
-    assert any("refs/jailbee/base/dev...HEAD" in part for part in diff_cmd)
+    assert "live-target-sha" in diff_cmd
 
 
 def test_diff_stat_uses_grouping_snippet(mocker, make_cfg, tmp_path):
@@ -5099,10 +5107,11 @@ def test_diff_stat_uses_grouping_snippet(mocker, make_cfg, tmp_path):
         "user.jailbee.repo_dir": "/repo",
         "user.jailbee.base_branch": "main",
     }.get(k)
+    _patch_diff_target(mocker, "main")
     _mock_container_running(incus, full)
-    # base resolution probe (rev-parse) resolves the first candidate:
+    # target object check, then stat snippet.
     incus.exec.side_effect = [
-        "abc123\n",  # _resolves(refs/jailbee/base/main) -> truthy
+        "",
         "=== superproject ===\n app.py | 2 +-\n=== deps/libfoo ===\n foo.py | 9 +++\n",
     ]
 
@@ -5127,10 +5136,11 @@ def test_diff_stat_passes_mode_committed_without_submodules(mocker, make_cfg, tm
         "user.jailbee.repo_dir": "/repo",
         "user.jailbee.base_branch": "main",
     }.get(k)
+    _patch_diff_target(mocker, "main")
     _mock_container_running(incus, full)
     plain_stat = " app.py | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n"
     incus.exec.side_effect = [
-        "abc123\n",  # _resolves(refs/jailbee/base/main) -> truthy
+        "",
         plain_stat,  # stat snippet returns plain output (no submodules)
     ]
 
@@ -5141,6 +5151,127 @@ def test_diff_stat_passes_mode_committed_without_submodules(mocker, make_cfg, tm
     assert "=== superproject ===" not in out
     last_call = incus.exec.call_args_list[-1]
     assert "bash" in last_call.args[1]
+
+
+@pytest.mark.parametrize(
+    ("mode", "incoming", "expected_range"),
+    [
+        ("committed", False, "live-target-sha HEAD"),
+        ("committed", True, "live-target-sha...HEAD"),
+    ],
+)
+def test_diff_committed_endpoint_selection(mocker, make_cfg, tmp_path, mode, incoming, expected_range):
+    cfg = make_cfg(tmp_path)
+    full = f"{cfg.container_prefix}-feat"
+    incus = _stub_diff_env(mocker, cfg, full)
+    incus.exec.side_effect = ["", "DIFF"]
+
+    sync.diff_from_container(
+        cfg, incus, "feat", mode=mode, incoming=incoming, color=False
+    )
+
+    diff_cmd = incus.exec.call_args_list[-1].args[1]
+    assert expected_range in " ".join(diff_cmd)
+
+
+def test_diff_all_incoming_combines_worktree_and_incoming(mocker, make_cfg, tmp_path):
+    cfg = make_cfg(tmp_path)
+    full = f"{cfg.container_prefix}-feat"
+    incus = _stub_diff_env(mocker, cfg, full)
+    incus.exec.side_effect = ["", "INCOMING", "WORKTREE"]
+
+    result = sync.diff_from_container(
+        cfg, incus, "feat", mode="all", incoming=True, color=False
+    )
+
+    assert "INCOMING" in result
+    assert "WORKTREE" in result
+    committed_cmd = incus.exec.call_args_list[1].args[1]
+    wt_cmd = incus.exec.call_args_list[2].args[1]
+    assert "live-target-sha...HEAD" in " ".join(committed_cmd)
+    assert "HEAD" in wt_cmd and "live-target-sha" not in " ".join(wt_cmd)
+
+
+def test_diff_wt_does_not_resolve_live_target(mocker, make_cfg, tmp_path):
+    cfg = make_cfg(tmp_path)
+    full = f"{cfg.container_prefix}-feat"
+    incus = _stub_diff_env(mocker, cfg, full)
+    target = mocker.patch("jailbee.host_target.resolve_target")
+    incus.exec.return_value = "WORKTREE"
+
+    sync.diff_from_container(cfg, incus, "feat", mode="wt", color=False)
+
+    target.assert_not_called()
+
+
+def test_diff_missing_host_target_fails_without_fallback(mocker, make_cfg, tmp_path):
+    from jailbee.host_target import TargetSnapshot
+
+    cfg = make_cfg(tmp_path)
+    full = f"{cfg.container_prefix}-feat"
+    incus = _stub_diff_env(mocker, cfg, full)
+    mocker.patch(
+        "jailbee.host_target.resolve_target",
+        return_value=TargetSnapshot(
+            branch="main",
+            sha=None,
+            source="unavailable",
+            upstream_ref="refs/remotes/origin/main",
+            tracking_relation="unavailable",
+        ),
+    )
+
+    with pytest.raises(sync.SyncError, match="main"):
+        sync.diff_from_container(cfg, incus, "feat", mode="committed")
+
+    incus.exec.assert_not_called()
+
+
+def test_diff_without_configured_target_does_not_use_default_branch(mocker, make_cfg, tmp_path):
+    cfg = make_cfg(tmp_path, default_branch="main")
+    full = f"{cfg.container_prefix}-feat"
+    incus = _stub_diff_env(mocker, cfg, full)
+    incus.config_get.side_effect = lambda _name, key: {
+        "user.jailbee.mode": "clone",
+        "user.jailbee.repo_dir": "/home/dev/repo",
+    }.get(key)
+    resolve = mocker.patch("jailbee.host_target.resolve_target")
+
+    with pytest.raises(sync.SyncError, match="no configured host target branch"):
+        sync.diff_from_container(cfg, incus, "feat", mode="committed")
+
+    resolve.assert_not_called()
+    incus.exec.assert_not_called()
+
+
+def test_diff_unreadable_host_target_fails_with_target_name(mocker, make_cfg, tmp_path):
+    from jailbee.incus import IncusError
+
+    cfg = make_cfg(tmp_path)
+    full = f"{cfg.container_prefix}-feat"
+    incus = _stub_diff_env(mocker, cfg, full)
+    incus.exec.side_effect = IncusError("missing object")
+
+    with pytest.raises(sync.SyncError, match="main"):
+        sync.diff_from_container(cfg, incus, "feat", mode="committed")
+
+    assert "live-target-sha" in " ".join(incus.exec.call_args.args[1])
+
+
+def test_diff_stat_snippet_uses_selected_endpoints_for_submodule_stats(mocker, make_cfg, tmp_path):
+    cfg = make_cfg(tmp_path)
+    full = f"{cfg.container_prefix}-feat"
+    incus = _stub_diff_env(mocker, cfg, full)
+    incus.exec.side_effect = ["", "STAT"]
+
+    sync.diff_from_container(
+        cfg, incus, "feat", mode="committed", stat_only=True, incoming=True, color=False
+    )
+
+    command = incus.exec.call_args_list[-1].args[1]
+    assert "...HEAD" in " ".join(command)
+    assert incus.exec.call_args_list[-1].kwargs["env"]["BASE"] == "live-target-sha"
+    assert incus.exec.call_args_list[-1].kwargs["env"]["INCOMING"] == "1"
 
 
 # ---- Fix-2 regression: pre_merge_head for FF / checkout paths -----------

@@ -3353,11 +3353,16 @@ CF=""
 [ "$COLOR" = "1" ] && CF="--color=always"
 
 emit_committed() {
-  SUPER=$(git diff --stat --ignore-submodules=all $CF "${BASE}...HEAD" 2>/dev/null)
+  if [ "$INCOMING" = "1" ]; then
+    SUPER=$(git diff --stat --ignore-submodules=all $CF "${BASE}...HEAD" 2>/dev/null)
+    RAW=$(git diff --raw --abbrev=40 "${BASE}...HEAD" 2>/dev/null)
+  else
+    SUPER=$(git diff --stat --ignore-submodules=all $CF "$BASE" HEAD 2>/dev/null)
+    RAW=$(git diff --raw --abbrev=40 "$BASE" HEAD 2>/dev/null)
+  fi
   SUBS=$(
     IFS_TAB="$(printf '\t')"
-    git diff --raw --abbrev=40 "${BASE}...HEAD" 2>/dev/null \
-      | while IFS="$IFS_TAB" read -r meta sub_path; do
+    printf '%s\n' "$RAW" | while IFS="$IFS_TAB" read -r meta sub_path; do
       [ -z "$sub_path" ] && continue
       set -- $meta
       om=${1#:}; nm=$2; os=$3; ns=$4
@@ -3403,22 +3408,22 @@ def diff_from_container(
     *,
     branch: str | None = None,
     mode: Literal["committed", "wt", "all"] = "committed",
+    incoming: bool = False,
     stat_only: bool = False,
     color: bool = True,
 ) -> str:
     """Stream a `git diff` from inside container `short`.
 
-    - ``mode="committed"``: ``git diff <base>...HEAD`` (patch) or the
-      per-submodule stat snippet (when ``stat_only=True``) where
-      ``<base>`` is resolved as: ``refs/jailbee/base/<base_branch>`` →
-      ``origin/<base_branch>`` → ``refs/heads/<base_branch>`` →
-      ``origin/<default_branch>``.
-      Raises ``SyncError`` if none resolves.
+    - ``mode="committed"``: direct ``git diff <host-target-sha> HEAD`` by
+      default, or ``git diff <host-target-sha>...HEAD`` with ``incoming=True``.
+      The host target is resolved from the container's configured base branch.
+      Raises ``SyncError`` if the host ref or its container-visible object is
+      unavailable.
     - ``mode="wt"``: ``git diff HEAD`` (patch) or per-submodule stat
       snippet (when ``stat_only=True``) — working tree vs HEAD.
       ``branch`` is ignored.
-    - ``mode="all"``: ``"wt"`` output followed by ``"committed"`` output,
-      joined by a separator line.
+    - ``mode="all"``: working-tree output followed by the selected committed
+      output, joined by a separator line.
 
     Patch modes pass ``--submodule=diff`` so changes *inside* submodules
     appear inline. Stat mode (``stat_only=True``) uses ``_DIFF_STAT_SNIPPET``
@@ -3466,6 +3471,7 @@ def diff_from_container(
             env={
                 "REPO_DIR": repo_dir,
                 "BASE": resolved_base,
+                "INCOMING": "1" if incoming else "0",
                 "MODE": snippet_mode,
                 "COLOR": "1" if color else "0",
             },
@@ -3479,50 +3485,33 @@ def diff_from_container(
 
     base_label = incus.config_get(full_name, "user.jailbee.base_branch")
     base_branch = base_label if isinstance(base_label, str) and base_label else None
+    if base_branch is None:
+        raise SyncError(f"Container '{short}' has no configured host target branch.")
+    from jailbee.host_target import resolve_target
 
-    def _resolves(ref: str) -> bool:
-        try:
-            check = incus.exec(
-                full_name,
-                [
-                    "git",
-                    "-C",
-                    repo_dir,
-                    "rev-parse",
-                    "--verify",
-                    "--quiet",
-                    f"{ref}^{{commit}}",
-                ],
-                uid=uid,
-            )
-        except IncusError:
-            return False
-        return bool(check.strip())
-
-    candidates: list[str] = []
-    if base_branch:
-        candidates.append(f"refs/jailbee/base/{base_branch}")
-        candidates.append(f"refs/remotes/origin/{base_branch}")
-        candidates.append(f"refs/heads/{base_branch}")
-    candidates.append(f"refs/remotes/origin/{cfg.default_branch}")
-    base: str | None = None
-    for ref in candidates:
-        if _resolves(ref):
-            base = ref
-            break
-    if base is None:
-        raise SyncError(
-            f"Cannot resolve base in container '{short}': none of {', '.join(candidates)} found."
+    target = resolve_target(cfg.repo_root, base_branch, cfg.upstream_remote)
+    if target.sha is None:
+        raise SyncError(f"Cannot resolve host target '{base_branch}' for container '{short}'.")
+    try:
+        incus.exec(
+            full_name,
+            ["git", "-C", repo_dir, "cat-file", "-e", f"{target.sha}^{{commit}}"],
+            uid=uid,
         )
+    except IncusError as exc:
+        raise SyncError(
+            f"Host target '{base_branch}' ({target.sha}) is not readable in container '{short}'."
+        ) from exc
 
     if stat_only:
-        return _run_stat(mode, base)
+        return _run_stat(mode, target.sha)
 
-    committed = _run_diff([f"{base}...HEAD"])
+    committed_args = [f"{target.sha}...HEAD"] if incoming else [target.sha, "HEAD"]
+    committed = _run_diff(committed_args)
 
     if mode == "committed":
         return committed
 
     wt = _run_diff(["HEAD"])
-    sep = "\n=== committed (vs base) ===\n"
+    sep = "\n=== committed (vs host target) ===\n"
     return wt + sep + committed

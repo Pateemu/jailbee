@@ -4885,6 +4885,25 @@ def test_git_diff_stat_flag_passes_through(tmp_path, mocker):
     assert diff_mock.call_args.kwargs["stat_only"] is True
 
 
+def test_git_diff_incoming_flag_passes_through(tmp_path, mocker):
+    repo = _setup_repo(tmp_path, "myrepo")
+    mocker.patch(
+        "jailbee.cli._resolve_config_path",
+        return_value=repo / ".jailbee" / "config.yaml",
+    )
+    mocker.patch("jailbee.incus.Incus")
+    mocker.patch(
+        "jailbee.cli._resolve_existing",
+        return_value=(mocker.MagicMock(), "myrepo-feat"),
+    )
+    diff_mock = mocker.patch("jailbee.sync.diff_from_container", return_value="")
+
+    result = CliRunner().invoke(app, ["git", "diff", "feat", "--incoming"])
+
+    assert result.exit_code == 0, result.output
+    assert diff_mock.call_args.kwargs["incoming"] is True
+
+
 def test_git_diff_color_flag_overrides_tty_detection(tmp_path, mocker):
     """`jailbee dashboard` pipes the diff into a pager, which makes stdout a
     pipe and would silence the colour the pager is there to render."""
