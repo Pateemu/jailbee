@@ -7059,8 +7059,10 @@ def test_submodule_sub_rows_formats_changed_submodules():
     )
     rows = submodule_sub_rows(c)
     assert rows[0]["name"] == "  └ deps/libfoo"
-    assert rows[0]["ahead_diff"] == "+42 -7"
+    assert rows[0]["target_diff"] == "+42 -7"
     assert rows[0]["ahead_count"] == "2"
+    assert rows[0]["behind_count"] == ""  # zero submodule counts are blank
+    assert "ahead_diff" not in rows[0]
     assert rows[0]["wt"] == "clean"
     assert rows[1]["name"] == "  └ vendor/bar"
     assert rows[1]["wt"] == "+3 -0"
@@ -7112,8 +7114,9 @@ def test_submodule_sub_rows_render_unknown_probe_data_as_question_marks():
         {
             "name": "  └ deps/lib",
             "wt": "clean",
-            "ahead_diff": "?",
+            "target_diff": "?",
             "ahead_count": "?",
+            "behind_count": "?",
         }
     ]
 
@@ -7146,9 +7149,10 @@ def test_ls_field_specs_json_includes_submodules_when_enabled():
     assert payload["submodules"] == [
         {
             "path": "deps/libfoo",
-            "ahead_ins": 42,
-            "ahead_del": 7,
+            "target_ins": 42,
+            "target_del": 7,
             "ahead_commits": 2,
+            "behind_commits": 0,
             "wt_ins": 0,
             "wt_del": 0,
             "status": "modified",
@@ -7160,6 +7164,54 @@ def test_ls_field_specs_json_includes_submodules_when_enabled():
         for f in ls_field_specs(now=datetime(2026, 6, 8, tzinfo=UTC), show_submodules=False)
     }
     assert "submodules" not in specs_off["git_status"].json(c)
+
+
+def test_live_target_fields_and_json_metadata():
+    from jailbee.git_status import GitStatus
+    from jailbee.lifecycle import ls_field_specs
+
+    c = _ci_with_status(
+        ahead_diff="+99 -1",
+        target_diff="clean",
+        ahead_count="2",
+        behind_count="1",
+        base_source="local",
+        base_sha="a" * 40,
+        tracking_relation="equal",
+        upstream_ref="origin/main",
+    )
+    assert isinstance(c.git_status, GitStatus)
+    specs = ls_field_specs(now=_NOW)
+    by_name = {field.name: field for field in specs}
+    assert "ahead_diff" not in by_name
+    assert [(f.name, f.header) for f in specs if f.name in ("target_diff", "ahead_count", "behind_count")] == [
+        ("target_diff", "DIFF ±"), ("ahead_count", "↑"), ("behind_count", "↓")
+    ]
+    assert all(by_name[name].default_table for name in ("target_diff", "ahead_count", "behind_count"))
+    assert by_name["target_diff"].json(c) == "clean"
+    payload = by_name["git_status"].json(c)
+    assert payload["target_diff"] == "clean"
+    assert payload["behind_count"] == "1"
+    assert payload["base_source"] == "local"
+    assert payload["base_sha"] == "a" * 40
+    assert "ahead_diff" not in payload
+
+
+def test_tracking_fallback_base_marker_and_grouped_notices():
+    from jailbee.lifecycle import ls_field_specs, tracking_notices
+
+    first = _ci_with_status(base_source="tracking", tracking_relation="tracking-ahead", upstream_ref="origin/main")
+    first.base_branch = "main"
+    second = _ci_with_status(tracking_relation="tracking-ahead", upstream_ref="origin/main")
+    second.base_branch = "main"
+    third = _ci_with_status(tracking_relation="diverged", upstream_ref="origin/release")
+    third.base_branch = "release"
+    fields = {f.name: f for f in ls_field_specs(now=_NOW)}
+    assert "tracking" in fields["base"].cell(first)
+    notices = tracking_notices([first, second, third])
+    assert len(notices) == 2
+    assert "origin/main" in notices[0] and "behind" in notices[0]
+    assert "origin/release" in notices[1] and "diverged" in notices[1]
 
 
 _NOW = datetime(2026, 6, 8, tzinfo=UTC)

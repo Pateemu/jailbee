@@ -132,6 +132,12 @@ def test_git_segments_empty_when_clean():
     assert is_git_clean(cc) is True
 
 
+def test_git_segments_use_live_diff_and_both_directions():
+    cc = _cc(wt="clean", target_diff="+4 -1", ahead_count="2", behind_count="1", conflict="ok")
+    assert m.git_segments(cc) == [("↑2", "ahead"), ("↓1", "ahead"), ("+4 -1", "diff")]
+    assert m.grid_rows(cc)[-1] == ("GIT", "↑2  ↓1  +4 -1")
+
+
 def test_git_segments_reports_dirty_pieces():
     from jailbee.qtui.model import git_segments, is_git_clean
 

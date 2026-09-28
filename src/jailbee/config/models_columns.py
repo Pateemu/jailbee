@@ -81,6 +81,11 @@ _LS_FIELD_ALIASES: dict[str, str] = {
     "claude_group": "group",
 }
 
+RETIRED_DIFF_FIELD_NOTICE = (
+    "'ahead_diff' was retired; use 'target_diff' for the live host-target tree diff "
+    "or `jailbee git diff --incoming` for the former contribution diff"
+)
+
 
 def canonical_ls_field(name: str) -> str:
     """`name` with a legacy credential-group alias normalized to `group`."""
@@ -170,7 +175,11 @@ def validate_column_blocks(blocks: Sequence[tuple[str, ColumnConfig]]) -> list[s
         for raw_name in list(block.fields or []) + list(block.hide):
             name = canonical_ls_field(raw_name)
             if name not in known:
-                issues.append(f"{block_name}: unknown field {name!r}; allowed: {allowed}")
+                issues.append(
+                    f"{block_name}: {RETIRED_DIFF_FIELD_NOTICE}"
+                    if name == "ahead_diff"
+                    else f"{block_name}: unknown field {name!r}; allowed: {allowed}"
+                )
     return issues
 
 
@@ -231,7 +240,9 @@ def sanitize_column_blocks(
                 hide.append(name)
             else:
                 warnings.append(
-                    f"{block_name}.hide: unknown field {raw_name!r} ignored; allowed: {allowed}"
+                    f"{block_name}.hide: {RETIRED_DIFF_FIELD_NOTICE}; ignored"
+                    if name == "ahead_diff"
+                    else f"{block_name}.hide: unknown field {raw_name!r} ignored; allowed: {allowed}"
                 )
         if hide != block.hide:
             updates["hide"] = hide
@@ -253,7 +264,9 @@ def sanitize_column_blocks(
                 name = canonical_ls_field(raw_name)
                 if name not in known:
                     warnings.append(
-                        f"{block_name}.fields: unknown field {raw_name!r} "
+                        f"{block_name}.fields: {RETIRED_DIFF_FIELD_NOTICE}; ignored"
+                        if name == "ahead_diff"
+                        else f"{block_name}.fields: unknown field {raw_name!r} "
                         f"ignored; allowed: {allowed}"
                     )
                     continue

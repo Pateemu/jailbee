@@ -1594,8 +1594,8 @@ def list_cmd(
             help=(
                 "Comma-separated list of fields to show. Allowed: name, "
                 "full_name, repo, mode, base, state, created, job, network, "
-                "ttl, loose_until, ip, memory_limit, mem, cpu, doing, wt, ahead_diff, "
-                "ahead_count, conflict, local_diff, local_count, git_status, "
+                "ttl, loose_until, ip, memory_limit, mem, cpu, doing, wt, target_diff, "
+                "ahead_count, behind_count, conflict, local_diff, local_count, git_status, "
                 "group, pr, issues."
             ),
         ),
@@ -1617,8 +1617,12 @@ def list_cmd(
         ls_field_specs,
         repo_has_submodules,
         submodule_sub_rows,
+        tracking_notices,
     )
-    from jailbee.tui import console
+    from jailbee.tui import console, warn
+
+    if fields is not None and "ahead_diff" in (part.strip() for part in fields.split(",")):
+        raise typer.BadParameter(models_columns.RETIRED_DIFF_FIELD_NOTICE)
 
     cfg = _load_or_exit(config)
     _advise_upgrade(cfg)
@@ -1638,6 +1642,8 @@ def list_cmd(
         with_background=True,
         scope=scope_for_session(),
     )
+    for notice in tracking_notices(containers):
+        warn(notice)
     now = _now()
     all_fields = ls_field_specs(now=now, all_repos=all_repos, show_submodules=show_submodules)
     # `_load_global()` rather than `load_global_config()` directly: a

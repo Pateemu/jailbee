@@ -2463,8 +2463,8 @@ def _sub_count_str(count: int | None) -> str:
 def submodule_sub_rows(c: ContainerInfo) -> list[dict[str, str]]:
     """Continuation rows (one per changed submodule) for ``jailbee ls``.
 
-    Keys match the ``ls`` field names (``name``/``wt``/``ahead_diff``/
-    ``ahead_count``); other columns render blank. Returns ``[]`` when the
+    Keys match the ``ls`` field names (``name``/``wt``/``target_diff``/
+    ``ahead_count``/``behind_count``); other columns render blank. Returns ``[]`` when the
     container has no git status or no submodule changes.
     """
     if c.git_status is None:
@@ -2475,11 +2475,33 @@ def submodule_sub_rows(c: ContainerInfo) -> list[dict[str, str]]:
             {
                 "name": f"  └ {s.path}",
                 "wt": _sub_stat_str(s.wt_ins, s.wt_del),
-                "ahead_diff": _sub_stat_str(s.ahead_ins, s.ahead_del),
+                "target_diff": _sub_stat_str(s.target_ins, s.target_del),
                 "ahead_count": _sub_count_str(s.ahead_commits),
+                "behind_count": _sub_count_str(s.behind_commits),
             }
         )
     return rows
+
+
+def tracking_notices(containers: Sequence[ContainerInfo]) -> list[str]:
+    """One notice per affected repository and base, never per container."""
+    seen: set[tuple[str | None, str | None]] = set()
+    notices: list[str] = []
+    for c in containers:
+        status = c.git_status
+        if status is None or status.tracking_relation not in ("tracking-ahead", "diverged"):
+            continue
+        key = (c.repo, c.base_branch)
+        if key in seen:
+            continue
+        seen.add(key)
+        target = f"{c.repo or 'repo'}/{c.base_branch or '?'}"
+        upstream = status.upstream_ref or "tracking ref"
+        if status.tracking_relation == "tracking-ahead":
+            notices.append(f"{target}: local target behind fetched {upstream}")
+        else:
+            notices.append(f"{target}: local target diverged from fetched {upstream}")
+    return notices
 
 
 # Rich style per `git_status.merge_label` kind. Module-level because it is a
@@ -2550,8 +2572,13 @@ def ls_field_specs(
             return None
         payload: dict[str, object] = {
             "wt": c.git_status.wt,
-            "ahead_diff": c.git_status.ahead_diff,
+            "target_diff": c.git_status.target_diff,
             "ahead_count": c.git_status.ahead_count,
+            "behind_count": c.git_status.behind_count,
+            "base_sha": c.git_status.base_sha,
+            "base_source": c.git_status.base_source,
+            "tracking_relation": c.git_status.tracking_relation,
+            "upstream_ref": c.git_status.upstream_ref,
             "conflict": c.git_status.conflict,
             "head_sha": c.git_status.head_sha,
             "remote_contained": c.git_status.remote_contained,
@@ -2564,9 +2591,10 @@ def ls_field_specs(
             payload["submodules"] = [
                 {
                     "path": s.path,
-                    "ahead_ins": s.ahead_ins,
-                    "ahead_del": s.ahead_del,
+                    "target_ins": s.target_ins,
+                    "target_del": s.target_del,
                     "ahead_commits": s.ahead_commits,
+                    "behind_commits": s.behind_commits,
                     "wt_ins": s.wt_ins,
                     "wt_del": s.wt_del,
                     "status": s.status,
@@ -2712,7 +2740,11 @@ def ls_field_specs(
         table_format.FieldSpec(
             name="base",
             header="BASE",
-            cell=lambda c: c.base_branch if c.base_branch else "—",
+            cell=lambda c: (
+                f"{c.base_branch} (tracking)"
+                if c.base_branch and c.git_status and c.git_status.base_source == "tracking"
+                else c.base_branch or "—"
+            ),
             json=lambda c: c.base_branch,
         ),
         table_format.FieldSpec(
@@ -2828,10 +2860,10 @@ def ls_field_specs(
             default_json=False,
         ),
         table_format.FieldSpec(
-            name="ahead_diff",
-            header="AHEAD ±",
-            cell=_git_cell("ahead_diff"),
-            json=_git_json("ahead_diff"),
+            name="target_diff",
+            header="DIFF ±",
+            cell=_git_cell("target_diff"),
+            json=_git_json("target_diff"),
             default_json=False,
         ),
         table_format.FieldSpec(
@@ -2839,6 +2871,14 @@ def ls_field_specs(
             header="↑",
             cell=_git_cell("ahead_count", zero_dim=True),
             json=_git_json("ahead_count"),
+            justify="right",
+            default_json=False,
+        ),
+        table_format.FieldSpec(
+            name="behind_count",
+            header="↓",
+            cell=_git_cell("behind_count", zero_dim=True),
+            json=_git_json("behind_count"),
             justify="right",
             default_json=False,
         ),
@@ -2854,8 +2894,8 @@ def ls_field_specs(
             header="LOCAL ±",
             cell=_git_cell("local_diff"),
             json=_git_json("local_diff"),
-            # Off by default: AHEAD ± already carries the pinned-base answer,
-            # and the default table is wide. Opt in via --fields or `ls.fields`.
+            # Checked-out host HEAD, distinct from the configured target branch.
+            # Opt in via --fields or `ls.fields`.
             default_table=False,
             default_json=False,
         ),
@@ -2872,8 +2912,8 @@ def ls_field_specs(
             name="git_status",
             header="GIT STATUS",
             cell=lambda c: (
-                f"wt={c.git_status.wt} ±={c.git_status.ahead_diff} "
-                f"↑={c.git_status.ahead_count} merge={c.git_status.conflict}"
+                f"wt={c.git_status.wt} ±={c.git_status.target_diff} "
+                f"↑={c.git_status.ahead_count} ↓={c.git_status.behind_count} merge={c.git_status.conflict}"
                 if c.git_status
                 else "—"
             ),

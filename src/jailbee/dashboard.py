@@ -72,6 +72,7 @@ from jailbee.lifecycle import (
     format_duration_short,
     list_containers,
     ls_field_specs,
+    tracking_notices,
 )
 from jailbee.paths import repo_config_path
 from jailbee.procstat import PRIME_INTERVAL_SECONDS, ActivitySampler
@@ -193,6 +194,7 @@ class RepoGroup:
     loose_ttl_default: str | None = None
     push_action_default: str = "ask"
     push_source_default: str = "base"
+    column_notice: str | None = None
 
 
 @dataclass(frozen=True)
@@ -293,8 +295,8 @@ def _global_config_or_defaults() -> GlobalConfig:
     honoured, invalid ones dropped) rather than the whole block being lost;
     this only still degrades to `GlobalConfig()` on a genuine host-level
     schema problem. The dropped names are logged rather than surfaced in
-    the UI — the dashboard has no confirmation-free place to print a
-    warning on every refresh tick.
+    the UI on every refresh tick; retired-column warnings are instead shown
+    once at startup or on the grouped repo's status line.
     """
     try:
         gcfg, dropped = load_global_config(default_global_config_path())
@@ -305,7 +307,24 @@ def _global_config_or_defaults() -> GlobalConfig:
     return gcfg
 
 
-def seed_view_state(engine: Engine, frontend: str) -> ViewState:
+def dashboard_config_migration_notice() -> str | None:
+    """Load-time migration warning for the retired global dashboard column."""
+    try:
+        _, warnings = load_global_config(default_global_config_path())
+    except Exception:
+        warnings = []  # the ordinary loader reports unrelated config failures
+    retired = [warning for warning in warnings if "ahead_diff" in warning]
+    return "; ".join(retired) if retired else None
+
+
+def dashboard_group_notices(groups: Sequence[RepoGroup]) -> list[str]:
+    """Config migration notices from the already gathered repo configurations."""
+    return [f"{group.prefix}: {group.column_notice}" for group in groups if group.column_notice]
+
+
+def seed_view_state(
+    engine: Engine, frontend: str, *, on_migration: Callable[[str], None] | None = None
+) -> ViewState:
     """``frontend``'s view state, seeding its columns on first use.
 
     The ``dashboard:`` config block is deprecated. It is read exactly once
@@ -322,7 +341,9 @@ def seed_view_state(engine: Engine, frontend: str) -> ViewState:
     A stored column set is filtered against :func:`all_column_names` on the
     way out, falling back to :func:`default_columns` if nothing survives —
     ``decode_names`` only validates JSON shape, not column vocabulary, so a
-    renamed or removed column would otherwise reach both front-ends raw. Each
+    renamed or removed column would otherwise reach both front-ends raw. The
+    retired ``ahead_diff`` is migrated to ``target_diff`` with a visible notice
+    before this filter. Each
     front-end's own last-column guard (``dashboard_settings.toggle_current``
     here, ``MainWindow._toggle_column`` in the Qt window) counts the *stored*
     length, so a phantom name inflates that count without ever being a real,
@@ -348,6 +369,9 @@ def seed_view_state(engine: Engine, frontend: str) -> ViewState:
     """
     state = load_view_state(engine, frontend)
     if state.columns is not None:
+        notice = stored_column_migration_notice(state.columns)
+        if notice is not None and on_migration is not None:
+            on_migration(notice)
         # Canonicalized *before* the filter: a stored set predating the
         # `claude_group` -> `group` rename holds a name `all_column_names` no
         # longer knows, and per this function's own contract the first save
@@ -359,13 +383,25 @@ def seed_view_state(engine: Engine, frontend: str) -> ViewState:
 
         known = frozenset(all_column_names())
         filtered = tuple(
-            dict.fromkeys(c for n in state.columns if (c := canonical_ls_field(n)) in known)
+            dict.fromkeys(
+                c for n in state.columns
+                if (c := "target_diff" if n == "ahead_diff" else canonical_ls_field(n)) in known
+            )
         )
         return replace(state, columns=filtered or default_columns())
     gcfg = _global_config_or_defaults()
     seeded = replace(state, columns=enabled_from_column_config(gcfg.dashboard))
     save_view_state(engine, frontend, seeded)
     return seeded
+
+
+def stored_column_migration_notice(columns: Sequence[str] | None) -> str | None:
+    """Human-facing notice before a stored view's retired column is migrated."""
+    if columns is not None and "ahead_diff" in columns:
+        from jailbee.config.models_columns import RETIRED_DIFF_FIELD_NOTICE
+
+        return f"Saved dashboard column: {RETIRED_DIFF_FIELD_NOTICE}; showing target_diff instead"
+    return None
 
 
 def gather_rows(
@@ -438,6 +474,9 @@ def gather_rows(
                 loose_ttl_default=_loose_ttl_default(cfg, gcfg),
                 push_action_default=cfg.push.default_action,
                 push_source_default=cfg.push.default_source,
+                column_notice="; ".join(
+                    warning for warning in cfg.column_warnings() if "ahead_diff" in warning
+                ) or None,
             )
         )
 
@@ -1510,7 +1549,8 @@ _AUTO_HIDE_ORDER = (
     "base",
     "mem",
     "cpu",
-    "ahead_diff",
+    "target_diff",
+    "behind_count",
     "group",
     "issues",
     "pr",
@@ -2267,7 +2307,12 @@ def run(
     # Resolved once for the whole run — a live-refreshing dashboard must not
     # re-merge config on every frame.
     engine = get_engine()
-    view_state = seed_view_state(engine, FRONTEND_TUI)
+    column_notices: list[str] = []
+    view_state = seed_view_state(engine, FRONTEND_TUI, on_migration=column_notices.append)
+    column_notice = "; ".join(column_notices) if column_notices else None
+    config_notice = dashboard_config_migration_notice()
+    if config_notice:
+        column_notice = "; ".join(filter(None, (column_notice, config_notice)))
     enabled: tuple[str, ...] | None = view_state.columns
     folded: frozenset[str] = view_state.folded
     show_empty_repos = view_state.show_empty_repos
@@ -2380,8 +2425,8 @@ def run(
     selected: Row | None = None
     sel_index = 0
     overlay: Overlay | None = None
-    notice: str | None = None
-    notice_until = 0.0
+    notice: str | None = column_notice
+    notice_until = time.monotonic() + 10.0 if column_notice else 0.0
 
     def set_notice(text: str) -> None:
         """Show ``text`` in the panel subtitle for a few seconds.
@@ -2726,6 +2771,8 @@ def run(
                     set_terminal_title(title, stream=sys.stdout)
                     last_title = title
                 age = (time.monotonic() - last_full) if last_full else 0.0
+                tracking = tracking_notices([c for g in all_groups for c in g.containers])
+                tracking.extend(dashboard_group_notices(all_groups))
                 live.update(
                     render(
                         groups,
@@ -2736,7 +2783,7 @@ def run(
                         git_enabled=git_enabled,
                         enabled=enabled,
                         overlay=overlay,
-                        notice=notice,
+                        notice=notice or ("; ".join(tracking) if tracking else None),
                         folded=folded,
                         hide_first=hide_first,
                         hidden_by_preferences=bool(all_groups) and not groups,

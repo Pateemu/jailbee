@@ -24,12 +24,15 @@ from jailbee.dashboard import (
     RepoTarget,
     collect_repo_roots,
     config_edit_reject_note_for_prefix,
+    dashboard_config_migration_notice,
+    dashboard_group_notices,
     new_container_argv,
     new_container_base_default,
     new_container_reject_note_for_prefix,
     seed_view_state,
 )
 from jailbee.db.view_prefs import FRONTEND_QT
+from jailbee.lifecycle import tracking_notices
 from jailbee.procstat import PRIME_INTERVAL_SECONDS
 from jailbee.qtui.actions import (
     ActionCommand,
@@ -125,6 +128,10 @@ class AppController(QObject):
         self._last_refresh_at = now
         self._window.set_groups(groups, now=now)
         self._window.set_refresh_ok(at=now, interval=self._interval, paused=self._paused)
+        notices = tracking_notices([c for group in groups for c in group.containers])
+        notices.extend(dashboard_group_notices(groups))
+        if notices:
+            self._window.set_status("; ".join(notices))
 
     @Slot(str)
     def on_failed(self, msg: str) -> None:
@@ -603,7 +610,8 @@ def run(
     no_git: bool,
 ) -> int:
     """Launch the Qt dashboard. Returns the process exit code."""
-    if preflight(cwd_root) is None:
+    roots = preflight(cwd_root)
+    if roots is None:
         error(NOTHING_TO_SHOW)
         return 1
 
@@ -611,11 +619,15 @@ def run(
     from jailbee.db.gui_state import load_gui_state
 
     engine = get_engine()
+    column_notices: list[str] = []
+    view_state = seed_view_state(engine, FRONTEND_QT, on_migration=column_notices.append)
+    column_notice = "; ".join(column_notices) if column_notices else None
+    config_notice = dashboard_config_migration_notice()
+    if config_notice:
+        column_notice = "; ".join(filter(None, (column_notice, config_notice)))
 
     # Resolved once for the whole run — a live-refreshing dashboard must not
     # re-merge config on every refresh tick.
-    view_state = seed_view_state(engine, FRONTEND_QT)
-
     state = load_gui_state(engine)
 
     resolved = interval if interval is not None else state.refresh_interval
@@ -682,6 +694,8 @@ def run(
 
     thread.start()
     window.show()
+    if column_notice:
+        QMessageBox.warning(window, "Dashboard column migration", column_notice)
     try:
         return int(app.exec())
     finally:

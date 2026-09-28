@@ -364,8 +364,9 @@ def _choice_widths(containers: list[ContainerInfo]) -> dict[str, int]:
         "ip": max(len(c.ip or "-") for c in containers),
         "base": max(len(c.base_branch or "—") for c in containers),
         "wt": max(len(c.git_status.wt if c.git_status else "—") for c in containers),
-        "ahead": max(len(c.git_status.ahead_diff if c.git_status else "—") for c in containers),
+        "ahead": max(len(c.git_status.target_diff if c.git_status else "—") for c in containers),
         "count": max(len(c.git_status.ahead_count if c.git_status else "—") for c in containers),
+        "behind": max(len(c.git_status.behind_count if c.git_status else "—") for c in containers),
         "conflict": max(len(merge_label(c.git_status)[0]) for c in containers),
         "job": max(
             len(background.job_label_or_empty(c.job_phase, c.job_pid, kind=c.job_kind))
@@ -383,10 +384,12 @@ def _format_choice_title(c: ContainerInfo, widths: dict[str, int]) -> str:
         wt = "—"
         ahead = "—"
         count = "—"
+        behind = "—"
     else:
         wt = c.git_status.wt
-        ahead = c.git_status.ahead_diff
+        ahead = c.git_status.target_diff
         count = c.git_status.ahead_count
+        behind = c.git_status.behind_count
     conflict = merge_label(c.git_status)[0]
     line = (
         f"{c.display_name:<{widths['name']}}  "
@@ -397,6 +400,7 @@ def _format_choice_title(c: ContainerInfo, widths: dict[str, int]) -> str:
         f"{wt:<{widths['wt']}}  "
         f"{ahead:<{widths['ahead']}}  "
         f"{count:>{widths['count']}}  "
+        f"{behind:>{widths['behind']}}  "
         f"{conflict:<{widths['conflict']}}"
     )
     if widths["job"]:

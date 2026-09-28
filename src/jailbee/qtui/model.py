@@ -103,7 +103,7 @@ def card_content(c: ContainerInfo, fields: list[FieldSpec[ContainerInfo]]) -> Ca
 
 
 # Git field values that mean "nothing to report".
-_GIT_FIELD_NAMES = ("wt", "ahead_diff", "ahead_count", "conflict")
+_GIT_FIELD_NAMES = ("wt", "target_diff", "ahead_count", "behind_count", "conflict")
 
 # The "✉N" marker `lifecycle._pr_cell` embeds in the PR column's cell text —
 # with or without a leading "#1234↓" — for N manifests waiting in the
@@ -140,9 +140,12 @@ def git_segments(cc: CardContent) -> list[tuple[str, str]]:
     ahead_count = card_field(cc, "ahead_count")
     if ahead_count not in (None, "0"):
         segs.append((f"↑{ahead_count}", "ahead"))
-    ahead_diff = card_field(cc, "ahead_diff")
-    if ahead_diff not in (None, "clean"):
-        segs.append((ahead_diff, "diff"))  # type: ignore[arg-type]  # not-None narrowed by the check
+    behind_count = card_field(cc, "behind_count")
+    if behind_count not in (None, "0"):
+        segs.append((f"↓{behind_count}", "ahead"))
+    target_diff = card_field(cc, "target_diff")
+    if target_diff not in (None, "clean"):
+        segs.append((target_diff, "diff"))  # type: ignore[arg-type]  # not-None narrowed by the check
     wt = card_field(cc, "wt")
     if wt not in (None, "clean"):
         segs.append((f"wt {wt}", "diff"))

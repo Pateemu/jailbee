@@ -1359,7 +1359,7 @@ def test_ls_fields_filters_columns_and_supports_git_status_nested(mocker, tmp_pa
         "jailbee.lifecycle.probe_many_parallel",
         return_value={
             "myrepo-feat-x": GitStatus(
-                wt="clean", ahead_diff="+1 -0", ahead_count="1", conflict="ok"
+                wt="clean", ahead_diff="+1 -0", target_diff="+1 -0", ahead_count="1", behind_count="0", conflict="ok", base_source="local", base_sha="abc123"
             ),
         },
     )
@@ -1375,8 +1375,13 @@ def test_ls_fields_filters_columns_and_supports_git_status_nested(mocker, tmp_pa
             "name": "feat-x",
             "git_status": {
                 "wt": "clean",
-                "ahead_diff": "+1 -0",
+                "target_diff": "+1 -0",
                 "ahead_count": "1",
+                "behind_count": "0",
+                "base_sha": "abc123",
+                "base_source": "local",
+                "tracking_relation": "unavailable",
+                "upstream_ref": "",
                 "conflict": "ok",
                 "head_sha": "",
                 "remote_contained": None,
@@ -1408,6 +1413,18 @@ def test_ls_fields_unknown_returns_error(mocker, tmp_path):
     combined = result.stdout + (result.stderr or "")
     assert "bogus" in combined
 
+
+def test_ls_explicit_retired_diff_field_explains_migration(mocker, tmp_path):
+    from typer.testing import CliRunner
+    from jailbee.cli import app
+
+    repo = _setup_repo(tmp_path, "myrepo")
+    mocker.patch("jailbee.cli._resolve_config_path", return_value=repo / ".jailbee" / "config.yaml")
+    mocker.patch("jailbee.incus.Incus").return_value.list_containers.return_value = []
+    result = CliRunner().invoke(app, ["ls", "--fields", "ahead_diff"])
+    assert result.exit_code != 0
+    assert "ahead_diff" in result.output and "target_diff" in result.output
+    assert "--incoming" in result.output
 
 def test_ls_fields_help_lists_every_known_field_name() -> None:
     """The --fields help text (cli.py) is a hand-maintained list; it must
@@ -4901,7 +4918,7 @@ def test_git_diff_without_the_flag_follows_stdout(tmp_path, mocker):
 
 
 def test_ls_renders_base_and_git_columns(tmp_path, mocker):
-    """`gie ls` table includes BASE / WT / AHEAD ± / ↑ columns."""
+    """`jailbee ls` table includes BASE / WT / DIFF ± / ↑ / ↓ columns."""
     from jailbee.git_status import GitStatus
     from jailbee.lifecycle import ContainerInfo
 
@@ -4922,7 +4939,7 @@ def test_ls_renders_base_and_git_columns(tmp_path, mocker):
             mode="clone",
             base_branch="main",
             git_status=GitStatus(
-                wt="+12 -3", ahead_diff="+245 -18", ahead_count="3", conflict="ok"
+                wt="+12 -3", ahead_diff="+245 -18", target_diff="+245 -18", ahead_count="3", behind_count="1", conflict="ok"
             ),
         ),
         ContainerInfo(
@@ -4946,10 +4963,10 @@ def test_ls_renders_base_and_git_columns(tmp_path, mocker):
     out = result.stdout
     assert "BASE" in out
     assert "WT" in out
-    assert "AHEAD" in out
+    assert "DIFF" in out and "↓" in out
     assert "main" in out  # base for feat-a
     assert "+12 -3" in out  # WT for feat-a
-    assert "+245 -18" in out  # AHEAD ± for feat-a
+    assert "+245 -18" in out  # DIFF ± for feat-a
     assert "—" in out  # legacy row has dashes
 
 
@@ -5048,7 +5065,7 @@ def test_ls_merge_conflict_in_git_status_json(tmp_path, mocker):
         "jailbee.lifecycle.probe_many_parallel",
         return_value={
             "myrepo-feat-x": GitStatus(
-                wt="clean", ahead_diff="+1 -0", ahead_count="1", conflict="conflict"
+                wt="clean", ahead_diff="+1 -0", target_diff="+1 -0", ahead_count="1", behind_count="0", conflict="conflict"
             ),
         },
     )
@@ -5064,8 +5081,13 @@ def test_ls_merge_conflict_in_git_status_json(tmp_path, mocker):
             "name": "feat-x",
             "git_status": {
                 "wt": "clean",
-                "ahead_diff": "+1 -0",
+                "target_diff": "+1 -0",
                 "ahead_count": "1",
+                "behind_count": "0",
+                "base_sha": None,
+                "base_source": "unavailable",
+                "tracking_relation": "unavailable",
+                "upstream_ref": "",
                 "conflict": "conflict",
                 "head_sha": "",
                 "remote_contained": None,

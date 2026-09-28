@@ -477,10 +477,11 @@ that path.
 |---|---|
 | `--all` | Containers from every jailbee-managed repo (adds a REPO column). Default: cwd repo only. |
 | `-o` / `--format <fmt>` | `table` (default) or `json`. |
-| `--fields <list>` | Comma-separated columns. Allowed: `name, full_name, repo, mode, base, state, created, job, network, ttl, loose_until, ip, memory_limit, mem, wt, ahead_diff, ahead_count, conflict, local_diff, local_count, git_status, pr, issues, group, cpu, doing`. `claude` and `claude_group` are accepted aliases for `group`. Wins outright over the `ls:` config block, and applies to every `--format`. |
+| `--fields <list>` | Comma-separated columns. Allowed: `name, full_name, repo, mode, base, state, created, job, network, ttl, loose_until, ip, memory_limit, mem, wt, target_diff, ahead_count, behind_count, conflict, local_diff, local_count, git_status, pr, issues, group, cpu, doing`. `claude` and `claude_group` are accepted aliases for `group`. Wins outright over the `ls:` config block, and applies to every `--format`. |
 
 Git-status columns: **BASE** (base branch), **WT** (uncommitted: `+adds -dels`),
-**AHEAD ±** / **↑** (commits ahead of base, 3-dot/"PR view"), **MERGE** (see
+**DIFF ±** (direct tree diff against the host target), **↑** / **↓** (unique
+commits on either side of the host target), **MERGE** (see
 below). The **JOB** column shows in-flight and failed
 background-job phases (`jailbee new`/`jailbee destroy --background`), and
 renders a detached autostart run as `autostart:<stage>` (`<stage>` is
@@ -529,7 +530,7 @@ against base is clean — a container left mid-merge by `jailbee git push
 Two more git-status columns exist, **off by default**: **LOCAL ±**
 (`local_diff`) and **L↑** (`local_count`) — the diff/commit-count between
 the container's HEAD and the *host's currently checked-out branch*, as
-opposed to `AHEAD ±`/`↑`'s comparison against the container's pinned base.
+opposed to `DIFF ±`/`↑`/`↓`'s comparison against the host target branch.
 Opt in with `--fields` or the `ls:` config block. Either can show `?`: the
 comparison needs one side to already hold the other's commit as an object
 in the same repository, and JailBee never fetches or pushes to force an answer
@@ -541,7 +542,7 @@ also feed the destroy guard's "commits not on the host" check (see `jailbee
 destroy` above).
 
 The two pairs count submodules differently, which is worth knowing when they
-sit side by side. `AHEAD ±` excludes gitlink lines
+sit side by side. `DIFF ±` excludes gitlink lines
 (`--ignore-submodules=all`) and instead folds in each submodule's *own*
 committed diff, so a pointer bump contributes the submodule's real content
 delta. `LOCAL ±` uses `--ignore-submodules=dirty` with no per-submodule pass

@@ -2057,7 +2057,7 @@ something has one" still applies to a hidden-by-config column, unlike
 
 **The two views have different built-in defaults.** `jailbee ls` is a
 one-shot listing and stays narrow: NAME, BASE, STATE, CREATED, NETWORK, WT,
-AHEAD ±, ↑, MERGE. The dashboards add MEM, CPU and DOING, because a live
+DIFF ±, ↑, ↓, MERGE. The dashboards add MEM, CPU and DOING, because a live
 number is worth its width in a view that refreshes and is a stale sample in
 one that does not — CPU and DOING are rates and have no value at all in a
 single reading, so `ls` takes a second one when you name either in
@@ -2077,10 +2077,20 @@ the command line still wins in **every** format, table or JSON.
 
 Allowed names (also the `jailbee ls --fields` vocabulary): `name`, `full_name`,
 `repo`, `mode`, `base`, `state`, `created`, `job`, `network`, `ttl`,
-`loose_until`, `ip`, `memory_limit`, `mem`, `wt`, `ahead_diff`,
-`ahead_count`, `conflict`, `local_diff`, `local_count`, `git_status`, `pr`,
+`loose_until`, `ip`, `memory_limit`, `mem`, `wt`, `target_diff`,
+`ahead_count`, `behind_count`, `conflict`, `local_diff`, `local_count`, `git_status`, `pr`,
 `issues`, `group`, `cpu`, `doing`. `claude` and `claude_group` are accepted
 aliases for `group`.
+
+`ahead_diff` was retired: configured uses produce a migration warning and
+explicit `--fields ahead_diff` is an error. Use `target_diff` for the direct
+committed-tree comparison with the host target branch, or `jailbee git diff
+--incoming` for the former branch-contribution patch. Explicit JSON
+`git_status` uses `target_diff`, `behind_count`, `base_source`, `base_sha`,
+`tracking_relation` and `upstream_ref` instead of `ahead_diff`; its submodule
+line fields are `target_ins`/`target_del` instead of `ahead_ins`/`ahead_del`.
+`local_diff` and `local_count` remain opt-in comparisons with the host's
+checked-out HEAD, which can differ from the target branch.
 
 Three things are problems: an unknown name (reported with the allowed set
 listed), `fields: []` (a table with no columns at all — write `fields: null`
