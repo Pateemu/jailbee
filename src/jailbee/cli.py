@@ -8833,13 +8833,15 @@ def egress_add_cmd(
     from jailbee import egress_scope
     from jailbee.egress import NetworkResolveError, parse_egress_entry
 
-    cfg = _load_or_exit(config)
     if entry is None:
         from jailbee.lifecycle import _stdin_is_interactive
 
         if not _stdin_is_interactive():
             error("ENTRY is required without an interactive terminal; pass ENTRY explicitly.")
             raise typer.Exit(2)
+
+    cfg = _load_or_exit(config)
+    if entry is None:
         from jailbee.egress_interaction import prompt_add_entry
 
         entry = prompt_add_entry()
@@ -8949,13 +8951,15 @@ def egress_rm_cmd(
     from jailbee import egress_scope
     from jailbee.db import get_engine
 
-    cfg = _load_or_exit(config)
     if entry is None:
         from jailbee.lifecycle import _stdin_is_interactive
 
         if not _stdin_is_interactive():
             error("ENTRY is required without an interactive terminal; pass ENTRY explicitly.")
             raise typer.Exit(2)
+
+    cfg = _load_or_exit(config)
+    if entry is None:
         from jailbee import egress_scope
         from jailbee.egress_interaction import pick_remove_entry
 

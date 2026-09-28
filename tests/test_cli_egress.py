@@ -68,6 +68,28 @@ def test_rm_without_entry_noninteractive_fails_before_prompt(tmp_path, mocker):
     prompt.assert_not_called()
 
 
+def test_add_without_entry_noninteractive_fails_before_loading_config(mocker):
+    load = mocker.patch("jailbee.cli._load_or_exit", side_effect=AssertionError("config loaded"))
+    mocker.patch("jailbee.lifecycle._stdin_is_interactive", return_value=False)
+
+    result = runner.invoke(app, ["net", "egress", "add"])
+
+    assert result.exit_code == 2
+    assert "ENTRY is required" in result.output
+    load.assert_not_called()
+
+
+def test_rm_without_entry_noninteractive_fails_before_loading_config(mocker):
+    load = mocker.patch("jailbee.cli._load_or_exit", side_effect=AssertionError("config loaded"))
+    mocker.patch("jailbee.lifecycle._stdin_is_interactive", return_value=False)
+
+    result = runner.invoke(app, ["net", "egress", "rm"])
+
+    assert result.exit_code == 2
+    assert "ENTRY is required" in result.output
+    load.assert_not_called()
+
+
 def test_add_without_entry_prompts_for_container_scope(tmp_path, mocker):
     import jailbee.egress_interaction as interaction
 
