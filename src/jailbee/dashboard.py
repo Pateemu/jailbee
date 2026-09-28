@@ -1393,15 +1393,10 @@ def repo_heading(group: RepoGroup, selected: Row | None, folded: frozenset[str])
     return result
 
 
-def repo_table(
-    group: RepoGroup,
-    fields: list[FieldSpecCI],
-    widths: tuple[int, ...],
-    selected: Row | None,
-    *,
-    show_header: bool,
+def _aligned_table(
+    fields: list[FieldSpecCI], widths: tuple[int, ...], *, show_header: bool
 ) -> Table:
-    """Render one repo's rows with globally aligned table columns."""
+    """An empty table with the dashboard's shared, fixed column geometry."""
     table = Table(
         box=None,
         pad_edge=False,
@@ -1418,6 +1413,22 @@ def repo_table(
             min_width=1,
             no_wrap=False,
         )
+    return table
+
+
+def column_header(fields: list[FieldSpecCI], widths: tuple[int, ...]) -> Table:
+    """The column titles, drawn once above every repo section."""
+    return _aligned_table(fields, widths, show_header=True)
+
+
+def repo_table(
+    group: RepoGroup,
+    fields: list[FieldSpecCI],
+    widths: tuple[int, ...],
+    selected: Row | None,
+) -> Table:
+    """Render one repo's rows, headerless, aligned with :func:`column_header`."""
+    table = _aligned_table(fields, widths, show_header=False)
     for container in group.containers:
         is_selected = selected == Row("container", container.name)
         cells: list[str] = []
@@ -1553,7 +1564,6 @@ class _RepoSections:
         )
         widths = _fit_dashboard_column_widths(measured, options.max_width)
         sections: list[RenderableType] = []
-        headers_shown = False
         if self.empty:
             sections.append(
                 "All repositories are hidden — open Settings > Visibility to show them"
@@ -1561,15 +1571,15 @@ class _RepoSections:
                 else "(no containers found)"
             )
         else:
+            expanded = {
+                g.prefix for g in self.groups if g.containers and g.prefix not in self.folded
+            }
+            if expanded:
+                sections.append(column_header(fields, widths))
             for group in self.groups:
                 sections.append(repo_heading(group, self.selected, self.folded))
-                if group.containers and group.prefix not in self.folded:
-                    sections.append(
-                        repo_table(
-                            group, fields, widths, self.selected, show_header=not headers_shown
-                        )
-                    )
-                    headers_shown = True
+                if group.prefix in expanded:
+                    sections.append(repo_table(group, fields, widths, self.selected))
         yield Group(*sections)
 
 

@@ -2515,6 +2515,51 @@ def test_render_shows_repo_headers_and_rows(tmp_path):
     assert "▸" in out
 
 
+def test_render_column_headers_sit_above_every_repo_heading(tmp_path):
+    """The column header row belongs to the whole table, not to the first repo:
+    it is drawn once, above the first repo heading, and never repeated."""
+    groups = [
+        dashboard.RepoGroup("alpha", "/repos/alpha", None, [_ci("alpha-one", "alpha")]),
+        dashboard.RepoGroup("beta", "/repos/beta", None, [_ci("beta-two", "beta")]),
+    ]
+    out = _render_text(
+        dashboard.render(
+            groups,
+            selected=None,
+            now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
+            last_refresh_age=1.0,
+            interval=3.0,
+            git_enabled=True,
+        )
+    )
+    lines = out.splitlines()
+    header_rows = [i for i, ln in enumerate(lines) if "NAME" in ln]
+    alpha_heading = next(i for i, ln in enumerate(lines) if "▾ alpha" in ln)
+    assert len(header_rows) == 1
+    assert header_rows[0] < alpha_heading
+
+
+def test_render_column_headers_stay_on_top_when_first_repo_is_empty(tmp_path):
+    groups = [
+        dashboard.RepoGroup("alpha", "/repos/alpha", None, []),
+        dashboard.RepoGroup("beta", "/repos/beta", None, [_ci("beta-two", "beta")]),
+    ]
+    out = _render_text(
+        dashboard.render(
+            groups,
+            selected=None,
+            now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
+            last_refresh_age=1.0,
+            interval=3.0,
+            git_enabled=True,
+        )
+    )
+    lines = out.splitlines()
+    header_row = next(i for i, ln in enumerate(lines) if "NAME" in ln)
+    alpha_heading = next(i for i, ln in enumerate(lines) if "▾ alpha" in ln)
+    assert header_row < alpha_heading
+
+
 def test_render_empty_groups_shows_placeholder():
     out = _render_text(
         dashboard.render(
