@@ -126,7 +126,7 @@ def test_code_examples_are_not_treated_as_raw_html_or_headings(site: tuple[Path,
         "2026-09-28-release.md",
         META,
         '```html\n<img src="https://example.com/demo.png">\n```\n\n'
-        '```sh\n# this is a shell comment\n```\n\n'
+        "```sh\n# this is a shell comment\n```\n\n"
         '`<img src="example">` is only an example.\n',
     )
     build(website, output)

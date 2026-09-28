@@ -24,9 +24,31 @@ URL = "https://jailbee.gisgro.io"
 DEFAULT_IMAGE = "/assets/img/jailbee-og.png"
 _SITEMAP_NS = "http://www.sitemaps.org/schemas/sitemap/0.9"
 _ARTICLE_TAGS = {
-    "a", "blockquote", "br", "code", "em", "h1", "h2", "h3", "h4", "h5", "h6",
-    "hr", "img", "li", "ol", "p", "pre", "strong", "table", "tbody", "td",
-    "th", "thead", "tr", "ul",
+    "a",
+    "blockquote",
+    "br",
+    "code",
+    "em",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "img",
+    "li",
+    "ol",
+    "p",
+    "pre",
+    "strong",
+    "table",
+    "tbody",
+    "td",
+    "th",
+    "thead",
+    "tr",
+    "ul",
 }
 
 
@@ -38,7 +60,9 @@ class _ArticleElements(HTMLParser):
         self.invalid_tag: str | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag not in _ARTICLE_TAGS or any(name.startswith("on") or name == "style" for name, _ in attrs):
+        if tag not in _ARTICLE_TAGS or any(
+            name.startswith("on") or name == "style" for name, _ in attrs
+        ):
             self.invalid_tag = tag
         if tag == "h1":
             self.h1_count += 1
