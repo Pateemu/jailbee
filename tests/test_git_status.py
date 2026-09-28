@@ -13,8 +13,8 @@ from jailbee.git_status import (
     parse_shortstat,
     probe_container_git,
 )
-from jailbee.incus import IncusError
 from jailbee.host_target import TargetSnapshot
+from jailbee.incus import IncusError
 
 
 @pytest.mark.parametrize(
@@ -853,8 +853,21 @@ def test_live_target_probe_uses_direct_tree_and_symmetric_commit_comparison(mock
     target = TargetSnapshot("main", "abc123", "local", "refs/remotes/origin/main", "local-ahead")
     incus = mocker.MagicMock()
     incus.exec.return_value = _payload(
-        "clean", "", "2", "ok", "", "", "headsha", "0", "?", "?", "", "0",
-        "0", "0", "1",
+        "clean",
+        "",
+        "2",
+        "ok",
+        "",
+        "",
+        "headsha",
+        "0",
+        "?",
+        "?",
+        "",
+        "0",
+        "0",
+        "0",
+        "1",
     )
 
     status = probe_container_git(incus, "c", "/repo", "main", "main", target=target)
@@ -862,7 +875,7 @@ def test_live_target_probe_uses_direct_tree_and_symmetric_commit_comparison(mock
     assert 'git diff --shortstat --ignore-submodules=all "${BASE}" HEAD' in _PROBE_SNIPPET
     assert 'git rev-list --left-right --count "${BASE}...HEAD"' in _PROBE_SNIPPET
     assert 'git merge-tree --write-tree "${BASE}" HEAD' in _PROBE_SNIPPET
-    committed_section = _PROBE_SNIPPET.split("if [ -n \"$BASE\" ]; then", 1)[1]
+    committed_section = _PROBE_SNIPPET.split('if [ -n "$BASE" ]; then', 1)[1]
     target_diff = committed_section.split("else", 1)[0]
     assert 'git diff --shortstat --ignore-submodules=all "${BASE}" HEAD' in target_diff
     assert incus.exec.call_args.kwargs["env"]["TARGET_SHA"] == "abc123"
@@ -892,15 +905,34 @@ def test_live_target_is_forwarded_by_branch_to_matching_parallel_probes(mocker):
 
 
 def test_unavailable_live_target_keeps_worktree_and_live_operation(mocker):
-    unavailable = TargetSnapshot("main", None, "unavailable", "refs/remotes/origin/main", "unavailable")
+    unavailable = TargetSnapshot(
+        "main", None, "unavailable", "refs/remotes/origin/main", "unavailable"
+    )
     incus = mocker.MagicMock()
     incus.exec.return_value = _payload(
-        " 1 file changed, 4 insertions(+)\n", "?", "?", "?", "", "", "headsha", "0",
-        "?", "?", "merge", "2", "0", "0", "", "unavailable", "unavailable",
+        " 1 file changed, 4 insertions(+)\n",
+        "?",
+        "?",
+        "?",
+        "",
+        "",
+        "headsha",
+        "0",
+        "?",
+        "?",
+        "merge",
+        "2",
+        "0",
+        "0",
+        "",
+        "unavailable",
+        "unavailable",
         "refs/remotes/origin/main",
     )
 
-    status = probe_container_git(mocker.Mock(exec=incus.exec), "c", "/repo", "main", "main", target=unavailable)
+    status = probe_container_git(
+        mocker.Mock(exec=incus.exec), "c", "/repo", "main", "main", target=unavailable
+    )
 
     assert status.wt == "+4 -0"
     assert status.target_diff == status.ahead_count == status.behind_count == "?"
@@ -913,13 +945,17 @@ def test_live_target_does_not_fall_back_to_pinned_refs_when_sha_is_unavailable(m
 
     target = TargetSnapshot("main", None, "unavailable", "refs/remotes/origin/main", "unavailable")
     incus = mocker.MagicMock()
-    incus.exec.return_value = _payload("", "?", "?", "?", "", "", "head", "0", "?", "?", "", "0", "0", "?")
+    incus.exec.return_value = _payload(
+        "", "?", "?", "?", "", "", "head", "0", "?", "?", "", "0", "0", "?"
+    )
 
     status = probe_container_git(incus, "c", "/repo", "main", "main", target=target)
 
     assert incus.exec.call_args.kwargs["env"]["TARGET_SHA"] == ""
     assert status.target_diff == status.ahead_count == status.behind_count == "?"
-    target_resolution = _PROBE_SNIPPET.split('if [ "$TARGET_MODE" = "1" ]; then', 1)[1].split("elif", 1)[0]
+    target_resolution = _PROBE_SNIPPET.split('if [ "$TARGET_MODE" = "1" ]; then', 1)[1].split(
+        "elif", 1
+    )[0]
     assert 'git cat-file -e "${TARGET_SHA}^{commit}"' in target_resolution
     assert "refs/jailbee/base/${BASE_BRANCH}" not in target_resolution
 
@@ -928,8 +964,20 @@ def test_missing_submodule_object_makes_live_target_diff_unknown(mocker):
     target = TargetSnapshot("main", "abc123", "local", "", "unavailable")
     incus = mocker.MagicMock()
     incus.exec.return_value = _payload(
-        "", "?\n?", "2", "ok", "deps/lib\tmodified\t1\t0\t?\n", "",
-        "head", "0", "?", "?", "", "0", "0", "1",
+        "",
+        "?\n?",
+        "2",
+        "ok",
+        "deps/lib\tmodified\t1\t0\t?\n",
+        "",
+        "head",
+        "0",
+        "?",
+        "?",
+        "",
+        "0",
+        "0",
+        "1",
     )
 
     status = probe_container_git(incus, "c", "/repo", "main", "main", target=target)

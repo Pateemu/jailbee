@@ -9,14 +9,15 @@ parallel use from a thread pool.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Mapping, TypedDict
+from typing import TypedDict
 
 from jailbee.config import CONTAINER_USERNAME
+from jailbee.host_target import TargetSnapshot
 from jailbee.incus import Incus, IncusError
 from jailbee.issue_outbox import ISSUE_OUTBOX_SUBPATH
-from jailbee.host_target import TargetSnapshot
 from jailbee.pr_outbox import OUTBOX_SUBPATH
 
 _SHORTSTAT_RE = re.compile(r"(?P<ins>\d+)\s+insertion|(?P<del>\d+)\s+deletion")
@@ -255,7 +256,7 @@ def _parse_submodules(committed_raw: str, wt_raw: str) -> tuple[SubmoduleChange,
         cols = line.split("\t")
         if len(cols) < 3:
             continue
-        path, status, commits_s = cols[0], cols[1], cols[2]
+        path, status = cols[0], cols[1]
         if not path.strip():
             continue
         if len(cols) >= 5:
@@ -362,10 +363,12 @@ WT="${WT_STAGED}${WT_UNSTAGED}${SUB_WT}"
 
 if [ -n "$BASE" ]; then
   if [ "$TARGET_MODE" = "1" ]; then
-    COMMITTED=$(git diff --shortstat --ignore-submodules=all "${BASE}" HEAD 2>/dev/null) || COMMITTED="?"
+    COMMITTED=$(git diff --shortstat --ignore-submodules=all "${BASE}" HEAD 2>/dev/null) \
+      || COMMITTED="?"
     RAW_DIFF=$(git diff --raw --abbrev=40 "${BASE}" HEAD 2>/dev/null) || RAW_DIFF="?"
   else
-    COMMITTED=$(git diff --shortstat --ignore-submodules=all "${BASE}...HEAD" 2>/dev/null) || COMMITTED="?"
+    COMMITTED=$(git diff --shortstat --ignore-submodules=all "${BASE}...HEAD" 2>/dev/null) \
+      || COMMITTED="?"
     RAW_DIFF=$(git diff --raw --abbrev=40 "${BASE}...HEAD" 2>/dev/null) || RAW_DIFF="?"
   fi
   SUB_COMMITTED=$(
@@ -440,7 +443,8 @@ if [ -n "$BASE" ]; then
       else
         status=modified
         if [ "$TARGET_MODE" = "1" ]; then
-          counts=$(git -C "$sub_path" rev-list --left-right --count "$os...$ns" 2>/dev/null) || counts="?"
+          counts=$(git -C "$sub_path" rev-list --left-right --count "$os...$ns" 2>/dev/null) \
+            || counts="?"
           if [ "$counts" = "?" ]; then ahead=0; behind=0
           else set -- $counts; behind=$1; ahead=$2; fi
           ss=$(git -C "$sub_path" diff --shortstat "$os" "$ns" 2>/dev/null) || ss="?"
