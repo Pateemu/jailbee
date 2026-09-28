@@ -148,6 +148,20 @@ def test_render_marks_state_and_flags_dynamic_columns():
     assert "Fields" in out and "Repos" in out and "Visibility" in out
 
 
+def test_render_highlights_the_cursor_row_in_the_shared_cursor_style():
+    """The overlay's cursor row reads as the same cursor as the dashboard's."""
+    from jailbee.dashboard_settings import CURSOR_STYLE, render_settings
+
+    console = Console(width=90, force_terminal=True, color_system="standard")
+    with console.capture() as cap:
+        console.print(render_settings(_state(), dynamic=frozenset()))
+    out = cap.get()
+    with console.capture() as cap:
+        console.print(f"[{CURSOR_STYLE}]name[/]", end="")
+
+    assert cap.get() in out  # the first row, `name`, is under the cursor
+
+
 def test_render_repos_tab_shows_folded_state():
     """Repos tab shows folded state: unchecked ([ ]) if folded, checked ([x]) if not.
 

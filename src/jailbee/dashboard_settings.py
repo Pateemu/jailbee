@@ -25,6 +25,12 @@ if TYPE_CHECKING:
 
 Tab = Literal["fields", "repos", "visibility"]
 
+# The cursor row's text style for every TUI dashboard surface: container
+# rows, repo headings, action menus and this overlay. It lives here, the
+# lowest module that draws a cursor, so `dashboard` can import it. It must
+# stay distinct from the headings' resting colours (cyan, magenta).
+CURSOR_STYLE = "bold bright_yellow"
+
 # The overlay is drawn *below* the live table (see module docstring), so every
 # row it draws is a line the table loses to `vertical_overflow="ellipsis"`
 # cropping from the bottom. Reading the live console's height here would
@@ -226,7 +232,7 @@ def render_settings(state: SettingsState, *, dynamic: frozenset[str]) -> Rendera
             if state.tab == "fields" and name in dynamic
             else ""
         )
-        style = "bold bright_white" if i == state.index else ""
+        style = CURSOR_STYLE if i == state.index else ""
         text = f"[{style}]{name}[/]" if style else name
         lines.append(f"{cursor}[{box_mark}]  {text}{note}")
     if end < total:

@@ -4047,7 +4047,20 @@ def test_render_marks_a_selected_repo_header(tmp_path):
     assert str(plain.style) == "bold cyan"
     # Exactly the style a selected container row gets from `repo_table`.
     row = dashboard.repo_table(g, [], (), dashboard.Row("container", "alpha-one"))
-    assert str(selected.style) == str(row.rows[0].style) == "bold bright_white"
+    assert str(selected.style) == str(row.rows[0].style) == dashboard.CURSOR_STYLE
+
+
+def test_cursor_style_is_distinct_from_every_heading_colour(tmp_path):
+    """The cursor must never look like a heading's resting colour: an orphan
+    heading was yellow, so a yellow cursor on it would be invisible."""
+    repo = dashboard.RepoGroup("alpha", "/a", None, [])
+    orphan = dashboard.RepoGroup("gamma", None, None, [])
+    resting = {str(dashboard.repo_heading(g, None, frozenset()).style) for g in (repo, orphan)}
+    assert resting == {"bold cyan", "bold magenta"}
+    assert dashboard.CURSOR_STYLE == "bold bright_yellow"
+    for g in (repo, orphan):
+        on_it = dashboard.repo_heading(g, dashboard.Row("repo", g.prefix), frozenset())
+        assert str(on_it.style) == dashboard.CURSOR_STYLE
 
 
 def test_render_gutter_lands_on_the_first_enabled_column_not_just_name(tmp_path):

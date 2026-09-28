@@ -50,6 +50,7 @@ from jailbee.dashboard_commands import (
     insert_options_before_separator,
 )
 from jailbee.dashboard_settings import (
+    CURSOR_STYLE,
     SettingsState,
     enabled_names,
     move_settings,
@@ -1262,7 +1263,7 @@ def _render_menu(menu: MenuState | RepoMenuState) -> RenderableType:
     """The action menu as a bordered panel: one row per action, cursor on the
     highlighted one."""
     lines = [
-        f"[bold cyan]▸[/] [{_CURSOR_STYLE}]{label}[/]" if i == menu.index else f"  {label}"
+        f"[bold cyan]▸[/] [{CURSOR_STYLE}]{label}[/]" if i == menu.index else f"  {label}"
         for i, item in enumerate(_menu_entries(menu))
         for label in [item.label if isinstance(item, MenuGroup) else item[0]]
     ]
@@ -1378,11 +1379,6 @@ def _hint_line(overlay: Overlay | None) -> str:
     return ""
 
 
-# The cursor row's text style, shared by container rows, repo headings and
-# menu entries so every kind of cursor stop reads as the same cursor.
-_CURSOR_STYLE = "bold bright_white"
-
-
 def repo_heading(group: RepoGroup, selected: Row | None, folded: frozenset[str]) -> Text:
     """Render a repo heading independently of the table's data columns.
 
@@ -1395,9 +1391,9 @@ def repo_heading(group: RepoGroup, selected: Row | None, folded: frozenset[str])
     if group.repo_root is None:
         label += "  (orphan)"
     if selected == Row("repo", group.prefix):
-        style = _CURSOR_STYLE
+        style = CURSOR_STYLE
     else:
-        style = "bold yellow" if group.repo_root is None else "bold cyan"
+        style = "bold magenta" if group.repo_root is None else "bold cyan"
     return Text(label, style=style)
 
 
@@ -1454,7 +1450,7 @@ def repo_table(
             if index == 0:
                 value = ("[bold cyan]▸[/] " if is_selected else "  ") + value
             cells.append(value)
-        table.add_row(*cells, style=_CURSOR_STYLE if is_selected else None)
+        table.add_row(*cells, style=CURSOR_STYLE if is_selected else None)
     return table
 
 
