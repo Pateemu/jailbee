@@ -855,7 +855,9 @@ def test_all_repos_legacy_foreign_uses_its_own_default_without_colliding_with_la
     ]
     load = mocker.patch("jailbee.config.load_repo_config", return_value=foreign_cfg)
     snapshots = {
-        branch: TargetSnapshot(branch, f"{branch}-sha", "local", f"refs/remotes/fork/{branch}", "equal")
+        branch: TargetSnapshot(
+            branch, f"{branch}-sha", "local", f"refs/remotes/fork/{branch}", "equal"
+        )
         for branch in ("develop", cfg.default_branch)
     }
     resolve = mocker.patch(
