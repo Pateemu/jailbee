@@ -708,6 +708,78 @@ def test_list_containers_passes_the_host_head_to_the_probe(make_cfg, tmp_path, m
     assert probe.call_args.kwargs["host_head"] == "deadbeef"
 
 
+def test_listing_snapshots_moved_host_branch_once_for_two_workers(make_cfg, tmp_path, mocker):
+    from jailbee.host_target import TargetSnapshot
+
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    cfg = make_cfg(repo)
+    incus = MagicMock()
+    incus.list_containers.return_value = [
+        _container(
+            name=f"myrepo-worker-{n}",
+            user_config={
+                "user.jailbee.repo_dir": "/repo",
+                "user.jailbee.base_branch": "vaaka-combined",
+            },
+        )
+        for n in (1, 2)
+    ]
+    snapshot = TargetSnapshot("vaaka-combined", "moved-outside-jb", "local", "refs/remotes/origin/vaaka-combined", "unavailable")
+    resolve = mocker.patch("jailbee.lifecycle.resolve_target", return_value=snapshot)
+    probe = mocker.patch("jailbee.lifecycle.probe_many_parallel", return_value={})
+
+    list_containers(cfg, incus, with_git_status=True)
+
+    resolve.assert_called_once_with(repo, "vaaka-combined", cfg.upstream_remote)
+    assert probe.call_args.kwargs["target_by_name"] == {
+        "myrepo-worker-1": snapshot,
+        "myrepo-worker-2": snapshot,
+    }
+
+
+def test_all_repos_uses_foreign_config_and_never_reads_excluded_or_orphan_refs(
+    make_cfg, tmp_path, mocker, db_session, db_engine
+):
+    from datetime import UTC, datetime
+
+    from jailbee.db.models import RegisteredRepo
+    from jailbee.host_target import TargetSnapshot
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+
+    root = tmp_path / "foreign"
+    root.mkdir()
+    cfg = make_cfg(tmp_path / "mine")
+    foreign_cfg = make_cfg(root).model_copy(update={"upstream_remote": "fork"})
+    db_session.add(RegisteredRepo(container_prefix="foreign", repo_root=str(root), registered_at=datetime.now(UTC)))
+    db_session.add(RegisteredRepo(container_prefix="missing", repo_root=str(tmp_path / "gone"), registered_at=datetime.now(UTC)))
+    db_session.add(RegisteredRepo(container_prefix="secret", repo_root=str(tmp_path / "secret"), registered_at=datetime.now(UTC)))
+    db_session.commit()
+    mocker.patch("jailbee.db.get_engine", return_value=db_engine)
+    incus = MagicMock()
+    incus.list_containers.return_value = [
+        _container(name=f"{prefix}-work", profiles=[f"{prefix}-base"], user_config={"user.jailbee.repo_dir": "/repo", "user.jailbee.base_branch": "dev"})
+        for prefix in ("foreign", "missing", "secret")
+    ]
+    load = mocker.patch("jailbee.config.load_repo_config", return_value=foreign_cfg)
+    resolved = TargetSnapshot("dev", "foreign-sha", "local", "refs/remotes/fork/dev", "unavailable")
+    resolve = mocker.patch("jailbee.lifecycle.resolve_target", return_value=resolved)
+    probe = mocker.patch("jailbee.lifecycle.probe_many_parallel", return_value={})
+
+    infos = list_containers(cfg, incus, all_repos=True, with_git_status=True, scope=RemoteRepoScope(frozenset({"secret"})))
+
+    assert {c.name for c in infos} == {"foreign-work", "missing-work"}
+    load.assert_called_once_with(root)
+    resolve.assert_called_once_with(root, "dev", "fork")
+    by_name = probe.call_args.kwargs["target_by_name"]
+    assert by_name["foreign-work"] == resolved
+    assert by_name["missing-work"].sha is None
+    assert by_name["missing-work"].source == "unavailable"
+    assert probe.call_args.kwargs["host_head_by_name"] == {
+        "foreign-work": None, "missing-work": None
+    }
+
+
 # ---- _resolve_local_on_host ----
 
 

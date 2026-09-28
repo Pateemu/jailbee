@@ -69,9 +69,10 @@ def test_probe_returns_parsed_status_when_snippet_emits_four_fields(mocker):
         base_branch="dev",
         default_branch="main",
     )
-    assert result == GitStatus(
-        wt="+12 -3", ahead_diff="+200 -18", ahead_count="3", conflict="conflict"
-    )
+    assert result.wt == "+12 -3"
+    assert result.ahead_diff == "+200 -18"
+    assert result.ahead_count == "3"
+    assert result.conflict == "conflict"
 
 
 def test_probe_returns_clean_when_snippet_emits_empty_fields(mocker):
@@ -86,7 +87,10 @@ def test_probe_returns_clean_when_snippet_emits_empty_fields(mocker):
     )
     # Empty ahead_count is treated as "?", not "0", since the snippet
     # explicitly writes "0" when base resolves and "?" when it doesn't.
-    assert result == GitStatus(wt="clean", ahead_diff="clean", ahead_count="?", conflict="ok")
+    assert result.wt == "clean"
+    assert result.ahead_diff == "clean"
+    assert result.ahead_count == "?"
+    assert result.conflict == "ok"
 
 
 def test_clean_submodule_keeps_wt_clean(mocker):
@@ -158,7 +162,6 @@ def test_probe_passes_env_vars_into_snippet(mocker):
         "BASE_BRANCH": "feature/x",
         "DEFAULT_BRANCH": "develop",
         "HOST_HEAD": "",
-        "TARGET_MODE": "",
         "TARGET_SHA": "",
         "OUTBOX_DIR": "/home/dev/.jailbee/pr-outbox",
         "ISSUE_OUTBOX_DIR": "/home/dev/.jailbee/issue-outbox",
@@ -261,29 +264,18 @@ def test_probe_many_parallel_with_empty_target_list_returns_empty_dict(mocker):
     incus.exec.assert_not_called()
 
 
-def test_probe_snippet_prefers_gie_base_ref():
+def test_probe_snippet_never_uses_pinned_base_ref():
     from jailbee.git_status import _PROBE_SNIPPET
 
-    assert "refs/jailbee/base/${BASE_BRANCH}" in _PROBE_SNIPPET
-    # It must be checked before the origin/<base> fallback.
-    gie_idx = _PROBE_SNIPPET.index("refs/jailbee/base/${BASE_BRANCH}")
-    origin_idx = _PROBE_SNIPPET.index("refs/remotes/origin/${BASE_BRANCH}")
-    assert gie_idx < origin_idx
+    assert "refs/jailbee/base/" not in _PROBE_SNIPPET
+    assert "refs/remotes/origin/" not in _PROBE_SNIPPET
+    assert 'git cat-file -e "${TARGET_SHA}^{commit}"' in _PROBE_SNIPPET
 
 
-def test_probe_snippet_guards_default_fallback_on_empty_base_branch():
-    """The origin/<default_branch> fallback must be gated on an *empty*
-    BASE_BRANCH. Otherwise a PR-review container whose base ref never made it
-    into the clone silently diffs the head against the default branch and
-    reports a huge, wrong AHEAD instead of an honest "?"."""
+def test_probe_snippet_never_uses_default_branch_as_fallback():
     from jailbee.git_status import _PROBE_SNIPPET
 
-    default_ref = "refs/remotes/origin/${DEFAULT_BRANCH}"
-    idx = _PROBE_SNIPPET.index(default_ref)
-    # The `elif` clause that introduces the default-branch fallback must carry
-    # a `[ -z "$BASE_BRANCH" ]` guard between it and the DEFAULT_BRANCH ref.
-    guard_start = _PROBE_SNIPPET.rindex("elif", 0, idx)
-    assert '[ -z "$BASE_BRANCH" ]' in _PROBE_SNIPPET[guard_start:idx]
+    assert "DEFAULT_BRANCH" not in _PROBE_SNIPPET
 
 
 def test_probe_returns_unknown_when_base_set_but_unresolved(mocker):
@@ -365,9 +357,9 @@ def test_probe_snippet_sums_submodule_committed():
 
     # Superproject committed diff drops the gitlink pointer (replaced by real delta).
     assert "--shortstat --ignore-submodules=all" in _PROBE_SNIPPET
-    assert '"${BASE}...HEAD"' in _PROBE_SNIPPET
+    assert '"${BASE}" HEAD' in _PROBE_SNIPPET
     # Gitlink SHA pairs are extracted from raw diff and diffed inside the submodule.
-    assert 'git diff --raw --abbrev=40 "${BASE}...HEAD"' in _PROBE_SNIPPET
+    assert 'git diff --raw --abbrev=40 "${BASE}" HEAD' in _PROBE_SNIPPET
     assert "160000" in _PROBE_SNIPPET
 
 
@@ -887,7 +879,7 @@ def test_live_target_probe_uses_direct_tree_and_symmetric_commit_comparison(mock
     assert status.tracking_relation == "local-ahead"
 
 
-def test_live_target_is_forwarded_by_branch_to_matching_parallel_probes(mocker):
+def test_live_target_is_forwarded_by_name_to_matching_parallel_probes(mocker):
     from jailbee.git_status import probe_many_parallel
 
     probe = mocker.patch("jailbee.git_status.probe_container_git")
@@ -898,10 +890,24 @@ def test_live_target_is_forwarded_by_branch_to_matching_parallel_probes(mocker):
         mocker.Mock(),
         [("a", "/repo", "main"), ("b", "/repo", "dev")],
         "main",
-        target_by_branch={"main": target},
+        target_by_name={"a": target},
     )
 
     assert [call.kwargs.get("target") for call in probe.call_args_list] == [target, None]
+
+
+def test_parallel_probe_never_forwards_current_repo_head_to_foreign_repo(mocker):
+    from jailbee.git_status import probe_many_parallel
+
+    probe = mocker.patch("jailbee.git_status.probe_container_git")
+    probe_many_parallel(
+        mocker.Mock(),
+        [("own", "/repo", "main"), ("foreign", "/repo", "main")],
+        "main",
+        host_head="own-head",
+        host_head_by_name={"own": "own-head", "foreign": None},
+    )
+    assert [call.kwargs["host_head"] for call in probe.call_args_list] == ["own-head", None]
 
 
 def test_unavailable_live_target_keeps_worktree_and_live_operation(mocker):
@@ -953,11 +959,8 @@ def test_live_target_does_not_fall_back_to_pinned_refs_when_sha_is_unavailable(m
 
     assert incus.exec.call_args.kwargs["env"]["TARGET_SHA"] == ""
     assert status.target_diff == status.ahead_count == status.behind_count == "?"
-    target_resolution = _PROBE_SNIPPET.split('if [ "$TARGET_MODE" = "1" ]; then', 1)[1].split(
-        "elif", 1
-    )[0]
-    assert 'git cat-file -e "${TARGET_SHA}^{commit}"' in target_resolution
-    assert "refs/jailbee/base/${BASE_BRANCH}" not in target_resolution
+    assert 'git cat-file -e "${TARGET_SHA}^{commit}"' in _PROBE_SNIPPET
+    assert "refs/jailbee/base/" not in _PROBE_SNIPPET
 
 
 def test_missing_submodule_object_makes_live_target_diff_unknown(mocker):

@@ -3202,6 +3202,7 @@ def _warn_before_container_destroy(cfg: Config, incus: Incus, full_name: str, sh
             cfg.default_branch,
             uid=cfg.container_user.uid,
             host_head=git.get_head_sha(cfg.repo_root),
+            target=_lifecycle.snapshot_targets_for(cfg, [ci])[(cfg.container_prefix, ci.base_branch or cfg.default_branch)],
         )
 
     unknown = [short] if status_is_unknown(ci) else []

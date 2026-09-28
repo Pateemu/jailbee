@@ -76,6 +76,26 @@ def test_destroy_single_probes_and_warns_about_stranded_work(tmp_path, mocker):
     assert result.exit_code != 0
 
 
+def test_destroy_single_probe_uses_live_target_without_changing_risk(tmp_path, mocker):
+    from jailbee.host_target import TargetSnapshot
+
+    incus, destroy = _setup(tmp_path, mocker, [])
+    incus.list_containers.return_value = [_clone_payload("myrepo-feat-a")]
+    mocker.patch("jailbee.lifecycle.resolve_container_name", return_value="myrepo-feat-a")
+    snapshot = TargetSnapshot("main", "live", "local", "refs/remotes/origin/main", "equal")
+    resolve = mocker.patch("jailbee.lifecycle.resolve_target", return_value=snapshot)
+    probe = mocker.patch("jailbee.git_status.probe_container_git", return_value=_at_risk())
+    mocker.patch("jailbee.destroy_guard.has_commit", return_value=False)
+
+    result = CliRunner().invoke(app, ["destroy", "feat-a"], input="y\nn\n")
+
+    assert result.exit_code != 0
+    assert "working tree +12 -3" in result.stdout
+    destroy.assert_not_called()
+    resolve.assert_called_once()
+    assert probe.call_args.kwargs["target"] == snapshot
+
+
 def test_destroy_declining_the_risk_prompt_destroys_nothing(tmp_path, mocker):
     incus, destroy_mock = _setup(tmp_path, mocker, [])
     incus.list_containers.return_value = [_clone_payload("myrepo-feat-a")]

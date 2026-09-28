@@ -1397,6 +1397,27 @@ def test_cleanup_destroy_guard_skips_second_prompt_when_clean(mocker, make_cfg, 
     assert result.destroyed is True
 
 
+def test_cleanup_guard_probes_live_target_but_still_blocks_stranded_work(mocker, make_cfg, tmp_path):
+    from jailbee.git_status import GitStatus
+    from jailbee.host_target import TargetSnapshot
+    from jailbee.sync import _warn_before_container_destroy
+
+    cfg = make_cfg(tmp_path)
+    incus = mocker.MagicMock()
+    full_name = f"{cfg.container_prefix}-feat-foo"
+    mocker.patch("jailbee.lifecycle.list_containers", return_value=[_guarded_container_info(full_name, cfg)])
+    snapshot = TargetSnapshot("main", "new-sha", "local", "refs/remotes/origin/main", "equal")
+    resolve = mocker.patch("jailbee.lifecycle.resolve_target", return_value=snapshot)
+    probe = mocker.patch("jailbee.git_status.probe_container_git", return_value=GitStatus(wt="+1 -0", ahead_diff="clean", ahead_count="0", conflict="ok"))
+    mocker.patch("jailbee.destroy_guard.has_commit", return_value=False)
+    confirm = mocker.patch("jailbee.tui.confirm_destroy_risk", return_value=False)
+
+    assert not _warn_before_container_destroy(cfg, incus, full_name, "feat-foo")
+    resolve.assert_called_once()
+    assert probe.call_args.kwargs["target"] == snapshot
+    assert confirm.call_count == 1
+
+
 def test_cleanup_destroy_guard_declines_second_prompt_keeps_container(mocker, make_cfg, tmp_path):
     """At risk + second prompt declined (the guard's own default): the
     container survives even though the plain first prompt said yes."""

@@ -343,32 +343,9 @@ cd "$REPO_DIR" 2>/dev/null || { printf '?\0?\0?\0?\0'; exit 0; }
 test -d .git || { printf '?\0?\0?\0?\0'; exit 0; }
 
 BASE=""
-if [ "$TARGET_MODE" = "1" ]; then
-  if [ -n "$TARGET_SHA" ] \
-     && git cat-file -e "${TARGET_SHA}^{commit}" >/dev/null 2>&1; then
-    BASE="$TARGET_SHA"
-  fi
-elif [ -n "$BASE_BRANCH" ] \
-   && git rev-parse --verify --quiet \
-      "refs/jailbee/base/${BASE_BRANCH}^{commit}" >/dev/null 2>&1; then
-  BASE="refs/jailbee/base/${BASE_BRANCH}"
-elif [ -n "$BASE_BRANCH" ] \
-   && git rev-parse --verify --quiet \
-      "refs/remotes/origin/${BASE_BRANCH}^{commit}" >/dev/null 2>&1; then
-  BASE="refs/remotes/origin/${BASE_BRANCH}"
-elif [ -n "$BASE_BRANCH" ] \
-   && git rev-parse --verify --quiet \
-      "refs/heads/${BASE_BRANCH}^{commit}" >/dev/null 2>&1; then
-  BASE="refs/heads/${BASE_BRANCH}"
-elif [ -z "$BASE_BRANCH" ] \
-   && git rev-parse --verify --quiet \
-      "refs/remotes/origin/${DEFAULT_BRANCH}^{commit}" >/dev/null 2>&1; then
-  # Only fall back to the default branch when NO base branch was requested.
-  # A set-but-unresolvable BASE_BRANCH deliberately leaves BASE empty so the
-  # probe reports "?" instead of a plausible-but-wrong diff against the
-  # default branch (which had silently inflated AHEAD for PR-review containers
-  # whose base ref never made it into the clone).
-  BASE="refs/remotes/origin/${DEFAULT_BRANCH}"
+if [ -n "$TARGET_SHA" ] \
+   && git cat-file -e "${TARGET_SHA}^{commit}" >/dev/null 2>&1; then
+  BASE="$TARGET_SHA"
 fi
 
 WT_UNSTAGED=$(git diff --shortstat --ignore-submodules=dirty HEAD 2>/dev/null) || WT_UNSTAGED=""
@@ -378,15 +355,9 @@ SUB_WT=$(git submodule foreach --recursive --quiet \
 WT="${WT_STAGED}${WT_UNSTAGED}${SUB_WT}"
 
 if [ -n "$BASE" ]; then
-  if [ "$TARGET_MODE" = "1" ]; then
-    COMMITTED=$(git diff --shortstat --ignore-submodules=all "${BASE}" HEAD 2>/dev/null) \
-      || COMMITTED="?"
-    RAW_DIFF=$(git diff --raw --abbrev=40 "${BASE}" HEAD 2>/dev/null) || RAW_DIFF="?"
-  else
-    COMMITTED=$(git diff --shortstat --ignore-submodules=all "${BASE}...HEAD" 2>/dev/null) \
-      || COMMITTED="?"
-    RAW_DIFF=$(git diff --raw --abbrev=40 "${BASE}...HEAD" 2>/dev/null) || RAW_DIFF="?"
-  fi
+  COMMITTED=$(git diff --shortstat --ignore-submodules=all "${BASE}" HEAD 2>/dev/null) \
+    || COMMITTED="?"
+  RAW_DIFF=$(git diff --raw --abbrev=40 "${BASE}" HEAD 2>/dev/null) || RAW_DIFF="?"
   SUB_COMMITTED=$(
     IFS_TAB="$(printf '\t')"
     printf '%s\n' "$RAW_DIFF" \
@@ -408,18 +379,14 @@ if [ -n "$BASE" ]; then
   # "?"; SUB_COMMITTED is then ignored by the host parser.
   COMMITTED="${COMMITTED}
 ${SUB_COMMITTED}"
-  BEHIND_COUNT="?"
-  if [ "$TARGET_MODE" = "1" ]; then
-    COUNTS=$(git rev-list --left-right --count "${BASE}...HEAD" 2>/dev/null) || COUNTS="?"
-    if [ "$COUNTS" != "?" ]; then
-      set -- $COUNTS
-      BEHIND_COUNT=$1
-      COUNT=$2
-    else
-      COUNT="?"
-    fi
+  COUNTS=$(git rev-list --left-right --count "${BASE}...HEAD" 2>/dev/null) || COUNTS="?"
+  if [ "$COUNTS" != "?" ]; then
+    set -- $COUNTS
+    BEHIND_COUNT=$1
+    COUNT=$2
   else
-    COUNT=$(git rev-list --count "${BASE}..HEAD" 2>/dev/null) || COUNT="?"
+    BEHIND_COUNT="?"
+    COUNT="?"
   fi
   # exit 0 = clean merge; exit 1 = conflicts detected (best-effort).
   # exit >1 (unresolvable ref, usage error, old git) falls through to "?".
@@ -458,23 +425,13 @@ if [ -n "$BASE" ]; then
         status=removed; ahead=0; behind=0; ss=""
       else
         status=modified
-        if [ "$TARGET_MODE" = "1" ]; then
-          counts=$(git -C "$sub_path" rev-list --left-right --count "$os...$ns" 2>/dev/null) \
-            || counts="?"
-          if [ "$counts" = "?" ]; then ahead="?"; behind="?"
-          else set -- $counts; behind=$1; ahead=$2; fi
-          ss=$(git -C "$sub_path" diff --shortstat "$os" "$ns" 2>/dev/null) || ss="?"
-        else
-          ahead=$(git -C "$sub_path" rev-list --count "$os..$ns" 2>/dev/null) || ahead="?"
-          behind=0
-          ss=$(git -C "$sub_path" diff --shortstat "$os".."$ns" 2>/dev/null) || ss="?"
-        fi
+        counts=$(git -C "$sub_path" rev-list --left-right --count "$os...$ns" 2>/dev/null) \
+          || counts="?"
+        if [ "$counts" = "?" ]; then ahead="?"; behind="?"
+        else set -- $counts; behind=$1; ahead=$2; fi
+        ss=$(git -C "$sub_path" diff --shortstat "$os" "$ns" 2>/dev/null) || ss="?"
       fi
-      if [ "$TARGET_MODE" = "1" ]; then
-        printf '%s\t%s\t%s\t%s\t%s\n' "$sub_path" "$status" "$ahead" "$behind" "$ss"
-      else
-        printf '%s\t%s\t%s\t%s\n' "$sub_path" "$status" "$ahead" "$ss"
-      fi
+      printf '%s\t%s\t%s\t%s\t%s\n' "$sub_path" "$status" "$ahead" "$behind" "$ss"
     done
   )
 fi
@@ -563,13 +520,9 @@ def probe_container_git(
 ) -> GitStatus:
     """Run the probe snippet inside `full_name`, return parsed `GitStatus`.
 
-    AHEAD ±/↑ and the conflict flag are computed against the container's
-    base branch (`refs/jailbee/base/<base_branch>`, falling back to
-    `refs/remotes/origin/<base_branch>`, then `refs/heads/<base_branch>`).
-    `origin/<default_branch>` is used **only** when no base branch was
-    requested (`base_branch` is None/empty): a set-but-unresolvable base
-    branch yields all-`?` rather than silently comparing against the default
-    branch. `uid` is forwarded to `incus exec --user` so `git` runs as the
+    Committed comparisons use the supplied host target SHA only. If absent or
+    unreadable, all comparison-dependent fields remain unknown. `uid` is
+    forwarded to `incus exec --user` so `git` runs as the
     container's dev user (avoids the `dubious ownership` refusal on a
     dev-owned repo).
 
@@ -592,7 +545,6 @@ def probe_container_git(
                 "BASE_BRANCH": base_branch or "",
                 "DEFAULT_BRANCH": default_branch,
                 "HOST_HEAD": host_head or "",
-                "TARGET_MODE": "1" if target is not None else "",
                 "TARGET_SHA": (target.sha or "") if target is not None else "",
                 "OUTBOX_DIR": f"/home/{CONTAINER_USERNAME}/{OUTBOX_SUBPATH}",
                 "ISSUE_OUTBOX_DIR": f"/home/{CONTAINER_USERNAME}/{ISSUE_OUTBOX_SUBPATH}",
@@ -681,7 +633,7 @@ def probe_container_git(
 
     raw_behind = parts[14].strip() if len(parts) >= 15 else "?"
     behind_count = raw_behind if raw_behind.isdigit() else "?"
-    target_diff = ahead_diff if target is not None else "?"
+    target_diff = ahead_diff
 
     return GitStatus(
         wt=wt,
@@ -715,7 +667,8 @@ def probe_many_parallel(
     max_workers: int = 8,
     timeout_s: int = 3,
     host_head: str | None = None,
-    target_by_branch: Mapping[str, TargetSnapshot] | None = None,
+    target_by_name: Mapping[str, TargetSnapshot] | None = None,
+    host_head_by_name: Mapping[str, str | None] | None = None,
 ) -> dict[str, GitStatus]:
     """Run `probe_container_git` for each (full_name, repo_dir, base_branch) target.
 
@@ -738,8 +691,8 @@ def probe_many_parallel(
             default_branch,
             uid=uid,
             timeout_s=timeout_s,
-            host_head=host_head,
-            target=(target_by_branch or {}).get(base_branch or ""),
+            host_head=(host_head_by_name.get(full_name) if host_head_by_name is not None else host_head),
+            target=(target_by_name or {}).get(full_name),
         )
         return full_name, status
 

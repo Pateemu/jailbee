@@ -32,6 +32,7 @@ from jailbee.git import (
 # fallback below produces byte-identical `clean` / `+N -M` / `?` strings to
 # the container-side probe — duplicating the parser is how the two would drift.
 from jailbee.git_status import GitStatus, merge_label, parse_shortstat, probe_many_parallel
+from jailbee.host_target import TargetSnapshot, resolve_target
 from jailbee.incus import Incus, IncusError
 from jailbee.procstat import ActivitySampler, SampleInput
 from jailbee.profiles import (
@@ -188,6 +189,63 @@ def _resolve_local_on_host(cfg: Config, status: GitStatus) -> GitStatus:
         local_diff=parse_shortstat(raw_diff),
         local_count=raw_count if raw_count.isdigit() else "?",
     )
+
+
+def snapshot_targets_for(
+    cfg: Config,
+    containers: Sequence[ContainerInfo],
+    *,
+    all_repos: bool = False,
+    scope: RemoteRepoScope | None = None,
+) -> dict[tuple[str, str], TargetSnapshot]:
+    """Resolve one immutable host target per visible repository and base branch."""
+    from sqlmodel import Session, col, select
+
+    from jailbee.config import load_repo_config
+    from jailbee.config.errors import ConfigError
+    from jailbee.db import get_engine
+    from jailbee.db.models import RegisteredRepo
+
+    eligible = [
+        c for c in containers
+        if c.repo and (all_repos or c.repo == cfg.container_prefix)
+        and (scope is None or scope.allows(c.repo))
+        and c.state == "Running" and c.mode != "mount" and c.repo_dir
+    ]
+    if not eligible:
+        return {}
+
+    foreign = {c.repo for c in eligible if c.repo != cfg.container_prefix}
+    roots: dict[str, Path] = {}
+    if foreign:
+        with Session(get_engine()) as session:
+            for record in session.exec(
+                select(RegisteredRepo).where(col(RegisteredRepo.container_prefix).in_(foreign))
+            ).all():
+                roots[record.container_prefix] = Path(record.repo_root)
+
+    snapshots: dict[tuple[str, str], TargetSnapshot] = {}
+    foreign_configs: dict[str, Config | None] = {}
+    for c in eligible:
+        assert c.repo is not None
+        branch = c.base_branch or cfg.default_branch
+        key = (c.repo, branch)
+        if key in snapshots:
+            continue
+        repo_cfg: Config | None = cfg
+        if c.repo != cfg.container_prefix:
+            if c.repo not in foreign_configs:
+                root = roots.get(c.repo)
+                try:
+                    foreign_configs[c.repo] = load_repo_config(root) if root and root.is_dir() else None
+                except (OSError, ValueError, ConfigError):
+                    foreign_configs[c.repo] = None
+            repo_cfg = foreign_configs[c.repo]
+        if repo_cfg is None:
+            snapshots[key] = TargetSnapshot(branch, None, "unavailable", "", "unavailable")
+        else:
+            snapshots[key] = resolve_target(repo_cfg.repo_root, branch, repo_cfg.upstream_remote)
+    return snapshots
 
 
 def list_containers(
@@ -356,16 +414,28 @@ def list_containers(
         # its arguments are evaluated first).
         statuses: dict[str, GitStatus] = {}
         if targets:
+            snapshots = snapshot_targets_for(cfg, out, all_repos=all_repos, scope=scope)
+            target_names = {name for name, _, _ in targets}
+            target_by_name = {
+                c.name: snapshots[(c.repo, c.base_branch or cfg.default_branch)]
+                for c in out if c.name in target_names and c.repo
+            }
+            host_head = get_head_sha(cfg.repo_root) if any(c.repo == cfg.container_prefix for c in out if c.name in target_names) else None
             statuses = probe_many_parallel(
                 incus,
                 targets,
                 cfg.default_branch,
                 uid=cfg.container_user.uid,
-                host_head=get_head_sha(cfg.repo_root),
+                host_head=host_head,
+                target_by_name=target_by_name,
+                host_head_by_name={name: host_head if any(c.name == name and c.repo == cfg.container_prefix for c in out) else None for name in target_names},
             )
         for c in out:
             status = statuses.get(c.name)
-            c.git_status = None if status is None else _resolve_local_on_host(cfg, status)
+            c.git_status = (
+                None if status is None else
+                _resolve_local_on_host(cfg, status) if c.repo == cfg.container_prefix else status
+            )
 
     if with_background:
         from sqlmodel import Session

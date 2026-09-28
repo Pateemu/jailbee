@@ -4675,6 +4675,7 @@ def destroy(
         destroy_container,
         list_containers,
         resolve_container_name,
+        snapshot_targets_for,
         short_name,
     )
 
@@ -4746,6 +4747,7 @@ def destroy(
                         cfg.default_branch,
                         uid=cfg.container_user.uid,
                         host_head=get_head_sha(cfg.repo_root),
+                        target=snapshot_targets_for(cfg, [info_])[(cfg.container_prefix, info_.base_branch or cfg.default_branch)],
                     )
                 if not _warn_before_destroy(cfg, [info_]):
                     raise typer.Abort()
