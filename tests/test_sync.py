@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -5153,6 +5155,80 @@ def test_diff_stat_passes_mode_committed_without_submodules(mocker, make_cfg, tm
     assert "=== superproject ===" not in out
     last_call = incus.exec.call_args_list[-1]
     assert "bash" in last_call.args[1]
+
+
+@pytest.mark.parametrize("incoming", [False, True])
+def test_diff_stat_rejects_unreadable_submodule_delta(mocker, make_cfg, tmp_path, incoming):
+    from jailbee.incus import IncusError
+
+    cfg = make_cfg(tmp_path)
+    full = f"{cfg.container_prefix}-feat"
+    incus = _stub_diff_env(mocker, cfg, full)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    git_bin = bin_dir / "git"
+    git_bin.write_text(
+        '#!/bin/sh\n'
+        'case "$*" in\n'
+        '  *"diff --raw"*) printf ":160000 160000 %040d %040d M\\tdeps/lib\\n" 1 2 ;;\n'
+        '  *"diff --stat --ignore-submodules=all"*) printf " app.py | 1 +\\n" ;;\n'
+        '  *"diff --stat"*) exit 1 ;;\n'
+        'esac\n'
+    )
+    git_bin.chmod(0o755)
+
+    def exec_snippet(_name, args, *, env=None, **_kwargs):
+        if args[0] != "bash":
+            return ""  # host-target object check
+        completed = subprocess.run(
+            args,
+            env={**os.environ, **env, "REPO_DIR": str(repo), "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode:
+            raise IncusError(completed.stderr.strip())
+        return completed.stdout
+
+    incus.exec.side_effect = exec_snippet
+
+    with pytest.raises(sync.SyncError, match="deps/lib"):
+        sync.diff_from_container(cfg, incus, "feat", stat_only=True, incoming=incoming, color=False)
+
+
+def test_diff_all_stat_labels_committed_section_as_host_target(mocker, make_cfg, tmp_path):
+    from jailbee.sync import _DIFF_STAT_SNIPPET
+
+    cfg = make_cfg(tmp_path)
+    full = f"{cfg.container_prefix}-feat"
+    incus = _stub_diff_env(mocker, cfg, full)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    git_bin = bin_dir / "git"
+    git_bin.write_text("#!/bin/sh\nexit 0\n")
+    git_bin.chmod(0o755)
+
+    def exec_snippet(_name, args, *, env=None, **_kwargs):
+        if args[0] != "bash":
+            return ""
+        return subprocess.run(
+            ["bash", "-c", _DIFF_STAT_SNIPPET],
+            env={**os.environ, **env, "REPO_DIR": str(repo), "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+
+    incus.exec.side_effect = exec_snippet
+
+    out = sync.diff_from_container(cfg, incus, "feat", mode="all", stat_only=True, color=False)
+
+    assert "=== committed (vs host target) ===" in out
+    assert "vs base" not in out
 
 
 @pytest.mark.parametrize(

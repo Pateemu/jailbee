@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+
 import pytest
 
 from jailbee.git_status import (
@@ -1024,3 +1027,86 @@ def test_submodule_probe_failures_preserve_unknown_fields_and_keep_the_row(
     assert changes[0].target_del == target_del
     assert changes[0].ahead_commits == ahead_commits
     assert changes[0].behind_commits == behind_commits
+
+
+@pytest.mark.parametrize("gitlink", ["added", "deleted", "raw-failed"])
+def test_probe_gitlink_without_resolvable_endpoints_never_reports_clean(
+    mocker, tmp_path, gitlink
+):
+    from jailbee.git_status import _PROBE_SNIPPET
+
+    # A fake git supplies real shell output while no real repo, Incus, or git
+    # objects are touched. Only gitlink endpoints / raw-diff reliability vary.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    git_bin = bin_dir / "git"
+    git_bin.write_text(
+        '#!/bin/sh\n'
+        'case "$*" in\n'
+        '  *"diff --raw"*)\n'
+        '    [ "$GITLINK" = raw-failed ] && exit 1\n'
+        '    if [ "$GITLINK" = added ]; then old=$(printf "%040d" 0); new=$(printf "%040d" 1);\n'
+        '      om=000000; nm=160000; status=A;\n'
+        '    else old=$(printf "%040d" 1); new=$(printf "%040d" 0);\n'
+        '      om=160000; nm=000000; status=D; fi\n'
+        '    printf ":%s %s %s %s %s\\tdeps/lib\\n" "$om" "$nm" "$old" "$new" "$status" ;;\n'
+        '  *"rev-list --left-right"*) printf "1\\t2\\n" ;;\n'
+        '  *"merge-tree"*) exit 0 ;;\n'
+        '  *"rev-parse HEAD"*) printf "headsha\\n" ;;\n'
+        '  *"branch -r"*) exit 0 ;;\n'
+        '  *"rev-parse --git-dir"*) printf ".git\\n" ;;\n'
+        '  *"ls-files --unmerged"*) exit 0 ;;\n'
+        '  *"submodule foreach"*) exit 0 ;;\n'
+        '  *"diff"*) exit 0 ;;\n'
+        'esac\n'
+    )
+    git_bin.chmod(0o755)
+
+    def exec_snippet(_name, _args, *, env, **_kwargs):
+        completed = subprocess.run(
+            ["bash", "-c", _PROBE_SNIPPET],
+            env={**os.environ, **env, "PATH": f"{bin_dir}:{os.environ['PATH']}", "GITLINK": gitlink},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return completed.stdout
+
+    target = TargetSnapshot("main", "abc123", "local", "refs/remotes/origin/main", "equal")
+    incus = mocker.Mock()
+    incus.exec.side_effect = exec_snippet
+    status = probe_container_git(incus, "c", str(repo), "main", "main", target=target)
+
+    assert status.target_diff == "?"
+    assert status.ahead_count == "2"
+    assert status.behind_count == "1"
+    assert status.wt == "clean"
+    if gitlink != "raw-failed":
+        assert status.submodules[0].status == ("new" if gitlink == "added" else "removed")
+        assert status.submodules[0].target_ins is None
+        assert status.submodules[0].target_del is None
+        assert status.submodules[0].ahead_commits is None
+        assert status.submodules[0].behind_commits is None
+
+
+@pytest.mark.parametrize("failure", ["exec", "partial"])
+def test_probe_failure_preserves_host_target_snapshot(mocker, failure):
+    target = TargetSnapshot(
+        "main", "abc123", "local", "refs/remotes/origin/main", "tracking-ahead"
+    )
+    incus = mocker.Mock()
+    if failure == "exec":
+        incus.exec.side_effect = IncusError("probe failed")
+    else:
+        incus.exec.return_value = "?\x00?"
+
+    status = probe_container_git(incus, "c", "/repo", "main", "main", target=target)
+
+    assert status.wt == status.target_diff == status.ahead_count == "?"
+    assert status.base_sha == "abc123"
+    assert status.base_source == "local"
+    assert status.tracking_relation == "tracking-ahead"
+    assert status.upstream_ref == "refs/remotes/origin/main"

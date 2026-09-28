@@ -3354,11 +3354,11 @@ CF=""
 
 emit_committed() {
   if [ "$INCOMING" = "1" ]; then
-    SUPER=$(git diff --stat --ignore-submodules=all $CF "${BASE}...HEAD" 2>/dev/null)
-    RAW=$(git diff --raw --abbrev=40 "${BASE}...HEAD" 2>/dev/null)
+    SUPER=$(git diff --stat --ignore-submodules=all $CF "${BASE}...HEAD" 2>/dev/null) || return 1
+    RAW=$(git diff --raw --abbrev=40 "${BASE}...HEAD" 2>/dev/null) || return 1
   else
-    SUPER=$(git diff --stat --ignore-submodules=all $CF "$BASE" HEAD 2>/dev/null)
-    RAW=$(git diff --raw --abbrev=40 "$BASE" HEAD 2>/dev/null)
+    SUPER=$(git diff --stat --ignore-submodules=all $CF "$BASE" HEAD 2>/dev/null) || return 1
+    RAW=$(git diff --raw --abbrev=40 "$BASE" HEAD 2>/dev/null) || return 1
   fi
   SUBS=$(
     IFS_TAB="$(printf '\t')"
@@ -3369,10 +3369,14 @@ emit_committed() {
       [ "$om" = "160000" ] || [ "$nm" = "160000" ] || continue
       case "$os" in *[!0]*) ;; *) continue ;; esac
       case "$ns" in *[!0]*) ;; *) continue ;; esac
-      out=$(git -C "$sub_path" diff --stat $CF "$os".."$ns" 2>/dev/null)
+      out=$(git -C "$sub_path" diff --stat $CF "$os".."$ns" 2>/dev/null) || {
+        printf 'Cannot compute submodule stat for %s\n' "$sub_path" >&2
+        exit 1
+      }
       [ -n "$out" ] && printf '=== %s ===\n%s\n' "$sub_path" "$out"
+      :
     done
-  )
+  ) || return 1
   _render
 }
 
@@ -3391,12 +3395,13 @@ _render() {
   else
     [ -n "$SUPER" ] && printf '%s\n' "$SUPER"
   fi
+  :
 }
 
 case "$MODE" in
   wt) emit_wt ;;
   committed) emit_committed ;;
-  all) emit_wt; printf '\n=== committed (vs base) ===\n'; emit_committed ;;
+  all) emit_wt; printf '\n=== committed (vs host target) ===\n'; emit_committed ;;
 esac
 """
 
@@ -3465,18 +3470,21 @@ def diff_from_container(
         return incus.exec(full_name, cmd, uid=uid)
 
     def _run_stat(snippet_mode: str, resolved_base: str) -> str:
-        return incus.exec(
-            full_name,
-            ["bash", "-c", _DIFF_STAT_SNIPPET],
-            env={
-                "REPO_DIR": repo_dir,
-                "BASE": resolved_base,
-                "INCOMING": "1" if incoming else "0",
-                "MODE": snippet_mode,
-                "COLOR": "1" if color else "0",
-            },
-            uid=uid,
-        )
+        try:
+            return incus.exec(
+                full_name,
+                ["bash", "-c", _DIFF_STAT_SNIPPET],
+                env={
+                    "REPO_DIR": repo_dir,
+                    "BASE": resolved_base,
+                    "INCOMING": "1" if incoming else "0",
+                    "MODE": snippet_mode,
+                    "COLOR": "1" if color else "0",
+                },
+                uid=uid,
+            )
+        except IncusError as exc:
+            raise SyncError(f"Cannot compute diff stat for container '{short}': {exc}") from exc
 
     if mode == "wt":
         if stat_only:

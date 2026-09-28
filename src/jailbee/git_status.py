@@ -358,7 +358,10 @@ if [ -n "$BASE" ]; then
   COMMITTED=$(git diff --shortstat --ignore-submodules=all "${BASE}" HEAD 2>/dev/null) \
     || COMMITTED="?"
   RAW_DIFF=$(git diff --raw --abbrev=40 "${BASE}" HEAD 2>/dev/null) || RAW_DIFF="?"
-  SUB_COMMITTED=$(
+  if [ "$RAW_DIFF" = "?" ]; then
+    SUB_COMMITTED="?"
+  else
+    SUB_COMMITTED=$(
     IFS_TAB="$(printf '\t')"
     printf '%s\n' "$RAW_DIFF" \
       | while IFS="$IFS_TAB" read -r meta sub_path; do
@@ -370,11 +373,12 @@ if [ -n "$BASE" ]; then
       set -- $meta
       om=${1#:}; nm=$2; os=$3; ns=$4
       [ "$om" = "160000" ] || [ "$nm" = "160000" ] || continue
-      case "$os" in *[!0]*) ;; *) continue ;; esac
-      case "$ns" in *[!0]*) ;; *) continue ;; esac
+      case "$os" in *[!0]*) ;; *) printf '?\n'; continue ;; esac
+      case "$ns" in *[!0]*) ;; *) printf '?\n'; continue ;; esac
       git -C "$sub_path" diff --shortstat "$os" "$ns" 2>/dev/null || printf '?\n'
     done
-  )
+    )
+  fi
   # If COMMITTED="?" (superproject diff failed) the whole field degrades to
   # "?"; SUB_COMMITTED is then ignored by the host parser.
   COMMITTED="${COMMITTED}
@@ -420,9 +424,9 @@ if [ -n "$BASE" ]; then
       os_zero=1; case "$os" in *[!0]*) os_zero=0 ;; esac
       ns_zero=1; case "$ns" in *[!0]*) ns_zero=0 ;; esac
       if [ "$os_zero" = "1" ] && [ "$ns_zero" = "0" ]; then
-        status=new; ahead=0; behind=0; ss=""
+        status=new; ahead="?"; behind="?"; ss="?"
       elif [ "$ns_zero" = "1" ]; then
-        status=removed; ahead=0; behind=0; ss=""
+        status=removed; ahead="?"; behind="?"; ss="?"
       else
         status=modified
         counts=$(git -C "$sub_path" rev-list --left-right --count "$os...$ns" 2>/dev/null) \
@@ -534,8 +538,18 @@ def probe_container_git(
     mirror direction itself (see ``lifecycle._resolve_local_on_host``).
 
     Any exec failure (non-zero exit, missing binary, timeout) or partial
-    output yields all-`?`.
+    output leaves probe-dependent fields unknown but preserves the host snapshot.
     """
+    unknown = GitStatus(
+        wt="?",
+        ahead_diff="?",
+        ahead_count="?",
+        conflict="?",
+        base_sha=target.sha if target is not None else None,
+        base_source=target.source if target is not None else "unavailable",
+        tracking_relation=target.tracking_relation if target is not None else "unavailable",
+        upstream_ref=target.upstream_ref if target is not None else "",
+    )
     try:
         raw = incus.exec(
             full_name,
@@ -563,11 +577,11 @@ def probe_container_git(
             timeout=timeout_s,
         )
     except IncusError:
-        return GitStatus(wt="?", ahead_diff="?", ahead_count="?", conflict="?")
+        return unknown
 
     parts = raw.split("\x00")
     if len(parts) < 4:
-        return GitStatus(wt="?", ahead_diff="?", ahead_count="?", conflict="?")
+        return unknown
     wt_raw, ahead_raw, count_raw, conflict_raw = parts[0], parts[1], parts[2], parts[3]
 
     wt = parse_shortstat(wt_raw)
