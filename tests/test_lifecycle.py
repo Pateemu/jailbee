@@ -813,6 +813,70 @@ def test_all_repos_uses_foreign_config_and_never_reads_excluded_or_orphan_refs(
     }
 
 
+def test_all_repos_legacy_foreign_uses_its_own_default_without_colliding_with_labeled_base(
+    make_cfg, tmp_path, mocker, db_session, db_engine
+):
+    from datetime import UTC, datetime
+
+    from jailbee.db.models import RegisteredRepo
+    from jailbee.host_target import TargetSnapshot
+
+    root = tmp_path / "foreign"
+    root.mkdir()
+    cfg = make_cfg(tmp_path / "mine")
+    foreign_cfg = make_cfg(root).model_copy(
+        update={"default_branch": "develop", "upstream_remote": "fork"}
+    )
+    assert cfg.default_branch != foreign_cfg.default_branch
+    db_session.add(
+        RegisteredRepo(
+            container_prefix="foreign", repo_root=str(root), registered_at=datetime.now(UTC)
+        )
+    )
+    db_session.commit()
+    mocker.patch("jailbee.db.get_engine", return_value=db_engine)
+    incus = MagicMock()
+    incus.list_containers.return_value = [
+        _container(
+            name=f"foreign-legacy-{n}",
+            profiles=["foreign-base"],
+            user_config={"user.jailbee.repo_dir": "/repo"},
+        )
+        for n in (1, 2)
+    ] + [
+        _container(
+            name="foreign-explicit-main",
+            profiles=["foreign-base"],
+            user_config={
+                "user.jailbee.repo_dir": "/repo",
+                "user.jailbee.base_branch": cfg.default_branch,
+            },
+        )
+    ]
+    load = mocker.patch("jailbee.config.load_repo_config", return_value=foreign_cfg)
+    snapshots = {
+        branch: TargetSnapshot(branch, f"{branch}-sha", "local", f"refs/remotes/fork/{branch}", "equal")
+        for branch in ("develop", cfg.default_branch)
+    }
+    resolve = mocker.patch(
+        "jailbee.lifecycle.resolve_target",
+        side_effect=lambda _root, branch, _upstream: snapshots[branch],
+    )
+    probe = mocker.patch("jailbee.lifecycle.probe_many_parallel", return_value={})
+
+    list_containers(cfg, incus, all_repos=True, with_git_status=True)
+
+    load.assert_called_once_with(root)
+    assert resolve.call_count == 2
+    resolve.assert_any_call(root, "develop", "fork")
+    resolve.assert_any_call(root, cfg.default_branch, "fork")
+    assert probe.call_args.kwargs["target_by_name"] == {
+        "foreign-legacy-1": snapshots["develop"],
+        "foreign-legacy-2": snapshots["develop"],
+        "foreign-explicit-main": snapshots[cfg.default_branch],
+    }
+
+
 # ---- _resolve_local_on_host ----
 
 

@@ -199,6 +199,20 @@ def snapshot_targets_for(
     scope: RemoteRepoScope | None = None,
 ) -> dict[tuple[str, str], TargetSnapshot]:
     """Resolve one immutable host target per visible repository and base branch."""
+    snapshots, _defaults = _snapshot_targets_with_defaults(
+        cfg, containers, all_repos=all_repos, scope=scope
+    )
+    return snapshots
+
+
+def _snapshot_targets_with_defaults(
+    cfg: Config,
+    containers: Sequence[ContainerInfo],
+    *,
+    all_repos: bool = False,
+    scope: RemoteRepoScope | None = None,
+) -> tuple[dict[tuple[str, str], TargetSnapshot], dict[str, str]]:
+    """Return snapshots and each loaded repository's effective default branch."""
     from sqlmodel import Session, col, select
 
     from jailbee.config import load_repo_config
@@ -217,7 +231,7 @@ def snapshot_targets_for(
         and c.repo_dir
     ]
     if not eligible:
-        return {}
+        return {}, {}
 
     foreign = {c.repo for c in eligible if c.repo != cfg.container_prefix}
     roots: dict[str, Path] = {}
@@ -229,13 +243,10 @@ def snapshot_targets_for(
                 roots[record.container_prefix] = Path(record.repo_root)
 
     snapshots: dict[tuple[str, str], TargetSnapshot] = {}
+    defaults: dict[str, str] = {}
     foreign_configs: dict[str, Config | None] = {}
     for c in eligible:
         assert c.repo is not None
-        branch = c.base_branch or cfg.default_branch
-        key = (c.repo, branch)
-        if key in snapshots:
-            continue
         repo_cfg: Config | None = cfg
         if c.repo != cfg.container_prefix:
             if c.repo not in foreign_configs:
@@ -247,11 +258,16 @@ def snapshot_targets_for(
                 except (OSError, ValueError, ConfigError):
                     foreign_configs[c.repo] = None
             repo_cfg = foreign_configs[c.repo]
+        defaults[c.repo] = repo_cfg.default_branch if repo_cfg is not None else cfg.default_branch
+        branch = c.base_branch or defaults[c.repo]
+        key = (c.repo, branch)
+        if key in snapshots:
+            continue
         if repo_cfg is None:
             snapshots[key] = TargetSnapshot(branch, None, "unavailable", "", "unavailable")
         else:
             snapshots[key] = resolve_target(repo_cfg.repo_root, branch, repo_cfg.upstream_remote)
-    return snapshots
+    return snapshots, defaults
 
 
 def list_containers(
@@ -420,10 +436,12 @@ def list_containers(
         # its arguments are evaluated first).
         statuses: dict[str, GitStatus] = {}
         if targets:
-            snapshots = snapshot_targets_for(cfg, out, all_repos=all_repos, scope=scope)
+            snapshots, defaults = _snapshot_targets_with_defaults(
+                cfg, out, all_repos=all_repos, scope=scope
+            )
             target_names = {name for name, _, _ in targets}
             target_by_name = {
-                c.name: snapshots[(c.repo, c.base_branch or cfg.default_branch)]
+                c.name: snapshots[(c.repo, c.base_branch or defaults[c.repo])]
                 for c in out
                 if c.name in target_names and c.repo
             }
