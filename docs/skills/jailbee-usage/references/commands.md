@@ -580,7 +580,8 @@ ignores `fields` entirely.
 Live, auto-refreshing TUI of all JailBee containers across registered repos + the cwd
 repo, grouped by repo. Keys: `↑/↓` or `j/k` move (spans repos; repo headers
 are cursor stops, not skipped), `Enter` action menu (on a repo header, a repo
-menu with New container and Fold/Unfold; on a container, its action menu),
+menu with New container, `Network → Egress…` and Fold/Unfold (orphan repos
+only offer Fold/Unfold; on a container, its action menu),
 `Space` toggle the selected setting
 in the settings overlay, `F2`/`S` settings overlay (columns + folding), `r`
 force refresh, `h`/`?` keybinding
@@ -589,11 +590,23 @@ dashboard stays visible and keeps refreshing behind it; `↑/↓` then move the
 menu cursor, `Enter` runs the entry, `Esc`/`q` closes it (`Ctrl-C` always quits
 the dashboard).
 
+Container actions group network mode switches and `Egress…` under `Network →`;
+stopped containers retain the read-only Egress view even though they have no
+mode switch. The inline Egress panel lists classified config, repo-local,
+legacy and container entries. Press `a` to add or `r` to remove the selected
+override; config entries and inherited repo entries in a container panel are
+not removable. Repo-level removal removes all stored copies of an entry, so a
+duplicate local/legacy entry is not presented as a single-source deletion.
+Changes run through the CLI from the selected repo, preserving DNS validation,
+ACL updates and repo `jailbee apply` advice. Over SSH, the read panel requires
+`net egress ls`; add/remove require their own permitted command leaves, and
+`restrict_host: true` keeps them unavailable even under a full command policy.
+
 The menu, in order: `job clear`, `job log`, `pr --open`, `pr`, `git push`,
 `git push --pr`, `git pull`, `git diff`, then tmux/shell, then one "Launch
 `<name>`" entry per app the repo's GUI registry declares (browsers, the
 JetBrains IDE, and any `apps:` entries, in that order — empty repos get
-none), then network mode switches, then restart/stop/destroy for Running
+none), then `Network →` with available mode switches and `Egress…`, then restart/stop/destroy for Running
 (start/destroy for Stopped). Each entry appears only when it would do
 something:
 
@@ -1358,13 +1371,16 @@ status|cancel`](#jailbee-autostart-statuscancel-name) above.
 Also available as the short root alias `jailbee egress` (hidden from
 `jailbee --help`, works identically). `NAME` resolves the same way as every
 other container command (short branch name, full name, or an interactive
-picker on a TTY); `--repo` always short-circuits that resolution — a
-repo-scope change touches no one container.
+picker on a TTY); add/rm also accept `--container NAME`, which explicitly
+selects that target when `ENTRY` is omitted (or alongside a supplied entry).
+It names the container; it does not select repo scope. `--repo` always
+short-circuits container resolution — a repo-scope change touches no one
+container.
 
 | Command | Behaviour |
 |---|---|
-| `jailbee net egress add ENTRY [NAME] [--repo]` | Allow one host. Defaults to container scope (stored in the container's `user.jailbee.egress_extra` label — dies with the container). `--repo` stores a host-local, uncommitted override applying to every container of this repo on this host instead. Rejects before storing anything: a malformed `ENTRY` (exit 2) or a hostname that fails to resolve (exit 1) — two different failures, two different codes. A no-op (exit 0, informational) if the entry is already covered by `config.yaml` or already stored at that scope. Materialises against the container's **current** network mode: adding to a `loose` container stores the label but touches no ACL/NIC until the container returns to `strict` (`--repo` has no container to materialise against, so it always just stores). |
-| `jailbee net egress rm ENTRY [NAME] [--repo]` | Remove an override. **Refuses** (exit 1, points at the config file) an entry that exists *only* in `config.yaml` — overrides can only widen the allowlist, never narrow config. Removes normally if the same entry is *also* stored as an override (typically one promoted with `export` and then pasted, or re-added on purpose) — that's the row that goes away, config is untouched. Same current-network-mode materialisation as `add`. |
+| `jailbee net egress add [ENTRY] [NAME] [--container NAME] [--repo]` | Allow one host. On a TTY, omitting `ENTRY` prompts for a destination. Defaults to container scope (stored in the container's `user.jailbee.egress_extra` label — dies with the container); `--container NAME` explicitly targets a container when `ENTRY` is omitted, while existing `ENTRY [NAME]` remains supported. `--container` names the target; it does not select repo scope. `--repo` stores a host-local, uncommitted override applying to every container of this repo on this host instead and skips container resolution. Rejects before storing anything: a malformed `ENTRY` (exit 2) or a hostname that fails to resolve (exit 1) — two different failures, two different codes. A no-op (exit 0, informational) if the entry is already covered by `config.yaml` or already stored at that scope. |
+| `jailbee net egress rm [ENTRY] [NAME] [--container NAME] [--repo]` | Remove an override. On a TTY, omitting `ENTRY` offers only stored overrides at the selected scope; `--container NAME` explicitly targets a container, and non-interactive use requires an explicit entry. Existing `ENTRY [NAME]` remains supported. `--repo` selects repo scope and skips container resolution. **Refuses** (exit 1, points at the config file) an entry that exists *only* in `config.yaml` — overrides can only widen the allowlist, never narrow config. Removes normally if the same entry is *also* stored as an override — that's the row that goes away, config is untouched. |
 | `jailbee net egress ls [NAME] [--format table\|json]` | Show every applicable entry with its source (`config`, `repo-override`, `container`) and a `redundant` note when an override duplicates a wider-scoped entry that already covers it — a repo-override row against `config.yaml`, or a container row against either `config.yaml` or a repo-scope override. With no `NAME`, shows repo scope only (config + repo overrides) — a read command must not prompt for a container — and prints a one-line stderr hint that container-scope entries are hidden; pass `NAME` to include that container's own overrides. |
 | `jailbee net egress export [NAME]` | Print a **complete replacement** for the repo config's `egress_allow:` key — existing file entries plus promotable overrides — sourced from the repo config file itself, never from the global config layer or jailbee's feature auto-added hosts (those track releases and would go stale frozen into a file). Paste over the *whole* key, don't append one below it: a second `egress_allow:` mapping key makes `yaml.safe_load` silently keep only the last one, discarding the first. With no `NAME`, repo-scope overrides only; pass `NAME` to include that container's overrides too. After pasting and `jailbee apply`, the now-redundant overrides can be dropped with `jailbee net egress rm`. |
 

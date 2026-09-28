@@ -91,8 +91,7 @@ def test_menu_labels_match_menu_actions_for_running(qtbot):
         )
     ]
     assert win.menu_labels_for("p-foo") == expected
-    assert expected[:5] == ["Attach tmux", "Open shell", "Launch JetBrains idea", "PR →", "Git →"]
-    assert "Launch JetBrains idea" in expected
+    assert expected[:5] == ["Attach tmux", "Open shell", "Launch →", "PR →", "Git →"]
     assert "Launch chrome" not in expected
     assert "Network: loose" in expected
     assert "Network: strict" not in expected
@@ -581,6 +580,7 @@ def test_container_menu_offers_new(qtbot):
     qtbot.addWidget(win)
     assert win.container_menu.title() == "&Container"
     assert win.new_container_action.text() == "&New…"
+    assert win.new_pr_container_action.text() == "New from &PR…"
 
 
 def test_container_menu_new_emits_the_selected_prefix(qtbot):
@@ -591,6 +591,18 @@ def test_container_menu_new_emits_the_selected_prefix(qtbot):
 
     with qtbot.waitSignal(win.newContainerRequested, timeout=1000) as blocker:
         win.new_container_action.trigger()
+
+    assert blocker.args == ["p"]
+
+
+def test_container_menu_new_from_pr_emits_the_selected_prefix(qtbot):
+    win = MainWindow(git_enabled=True, interval=3.0)
+    qtbot.addWidget(win)
+    win.set_groups(_groups(), now=datetime.now().astimezone())
+    win.tree.setCurrentItem(win.tree.topLevelItem(0))
+
+    with qtbot.waitSignal(win.newPrContainerRequested, timeout=1000) as blocker:
+        win.new_pr_container_action.trigger()
 
     assert blocker.args == ["p"]
 
@@ -647,7 +659,29 @@ def test_group_row_context_menu_offers_new_container(qtbot):
         QTimer.singleShot(0, interact)
         win._on_context_menu(QPoint(0, 0))
 
-    assert seen == ["New container…"]
+    assert seen == ["New container…", "New from PR…"]
+    assert blocker.args == ["p"]
+
+
+def test_group_row_context_menu_creates_pr_container(qtbot):
+    from PySide6.QtCore import QPoint, QTimer
+    from PySide6.QtWidgets import QApplication
+
+    win = MainWindow(git_enabled=True, interval=3.0, layout="table")
+    qtbot.addWidget(win)
+    win.set_groups(_groups(), now=datetime.now().astimezone())
+    win.tree.setCurrentItem(win.tree.topLevelItem(0))
+
+    def choose_pr() -> None:
+        popup = QApplication.activePopupWidget()
+        if popup is not None:
+            popup.actions()[1].trigger()
+            popup.close()
+
+    with qtbot.waitSignal(win.newPrContainerRequested, timeout=1000) as blocker:
+        QTimer.singleShot(0, choose_pr)
+        win._on_context_menu(QPoint(0, 0))
+
     assert blocker.args == ["p"]
 
 

@@ -14,6 +14,7 @@ from rich.console import Console, RenderableType
 
 from jailbee import dashboard
 from jailbee.config.loader import _scratch_prefix
+from jailbee.egress_scope import EntryRow
 from jailbee.git_status import GitStatus
 from jailbee.lifecycle import ContainerInfo
 
@@ -854,7 +855,15 @@ def _session_verbs(actions: list[tuple[str, str]]) -> list[str]:
 
 def test_menu_actions_running_default_hides_ide_and_chrome():
     actions = dashboard.menu_actions(_ctx())
-    assert _session_verbs(actions) == ["tmux", "shell", "net loose", "restart", "stop", "destroy"]
+    assert _session_verbs(actions) == [
+        "tmux",
+        "shell",
+        "net loose",
+        "net egress ls",
+        "restart",
+        "stop",
+        "destroy",
+    ]
     verbs = [a for _, a in actions]
     assert "ide" not in verbs
     assert "chrome" not in verbs
@@ -877,6 +886,7 @@ def test_menu_actions_running_ide_enabled_only():
         "shell",
         "ide",
         "net loose",
+        "net egress ls",
         "restart",
         "stop",
         "destroy",
@@ -891,6 +901,7 @@ def test_menu_actions_running_chrome_enabled_only():
         "shell",
         "chrome",
         "net loose",
+        "net egress ls",
         "restart",
         "stop",
         "destroy",
@@ -906,6 +917,7 @@ def test_menu_actions_running_both_enabled():
         "ide",
         "chrome",
         "net loose",
+        "net egress ls",
         "restart",
         "stop",
         "destroy",
@@ -938,6 +950,7 @@ def test_remote_action_menu_offers_no_app_launches():
         for item in dashboard.group_menu_actions(remote)
         if isinstance(item, dashboard.MenuGroup)
     ] == ["PR →", "Git →"]
+    assert ("Egress…", "net egress ls") in remote
 
 
 def test_remote_quick_keys_refuse_gui_apps_and_say_why():
@@ -976,7 +989,7 @@ def test_action_menu_has_no_apps_when_none_are_configured():
 
 def test_menu_actions_stopped():
     actions = dashboard.menu_actions(_ctx(state="Stopped"))
-    assert [a for _, a in actions] == ["start", "destroy"]
+    assert [a for _, a in actions] == ["start", "net egress ls", "destroy"]
 
 
 def test_menu_actions_orphan_disabled():
@@ -1011,7 +1024,522 @@ def test_menu_actions_running_network_unknown_offers_both():
 
 def test_menu_actions_stopped_has_no_network_entries():
     verbs = [a for _, a in dashboard.menu_actions(_ctx(state="Stopped"))]
-    assert not any(v.startswith("net ") for v in verbs)
+    assert verbs.count("net egress ls") == 1
+    assert not any(v in {"net strict", "net loose"} for v in verbs)
+
+
+def test_network_group_keeps_mode_eligibility_and_stopped_egress_view():
+    running = dashboard.group_menu_actions(dashboard.menu_actions(_ctx()), include_network=True)
+    network = next(
+        item
+        for item in running
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    assert [verb for _, verb in network.actions] == ["net loose", "net egress ls"]
+    stopped = dashboard.group_menu_actions(
+        dashboard.menu_actions(_ctx(state="Stopped")), include_network=True
+    )
+    network = next(
+        item
+        for item in stopped
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    assert network.actions == (("Egress…", "net egress ls"),)
+    assert dashboard.group_menu_actions(dashboard.menu_actions(_ctx(has_repo=False))) == []
+
+
+def test_egress_view_remote_policy_is_independent_and_restricted_host_read_only():
+    from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
+
+    group = dashboard.RepoGroup("alpha", "/alpha", None, [_ci("alpha-1", "alpha")])
+    view_only = RemoteSSHConfig(
+        commands=RemoteCommandPolicy(mode="allowlist", allow=["net egress ls"])
+    )
+    actions = dashboard.actions_for_container(
+        [group], "alpha-1", over_ssh=True, ssh_policy=view_only
+    )
+    assert [(label, verb) for label, verb in actions if verb.startswith("net ")] == [
+        ("Egress…", "net egress ls")
+    ]
+    restricted_full = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="full"), restrict_host=True)
+    actions = dashboard.actions_for_container(
+        [group], "alpha-1", over_ssh=True, ssh_policy=restricted_full
+    )
+    assert "net egress ls" in [verb for _, verb in actions]
+    assert "net egress add" not in [verb for _, verb in actions]
+    assert "net egress rm" not in [verb for _, verb in actions]
+
+
+def test_repo_menu_offers_egress_only_for_actionable_repo():
+    groups = [
+        dashboard.RepoGroup("alpha", "/alpha", None, []),
+        dashboard.RepoGroup("orphan", None, None, [_ci("orphan-1", "orphan")]),
+    ]
+    actionable = dashboard.open_repo_menu(groups, "alpha", frozenset())
+    assert actionable is not None
+    assert dashboard.MenuGroup("Network →", (("Egress…", "net egress ls"),)) in actionable.actions
+    orphan = dashboard.open_repo_menu(groups, "orphan", frozenset())
+    assert orphan is not None
+    assert all(not isinstance(item, dashboard.MenuGroup) for item in orphan.actions)
+
+
+def test_repo_menu_egress_respects_ssh_read_permission():
+    from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
+
+    group = dashboard.RepoGroup("alpha", "/alpha", None, [])
+    allowed = RemoteSSHConfig(
+        commands=RemoteCommandPolicy(mode="allowlist", allow=["net egress ls"])
+    )
+    denied = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="disabled"))
+    allowed_menu = dashboard.open_repo_menu(
+        [group], "alpha", frozenset(), ssh_policy=allowed, over_ssh=True
+    )
+    denied_menu = dashboard.open_repo_menu(
+        [group], "alpha", frozenset(), ssh_policy=denied, over_ssh=True
+    )
+    assert allowed_menu is not None and any(
+        isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+        for item in allowed_menu.actions
+    )
+    assert denied_menu is not None and all(
+        not isinstance(item, dashboard.MenuGroup) for item in denied_menu.actions
+    )
+
+
+def test_repo_network_menu_is_a_submenu_and_escape_returns_to_parent():
+    group = dashboard.RepoGroup("alpha", "/alpha", None, [])
+    menu = dashboard.open_repo_menu([group], "alpha", frozenset())
+    assert menu is not None
+    assert menu.actions[2] == dashboard.MenuGroup("Network →", (("Egress…", "net egress ls"),))
+
+    menu.index = 2
+    child, verb = dashboard.enter_menu(menu)
+    assert verb is None
+    assert isinstance(child, dashboard.RepoMenuState)
+    assert child.active_group == "Network →"
+    assert dashboard.menu_verb(child) == "net egress ls"
+    parent = dashboard.back_menu(child)
+    assert parent is not None
+    assert parent.active_group is None
+    assert parent.index == 2
+    assert dashboard.menu_verb(parent) is None
+
+
+def test_repo_network_submenu_remains_gated_by_ssh_read_permission():
+    from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
+
+    group = dashboard.RepoGroup("alpha", "/alpha", None, [])
+    denied = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="disabled"))
+    menu = dashboard.open_repo_menu([group], "alpha", frozenset(), ssh_policy=denied, over_ssh=True)
+    assert menu is not None
+    assert all(not isinstance(item, dashboard.MenuGroup) for item in menu.actions)
+
+
+def test_run_opens_egress_panel_and_dispatches_scoped_add(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    menu = dashboard.open_menu([group], "alpha-x")
+    assert menu is not None
+    network = next(
+        item
+        for item in dashboard.group_menu_actions(menu.actions, include_network=True)
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    network_index = next(
+        i
+        for i, item in enumerate(dashboard.group_menu_actions(menu.actions, include_network=True))
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
+    rows = mocker.patch.object(dashboard, "load_egress_rows", return_value=())
+    prompt = mocker.patch("typer.prompt", return_value="example.com:8443")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [
+        b"j",
+        b"\r",
+        *([b"j"] * network_index),
+        b"\r",
+        *([b"j"] * egress_index),
+        b"\r",
+        b"a",
+        b"\x1b",
+        b"\x03",
+    ]
+    assert _drive_run(mocker, keys, groups=[group]) == 0
+
+    assert rows.call_count == 2  # initial load and post-mutation reload
+    assert rows.call_args_list[0].args[0::2] == (tmp_path, "alpha-x")
+    prompt.assert_called_once()
+    child.assert_called_once_with(
+        ["jailbee", "net", "egress", "add", "example.com:8443", "alpha-x"],
+        check=False,
+        cwd=tmp_path,
+    )
+    assert any(
+        isinstance(call.kwargs.get("overlay"), dashboard.EgressState)
+        for call in render.call_args_list
+    )
+
+
+def test_ssh_egress_read_view_is_read_only_even_with_full_policy(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
+
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    policy = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="full"), restrict_host=True)
+    menu = dashboard.open_menu([group], "alpha-x", remote=True, over_ssh=True, ssh_policy=policy)
+    assert menu is not None
+    root = dashboard.group_menu_actions(menu.actions, include_network=True)
+    network_index = next(
+        i
+        for i, item in enumerate(root)
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    network = next(
+        item for item in root if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
+    mocker.patch.object(
+        dashboard, "load_egress_rows", return_value=(EntryRow("allowed.example", "config"),)
+    )
+    prompt = mocker.patch("typer.prompt")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert (
+        _drive_run(
+            mocker,
+            [
+                b"j",
+                b"\r",
+                *([b"j"] * network_index),
+                b"\r",
+                *([b"j"] * egress_index),
+                b"\r",
+                b"a",
+                b"\x1b",
+                b"\x03",
+            ],
+            groups=[group],
+            remote=True,
+            over_ssh=True,
+            ssh_policy=policy,
+        )
+        == 0
+    )
+
+    prompt.assert_not_called()
+    child.assert_not_called()
+    panels = [call.kwargs["overlay"] for call in render.call_args_list]
+    egress = next(panel for panel in panels if isinstance(panel, dashboard.EgressState))
+    assert egress.can_add is False
+    assert egress.can_rm is False
+
+
+def test_run_removes_only_selected_container_override(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    rows = (
+        EntryRow("from-config.example", "config"),
+        EntryRow("container-only.example", "container"),
+    )
+    load = mocker.patch.object(dashboard, "load_egress_rows", return_value=rows)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+    menu = dashboard.open_menu([group], "alpha-x")
+    assert menu is not None
+    root = dashboard.group_menu_actions(menu.actions, include_network=True)
+    network_index = next(
+        i
+        for i, item in enumerate(root)
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    network = next(
+        item for item in root if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
+
+    keys = [
+        b"j",
+        b"\r",
+        *([b"j"] * network_index),
+        b"\r",
+        *([b"j"] * egress_index),
+        b"\r",
+        b"j",
+        b"r",
+        b"\x1b",
+        b"\x03",
+    ]
+    assert _drive_run(mocker, keys, groups=[group]) == 0
+
+    assert load.call_count == 2
+    child.assert_called_once_with(
+        ["jailbee", "net", "egress", "rm", "container-only.example", "alpha-x"],
+        check=False,
+        cwd=tmp_path,
+    )
+
+
+def test_repo_egress_dispatch_uses_repo_scope_and_explicit_config(mocker, tmp_path):
+    config_path = tmp_path / ".jailbee" / "config.yaml"
+    group = dashboard.RepoGroup("alpha", str(tmp_path), config_path, [_ci("alpha-x", "alpha")])
+    mocker.patch.object(dashboard, "load_egress_rows", return_value=())
+    mocker.patch("typer.prompt", return_value="repo.example:443")
+    mocker.patch.object(dashboard, "_wait_for_return")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+
+    assert (
+        _drive_run(
+            mocker, [b"\r", b"j", b"j", b"\r", b"\r", b"a", b"\x1b", b"\x03"], groups=[group]
+        )
+        == 0
+    )
+
+    child.assert_called_once_with(
+        [
+            "jailbee",
+            "net",
+            "egress",
+            "add",
+            "repo.example:443",
+            "--repo",
+            "--config",
+            str(config_path),
+        ],
+        check=False,
+        cwd=tmp_path,
+    )
+
+
+def test_egress_add_prompt_cancellation_is_visible_and_does_not_dispatch(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    menu = dashboard.open_menu([group], "alpha-x")
+    assert menu is not None
+    root = dashboard.group_menu_actions(menu.actions, include_network=True)
+    network_index = next(
+        i
+        for i, item in enumerate(root)
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    network = root[network_index]
+    assert isinstance(network, dashboard.MenuGroup)
+    egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
+    mocker.patch.object(dashboard, "load_egress_rows", return_value=())
+    import typer
+
+    mocker.patch("typer.prompt", side_effect=typer.Abort())
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert (
+        _drive_run(
+            mocker,
+            [
+                b"j",
+                b"\r",
+                *([b"j"] * network_index),
+                b"\r",
+                *([b"j"] * egress_index),
+                b"\r",
+                b"a",
+                b"\x03",
+            ],
+            groups=[group],
+        )
+        == 0
+    )
+
+    child.assert_not_called()
+    assert any(
+        "cancel" in str(call.kwargs.get("notice", "")).lower() for call in render.call_args_list
+    )
+
+
+@pytest.mark.parametrize("returncode", [1, 2], ids=["mutation-failure", "invalid-destination"])
+def test_egress_mutation_failure_is_visible(mocker, tmp_path, returncode):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    menu = dashboard.open_menu([group], "alpha-x")
+    assert menu is not None
+    root = dashboard.group_menu_actions(menu.actions, include_network=True)
+    network_index = next(
+        i
+        for i, item in enumerate(root)
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    network = root[network_index]
+    assert isinstance(network, dashboard.MenuGroup)
+    egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
+    mocker.patch.object(dashboard, "load_egress_rows", return_value=())
+    mocker.patch("typer.prompt", return_value="invalid..example")
+    mocker.patch.object(dashboard, "_wait_for_return")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = returncode
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert (
+        _drive_run(
+            mocker,
+            [
+                b"j",
+                b"\r",
+                *([b"j"] * network_index),
+                b"\r",
+                *([b"j"] * egress_index),
+                b"\r",
+                b"a",
+                b"\x03",
+            ],
+            groups=[group],
+        )
+        == 0
+    )
+
+    child.assert_called_once()
+    assert any(
+        f"exited {returncode}" in str(call.kwargs.get("notice", ""))
+        for call in render.call_args_list
+    )
+
+
+def test_egress_panel_closes_when_container_disappears(mocker, tmp_path):
+    container = _ci("alpha-x", "alpha")
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [container])
+    menu = dashboard.open_menu([group], "alpha-x")
+    assert menu is not None
+    root = dashboard.group_menu_actions(menu.actions, include_network=True)
+    network_index = next(
+        i
+        for i, item in enumerate(root)
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    network = root[network_index]
+    assert isinstance(network, dashboard.MenuGroup)
+    egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
+
+    def remove_container_during_prompt(*_args, **_kwargs):
+        group.containers.clear()
+        return "example.com"
+
+    mocker.patch.object(dashboard, "load_egress_rows", return_value=())
+    mocker.patch("typer.prompt", side_effect=remove_container_during_prompt)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert (
+        _drive_run(
+            mocker,
+            [
+                b"j",
+                b"\r",
+                *([b"j"] * network_index),
+                b"\r",
+                *([b"j"] * egress_index),
+                b"\r",
+                b"a",
+                b"\x03",
+            ],
+            groups=[group],
+        )
+        == 0
+    )
+
+    child.assert_not_called()
+    overlays = [call.kwargs.get("overlay") for call in render.call_args_list]
+    assert not isinstance(overlays[-1], dashboard.EgressState)
+    assert any(
+        "no longer available" in str(call.kwargs.get("notice", ""))
+        for call in render.call_args_list
+    )
+
+
+def test_egress_panel_closes_when_repo_disappears_during_dispatch(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    menu = dashboard.open_menu([group], "alpha-x")
+    assert menu is not None
+    root = dashboard.group_menu_actions(menu.actions, include_network=True)
+    network_index = next(
+        i
+        for i, item in enumerate(root)
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    network = root[network_index]
+    assert isinstance(network, dashboard.MenuGroup)
+    egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
+    mocker.patch.object(dashboard, "load_egress_rows", return_value=())
+    mocker.patch("typer.prompt", return_value="example.com")
+    child = mocker.patch.object(dashboard.subprocess, "run", side_effect=FileNotFoundError())
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert (
+        _drive_run(
+            mocker,
+            [
+                b"j",
+                b"\r",
+                *([b"j"] * network_index),
+                b"\r",
+                *([b"j"] * egress_index),
+                b"\r",
+                b"a",
+                b"\x03",
+            ],
+            groups=[group],
+        )
+        == 0
+    )
+
+    child.assert_called_once()
+    overlays = [call.kwargs.get("overlay") for call in render.call_args_list]
+    assert not isinstance(overlays[-1], dashboard.EgressState)
+    assert any(
+        "no longer exists" in str(call.kwargs.get("notice", "")) for call in render.call_args_list
+    )
+
+
+def test_egress_loader_failure_is_visible_and_does_not_crash(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    menu = dashboard.open_menu([group], "alpha-x")
+    assert menu is not None
+    root = dashboard.group_menu_actions(menu.actions, include_network=True)
+    network_index = next(
+        i
+        for i, item in enumerate(root)
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    network = next(
+        item for item in root if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
+    mocker.patch.object(
+        dashboard, "load_egress_rows", side_effect=LookupError("database unavailable")
+    )
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert (
+        _drive_run(
+            mocker,
+            [
+                b"j",
+                b"\r",
+                *([b"j"] * network_index),
+                b"\r",
+                *([b"j"] * egress_index),
+                b"\r",
+                b"\x03",
+            ],
+            groups=[group],
+        )
+        == 0
+    )
+
+    assert any(
+        "could not load egress entries" in str(call.kwargs.get("notice"))
+        for call in render.call_args_list
+    )
 
 
 def test_menu_actions_orphan_disabled_even_with_network():
@@ -1026,6 +1554,7 @@ def test_menu_actions_network_entries_ordered_after_chrome_before_restart():
         "ide",
         "chrome",
         "net loose",
+        "net egress ls",
         "restart",
         "stop",
         "destroy",
@@ -1041,10 +1570,16 @@ def test_menu_actions_running_includes_open_pr_when_pr_known():
 
 def test_menu_actions_stopped_includes_open_pr_when_pr_known():
     actions = dashboard.menu_actions(_ctx(state="Stopped", pr_number=7))
-    assert actions == [("Start", "start"), ("Open PR", "pr --open"), ("Destroy", "destroy")]
-    assert dashboard.group_menu_actions(actions) == [
+    assert actions == [
+        ("Start", "start"),
+        ("Open PR", "pr --open"),
+        ("Egress…", "net egress ls"),
+        ("Destroy", "destroy"),
+    ]
+    assert dashboard.group_menu_actions(actions, include_network=True) == [
         ("Start", "start"),
         dashboard.MenuGroup("PR →", (("Open PR", "pr --open"),)),
+        dashboard.MenuGroup("Network →", (("Egress…", "net egress ls"),)),
         ("Destroy", "destroy"),
     ]
 
@@ -1072,6 +1607,7 @@ def test_menu_actions_running_offers_the_workflow_verbs():
         "git push",
         "git diff",
         "net loose",
+        "net egress ls",
         "restart",
         "stop",
         "destroy",
@@ -1099,6 +1635,24 @@ def test_group_menu_actions_separates_git_and_pr():
     assert dashboard.group_menu_actions([]) == []
 
 
+def test_group_menu_actions_collects_registry_launches_at_first_occurrence():
+    leaves = [
+        ("Attach tmux", "tmux"),
+        ("Launch Chrome (host)", "chrome"),
+        ("Open shell", "shell"),
+        ("Launch Figma", "apps run figma --container"),
+        ("Create/update PR", "pr"),
+        ("Show diff", "git diff"),
+    ]
+    assert dashboard.group_menu_actions(leaves) == [
+        leaves[0],
+        dashboard.MenuGroup("Launch →", (leaves[1], leaves[3])),
+        leaves[2],
+        dashboard.MenuGroup("PR →", (leaves[4],)),
+        dashboard.MenuGroup("Git →", (leaves[5],)),
+    ]
+
+
 def test_group_menu_actions_keeps_relative_order_and_unclassified_leaves():
     leaves = [
         ("Show diff", "git diff"),
@@ -1110,7 +1664,7 @@ def test_group_menu_actions_keeps_relative_order_and_unclassified_leaves():
     ]
     assert dashboard.group_menu_actions(leaves) == [
         dashboard.MenuGroup("Git →", (leaves[0], leaves[4])),
-        leaves[1],
+        dashboard.MenuGroup("Launch →", (leaves[1],)),
         leaves[2],
         dashboard.MenuGroup("PR →", (leaves[3], leaves[5])),
     ]
@@ -1120,8 +1674,11 @@ def test_menu_actions_mount_mode_groups_pending_pr_but_not_git():
     actions = dashboard.menu_actions(
         _ctx(mode="mount", git_status=_dirty(pending_pr_actions=2, pending_issue_actions=1))
     )
-    grouped = dashboard.group_menu_actions(actions)
-    assert [item.label for item in grouped if isinstance(item, dashboard.MenuGroup)] == ["PR →"]
+    grouped = dashboard.group_menu_actions(actions, include_network=True)
+    assert [item.label for item in grouped if isinstance(item, dashboard.MenuGroup)] == [
+        "PR →",
+        "Network →",
+    ]
     assert grouped[0] == ("Attach tmux", "tmux")
     assert grouped[2] == dashboard.MenuGroup(
         "PR →", (("Apply 2 PR action(s) (review apply)", "review apply"),)
@@ -1268,12 +1825,12 @@ def test_menu_actions_mount_mode_has_no_workflow_verbs():
     """A mount-mode container has no clone of its own, so every one of these
     would fail in `sync.assert_container_publishable`."""
     verbs = [v for _, v in dashboard.menu_actions(_ctx(mode="mount"))]
-    assert verbs == ["tmux", "shell", "net loose", "restart", "stop", "destroy"]
+    assert verbs == ["tmux", "shell", "net loose", "net egress ls", "restart", "stop", "destroy"]
 
 
 def test_menu_actions_stopped_has_no_workflow_verbs():
     verbs = [v for _, v in dashboard.menu_actions(_ctx(state="Stopped"))]
-    assert verbs == ["start", "destroy"]
+    assert verbs == ["start", "net egress ls", "destroy"]
 
 
 def test_menu_actions_hides_git_pull_when_nothing_is_ahead():
@@ -1410,6 +1967,27 @@ def test_menu_enters_groups_and_returns_to_saved_root_cursor():
     assert dashboard.enter_menu(git) == (git, "git diff")
     assert dashboard.back_menu(git).index == 2
     assert root.index == 0 and root.active_group is None
+
+
+def test_menu_launch_submenu_navigates_and_dispatches_original_verbs():
+    root = dashboard.MenuState(
+        "alpha-x",
+        [
+            ("Attach tmux", "tmux"),
+            ("Launch JetBrains idea", "ide"),
+            ("Launch Figma", "apps run figma --container"),
+            ("Destroy", "destroy"),
+        ],
+    )
+    selected = dashboard.move_menu(root, 1)
+    assert dashboard.menu_verb(selected) is None
+
+    launch, verb = dashboard.enter_menu(selected)
+    assert verb is None and launch.active_group == "Launch →"
+    assert dashboard.menu_verb(launch) == "ide"
+    assert dashboard.enter_menu(dashboard.move_menu(launch, 1))[1] == "apps run figma --container"
+    parent = dashboard.back_menu(launch)
+    assert parent is not None and parent.active_group is None and parent.index == 1
 
 
 def test_menu_group_cursor_clamps_within_visible_entries():
@@ -3314,6 +3892,28 @@ def test_new_container_argv_carries_no_yes_flag(tmp_path):
     assert "--yes" not in argv and "-y" not in argv
 
 
+def test_new_pr_container_argv_targets_configured_repo_without_yes(tmp_path):
+    target = _dispatch_target(tmp_path, "c.yaml")
+
+    assert dashboard.new_pr_container_argv(target, 123) == [
+        "jailbee",
+        "new",
+        "--config",
+        str(target.config_path),
+        "--pr",
+        "123",
+    ]
+
+
+def test_new_pr_container_argv_targets_scratch_repo(tmp_path):
+    assert dashboard.new_pr_container_argv(dashboard.RepoTarget(tmp_path, None), 123) == [
+        "jailbee",
+        "new",
+        "--pr",
+        "123",
+    ]
+
+
 def test_parse_key_maps_arrows_and_letters():
     assert dashboard.parse_key(b"\x1b[A") == "up"
     assert dashboard.parse_key(b"\x1b[B") == "down"
@@ -3527,6 +4127,7 @@ def test_render_help_overlay_documents_every_key(tmp_path):
     assert "NAME" in out and "one" in out
     assert "offered" in out or "available" in out
     assert "close" in out
+    assert "Egress panel: a adds, r removes a scoped override" in out
 
 
 def test_render_swaps_the_hint_line_while_the_menu_is_open(tmp_path):
@@ -4825,7 +5426,10 @@ def test_repo_header_enter_opens_menu_without_folding(mocker, tmp_path):
     menus = [call.kwargs["overlay"] for call in render.call_args_list if call.kwargs["overlay"]]
     assert menus
     assert menus[0].repo == "alpha"
-    assert [label for label, _ in menus[0].actions] == ["New container…", "Fold"]
+    assert [
+        item.label if isinstance(item, dashboard.MenuGroup) else item[0]
+        for item in menus[0].actions
+    ] == ["New container…", "New from PR…", "Network →", "Fold"]
     save.assert_not_called()
 
 
@@ -4844,6 +5448,32 @@ def test_repo_menu_new_runs_the_existing_creation_flow(mocker, tmp_path):
     )
 
 
+def test_repo_menu_new_from_pr_runs_review_creation_in_repo(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
+    mocker.patch("typer.prompt", return_value="123")
+    mocker.patch.object(dashboard, "_wait_for_return")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+
+    assert _drive_run(mocker, [b"\r", b"j", b"\r"], groups=[group]) == 0
+
+    child.assert_called_once_with(["jailbee", "new", "--pr", "123"], check=False, cwd=tmp_path)
+
+
+@pytest.mark.parametrize(
+    "answer", ["0", "-2", "abc", "--yes", "  ", pytest.param("9" * 5000, id="oversized")]
+)
+def test_repo_menu_new_from_pr_rejects_nonpositive_or_non_numeric_input(mocker, tmp_path, answer):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
+    mocker.patch("typer.prompt", return_value=answer)
+    mocker.patch.object(dashboard, "_wait_for_return")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+
+    assert _drive_run(mocker, [b"\r", b"j", b"\r"], groups=[group]) == 0
+
+    child.assert_not_called()
+
+
 @pytest.mark.parametrize("initially_folded", [False, True])
 def test_repo_menu_toggles_fold_and_persists_it(mocker, tmp_path, initially_folded):
     group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
@@ -4855,7 +5485,7 @@ def test_repo_menu_toggles_fold_and_persists_it(mocker, tmp_path, initially_fold
     assert (
         _drive_run(
             mocker,
-            [b"\r", b"j", b"\r"],
+            [b"\r", b"j", b"j", b"j", b"\r"],
             groups=[group],
             view_state=dashboard.ViewState(
                 folded=frozenset({"alpha"}) if initially_folded else frozenset(),
@@ -4867,7 +5497,7 @@ def test_repo_menu_toggles_fold_and_persists_it(mocker, tmp_path, initially_fold
     )
 
     menus = [call.kwargs["overlay"] for call in render.call_args_list if call.kwargs["overlay"]]
-    assert menus[0].actions[1][0] == ("Unfold" if initially_folded else "Fold")
+    assert menus[0].actions[3][0] == ("Unfold" if initially_folded else "Fold")
     assert save.call_count == 1
     assert save.call_args.args[1] == FRONTEND_TUI
     assert save.call_args.args[2].folded == (

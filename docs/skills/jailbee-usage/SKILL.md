@@ -104,6 +104,11 @@ widens network access — still get asked. The Qt dashboard does the same from
 a terminal window for the run. Only those two fields are asked; network,
 memory, cpu, mount and autostart come from the repo's config exactly as they
 do for `jailbee new <branch> <base>` on the command line.
+For review containers, select **New from PR…** in the TUI repo menu or the
+Qt **Container** menu / repo header (the Cards view also has a **PR…** button).
+Enter a positive PR number; the dashboard runs `jailbee new --pr N` in that
+repo and leaves the CLI's confirmations intact. A repo must have a usable
+directory; orphan groups cannot create either kind of container.
 An empty but registered repository can be targeted from its header: press `n`
 in the TUI, or use **View > Repositories** to restore it and then choose
 **Container > New…**, or **New…** on the Qt repository group header. Orphan

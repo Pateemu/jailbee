@@ -29,6 +29,7 @@ from jailbee.dashboard import (
     new_container_argv,
     new_container_base_default,
     new_container_reject_note_for_prefix,
+    new_pr_container_argv,
     seed_view_state,
 )
 from jailbee.db.view_prefs import FRONTEND_QT
@@ -500,6 +501,42 @@ class AppController(QObject):
             return
         self._worker.force()
 
+    @Slot(str)
+    def on_new_pr_container(self, prefix: str) -> None:
+        """Ask for a PR number and open the CLI's review-container flow."""
+        note = new_container_reject_note_for_prefix(self._latest, prefix)
+        group = next((g for g in self._latest if g.prefix == prefix), None)
+        if group is not None and not self._is_group_visible(group):
+            return
+        if note is not None:
+            QMessageBox.warning(self._window, "No repo selected", note)
+            return
+        assert group is not None
+        target = RepoTarget.of(group)
+        assert target is not None
+        number, accepted = QInputDialog.getInt(
+            self._window, f"New review container in '{prefix}'", "PR number", minValue=1
+        )
+        if not accepted:
+            return
+        action = ActionCommand(
+            argv=new_pr_container_argv(target, number),
+            launch="terminal",
+            confirm=False,
+            cwd=target.cwd(),
+        )
+        try:
+            argv = resolve_launch(action, detect_terminal(env=_env(), which=shutil.which))
+        except TerminalNotFoundError as exc:
+            QMessageBox.warning(self._window, "No terminal", str(exc))
+            return
+        try:
+            subprocess.Popen(argv, start_new_session=True, cwd=action.cwd)
+        except OSError as exc:
+            QMessageBox.warning(self._window, "Launch failed", str(exc))
+            return
+        self._worker.force()
+
     def _is_group_visible(self, group: RepoGroup) -> bool:
         """Gate stale UI actions against the window's current filtered view."""
         return group.prefix not in self._hidden_repos() and (
@@ -590,6 +627,7 @@ def _wire(window: MainWindow, worker: RefreshWorker, controller: AppController) 
     worker.failed.connect(controller.on_failed)
     window.actionRequested.connect(controller.on_action)
     window.newContainerRequested.connect(controller.on_new_container)
+    window.newPrContainerRequested.connect(controller.on_new_pr_container)
     window.configEditRequested.connect(controller.on_config_edit)
     window.refreshRequested.connect(controller.on_refresh_requested)
     window.intervalChanged.connect(controller.on_interval_changed)

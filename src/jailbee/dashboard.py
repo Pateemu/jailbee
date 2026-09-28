@@ -49,6 +49,15 @@ from jailbee.dashboard_commands import (
     dashboard_action_argv,
     insert_options_before_separator,
 )
+from jailbee.dashboard_egress import (
+    EgressState,
+    egress_argv,
+    move_egress,
+    removable_entry,
+    render_egress,
+    replace_egress_rows,
+)
+from jailbee.dashboard_egress_data import load_egress_rows
 from jailbee.dashboard_settings import (
     CURSOR_STYLE,
     SettingsState,
@@ -715,19 +724,27 @@ _PR_MENU_VERBS = frozenset({"pr --open", "pr", "review apply"})
 _GIT_MENU_VERBS = frozenset({"merge", "git pull", "git push", "git push --pr", "git diff"})
 
 
-def group_menu_actions(actions: Sequence[tuple[str, str]]) -> list[MenuItem]:
-    """Group filtered PR and Git leaves at their first occurrence.
+def group_menu_actions(
+    actions: Sequence[tuple[str, str]], *, include_network: bool = False
+) -> list[MenuItem]:
+    """Group filtered Launch, PR and Git leaves; optionally group Network for the TUI.
 
     Relative order within each submenu and among ungrouped leaves is retained;
     this function never changes eligibility or adds executable verbs.
     """
+    launch_actions = tuple(action for action in actions if action[0].startswith("Launch "))
     pr_actions = tuple(action for action in actions if action[1] in _PR_MENU_VERBS)
     git_actions = tuple(action for action in actions if action[1] in _GIT_MENU_VERBS)
+    network_actions = tuple(action for action in actions if action[1].startswith("net "))
     result: list[MenuItem] = []
     seen: set[str] = set()
     for action in actions:
         verb = action[1]
-        if verb in _PR_MENU_VERBS:
+        if action[0].startswith("Launch "):
+            if "launch" not in seen:
+                result.append(MenuGroup("Launch →", launch_actions))
+                seen.add("launch")
+        elif verb in _PR_MENU_VERBS:
             if "pr" not in seen:
                 result.append(MenuGroup("PR →", pr_actions))
                 seen.add("pr")
@@ -735,6 +752,10 @@ def group_menu_actions(actions: Sequence[tuple[str, str]]) -> list[MenuItem]:
             if "git" not in seen:
                 result.append(MenuGroup("Git →", git_actions))
                 seen.add("git")
+        elif include_network and verb.startswith("net "):
+            if "network" not in seen:
+                result.append(MenuGroup("Network →", network_actions))
+                seen.add("network")
         else:
             result.append(action)
     return result
@@ -869,12 +890,15 @@ def menu_actions(ctx: MenuContext) -> list[tuple[str, str]]:
         for mode in _NETWORK_MODES:
             if mode != ctx.current_network:
                 actions.append((f"Network: {mode}", f"net {mode}"))
+        actions.append(("Egress…", "net egress ls"))
         actions += [
             ("Restart", "restart"),
             ("Stop", "stop"),
             ("Destroy", "destroy"),
         ]
         return actions
+    if ctx.state == "Stopped":
+        actions.append(("Egress…", "net egress ls"))
     return [*actions, ("Destroy", "destroy")]
 
 
@@ -1166,8 +1190,10 @@ class RepoMenuState:
     """Repo-scoped actions for a selected header, distinct from container verbs."""
 
     repo: str
-    actions: list[tuple[str, str]]
+    actions: list[MenuItem]
     index: int = 0
+    active_group: str | None = None
+    parent_index: int = 0
 
 
 # What occupies the slot under the table. Overlays are mutually exclusive by
@@ -1211,7 +1237,7 @@ def edit_command(state: CommandState, key: bytes) -> CommandState:
     return state
 
 
-Overlay = MenuState | RepoMenuState | SettingsState | CommandState | Literal["help"]
+Overlay = MenuState | RepoMenuState | EgressState | SettingsState | CommandState | Literal["help"]
 
 
 def open_menu(
@@ -1237,24 +1263,40 @@ def open_menu(
 
 
 def open_repo_menu(
-    groups: list[RepoGroup], prefix: str, folded: frozenset[str]
+    groups: list[RepoGroup],
+    prefix: str,
+    folded: frozenset[str],
+    *,
+    ssh_policy: RemoteSSHConfig | None = None,
+    over_ssh: bool = False,
 ) -> RepoMenuState | None:
     """Offer creation for actionable repos and folding for every visible header."""
     group = next((g for g in groups if g.prefix == prefix), None)
     if group is None:
         return None
-    actions: list[tuple[str, str]] = []
+    actions: list[MenuItem] = []
     if RepoTarget.of(group) is not None:
         actions.append(("New container…", "new"))
+        actions.append(("New from PR…", "new-pr"))
+        try:
+            check_dashboard_command(
+                ["net", "egress", "ls", "--repo"], ssh_policy, over_ssh=over_ssh
+            )
+        except RouteError:
+            pass
+        else:
+            actions.append(MenuGroup("Network →", (("Egress…", "net egress ls"),)))
     actions.append(("Unfold" if prefix in folded else "Fold", "fold"))
     return RepoMenuState(prefix, actions)
 
 
 def _menu_entries(menu: MenuState | RepoMenuState) -> Sequence[MenuItem]:
     """Visible entries at this level, derived only from captured leaves."""
-    if isinstance(menu, RepoMenuState):
-        return menu.actions
-    items = group_menu_actions(menu.actions)
+    items = (
+        menu.actions
+        if isinstance(menu, RepoMenuState)
+        else group_menu_actions(menu.actions, include_network=True)
+    )
     if menu.active_group is None:
         return items
     return next(
@@ -1267,7 +1309,7 @@ def _menu_entries(menu: MenuState | RepoMenuState) -> Sequence[MenuItem]:
     )
 
 
-def enter_menu(menu: MenuState) -> tuple[MenuState, str | None]:
+def enter_menu(menu: MenuState | RepoMenuState) -> tuple[MenuState | RepoMenuState, str | None]:
     """Enter a selected group or return its selected executable verb."""
     entries = _menu_entries(menu)
     if not 0 <= menu.index < len(entries):
@@ -1278,7 +1320,7 @@ def enter_menu(menu: MenuState) -> tuple[MenuState, str | None]:
     return menu, selected[1]
 
 
-def back_menu(menu: MenuState) -> MenuState | None:
+def back_menu(menu: MenuState | RepoMenuState) -> MenuState | RepoMenuState | None:
     """Go back to the highlighted parent group; close at the root."""
     if menu.active_group is None:
         return None
@@ -1309,7 +1351,11 @@ def _render_menu(menu: MenuState | RepoMenuState) -> RenderableType:
         for label in [item.label if isinstance(item, MenuGroup) else item[0]]
     ]
     if isinstance(menu, RepoMenuState):
-        title = f"{menu.repo} →"
+        title = (
+            f"{menu.repo} → {menu.active_group.removesuffix(' →')}"
+            if menu.active_group
+            else f"{menu.repo} →"
+        )
     elif menu.active_group:
         title = f"{menu.container} → {menu.active_group.removesuffix(' →')}"
     else:
@@ -1342,7 +1388,12 @@ def _render_help() -> RenderableType:
             for b in KEY_BINDINGS
             if b.group == group and b.hint
         ]
-    lines += ["", f"[dim]{_GATE_NOTE}[/dim]"]
+    lines += [
+        "",
+        "Egress panel: a adds, r removes a scoped override; Esc backs to its menu.",
+        "",
+        f"[dim]{_GATE_NOTE}[/dim]",
+    ]
     return Panel(
         "\n".join(lines),
         title="[bold]keys[/]",
@@ -1408,6 +1459,11 @@ def _hint_line(overlay: Overlay | None) -> str:
         return "[bold]↑/↓[/bold] move  ·  [bold]Enter[/bold] open/run  ·  [bold]Esc[/bold] cancel"
     if isinstance(overlay, RepoMenuState):
         return "[bold]↑/↓[/bold] move  ·  [bold]Enter[/bold] run  ·  [bold]Esc[/bold] cancel"
+    if isinstance(overlay, EgressState):
+        return (
+            "[bold]↑/↓[/bold] move  ·  [bold]a[/bold] add  ·  "
+            "[bold]r[/bold] remove  ·  [bold]Esc[/bold] back"
+        )
     if isinstance(overlay, SettingsState):
         return (
             "[bold]↑/↓[/bold] move  ·  [bold]Space[/bold] toggle  ·  "
@@ -1681,7 +1737,13 @@ def render(
         ),
     ]
     if overlay is not None:
-        if isinstance(overlay, (MenuState, RepoMenuState)):
+        if isinstance(overlay, EgressState):
+            panel = render_egress(
+                overlay,
+                can_add=overlay.can_add,
+                can_rm=overlay.can_rm and removable_entry(overlay) is not None,
+            )
+        elif isinstance(overlay, (MenuState, RepoMenuState)):
             panel = _render_menu(overlay)
         elif isinstance(overlay, CommandState):
             lines = [f"> {overlay.text}▏"]
@@ -2023,6 +2085,11 @@ def new_container_argv(target: RepoTarget, branch: str, base: str) -> list[str]:
     return ["jailbee", "new", *target.flags(), "--", branch, base]
 
 
+def new_pr_container_argv(target: RepoTarget, number: int) -> list[str]:
+    """Create a review container using the CLI's existing PR resolution flow."""
+    return ["jailbee", "new", *target.flags(), "--pr", str(number)]
+
+
 # Verbs routed through the CLI's attach guard, which asks "continue anyway?"
 # when the container's background job failed or is unfinished. Both dashboards
 # have already shown that state in the JOB column, so the question would only
@@ -2069,6 +2136,7 @@ PRINTING_VERBS: frozenset[str] = frozenset(
         "merge",
         "job log",
         "job log --follow",
+        "net egress ls",
     }
 )
 
@@ -2427,6 +2495,7 @@ def run(
     selected: Row | None = None
     sel_index = 0
     overlay: Overlay | None = None
+    egress_parent: MenuState | RepoMenuState | None = None
     notice: str | None = column_notice
     notice_until = time.monotonic() + 10.0 if column_notice else 0.0
 
@@ -2577,8 +2646,139 @@ def run(
                     set_notice(f"'jailbee {verb} {target}' exited {rc}")
                 force.set()  # an action likely changed state — refresh ASAP
 
-            def create_container() -> None:
-                """Ask for a branch and a base, then run `jailbee new` here.
+            def open_egress(prefix: str, container: str | None) -> EgressState | None:
+                """Load one scoped view after checking the read permission."""
+                group = next((item for item in groups if item.prefix == prefix), None)
+                if group is None or RepoTarget.of(group) is None:
+                    set_notice(f"'{prefix}' is no longer listed or has no repo directory")
+                    return None
+                if container is not None and not any(c.name == container for c in group.containers):
+                    set_notice(f"'{container}' is no longer listed")
+                    return None
+                argv = ["net", "egress", "ls", *([container] if container else ["--repo"])]
+                try:
+                    check_dashboard_command(argv, ssh_policy, over_ssh=over_ssh)
+                    rows = load_egress_rows(Path(group.repo_root or ""), incus, container)
+                except Exception as exc:
+                    set_notice(f"could not load egress entries: {exc}")
+                    return None
+                state = EgressState(prefix, container, rows)
+                return replace(
+                    state,
+                    can_add=egress_permitted(state, "add"),
+                    can_rm=egress_permitted(state, "rm"),
+                )
+
+            def egress_permitted(state: EgressState, action: Literal["add", "rm"]) -> bool:
+                """Check the current remote policy for the scoped mutation."""
+                try:
+                    check_dashboard_command(
+                        egress_argv(state, action, "example.com"),
+                        ssh_policy,
+                        over_ssh=over_ssh,
+                    )
+                except RouteError:
+                    return False
+                return True
+
+            def mutate_egress(
+                state: EgressState, action: Literal["add", "rm"]
+            ) -> EgressState | None:
+                """Prompt, reauthorize and run one scoped mutation; reload rows."""
+                group = next((item for item in groups if item.prefix == state.prefix), None)
+                target = RepoTarget.of(group) if group is not None else None
+                if (
+                    group is None
+                    or target is None
+                    or (
+                        state.container is not None
+                        and not any(c.name == state.container for c in group.containers)
+                    )
+                ):
+                    set_notice("Egress target is no longer available")
+                    return None
+                entry = ""
+                if action == "rm":
+                    entry = removable_entry(state) or ""
+                    if not entry:
+                        set_notice("Select a removable override first")
+                        return state
+                if not egress_permitted(state, action):
+                    set_notice(f"net egress {action} is not permitted by the SSH policy")
+                    return state
+
+                outcome = "cancelled"
+
+                def prompt_and_run() -> int:
+                    import typer
+
+                    nonlocal entry, outcome
+                    try:
+                        if action == "add":
+                            entry = typer.prompt(
+                                "Destination (host, host:port, IPv4 or CIDR)"
+                            ).strip()
+                    except (typer.Abort, EOFError, KeyboardInterrupt):
+                        return 0
+                    if not entry:
+                        return 0
+                    current_group = next(
+                        (item for item in groups if item.prefix == state.prefix), None
+                    )
+                    current_target = (
+                        RepoTarget.of(current_group) if current_group is not None else None
+                    )
+                    if (
+                        current_group is None
+                        or current_target is None
+                        or (
+                            state.container is not None
+                            and not any(c.name == state.container for c in current_group.containers)
+                        )
+                    ):
+                        outcome = "target-missing"
+                        set_notice("Egress target is no longer available")
+                        return 0
+                    args = egress_argv(state, action, entry)
+                    argv = [*args, *(current_target.flags() if not over_ssh else [])]
+                    try:
+                        check_dashboard_command(argv, ssh_policy, over_ssh=over_ssh)
+                    except RouteError as exc:
+                        outcome = "blocked"
+                        set_notice(str(exc))
+                        return 0
+                    outcome = "dispatched"
+                    rc = subprocess.run(
+                        ["jailbee", *argv], check=False, cwd=current_target.cwd()
+                    ).returncode
+                    _wait_for_return()
+                    return rc
+
+                try:
+                    rc = foreground(prompt_and_run)
+                except OSError:
+                    _report_vanished_repo(target)
+                    return None
+                if outcome == "cancelled":
+                    set_notice("Egress change cancelled")
+                    return state
+                if outcome == "target-missing":
+                    return None
+                if outcome == "blocked":
+                    return state
+                if rc != 0:
+                    set_notice(f"'jailbee net egress {action}' exited {rc}")
+                else:
+                    force.set()
+                try:
+                    rows = load_egress_rows(target.repo_root, incus, state.container)
+                except Exception as exc:
+                    set_notice(f"could not refresh egress entries: {exc}")
+                    return state
+                return replace_egress_rows(state, rows)
+
+            def create_container(*, from_pr: bool = False) -> None:
+                """Ask for a branch and base, or a PR number, then run `jailbee new`.
 
                 The terminal is handed over rather than the command dispatched
                 detached, because `jailbee new` asks its own questions:
@@ -2602,36 +2802,50 @@ def run(
                 assert group is not None  # guaranteed by the note being None
                 repo = RepoTarget.of(group)
                 assert repo is not None  # ditto: new_container_target rejects rootless groups
-                base_default = new_container_base_default(group.repo_root)
+                base_default = None if from_pr else new_container_base_default(group.repo_root)
 
                 def ask_and_run() -> int:
                     import typer
 
                     try:
-                        branch = typer.prompt("New branch").strip()
-                        base = typer.prompt("Base branch", default=base_default or "").strip()
+                        if from_pr:
+                            answer = typer.prompt("PR number").strip()
+                            try:
+                                number = (
+                                    int(answer) if answer.isascii() and answer.isdecimal() else 0
+                                )
+                            except ValueError:
+                                number = 0  # Python refuses excessively long integer strings
+                            if number < 1:
+                                console.print(
+                                    "\n[yellow]No container created — invalid PR number.[/yellow]"
+                                )
+                                _wait_for_return()
+                                return 0
+                            argv = new_pr_container_argv(repo, number)
+                        else:
+                            branch = typer.prompt("New branch").strip()
+                            base = typer.prompt("Base branch", default=base_default or "").strip()
+                            if not branch or not base:
+                                empty = "branch" if not branch else "base branch"
+                                console.print(
+                                    f"\n[yellow]No container created — {empty} was empty.[/yellow]"
+                                )
+                                _wait_for_return()
+                                return 0
+                            argv = new_container_argv(repo, branch, base)
                     except (typer.Abort, EOFError, KeyboardInterrupt):
                         # Ctrl-C answers the prompt, not the dashboard: `run`'s
                         # own KeyboardInterrupt handler would quit outright.
                         return 0
-                    if not branch or not base:
-                        # Reachable two ways: a whitespace-only branch, and —
-                        # on a host repo in detached HEAD, where `base_default`
-                        # is empty — simply pressing Enter twice. Silently
-                        # returning here used to be indistinguishable from a
-                        # broken keypress, so say what happened before giving
-                        # the terminal back.
-                        empty = "branch" if not branch else "base branch"
-                        console.print(
-                            f"\n[yellow]No container created — {empty} was empty.[/yellow]"
+                    if over_ssh:
+                        # Remote sessions address their selected repo by cwd,
+                        # not by an explicit host config path.
+                        argv = (
+                            ["jailbee", "new", "--pr", str(number)]
+                            if from_pr
+                            else ["jailbee", "new", "--", branch, base]
                         )
-                        _wait_for_return()
-                        return 0
-                    argv = (
-                        ["jailbee", "new", "--", branch, base]
-                        if over_ssh
-                        else new_container_argv(repo, branch, base)
-                    )
                     try:
                         check_dashboard_command(argv[1:], ssh_policy, over_ssh=over_ssh)
                     except RouteError as exc:
@@ -2756,10 +2970,30 @@ def run(
                 if isinstance(overlay, RepoMenuState) and Row("repo", overlay.repo) not in rows:
                     set_notice(f"'{overlay.repo}' is gone — menu closed")
                     overlay = None
+                if isinstance(overlay, EgressState) and (
+                    not any(g.prefix == overlay.prefix for g in groups)
+                    or (
+                        overlay.container is not None
+                        and not any(
+                            c.name == overlay.container
+                            for g in groups
+                            if g.prefix == overlay.prefix
+                            for c in g.containers
+                        )
+                    )
+                ):
+                    set_notice("Egress target is gone — panel closed")
+                    overlay = None
                 if isinstance(overlay, MenuState):
                     selected = Row("container", overlay.container)  # pinned while the menu is open
                 elif isinstance(overlay, RepoMenuState):
                     selected = Row("repo", overlay.repo)
+                elif isinstance(overlay, EgressState):
+                    selected = (
+                        Row("container", overlay.container)
+                        if overlay.container is not None
+                        else Row("repo", overlay.prefix)
+                    )
                 else:
                     selected = reconcile_selection(rows, selected, sel_index)
                 if selected in rows:
@@ -2847,7 +3081,13 @@ def run(
                     if key == "quit":
                         overlay = None
                     elif key == "cancel":
-                        overlay = back_menu(overlay) if isinstance(overlay, MenuState) else None
+                        if isinstance(overlay, (MenuState, RepoMenuState)):
+                            overlay = back_menu(overlay)
+                        elif isinstance(overlay, EgressState):
+                            overlay = egress_parent
+                            egress_parent = None
+                        else:
+                            overlay = None
                     elif key == "help":
                         # One slot, so help replaces the menu rather than
                         # stacking on it — and toggles itself shut.
@@ -2875,29 +3115,48 @@ def run(
                             persist_view_state(
                                 ViewState(enabled, folded, show_empty_repos, hidden_repos)
                             )
+                    elif isinstance(overlay, EgressState):
+                        if key in ("up", "down"):
+                            overlay = move_egress(overlay, -1 if key == "up" else 1)
+                        elif data == b"a":
+                            overlay = mutate_egress(overlay, "add")
+                        elif data == b"r":
+                            overlay = mutate_egress(overlay, "rm")
                     elif isinstance(overlay, (MenuState, RepoMenuState)):
                         if key in ("up", "down"):
                             overlay = move_menu(overlay, -1 if key == "up" else 1)
                         elif key == "enter":
+                            next_menu, verb = enter_menu(overlay)
+                            if verb is None:
+                                overlay = next_menu
+                                continue
                             if isinstance(overlay, RepoMenuState):
-                                verb = menu_verb(overlay)
                                 target = overlay.repo
+                                repo_parent = next_menu
                                 overlay = None
                                 if verb == "new":
                                     create_container()
+                                elif verb == "new-pr":
+                                    create_container(from_pr=True)
                                 elif verb == "fold":
                                     folded = toggle_folded(folded, target)
                                     persist_view_state(
                                         ViewState(enabled, folded, show_empty_repos, hidden_repos)
                                     )
+                                elif verb == "net egress ls":
+                                    egress_parent = repo_parent
+                                    overlay = open_egress(target, None)
                             else:
-                                next_menu, verb = enter_menu(overlay)
-                                if verb is not None:
-                                    target = overlay.container
-                                    overlay = None
-                                    dispatch(target, verb)
+                                target = overlay.container
+                                assert isinstance(next_menu, MenuState)
+                                container_parent = next_menu
+                                overlay = None
+                                if verb == "net egress ls":
+                                    group = _find_group(groups, target)
+                                    egress_parent = container_parent
+                                    overlay = open_egress(group.prefix, target) if group else None
                                 else:
-                                    overlay = next_menu
+                                    dispatch(target, verb)
                     continue
                 if key == "quit":
                     break
@@ -2907,7 +3166,13 @@ def run(
                         sel_index = rows.index(selected)
                 elif key == "enter":
                     if selected is not None and selected.kind == "repo":
-                        overlay = open_repo_menu(groups, selected.key, folded)
+                        overlay = open_repo_menu(
+                            groups,
+                            selected.key,
+                            folded,
+                            ssh_policy=ssh_policy,
+                            over_ssh=over_ssh,
+                        )
                     else:
                         container = container_of(selected)
                         overlay = open_menu(

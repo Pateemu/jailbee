@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):
     cardStyleChanged = Signal(str)  # noqa: N815 - Qt signal naming; payload: "compact" | "grid"
     columnsChanged = Signal()  # noqa: N815 - Qt signal naming convention (camelCase); the enabled column set changed
     newContainerRequested = Signal(str)  # noqa: N815 - Qt signal naming convention (camelCase); payload: repo prefix, "" when nothing is selected
+    newPrContainerRequested = Signal(str)  # noqa: N815 - payload: repo prefix
     configEditRequested = Signal(str, bool)  # noqa: N815 - Qt signal naming convention (camelCase); payload: (repo prefix, edit the global layer)
     repoVisibilityChanged = Signal()  # noqa: N815 - repository visibility preference changed
 
@@ -130,6 +131,7 @@ class MainWindow(QMainWindow):
         self.card_view = CardView()
         self.card_view.actionRequested.connect(self.actionRequested)  # re-emit
         self.card_view.newContainerRequested.connect(self.newContainerRequested)
+        self.card_view.newPrContainerRequested.connect(self.newPrContainerRequested)
         self.card_view.set_card_style(self._card_style)
 
         self.stack = QStackedWidget()
@@ -375,6 +377,10 @@ class MainWindow(QMainWindow):
         self.new_container_action.triggered.connect(
             lambda: self.newContainerRequested.emit(self._selected_prefix() or "")
         )
+        self.new_pr_container_action = menu.addAction("New from &PR…")
+        self.new_pr_container_action.triggered.connect(
+            lambda: self.newPrContainerRequested.emit(self._selected_prefix() or "")
+        )
 
     def _build_config_menu(self) -> None:
         """The second repo-scoped menu: editing config, not acting on a container.
@@ -548,6 +554,10 @@ class MainWindow(QMainWindow):
             act = group_menu.addAction("New container…")
             act.triggered.connect(
                 lambda _checked=False, p=prefix: self.newContainerRequested.emit(p)
+            )
+            pr_act = group_menu.addAction("New from PR…")
+            pr_act.triggered.connect(
+                lambda _checked=False, p=prefix: self.newPrContainerRequested.emit(p)
             )
             # Same stub gap as below: pos is a QPoint at runtime, but PySide6's
             # overload set for the signal's `object` parameter doesn't narrow to it.

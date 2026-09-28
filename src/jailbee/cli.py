@@ -8784,6 +8784,22 @@ def _egress_target(
     return _resolve_existing(cfg, name)
 
 
+def _egress_container_name(
+    name: str | None, container_option: str | None, *, repo: bool
+) -> str | None:
+    """Resolve the target selector while retaining the positional NAME form.
+
+    `--container` provides an unambiguous target when ENTRY is omitted; it is
+    also accepted alongside ENTRY. `--repo` remains a short circuit and ignores
+    both container selectors, matching the existing positional contract.
+    """
+    if repo:
+        return name
+    if name is not None and container_option is not None:
+        raise typer.BadParameter("pass NAME or --container, not both")
+    return container_option if container_option is not None else name
+
+
 def _repin_hosts_quietly(cfg: "Config", incus: "IncusType", name: str) -> None:
     """Best-effort /etc/hosts re-pin after an override change.
 
@@ -8816,7 +8832,7 @@ def _egress_container_mode(cfg: "Config", incus: "IncusType", name: str) -> str:
 @egress_app.command("add")
 def egress_add_cmd(
     entry: Annotated[
-        str,
+        str | None,
         typer.Argument(
             help=(
                 "Destination to allow, as 'host', 'host:port', an IPv4 address "
@@ -8826,7 +8842,7 @@ def egress_add_cmd(
                 "what the ACL carries."
             ),
         ),
-    ],
+    ] = None,
     name: Annotated[
         str | None,
         typer.Argument(
@@ -8834,6 +8850,14 @@ def egress_add_cmd(
                 _CONTAINER_ARG_HELP + " Ignored with --repo, which changes the "
                 "repo-scope allowlist and so resolves no container at all."
             ),
+            autocompletion=completion.complete_container,
+        ),
+    ] = None,
+    container_option: Annotated[
+        str | None,
+        typer.Option(
+            "--container",
+            help="Target this container (cannot be combined with positional NAME).",
             autocompletion=completion.complete_container,
         ),
     ] = None,
@@ -8847,7 +8871,21 @@ def egress_add_cmd(
     from jailbee import egress_scope
     from jailbee.egress import NetworkResolveError, parse_egress_entry
 
+    name = _egress_container_name(name, container_option, repo=repo)
+    if entry is None:
+        from jailbee.lifecycle import _stdin_is_interactive
+
+        if not _stdin_is_interactive():
+            error("ENTRY is required without an interactive terminal; pass ENTRY explicitly.")
+            raise typer.Exit(2)
+
     cfg = _load_or_exit(config)
+    if entry is None:
+        from jailbee.egress_interaction import prompt_add_entry
+
+        entry = prompt_add_entry()
+        if entry is None:
+            return
     try:
         parse_egress_entry(entry)
     except ValueError as e:
@@ -8910,7 +8948,7 @@ def egress_add_cmd(
 @egress_app.command("rm")
 def egress_rm_cmd(
     entry: Annotated[
-        str,
+        str | None,
         typer.Argument(
             help=(
                 "Override to remove, spelled exactly as `jailbee net egress ls` "
@@ -8919,7 +8957,7 @@ def egress_rm_cmd(
                 "config.yaml cannot be removed here."
             ),
         ),
-    ],
+    ] = None,
     name: Annotated[
         str | None,
         typer.Argument(
@@ -8927,6 +8965,14 @@ def egress_rm_cmd(
                 _CONTAINER_ARG_HELP + " Ignored with --repo, which changes the "
                 "repo-scope allowlist and so resolves no container at all."
             ),
+            autocompletion=completion.complete_container,
+        ),
+    ] = None,
+    container_option: Annotated[
+        str | None,
+        typer.Option(
+            "--container",
+            help="Target this container (cannot be combined with positional NAME).",
             autocompletion=completion.complete_container,
         ),
     ] = None,
@@ -8952,7 +8998,40 @@ def egress_rm_cmd(
     from jailbee import egress_scope
     from jailbee.db import get_engine
 
+    name = _egress_container_name(name, container_option, repo=repo)
+    if entry is None:
+        from jailbee.lifecycle import _stdin_is_interactive
+
+        if not _stdin_is_interactive():
+            error("ENTRY is required without an interactive terminal; pass ENTRY explicitly.")
+            raise typer.Exit(2)
+
     cfg = _load_or_exit(config)
+    if entry is None:
+        from jailbee import egress_scope
+        from jailbee.egress_interaction import pick_remove_entry
+
+        if repo:
+            with Session(get_engine()) as session:
+                entries = list(
+                    dict.fromkeys(
+                        [
+                            *egress_scope.local_entries(cfg.container_prefix),
+                            *egress_scope.legacy_repo_extras(session, cfg.container_prefix),
+                        ]
+                    )
+                )
+            entry = pick_remove_entry(entries, scope="repo")
+        else:
+            incus, container = _egress_target(name, repo, cfg)
+            assert container is not None
+            entries = egress_scope.container_extras(incus, container)
+            name = container
+            entry = pick_remove_entry(entries, scope="container")
+        if entry is None:
+            if not entries:
+                info("There are no stored overrides to remove.")
+            return
     if repo:
         removed = egress_scope.remove_local_entry(cfg.container_prefix, entry)
         with Session(get_engine()) as session:

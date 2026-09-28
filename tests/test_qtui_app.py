@@ -881,6 +881,21 @@ def test_destroy_guard_reads_a_scratch_repos_config_from_its_root(mocker, tmp_pa
     load.assert_called_once_with(tmp_path)
 
 
+def test_net_egress_ls_opens_the_qt_output_window(mocker, tmp_path):
+    """The shared Egress action prints its table, which must stay visible in Qt."""
+    controller = _controller_with_group(mocker, tmp_path)
+    open_output = mocker.patch.object(qapp.AppController, "_open_output")
+    popen = mocker.patch.object(qapp.subprocess, "Popen")
+
+    controller.on_action("net egress ls", "p-foo")
+
+    open_output.assert_called_once()
+    assert open_output.call_args.args[0][:4] == ["jailbee", "net", "egress", "ls"]
+    assert open_output.call_args.args[1] == "jailbee net egress ls p-foo"
+    assert open_output.call_args.args[2] == tmp_path
+    popen.assert_not_called()
+
+
 def test_on_action_git_diff_opens_an_output_window_instead_of_spawning(mocker, tmp_path):
     """`git diff` exists for the text it prints: a detached Popen would throw
     that away, so the verb must go to the output window instead."""
@@ -1392,6 +1407,62 @@ def test_on_new_container_reports_a_missing_terminal(mocker):
 
     warn.assert_called_once()
     popen.assert_not_called()
+
+
+def test_on_new_pr_container_launches_in_a_terminal_for_selected_repo(mocker):
+    from PySide6.QtWidgets import QInputDialog
+
+    prompt = mocker.patch.object(QInputDialog, "getInt", return_value=(123, True))
+    mocker.patch("jailbee.qtui.app.detect_terminal", return_value=mocker.sentinel.term)
+    resolve = mocker.patch(
+        "jailbee.qtui.app.resolve_launch", return_value=["xterm", "-e", "jailbee", "new"]
+    )
+    popen = mocker.patch("jailbee.qtui.app.subprocess.Popen")
+    controller = qapp.AppController(mocker.Mock(), mocker.Mock(), interval=3.0)
+    controller.on_groups(_new_container_groups())
+
+    controller.on_new_pr_container("p")
+
+    assert prompt.call_args.kwargs["minValue"] == 1
+    action = resolve.call_args.args[0]
+    assert action.argv == [
+        "jailbee",
+        "new",
+        "--config",
+        "/repo/.jailbee/config.yaml",
+        "--pr",
+        "123",
+    ]
+    assert action.launch == "terminal"
+    assert action.cwd == Path("/repo")
+    assert popen.call_args.kwargs["cwd"] == Path("/repo")
+
+
+def test_on_new_pr_container_cancel_does_not_launch(mocker):
+    from PySide6.QtWidgets import QInputDialog
+
+    mocker.patch.object(QInputDialog, "getInt", return_value=(1, False))
+    popen = mocker.patch("jailbee.qtui.app.subprocess.Popen")
+    controller = qapp.AppController(mocker.Mock(), mocker.Mock(), interval=3.0)
+    controller.on_groups(_new_container_groups())
+
+    controller.on_new_pr_container("p")
+
+    popen.assert_not_called()
+
+
+def test_on_new_pr_container_rejects_orphan_before_prompt(mocker):
+    from PySide6.QtWidgets import QInputDialog
+
+    prompt = mocker.patch.object(QInputDialog, "getInt")
+    warn = mocker.patch.object(QMessageBox, "warning")
+    controller = qapp.AppController(mocker.Mock(), mocker.Mock(), interval=3.0)
+    controller.on_groups([RepoGroup("orphan", None, None, [])])
+
+    controller.on_new_pr_container("orphan")
+
+    prompt.assert_not_called()
+    assert "orphan" in warn.call_args.args[2]
 
 
 def test_on_config_edit_launches_the_tui_in_a_terminal(mocker, tmp_path):
