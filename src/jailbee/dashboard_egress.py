@@ -98,7 +98,11 @@ def render_egress(state: EgressState, *, can_add: bool, can_rm: bool) -> Rendera
             line.append(row.entry, style="bold" if i == state.index else "")
             sources = repo_sources.get(row.entry, set())
             duplicate_repo_entry = {"local", "db (legacy)"} <= sources
-            source_note = f"[{row.source}; removes both repo copies]" if duplicate_repo_entry else f"[{row.source}]"
+            source_note = (
+                f"[{row.source}; removes both repo copies]"
+                if duplicate_repo_entry
+                else f"[{row.source}]"
+            )
             line.append(f"  {source_note}")
             if row.redundant:
                 line.append("  (redundant)", style="dim")

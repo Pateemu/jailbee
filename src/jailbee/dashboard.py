@@ -49,6 +49,15 @@ from jailbee.dashboard_commands import (
     dashboard_action_argv,
     insert_options_before_separator,
 )
+from jailbee.dashboard_egress import (
+    EgressState,
+    egress_argv,
+    move_egress,
+    removable_entry,
+    render_egress,
+    replace_egress_rows,
+)
+from jailbee.dashboard_egress_data import load_egress_rows
 from jailbee.dashboard_settings import (
     CURSOR_STYLE,
     SettingsState,
@@ -60,15 +69,6 @@ from jailbee.dashboard_settings import (
     toggle_current,
 )
 from jailbee.dashboard_visibility import visible_repo_groups
-from jailbee.dashboard_egress import (
-    EgressState,
-    egress_argv,
-    move_egress,
-    removable_entry,
-    render_egress,
-    replace_egress_rows,
-)
-from jailbee.dashboard_egress_data import load_egress_rows
 from jailbee.db.view_prefs import ViewState, load_view_state, save_view_state
 from jailbee.global_config import (
     GlobalConfig,
@@ -1237,7 +1237,9 @@ def open_repo_menu(
     if RepoTarget.of(group) is not None:
         actions.append(("New container…", "new"))
         try:
-            check_dashboard_command(["net", "egress", "ls", "--repo"], ssh_policy, over_ssh=over_ssh)
+            check_dashboard_command(
+                ["net", "egress", "ls", "--repo"], ssh_policy, over_ssh=over_ssh
+            )
         except RouteError:
             pass
         else:
@@ -1412,7 +1414,10 @@ def _hint_line(overlay: Overlay | None) -> str:
     if isinstance(overlay, RepoMenuState):
         return "[bold]↑/↓[/bold] move  ·  [bold]Enter[/bold] run  ·  [bold]Esc[/bold] cancel"
     if isinstance(overlay, EgressState):
-        return "[bold]↑/↓[/bold] move  ·  [bold]a[/bold] add  ·  [bold]r[/bold] remove  ·  [bold]Esc[/bold] back"
+        return (
+            "[bold]↑/↓[/bold] move  ·  [bold]a[/bold] add  ·  "
+            "[bold]r[/bold] remove  ·  [bold]Esc[/bold] back"
+        )
     if isinstance(overlay, SettingsState):
         return (
             "[bold]↑/↓[/bold] move  ·  [bold]Space[/bold] toggle  ·  "
@@ -2592,7 +2597,7 @@ def run(
                 if container is not None and not any(c.name == container for c in group.containers):
                     set_notice(f"'{container}' is no longer listed")
                     return None
-                argv = ["net", "egress", "ls", *( [container] if container else ["--repo"] )]
+                argv = ["net", "egress", "ls", *([container] if container else ["--repo"])]
                 try:
                     check_dashboard_command(argv, ssh_policy, over_ssh=over_ssh)
                     rows = load_egress_rows(Path(group.repo_root or ""), incus, container)
@@ -2622,9 +2627,13 @@ def run(
                 """Prompt, reauthorize and run one scoped mutation; reload rows."""
                 group = next((item for item in groups if item.prefix == state.prefix), None)
                 target = RepoTarget.of(group) if group is not None else None
-                if group is None or target is None or (
-                    state.container is not None
-                    and not any(c.name == state.container for c in group.containers)
+                if (
+                    group is None
+                    or target is None
+                    or (
+                        state.container is not None
+                        and not any(c.name == state.container for c in group.containers)
+                    )
                 ):
                     set_notice("Egress target is no longer available")
                     return state
@@ -2644,7 +2653,9 @@ def run(
                     nonlocal entry
                     try:
                         if action == "add":
-                            entry = typer.prompt("Destination (host, host:port, IPv4 or CIDR)").strip()
+                            entry = typer.prompt(
+                                "Destination (host, host:port, IPv4 or CIDR)"
+                            ).strip()
                     except (typer.Abort, EOFError, KeyboardInterrupt):
                         return 0
                     if not entry:
@@ -2656,7 +2667,9 @@ def run(
                     except RouteError as exc:
                         set_notice(str(exc))
                         return 0
-                    rc = subprocess.run(["jailbee", *argv], check=False, cwd=target.cwd()).returncode
+                    rc = subprocess.run(
+                        ["jailbee", *argv], check=False, cwd=target.cwd()
+                    ).returncode
                     _wait_for_return()
                     return rc
 
@@ -3034,7 +3047,9 @@ def run(
                                     if verb == "net egress ls":
                                         group = _find_group(groups, target)
                                         egress_parent = container_parent
-                                        overlay = open_egress(group.prefix, target) if group else None
+                                        overlay = (
+                                            open_egress(group.prefix, target) if group else None
+                                        )
                                     else:
                                         dispatch(target, verb)
                                 else:

@@ -14,9 +14,9 @@ from rich.console import Console, RenderableType
 
 from jailbee import dashboard
 from jailbee.config.loader import _scratch_prefix
+from jailbee.egress_scope import EntryRow
 from jailbee.git_status import GitStatus
 from jailbee.lifecycle import ContainerInfo
-from jailbee.egress_scope import EntryRow
 
 
 def test_inline_editor_keeps_shortcuts_as_text():
@@ -855,7 +855,15 @@ def _session_verbs(actions: list[tuple[str, str]]) -> list[str]:
 
 def test_menu_actions_running_default_hides_ide_and_chrome():
     actions = dashboard.menu_actions(_ctx())
-    assert _session_verbs(actions) == ["tmux", "shell", "net loose", "net egress ls", "restart", "stop", "destroy"]
+    assert _session_verbs(actions) == [
+        "tmux",
+        "shell",
+        "net loose",
+        "net egress ls",
+        "restart",
+        "stop",
+        "destroy",
+    ]
     verbs = [a for _, a in actions]
     assert "ide" not in verbs
     assert "chrome" not in verbs
@@ -941,7 +949,7 @@ def test_remote_action_menu_offers_no_app_launches():
         item.label
         for item in dashboard.group_menu_actions(remote)
         if isinstance(item, dashboard.MenuGroup)
-        ] == ["PR →", "Git →"]
+    ] == ["PR →", "Git →"]
     assert ("Egress…", "net egress ls") in remote
 
 
@@ -1022,12 +1030,20 @@ def test_menu_actions_stopped_has_no_network_entries():
 
 def test_network_group_keeps_mode_eligibility_and_stopped_egress_view():
     running = dashboard.group_menu_actions(dashboard.menu_actions(_ctx()), include_network=True)
-    network = next(item for item in running if isinstance(item, dashboard.MenuGroup) and item.label == "Network →")
+    network = next(
+        item
+        for item in running
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
     assert [verb for _, verb in network.actions] == ["net loose", "net egress ls"]
     stopped = dashboard.group_menu_actions(
         dashboard.menu_actions(_ctx(state="Stopped")), include_network=True
     )
-    network = next(item for item in stopped if isinstance(item, dashboard.MenuGroup) and item.label == "Network →")
+    network = next(
+        item
+        for item in stopped
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
     assert network.actions == (("Egress…", "net egress ls"),)
     assert dashboard.group_menu_actions(dashboard.menu_actions(_ctx(has_repo=False))) == []
 
@@ -1036,11 +1052,19 @@ def test_egress_view_remote_policy_is_independent_and_restricted_host_read_only(
     from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
 
     group = dashboard.RepoGroup("alpha", "/alpha", None, [_ci("alpha-1", "alpha")])
-    view_only = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="allowlist", allow=["net egress ls"]))
-    actions = dashboard.actions_for_container([group], "alpha-1", over_ssh=True, ssh_policy=view_only)
-    assert [(label, verb) for label, verb in actions if verb.startswith("net ")] == [("Egress…", "net egress ls")]
+    view_only = RemoteSSHConfig(
+        commands=RemoteCommandPolicy(mode="allowlist", allow=["net egress ls"])
+    )
+    actions = dashboard.actions_for_container(
+        [group], "alpha-1", over_ssh=True, ssh_policy=view_only
+    )
+    assert [(label, verb) for label, verb in actions if verb.startswith("net ")] == [
+        ("Egress…", "net egress ls")
+    ]
     restricted_full = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="full"), restrict_host=True)
-    actions = dashboard.actions_for_container([group], "alpha-1", over_ssh=True, ssh_policy=restricted_full)
+    actions = dashboard.actions_for_container(
+        [group], "alpha-1", over_ssh=True, ssh_policy=restricted_full
+    )
     assert "net egress ls" in [verb for _, verb in actions]
     assert "net egress add" not in [verb for _, verb in actions]
     assert "net egress rm" not in [verb for _, verb in actions]
@@ -1063,7 +1087,9 @@ def test_repo_menu_egress_respects_ssh_read_permission():
     from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
 
     group = dashboard.RepoGroup("alpha", "/alpha", None, [])
-    allowed = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="allowlist", allow=["net egress ls"]))
+    allowed = RemoteSSHConfig(
+        commands=RemoteCommandPolicy(mode="allowlist", allow=["net egress ls"])
+    )
     denied = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="disabled"))
     allowed_menu = dashboard.open_repo_menu(
         [group], "alpha", frozenset(), ssh_policy=allowed, over_ssh=True
@@ -1071,8 +1097,12 @@ def test_repo_menu_egress_respects_ssh_read_permission():
     denied_menu = dashboard.open_repo_menu(
         [group], "alpha", frozenset(), ssh_policy=denied, over_ssh=True
     )
-    assert allowed_menu is not None and ("Network → Egress…", "net egress ls") in allowed_menu.actions
-    assert denied_menu is not None and all(verb != "net egress ls" for _, verb in denied_menu.actions)
+    assert (
+        allowed_menu is not None and ("Network → Egress…", "net egress ls") in allowed_menu.actions
+    )
+    assert denied_menu is not None and all(
+        verb != "net egress ls" for _, verb in denied_menu.actions
+    )
 
 
 def test_run_opens_egress_panel_and_dispatches_scoped_add(mocker, tmp_path):
@@ -1080,11 +1110,13 @@ def test_run_opens_egress_panel_and_dispatches_scoped_add(mocker, tmp_path):
     menu = dashboard.open_menu([group], "alpha-x")
     assert menu is not None
     network = next(
-        item for item in dashboard.group_menu_actions(menu.actions, include_network=True)
+        item
+        for item in dashboard.group_menu_actions(menu.actions, include_network=True)
         if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
     )
     network_index = next(
-        i for i, item in enumerate(dashboard.group_menu_actions(menu.actions, include_network=True))
+        i
+        for i, item in enumerate(dashboard.group_menu_actions(menu.actions, include_network=True))
         if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
     )
     egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
@@ -1095,7 +1127,17 @@ def test_run_opens_egress_panel_and_dispatches_scoped_add(mocker, tmp_path):
     mocker.patch.object(dashboard, "_wait_for_return")
     render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
 
-    keys = [b"j", b"\r", *([b"j"] * network_index), b"\r", *([b"j"] * egress_index), b"\r", b"a", b"\x1b", b"\x03"]
+    keys = [
+        b"j",
+        b"\r",
+        *([b"j"] * network_index),
+        b"\r",
+        *([b"j"] * egress_index),
+        b"\r",
+        b"a",
+        b"\x1b",
+        b"\x03",
+    ]
     assert _drive_run(mocker, keys, groups=[group]) == 0
 
     assert rows.call_count == 2  # initial load and post-mutation reload
@@ -1106,7 +1148,10 @@ def test_run_opens_egress_panel_and_dispatches_scoped_add(mocker, tmp_path):
         check=False,
         cwd=tmp_path,
     )
-    assert any(isinstance(call.kwargs.get("overlay"), dashboard.EgressState) for call in render.call_args_list)
+    assert any(
+        isinstance(call.kwargs.get("overlay"), dashboard.EgressState)
+        for call in render.call_args_list
+    )
 
 
 def test_ssh_egress_read_view_is_read_only_even_with_full_policy(mocker, tmp_path):
@@ -1117,22 +1162,43 @@ def test_ssh_egress_read_view_is_read_only_even_with_full_policy(mocker, tmp_pat
     menu = dashboard.open_menu([group], "alpha-x", remote=True, over_ssh=True, ssh_policy=policy)
     assert menu is not None
     root = dashboard.group_menu_actions(menu.actions, include_network=True)
-    network_index = next(i for i, item in enumerate(root) if isinstance(item, dashboard.MenuGroup) and item.label == "Network →")
-    network = next(item for item in root if isinstance(item, dashboard.MenuGroup) and item.label == "Network →")
+    network_index = next(
+        i
+        for i, item in enumerate(root)
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    network = next(
+        item for item in root if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
     egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
-    mocker.patch.object(dashboard, "load_egress_rows", return_value=(EntryRow("allowed.example", "config"),))
+    mocker.patch.object(
+        dashboard, "load_egress_rows", return_value=(EntryRow("allowed.example", "config"),)
+    )
     prompt = mocker.patch("typer.prompt")
     child = mocker.patch.object(dashboard.subprocess, "run")
     render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
 
-    assert _drive_run(
-        mocker,
-        [b"j", b"\r", *([b"j"] * network_index), b"\r", *([b"j"] * egress_index), b"\r", b"a", b"\x1b", b"\x03"],
-        groups=[group],
-        remote=True,
-        over_ssh=True,
-        ssh_policy=policy,
-    ) == 0
+    assert (
+        _drive_run(
+            mocker,
+            [
+                b"j",
+                b"\r",
+                *([b"j"] * network_index),
+                b"\r",
+                *([b"j"] * egress_index),
+                b"\r",
+                b"a",
+                b"\x1b",
+                b"\x03",
+            ],
+            groups=[group],
+            remote=True,
+            over_ssh=True,
+            ssh_policy=policy,
+        )
+        == 0
+    )
 
     prompt.assert_not_called()
     child.assert_not_called()
@@ -1155,11 +1221,28 @@ def test_run_removes_only_selected_container_override(mocker, tmp_path):
     menu = dashboard.open_menu([group], "alpha-x")
     assert menu is not None
     root = dashboard.group_menu_actions(menu.actions, include_network=True)
-    network_index = next(i for i, item in enumerate(root) if isinstance(item, dashboard.MenuGroup) and item.label == "Network →")
-    network = next(item for item in root if isinstance(item, dashboard.MenuGroup) and item.label == "Network →")
+    network_index = next(
+        i
+        for i, item in enumerate(root)
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    network = next(
+        item for item in root if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
     egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
 
-    keys = [b"j", b"\r", *([b"j"] * network_index), b"\r", *([b"j"] * egress_index), b"\r", b"j", b"r", b"\x1b", b"\x03"]
+    keys = [
+        b"j",
+        b"\r",
+        *([b"j"] * network_index),
+        b"\r",
+        *([b"j"] * egress_index),
+        b"\r",
+        b"j",
+        b"r",
+        b"\x1b",
+        b"\x03",
+    ]
     assert _drive_run(mocker, keys, groups=[group]) == 0
 
     assert load.call_count == 2
@@ -1172,9 +1255,7 @@ def test_run_removes_only_selected_container_override(mocker, tmp_path):
 
 def test_repo_egress_dispatch_uses_repo_scope_and_explicit_config(mocker, tmp_path):
     config_path = tmp_path / ".jailbee" / "config.yaml"
-    group = dashboard.RepoGroup(
-        "alpha", str(tmp_path), config_path, [_ci("alpha-x", "alpha")]
-    )
+    group = dashboard.RepoGroup("alpha", str(tmp_path), config_path, [_ci("alpha-x", "alpha")])
     mocker.patch.object(dashboard, "load_egress_rows", return_value=())
     mocker.patch("typer.prompt", return_value="repo.example:443")
     mocker.patch.object(dashboard, "_wait_for_return")
@@ -1204,17 +1285,36 @@ def test_egress_loader_failure_is_visible_and_does_not_crash(mocker, tmp_path):
     menu = dashboard.open_menu([group], "alpha-x")
     assert menu is not None
     root = dashboard.group_menu_actions(menu.actions, include_network=True)
-    network_index = next(i for i, item in enumerate(root) if isinstance(item, dashboard.MenuGroup) and item.label == "Network →")
-    network = next(item for item in root if isinstance(item, dashboard.MenuGroup) and item.label == "Network →")
+    network_index = next(
+        i
+        for i, item in enumerate(root)
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    network = next(
+        item for item in root if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
     egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
-    mocker.patch.object(dashboard, "load_egress_rows", side_effect=LookupError("database unavailable"))
+    mocker.patch.object(
+        dashboard, "load_egress_rows", side_effect=LookupError("database unavailable")
+    )
     render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
 
-    assert _drive_run(
-        mocker,
-        [b"j", b"\r", *([b"j"] * network_index), b"\r", *([b"j"] * egress_index), b"\r", b"\x03"],
-        groups=[group],
-    ) == 0
+    assert (
+        _drive_run(
+            mocker,
+            [
+                b"j",
+                b"\r",
+                *([b"j"] * network_index),
+                b"\r",
+                *([b"j"] * egress_index),
+                b"\r",
+                b"\x03",
+            ],
+            groups=[group],
+        )
+        == 0
+    )
 
     assert any(
         "could not load egress entries" in str(call.kwargs.get("notice"))
@@ -1355,7 +1455,10 @@ def test_menu_actions_mount_mode_groups_pending_pr_but_not_git():
         _ctx(mode="mount", git_status=_dirty(pending_pr_actions=2, pending_issue_actions=1))
     )
     grouped = dashboard.group_menu_actions(actions, include_network=True)
-    assert [item.label for item in grouped if isinstance(item, dashboard.MenuGroup)] == ["PR →", "Network →"]
+    assert [item.label for item in grouped if isinstance(item, dashboard.MenuGroup)] == [
+        "PR →",
+        "Network →",
+    ]
     assert grouped[0] == ("Attach tmux", "tmux")
     assert grouped[2] == dashboard.MenuGroup(
         "PR →", (("Apply 2 PR action(s) (review apply)", "review apply"),)
@@ -5043,7 +5146,11 @@ def test_repo_header_enter_opens_menu_without_folding(mocker, tmp_path):
     menus = [call.kwargs["overlay"] for call in render.call_args_list if call.kwargs["overlay"]]
     assert menus
     assert menus[0].repo == "alpha"
-    assert [label for label, _ in menus[0].actions] == ["New container…", "Network → Egress…", "Fold"]
+    assert [label for label, _ in menus[0].actions] == [
+        "New container…",
+        "Network → Egress…",
+        "Fold",
+    ]
     save.assert_not_called()
 
 
