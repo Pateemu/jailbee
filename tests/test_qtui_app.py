@@ -1394,6 +1394,62 @@ def test_on_new_container_reports_a_missing_terminal(mocker):
     popen.assert_not_called()
 
 
+def test_on_new_pr_container_launches_in_a_terminal_for_selected_repo(mocker):
+    from PySide6.QtWidgets import QInputDialog
+
+    prompt = mocker.patch.object(QInputDialog, "getInt", return_value=(123, True))
+    mocker.patch("jailbee.qtui.app.detect_terminal", return_value=mocker.sentinel.term)
+    resolve = mocker.patch(
+        "jailbee.qtui.app.resolve_launch", return_value=["xterm", "-e", "jailbee", "new"]
+    )
+    popen = mocker.patch("jailbee.qtui.app.subprocess.Popen")
+    controller = qapp.AppController(mocker.Mock(), mocker.Mock(), interval=3.0)
+    controller.on_groups(_new_container_groups())
+
+    controller.on_new_pr_container("p")
+
+    assert prompt.call_args.kwargs["minValue"] == 1
+    action = resolve.call_args.args[0]
+    assert action.argv == [
+        "jailbee",
+        "new",
+        "--config",
+        "/repo/.jailbee/config.yaml",
+        "--pr",
+        "123",
+    ]
+    assert action.launch == "terminal"
+    assert action.cwd == Path("/repo")
+    assert popen.call_args.kwargs["cwd"] == Path("/repo")
+
+
+def test_on_new_pr_container_cancel_does_not_launch(mocker):
+    from PySide6.QtWidgets import QInputDialog
+
+    mocker.patch.object(QInputDialog, "getInt", return_value=(1, False))
+    popen = mocker.patch("jailbee.qtui.app.subprocess.Popen")
+    controller = qapp.AppController(mocker.Mock(), mocker.Mock(), interval=3.0)
+    controller.on_groups(_new_container_groups())
+
+    controller.on_new_pr_container("p")
+
+    popen.assert_not_called()
+
+
+def test_on_new_pr_container_rejects_orphan_before_prompt(mocker):
+    from PySide6.QtWidgets import QInputDialog
+
+    prompt = mocker.patch.object(QInputDialog, "getInt")
+    warn = mocker.patch.object(QMessageBox, "warning")
+    controller = qapp.AppController(mocker.Mock(), mocker.Mock(), interval=3.0)
+    controller.on_groups([RepoGroup("orphan", None, None, [])])
+
+    controller.on_new_pr_container("orphan")
+
+    prompt.assert_not_called()
+    assert "orphan" in warn.call_args.args[2]
+
+
 def test_on_config_edit_launches_the_tui_in_a_terminal(mocker, tmp_path):
     popen = mocker.patch("jailbee.qtui.app.subprocess.Popen")
     mocker.patch("jailbee.qtui.app.resolve_launch", side_effect=lambda action, _t: action.argv)

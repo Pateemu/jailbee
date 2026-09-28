@@ -670,8 +670,12 @@ def test_empty_actionable_group_has_new_control_but_orphan_does_not(qtbot):
     headers = {header._prefix: header for header in view.findChildren(_GroupHeader)}
     buttons = {b.text(): b for b in view.findChildren(QPushButton)}
     assert "New…" in buttons
+    assert "PR…" in buttons
     assert headers["lost"].findChildren(QPushButton) == []
     with qtbot.waitSignal(view.newContainerRequested, timeout=1000) as blocker:
         buttons["New…"].click()
+    assert blocker.args == ["scratch"]
+    with qtbot.waitSignal(view.newPrContainerRequested, timeout=1000) as blocker:
+        buttons["PR…"].click()
     assert blocker.args == ["scratch"]
     assert "0 containers" in headers["scratch"].text()

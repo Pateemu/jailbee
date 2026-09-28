@@ -10,6 +10,10 @@ before editing `## Unreleased`.
 
 ### Added
 
+- **Create PR review containers from either dashboard.** Select **New from PR…**
+  in a repo's TUI menu or the Qt dashboard's Container menu / repo header;
+  enter a PR number to run `jailbee new --pr N` in that repo.
+
 - **Pick a PR container for `jb push --pr`.** On a TTY, omitting the name
   offers a single-select list of running clone-mode PR containers (or uses
   the only eligible one). Scripts still pass an explicit name.
