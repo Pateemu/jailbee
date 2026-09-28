@@ -5170,12 +5170,12 @@ def test_diff_stat_rejects_unreadable_submodule_delta(mocker, make_cfg, tmp_path
     bin_dir.mkdir()
     git_bin = bin_dir / "git"
     git_bin.write_text(
-        '#!/bin/sh\n'
+        "#!/bin/sh\n"
         'case "$*" in\n'
         '  *"diff --raw"*) printf ":160000 160000 %040d %040d M\\tdeps/lib\\n" 1 2 ;;\n'
         '  *"diff --stat --ignore-submodules=all"*) printf " app.py | 1 +\\n" ;;\n'
         '  *"diff --stat"*) exit 1 ;;\n'
-        'esac\n'
+        "esac\n"
     )
     git_bin.chmod(0o755)
 
@@ -5184,7 +5184,12 @@ def test_diff_stat_rejects_unreadable_submodule_delta(mocker, make_cfg, tmp_path
             return ""  # host-target object check
         completed = subprocess.run(
             args,
-            env={**os.environ, **env, "REPO_DIR": str(repo), "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+            env={
+                **os.environ,
+                **env,
+                "REPO_DIR": str(repo),
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            },
             capture_output=True,
             text=True,
         )
@@ -5217,7 +5222,12 @@ def test_diff_all_stat_labels_committed_section_as_host_target(mocker, make_cfg,
             return ""
         return subprocess.run(
             ["bash", "-c", _DIFF_STAT_SNIPPET],
-            env={**os.environ, **env, "REPO_DIR": str(repo), "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+            env={
+                **os.environ,
+                **env,
+                "REPO_DIR": str(repo),
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            },
             capture_output=True,
             text=True,
             check=True,

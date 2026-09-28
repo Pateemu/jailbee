@@ -1030,9 +1030,7 @@ def test_submodule_probe_failures_preserve_unknown_fields_and_keep_the_row(
 
 
 @pytest.mark.parametrize("gitlink", ["added", "deleted", "raw-failed"])
-def test_probe_gitlink_without_resolvable_endpoints_never_reports_clean(
-    mocker, tmp_path, gitlink
-):
+def test_probe_gitlink_without_resolvable_endpoints_never_reports_clean(mocker, tmp_path, gitlink):
     from jailbee.git_status import _PROBE_SNIPPET
 
     # A fake git supplies real shell output while no real repo, Incus, or git
@@ -1044,14 +1042,14 @@ def test_probe_gitlink_without_resolvable_endpoints_never_reports_clean(
     bin_dir.mkdir()
     git_bin = bin_dir / "git"
     git_bin.write_text(
-        '#!/bin/sh\n'
+        "#!/bin/sh\n"
         'case "$*" in\n'
         '  *"diff --raw"*)\n'
         '    [ "$GITLINK" = raw-failed ] && exit 1\n'
         '    if [ "$GITLINK" = added ]; then old=$(printf "%040d" 0); new=$(printf "%040d" 1);\n'
-        '      om=000000; nm=160000; status=A;\n'
+        "      om=000000; nm=160000; status=A;\n"
         '    else old=$(printf "%040d" 1); new=$(printf "%040d" 0);\n'
-        '      om=160000; nm=000000; status=D; fi\n'
+        "      om=160000; nm=000000; status=D; fi\n"
         '    printf ":%s %s %s %s %s\\tdeps/lib\\n" "$om" "$nm" "$old" "$new" "$status" ;;\n'
         '  *"rev-list --left-right"*) printf "1\\t2\\n" ;;\n'
         '  *"merge-tree"*) exit 0 ;;\n'
@@ -1061,14 +1059,19 @@ def test_probe_gitlink_without_resolvable_endpoints_never_reports_clean(
         '  *"ls-files --unmerged"*) exit 0 ;;\n'
         '  *"submodule foreach"*) exit 0 ;;\n'
         '  *"diff"*) exit 0 ;;\n'
-        'esac\n'
+        "esac\n"
     )
     git_bin.chmod(0o755)
 
     def exec_snippet(_name, _args, *, env, **_kwargs):
         completed = subprocess.run(
             ["bash", "-c", _PROBE_SNIPPET],
-            env={**os.environ, **env, "PATH": f"{bin_dir}:{os.environ['PATH']}", "GITLINK": gitlink},
+            env={
+                **os.environ,
+                **env,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "GITLINK": gitlink,
+            },
             capture_output=True,
             text=True,
             check=True,
@@ -1094,9 +1097,7 @@ def test_probe_gitlink_without_resolvable_endpoints_never_reports_clean(
 
 @pytest.mark.parametrize("failure", ["exec", "partial"])
 def test_probe_failure_preserves_host_target_snapshot(mocker, failure):
-    target = TargetSnapshot(
-        "main", "abc123", "local", "refs/remotes/origin/main", "tracking-ahead"
-    )
+    target = TargetSnapshot("main", "abc123", "local", "refs/remotes/origin/main", "tracking-ahead")
     incus = mocker.Mock()
     if failure == "exec":
         incus.exec.side_effect = IncusError("probe failed")
