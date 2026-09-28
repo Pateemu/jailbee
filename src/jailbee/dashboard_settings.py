@@ -28,8 +28,9 @@ Tab = Literal["fields", "repos", "visibility"]
 # The cursor row's text style for every TUI dashboard surface: container
 # rows, repo headings, action menus and this overlay. It lives here, the
 # lowest module that draws a cursor, so `dashboard` can import it. It must
-# stay distinct from the headings' resting colours (cyan, magenta).
-CURSOR_STYLE = "bold bright_yellow"
+# stay distinct from the headings' resting colours (cyan, yellow). Container
+# rows and headings carry no other cursor marker.
+CURSOR_STYLE = "bold magenta"
 
 # The overlay is drawn *below* the live table (see module docstring), so every
 # row it draws is a line the table loses to `vertical_overflow="ellipsis"`

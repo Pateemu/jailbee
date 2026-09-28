@@ -92,7 +92,7 @@ def test_command_binding_and_inline_render_keep_table_visible():
     )
     rendered = screen.export_text()
     assert dashboard.parse_key(b"!") == "command"
-    assert "▸ x" in rendered
+    assert "  x" in rendered
     assert "git d" in rendered
     assert "git diff" in rendered
 
@@ -2449,6 +2449,26 @@ def _render_text(renderable: RenderableType, width: int = 200) -> str:
     return console.export_text()
 
 
+def _render_ansi_lines(renderable: RenderableType, width: int = 200) -> list[str]:
+    """The frame's lines with their ANSI styling, for asserting on highlights."""
+    # `no_color=False` overrides the suite's NO_COLOR, which would strip the
+    # very colour these assertions look for.
+    console = Console(
+        record=True, width=width, force_terminal=True, color_system="standard", no_color=False
+    )
+    console.print(renderable)
+    return console.export_text(styles=True).splitlines()
+
+
+def _cursor_lines(lines: list[str]) -> list[str]:
+    """Lines carrying the cursor highlight — the only cursor indicator."""
+    console = Console(force_terminal=True, color_system="standard", no_color=False)
+    with console.capture() as cap:
+        console.print(f"[{dashboard.CURSOR_STYLE}]x[/]", end="")
+    sgr = cap.get().split("x", 1)[0]
+    return [ln for ln in lines if sgr in ln]
+
+
 def test_render_hides_job_column_until_a_job_exists(tmp_path):
     now = datetime(2026, 6, 8, 12, 0, tzinfo=UTC)
 
@@ -2511,8 +2531,21 @@ def test_render_shows_repo_headers_and_rows(tmp_path):
     # Ordinary mode has a compact help cue, not a permanent keybinding footer.
     assert "h/? help" in out.splitlines()[0]
     assert "Enter menu" not in out and "q quit" not in out
-    # selected row marked with arrow
-    assert "▸" in out
+    # The selected row is highlighted, and the highlight is its only marker.
+    assert "▸" not in out
+    cursor = _cursor_lines(
+        _render_ansi_lines(
+            dashboard.render(
+                groups,
+                selected=dashboard.Row("container", "alpha-one"),
+                now=now,
+                last_refresh_age=1.0,
+                interval=3.0,
+                git_enabled=True,
+            )
+        )
+    )
+    assert len(cursor) == 1 and "one" in cursor[0] and "alpha" not in cursor[0]
 
 
 def test_render_column_headers_sit_above_every_repo_heading(tmp_path):
@@ -2749,7 +2782,7 @@ def test_render_keeps_only_enabled_column_at_tiny_width(tmp_path):
     assert "STATE" in _render_text(frame, width=20)
 
 
-def test_render_selected_gutter_stays_on_row_when_first_column_is_hidden(tmp_path):
+def test_render_highlight_stays_on_row_when_first_column_is_hidden(tmp_path):
     group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-one", "alpha")])
     frame = dashboard.render(
         [group],
@@ -2762,9 +2795,9 @@ def test_render_selected_gutter_stays_on_row_when_first_column_is_hidden(tmp_pat
         hide_first=("state",),
     )
 
-    out = _render_text(frame, width=19)
+    cursor = _cursor_lines(_render_ansi_lines(frame, width=19))
 
-    assert any("▸" in line and "strict" in line for line in out.splitlines())
+    assert len(cursor) == 1 and "strict" in cursor[0]
 
 
 def test_render_column_offsets_align_across_repos_of_different_lengths(tmp_path):
@@ -4021,10 +4054,10 @@ def test_render_marks_a_selected_repo_header(tmp_path):
     Headers became cursor stops at a point where `render` did not consult
     `selected` for them at all, so pressing Down onto a header made the
     highlight vanish. The first fix prefixed the header with the container
-    rows' `▸` gutter arrow, but a header has no gutter cell of its own, so
-    the whole line jumped two cells right whenever the cursor landed on it.
-    The cursor header now takes the container rows' cursor style without
-    their arrow: same text, same position, same highlight as a cursor row.
+    rows' then `▸` gutter arrow, but a header has no gutter cell of its own,
+    so the whole line jumped two cells right whenever the cursor landed on
+    it. Every cursor row is now marked by the highlight alone: same text,
+    same position, same style for a header as for a container row.
     """
     g = dashboard.RepoGroup("alpha", "/a", tmp_path / "a.yaml", [_ci("alpha-one", "alpha")])
     kwargs = dict(
@@ -4051,13 +4084,13 @@ def test_render_marks_a_selected_repo_header(tmp_path):
 
 
 def test_cursor_style_is_distinct_from_every_heading_colour(tmp_path):
-    """The cursor must never look like a heading's resting colour: an orphan
-    heading was yellow, so a yellow cursor on it would be invisible."""
+    """The cursor must never look like a heading's resting colour, or the
+    cursor on that heading would be invisible."""
     repo = dashboard.RepoGroup("alpha", "/a", None, [])
     orphan = dashboard.RepoGroup("gamma", None, None, [])
     resting = {str(dashboard.repo_heading(g, None, frozenset()).style) for g in (repo, orphan)}
-    assert resting == {"bold cyan", "bold magenta"}
-    assert dashboard.CURSOR_STYLE == "bold bright_yellow"
+    assert resting == {"bold cyan", "bold yellow"}
+    assert dashboard.CURSOR_STYLE == "bold magenta"
     for g in (repo, orphan):
         on_it = dashboard.repo_heading(g, dashboard.Row("repo", g.prefix), frozenset())
         assert str(on_it.style) == dashboard.CURSOR_STYLE

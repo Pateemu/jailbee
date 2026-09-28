@@ -1382,9 +1382,9 @@ def _hint_line(overlay: Overlay | None) -> str:
 def repo_heading(group: RepoGroup, selected: Row | None, folded: frozenset[str]) -> Text:
     """Render a repo heading independently of the table's data columns.
 
-    The cursor heading takes the container rows' cursor style but not their
-    ``▸`` gutter arrow: a heading has no gutter cell, so an inserted arrow
-    would shift the whole line whenever the cursor landed on it.
+    The cursor heading is marked by :data:`CURSOR_STYLE` alone, like a
+    container row; an inserted marker would shift the whole line whenever
+    the cursor landed on it.
     """
     marker = "▸" if group.prefix in folded else "▾"
     label = f"{marker} {group.prefix}  ({len(group.containers)})"
@@ -1393,7 +1393,7 @@ def repo_heading(group: RepoGroup, selected: Row | None, folded: frozenset[str])
     if selected == Row("repo", group.prefix):
         style = CURSOR_STYLE
     else:
-        style = "bold magenta" if group.repo_root is None else "bold cyan"
+        style = "bold yellow" if group.repo_root is None else "bold cyan"
     return Text(label, style=style)
 
 
@@ -1402,7 +1402,7 @@ def _aligned_table(
 ) -> Table:
     """An empty table with the dashboard's shared, fixed column geometry.
 
-    The first title carries the same two-cell selection gutter that
+    The first title carries the same two-cell indent that
     :func:`repo_table` puts in front of every first-column cell.
     """
     table = Table(
@@ -1448,7 +1448,7 @@ def repo_table(
                 else field_spec.cell(container)
             )
             if index == 0:
-                value = ("[bold cyan]▸[/] " if is_selected else "  ") + value
+                value = "  " + value  # indent under the repo heading
             cells.append(value)
         table.add_row(*cells, style=CURSOR_STYLE if is_selected else None)
     return table
@@ -1538,9 +1538,9 @@ def _fit_dashboard_fields(
     order = {name: index for index, name in enumerate(priorities)}
 
     def required_width() -> int:
-        # The selection marker moves to the first *remaining* column.
-        gutter = 2 if kept and kept[0] != 0 else 0
-        return sum(widths[i] + 2 for i in kept) + gutter
+        # The row indent moves to the first *remaining* column.
+        indent = 2 if kept and kept[0] != 0 else 0
+        return sum(widths[i] + 2 for i in kept) + indent
 
     while len(kept) > 1 and required_width() > available_width:
         discard = min(
@@ -1610,8 +1610,8 @@ def render(
     """Build the Rich renderable for one dashboard frame.
 
     Repo sections are rendered in the dashboard body with aligned columns.
-    The selected row is marked with a
-    ``▸`` gutter arrow and bold styling. Wrapped in a rounded Panel whose
+    The selected row, heading or container, is marked by its
+    :data:`CURSOR_STYLE` highlight alone. Wrapped in a rounded Panel whose
     left-aligned title carries the summary, the clock and a fixed-width
     refresh field; the subtitle carries a transient notice and nothing else.
 

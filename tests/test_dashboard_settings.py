@@ -152,7 +152,7 @@ def test_render_highlights_the_cursor_row_in_the_shared_cursor_style():
     """The overlay's cursor row reads as the same cursor as the dashboard's."""
     from jailbee.dashboard_settings import CURSOR_STYLE, render_settings
 
-    console = Console(width=90, force_terminal=True, color_system="standard")
+    console = Console(width=90, force_terminal=True, color_system="standard", no_color=False)
     with console.capture() as cap:
         console.print(render_settings(_state(), dynamic=frozenset()))
     out = cap.get()
