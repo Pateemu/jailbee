@@ -293,6 +293,7 @@ dev = [
     { name = "types-pyyaml" },
 ]
 docs = [
+    { name = "pyyaml" },
     { name = "zensical" },
 ]
 
@@ -324,7 +325,10 @@ dev = [
     { name = "ruff", specifier = ">=0.5" },
     { name = "types-pyyaml", specifier = ">=6.0" },
 ]
-docs = [{ name = "zensical", specifier = "==0.0.60" }]
+docs = [
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "zensical", specifier = "==0.0.60" },
+]
 
 [[package]]
 name = "jinja2"

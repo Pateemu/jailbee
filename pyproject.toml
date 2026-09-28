@@ -78,6 +78,7 @@ dev = [
 # someone reviewed. `make site` and the CI docs job are its only callers.
 docs = [
     "zensical==0.0.60",
+    "pyyaml>=6.0",
 ]
 
 [tool.uv]
