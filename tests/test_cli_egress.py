@@ -119,9 +119,7 @@ def test_add_without_entry_accepts_explicit_container_option(tmp_path, mocker):
     mocker.patch.object(interaction, "prompt_add_entry", return_value="example.com")
     mocker.patch("jailbee.egress_scope.resolve_entries", return_value=[])
     setc = mocker.patch("jailbee.egress_scope.set_container_extras")
-    resolve = mocker.patch(
-        "jailbee.cli._resolve_existing", return_value=(incus, "myrepo-other")
-    )
+    resolve = mocker.patch("jailbee.cli._resolve_existing", return_value=(incus, "myrepo-other"))
 
     result = runner.invoke(app, ["net", "egress", "add", "--container", "myrepo-other"])
 
@@ -140,9 +138,7 @@ def test_rm_without_entry_accepts_explicit_container_option(tmp_path, mocker):
     mocker.patch("jailbee.egress_scope.container_extras", return_value=["stored.example"])
     pick = mocker.patch.object(interaction, "pick_remove_entry", return_value="stored.example")
     setc = mocker.patch("jailbee.egress_scope.set_container_extras")
-    resolve = mocker.patch(
-        "jailbee.cli._resolve_existing", return_value=(incus, "myrepo-other")
-    )
+    resolve = mocker.patch("jailbee.cli._resolve_existing", return_value=(incus, "myrepo-other"))
 
     result = runner.invoke(app, ["net", "egress", "rm", "--container", "myrepo-other"])
 

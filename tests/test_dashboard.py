@@ -1292,9 +1292,9 @@ def test_repo_egress_dispatch_uses_repo_scope_and_explicit_config(mocker, tmp_pa
     child = mocker.patch.object(dashboard.subprocess, "run")
     child.return_value.returncode = 0
 
-    assert _drive_run(
-        mocker, [b"\r", b"j", b"\r", b"\r", b"a", b"\x1b", b"\x03"], groups=[group]
-    ) == 0
+    assert (
+        _drive_run(mocker, [b"\r", b"j", b"\r", b"\r", b"a", b"\x1b", b"\x03"], groups=[group]) == 0
+    )
 
     child.assert_called_once_with(
         [

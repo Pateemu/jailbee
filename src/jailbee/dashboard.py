@@ -1309,7 +1309,11 @@ def _render_menu(menu: MenuState | RepoMenuState) -> RenderableType:
         for label in [item.label if isinstance(item, MenuGroup) else item[0]]
     ]
     if isinstance(menu, RepoMenuState):
-        title = f"{menu.repo} → {menu.active_group.removesuffix(' →')}" if menu.active_group else f"{menu.repo} →"
+        title = (
+            f"{menu.repo} → {menu.active_group.removesuffix(' →')}"
+            if menu.active_group
+            else f"{menu.repo} →"
+        )
     elif menu.active_group:
         title = f"{menu.container} → {menu.active_group.removesuffix(' →')}"
     else:
