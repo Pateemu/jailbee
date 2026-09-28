@@ -293,6 +293,8 @@ dev = [
     { name = "types-pyyaml" },
 ]
 docs = [
+    { name = "jinja2" },
+    { name = "markdown" },
     { name = "pyyaml" },
     { name = "zensical" },
 ]
@@ -326,6 +328,8 @@ dev = [
     { name = "types-pyyaml", specifier = ">=6.0" },
 ]
 docs = [
+    { name = "jinja2", specifier = ">=3.0" },
+    { name = "markdown", specifier = ">=3.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "zensical", specifier = "==0.0.60" },
 ]

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title }}</title>
+    <meta name="description" content="{{ description }}" />
+    <link rel="canonical" href="{{ canonical }}" />
+    <meta property="og:title" content="{{ title }}" />
+    <meta property="og:description" content="{{ description }}" />
+    <meta property="og:url" content="{{ canonical }}" />
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="JailBee" />
+    <meta property="og:image" content="{{ og_image | default('https://jailbee.gisgro.io/assets/img/jailbee-og.png') }}" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" href="/assets/img/jailbee-logo.png" />
+    <link rel="stylesheet" href="/assets/style.css?v={{ style_hash }}" />
+    <link rel="stylesheet" href="/assets/news.css?v={{ news_hash }}" />
+    {% block head %}{% endblock %}
+  </head>
+  <body>
+    <header class="topbar">
+      <nav class="topbar__inner" aria-label="Main navigation">
+        <a class="topbar__brand" href="/">
+          <img src="/assets/img/jailbee-mark.png" alt="" width="340" height="345" />
+          <span>JailBee</span>
+        </a>
+        <a class="topbar__link topbar__link--news" href="/news/">News</a>
+        <a class="topbar__link" href="/docs/">Docs</a>
+        <a class="topbar__source" href="https://github.com/VRTFinland/jailbee">Source code</a>
+      </nav>
+    </header>
+    <main class="wrap news-main">{% block content %}{% endblock %}</main>
+    <footer>
+      <div class="wrap">
+        <div class="footer__brand">
+          <img class="footer__mark" src="/assets/img/jailbee-mark.png" alt="" width="340" height="345" />
+          <span class="footer__word">J<em>ai</em>lBee</span>
+        </div>
+        <p>JailBee is free software under the GNU General Public License v3.0 or later. ·
+          <a href="https://github.com/VRTFinland/jailbee">GitHub</a></p>
+        <a class="footer__gisgro" href="https://gisgro.com" rel="noopener">
+          <img src="/assets/img/gisgro-logo.svg" width="140" height="25" alt="GISGRO" />
+        </a>
+        <p class="footer__copyright">© 2026 GISGRO Oy</p>
+      </div>
+    </footer>
+  </body>
+</html>

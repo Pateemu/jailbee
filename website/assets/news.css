@@ -1,0 +1,15 @@
+/* News-specific layout; typography and palette come from style.css. */
+.news-main { padding-top: var(--section-y); padding-bottom: var(--section-y); min-height: 60vh; }
+.news-index, .news-article { max-width: 780px; margin: 0 auto; }
+.news-summary { font-size: 1.2rem; color: var(--muted); }
+.news-card { border-top: 1px solid var(--border); padding: 2rem 0; display: grid; gap: 1.5rem; }
+.news-card img, .news-feature { width: 100%; border-radius: var(--radius); }
+.news-card h2 { margin: .4rem 0; }
+.news-card time, .news-article time { color: var(--muted); font-family: var(--mono); }
+.news-back { display: inline-block; margin-bottom: 2rem; }
+.news-article__header { margin-bottom: 2rem; }
+.news-article__body { max-width: var(--measure); margin: 2rem 0; overflow-wrap: break-word; }
+.news-article__body > * { margin-bottom: 1.2rem; }
+.news-article__body pre { background: var(--surface); overflow-x: auto; padding: 1rem; border-radius: var(--radius); }
+.news-article__body img { border-radius: var(--radius); }
+@media (min-width: 700px) { .news-card:has(img) { grid-template-columns: minmax(0, 240px) minmax(0, 1fr); } }
