@@ -11,11 +11,12 @@ from __future__ import annotations
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import Mapping, TypedDict
 
 from jailbee.config import CONTAINER_USERNAME
 from jailbee.incus import Incus, IncusError
 from jailbee.issue_outbox import ISSUE_OUTBOX_SUBPATH
+from jailbee.host_target import TargetSnapshot
 from jailbee.pr_outbox import OUTBOX_SUBPATH
 
 _SHORTSTAT_RE = re.compile(r"(?P<ins>\d+)\s+insertion|(?P<del>\d+)\s+deletion")
@@ -25,7 +26,7 @@ _SHORTSTAT_RE = re.compile(r"(?P<ins>\d+)\s+insertion|(?P<del>\d+)\s+deletion")
 _IN_PROGRESS_VALUES = frozenset({"", "merge", "rebase", "cherry-pick", "revert"})
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class SubmoduleChange:
     """A single submodule's change vs the container's base branch.
 
@@ -35,12 +36,47 @@ class SubmoduleChange:
     """
 
     path: str
-    ahead_ins: int
-    ahead_del: int
+    target_ins: int
+    target_del: int
     ahead_commits: int
     wt_ins: int
     wt_del: int
     status: str
+    behind_commits: int = 0
+
+    def __init__(
+        self,
+        path: str,
+        target_ins: int = 0,
+        target_del: int = 0,
+        ahead_commits: int = 0,
+        wt_ins: int = 0,
+        wt_del: int = 0,
+        status: str = "modified",
+        behind_commits: int = 0,
+        *,
+        ahead_ins: int | None = None,
+        ahead_del: int | None = None,
+    ) -> None:
+        """Build a change, accepting old line-field names during migration."""
+        object.__setattr__(self, "path", path)
+        object.__setattr__(self, "target_ins", target_ins if ahead_ins is None else ahead_ins)
+        object.__setattr__(self, "target_del", target_del if ahead_del is None else ahead_del)
+        object.__setattr__(self, "ahead_commits", ahead_commits)
+        object.__setattr__(self, "behind_commits", behind_commits)
+        object.__setattr__(self, "wt_ins", wt_ins)
+        object.__setattr__(self, "wt_del", wt_del)
+        object.__setattr__(self, "status", status)
+
+    @property
+    def ahead_ins(self) -> int:
+        """Compatibility alias for consumers not yet migrated to target names."""
+        return self.target_ins
+
+    @property
+    def ahead_del(self) -> int:
+        """Compatibility alias for consumers not yet migrated to target names."""
+        return self.target_del
 
 
 @dataclass(frozen=True)
@@ -80,6 +116,12 @@ class GitStatus:
     # separate outbox directory. None means the probe could not say (older
     # output, or an unreadable value).
     pending_issue_actions: int | None = None
+    target_diff: str = "?"
+    behind_count: str = "?"
+    base_sha: str | None = None
+    base_source: str = "unavailable"
+    tracking_relation: str = "unavailable"
+    upstream_ref: str = ""
 
 
 # Probe value -> the word shown to the user for an operation in progress.
@@ -175,9 +217,10 @@ def parse_shortstat(raw: str) -> str:
 
 
 class _SubAcc(TypedDict):
-    ahead_ins: int
-    ahead_del: int
+    target_ins: int
+    target_del: int
     ahead_commits: int
+    behind_commits: int
     wt_ins: int
     wt_del: int
     status: str
@@ -197,9 +240,10 @@ def _parse_submodules(committed_raw: str, wt_raw: str) -> tuple[SubmoduleChange,
 
     def _blank() -> _SubAcc:
         return _SubAcc(
-            ahead_ins=0,
-            ahead_del=0,
+            target_ins=0,
+            target_del=0,
             ahead_commits=0,
+            behind_commits=0,
             wt_ins=0,
             wt_del=0,
             status="modified",
@@ -214,12 +258,17 @@ def _parse_submodules(committed_raw: str, wt_raw: str) -> tuple[SubmoduleChange,
         path, status, commits_s = cols[0], cols[1], cols[2]
         if not path.strip():
             continue
-        shortstat = cols[3] if len(cols) > 3 else ""
+        if len(cols) >= 5:
+            ahead_s, behind_s, shortstat = cols[2], cols[3], cols[4]
+        else:
+            ahead_s, behind_s = cols[2], "0"
+            shortstat = cols[3] if len(cols) > 3 else ""
         ins, dels = _shortstat_ints(shortstat)
         entry = acc.setdefault(path, _blank())
-        entry["ahead_ins"] = ins
-        entry["ahead_del"] = dels
-        entry["ahead_commits"] = int(commits_s) if commits_s.strip().isdigit() else 0
+        entry["target_ins"] = ins
+        entry["target_del"] = dels
+        entry["ahead_commits"] = int(ahead_s) if ahead_s.strip().isdigit() else 0
+        entry["behind_commits"] = int(behind_s) if behind_s.strip().isdigit() else 0
         entry["status"] = status or "modified"
 
     # Nested-submodule WT entries (from `git submodule foreach --recursive`,
@@ -246,9 +295,10 @@ def _parse_submodules(committed_raw: str, wt_raw: str) -> tuple[SubmoduleChange,
     for path in sorted(acc):
         e = acc[path]
         changed = (
-            e["ahead_ins"]
-            or e["ahead_del"]
+            e["target_ins"]
+            or e["target_del"]
             or e["ahead_commits"]
+            or e["behind_commits"]
             or e["wt_ins"]
             or e["wt_del"]
             or e["status"] in ("new", "removed")
@@ -258,9 +308,10 @@ def _parse_submodules(committed_raw: str, wt_raw: str) -> tuple[SubmoduleChange,
         out.append(
             SubmoduleChange(
                 path=path,
-                ahead_ins=e["ahead_ins"],
-                ahead_del=e["ahead_del"],
+                target_ins=e["target_ins"],
+                target_del=e["target_del"],
                 ahead_commits=e["ahead_commits"],
+                behind_commits=e["behind_commits"],
                 wt_ins=e["wt_ins"],
                 wt_del=e["wt_del"],
                 status=e["status"],
@@ -275,7 +326,12 @@ cd "$REPO_DIR" 2>/dev/null || { printf '?\0?\0?\0?\0'; exit 0; }
 test -d .git || { printf '?\0?\0?\0?\0'; exit 0; }
 
 BASE=""
-if [ -n "$BASE_BRANCH" ] \
+if [ "$TARGET_MODE" = "1" ]; then
+  if [ -n "$TARGET_SHA" ] \
+     && git cat-file -e "${TARGET_SHA}^{commit}" >/dev/null 2>&1; then
+    BASE="$TARGET_SHA"
+  fi
+elif [ -n "$BASE_BRANCH" ] \
    && git rev-parse --verify --quiet \
       "refs/jailbee/base/${BASE_BRANCH}^{commit}" >/dev/null 2>&1; then
   BASE="refs/jailbee/base/${BASE_BRANCH}"
@@ -305,11 +361,16 @@ SUB_WT=$(git submodule foreach --recursive --quiet \
 WT="${WT_STAGED}${WT_UNSTAGED}${SUB_WT}"
 
 if [ -n "$BASE" ]; then
-  COMMITTED=$(git diff --shortstat --ignore-submodules=all \
-    "${BASE}...HEAD" 2>/dev/null) || COMMITTED="?"
+  if [ "$TARGET_MODE" = "1" ]; then
+    COMMITTED=$(git diff --shortstat --ignore-submodules=all "${BASE}" HEAD 2>/dev/null) || COMMITTED="?"
+    RAW_DIFF=$(git diff --raw --abbrev=40 "${BASE}" HEAD 2>/dev/null) || RAW_DIFF="?"
+  else
+    COMMITTED=$(git diff --shortstat --ignore-submodules=all "${BASE}...HEAD" 2>/dev/null) || COMMITTED="?"
+    RAW_DIFF=$(git diff --raw --abbrev=40 "${BASE}...HEAD" 2>/dev/null) || RAW_DIFF="?"
+  fi
   SUB_COMMITTED=$(
     IFS_TAB="$(printf '\t')"
-    git diff --raw --abbrev=40 "${BASE}...HEAD" 2>/dev/null \
+    printf '%s\n' "$RAW_DIFF" \
       | while IFS="$IFS_TAB" read -r meta sub_path; do
       [ -z "$sub_path" ] && continue
       # meta = ":<oldmode> <newmode> <oldsha> <newsha> <status>"
@@ -321,14 +382,26 @@ if [ -n "$BASE" ]; then
       [ "$om" = "160000" ] || [ "$nm" = "160000" ] || continue
       case "$os" in *[!0]*) ;; *) continue ;; esac
       case "$ns" in *[!0]*) ;; *) continue ;; esac
-      git -C "$sub_path" diff --shortstat "$os".."$ns" 2>/dev/null
+      git -C "$sub_path" diff --shortstat "$os" "$ns" 2>/dev/null || printf '?\n'
     done
   )
   # If COMMITTED="?" (superproject diff failed) the whole field degrades to
   # "?"; SUB_COMMITTED is then ignored by the host parser.
   COMMITTED="${COMMITTED}
 ${SUB_COMMITTED}"
-  COUNT=$(git rev-list --count "${BASE}..HEAD" 2>/dev/null) || COUNT="?"
+  BEHIND_COUNT="?"
+  if [ "$TARGET_MODE" = "1" ]; then
+    COUNTS=$(git rev-list --left-right --count "${BASE}...HEAD" 2>/dev/null) || COUNTS="?"
+    if [ "$COUNTS" != "?" ]; then
+      set -- $COUNTS
+      BEHIND_COUNT=$1
+      COUNT=$2
+    else
+      COUNT="?"
+    fi
+  else
+    COUNT=$(git rev-list --count "${BASE}..HEAD" 2>/dev/null) || COUNT="?"
+  fi
   # exit 0 = clean merge; exit 1 = conflicts detected (best-effort).
   # exit >1 (unresolvable ref, usage error, old git) falls through to "?".
   git merge-tree --write-tree "${BASE}" HEAD >/dev/null 2>&1
@@ -343,6 +416,7 @@ ${SUB_COMMITTED}"
 else
   COMMITTED="?"
   COUNT="?"
+  BEHIND_COUNT="?"
   CONFLICT="?"
 fi
 
@@ -351,7 +425,7 @@ SUB_COMMITTED_STRUCT=""
 if [ -n "$BASE" ]; then
   SUB_COMMITTED_STRUCT=$(
     IFS_TAB="$(printf '\t')"
-    git diff --raw --abbrev=40 "${BASE}...HEAD" 2>/dev/null \
+    printf '%s\n' "$RAW_DIFF" \
       | while IFS="$IFS_TAB" read -r meta sub_path; do
       [ -z "$sub_path" ] && continue
       set -- $meta
@@ -365,10 +439,22 @@ if [ -n "$BASE" ]; then
         status=removed; commits=0; ss=""
       else
         status=modified
-        commits=$(git -C "$sub_path" rev-list --count "$os".."$ns" 2>/dev/null) || commits=0
-        ss=$(git -C "$sub_path" diff --shortstat "$os".."$ns" 2>/dev/null) || ss=""
+        if [ "$TARGET_MODE" = "1" ]; then
+          counts=$(git -C "$sub_path" rev-list --left-right --count "$os...$ns" 2>/dev/null) || counts="?"
+          if [ "$counts" = "?" ]; then ahead=0; behind=0
+          else set -- $counts; behind=$1; ahead=$2; fi
+          ss=$(git -C "$sub_path" diff --shortstat "$os" "$ns" 2>/dev/null) || ss="?"
+        else
+          ahead=$(git -C "$sub_path" rev-list --count "$os..$ns" 2>/dev/null) || ahead=0
+          behind=0
+          ss=$(git -C "$sub_path" diff --shortstat "$os".."$ns" 2>/dev/null) || ss=""
+        fi
       fi
-      printf '%s\t%s\t%s\t%s\n' "$sub_path" "$status" "$commits" "$ss"
+      if [ "$TARGET_MODE" = "1" ]; then
+        printf '%s\t%s\t%s\t%s\t%s\n' "$sub_path" "$status" "$ahead" "$behind" "$ss"
+      else
+        printf '%s\t%s\t%s\t%s\n' "$sub_path" "$status" "$ahead" "$ss"
+      fi
     done
   )
 fi
@@ -439,7 +525,7 @@ case "$PENDING_ISSUES" in '' | *[!0-9]*) PENDING_ISSUES="?" ;; esac
 printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' \
   "$WT" "$COMMITTED" "$COUNT" "$CONFLICT" "$SUB_COMMITTED_STRUCT" "$SUB_WT_STRUCT" \
   "$HEAD_SHA" "$REMOTE_CONTAINED" "$LOCAL_DIFF" "$LOCAL_COUNT" \
-  "$IN_PROGRESS" "$UNMERGED" "$PENDING" "$PENDING_ISSUES"
+  "$IN_PROGRESS" "$UNMERGED" "$PENDING" "$PENDING_ISSUES" "$BEHIND_COUNT"
 """
 
 
@@ -453,6 +539,7 @@ def probe_container_git(
     uid: int | None = None,
     timeout_s: int = 3,
     host_head: str | None = None,
+    target: TargetSnapshot | None = None,
 ) -> GitStatus:
     """Run the probe snippet inside `full_name`, return parsed `GitStatus`.
 
@@ -485,6 +572,8 @@ def probe_container_git(
                 "BASE_BRANCH": base_branch or "",
                 "DEFAULT_BRANCH": default_branch,
                 "HOST_HEAD": host_head or "",
+                "TARGET_MODE": "1" if target is not None else "",
+                "TARGET_SHA": (target.sha or "") if target is not None else "",
                 "OUTBOX_DIR": f"/home/{CONTAINER_USERNAME}/{OUTBOX_SUBPATH}",
                 "ISSUE_OUTBOX_DIR": f"/home/{CONTAINER_USERNAME}/{ISSUE_OUTBOX_SUBPATH}",
                 # The probe only reads, but `git diff`/`git diff --cached`/
@@ -570,6 +659,10 @@ def probe_container_git(
     else:
         pending_issue_actions = None
 
+    raw_behind = parts[14].strip() if len(parts) >= 15 else "?"
+    behind_count = raw_behind if raw_behind.isdigit() else "?"
+    target_diff = ahead_diff if target is not None else "?"
+
     return GitStatus(
         wt=wt,
         ahead_diff=ahead_diff,
@@ -584,6 +677,12 @@ def probe_container_git(
         unmerged=unmerged,
         pending_pr_actions=pending_pr_actions,
         pending_issue_actions=pending_issue_actions,
+        target_diff=target_diff,
+        behind_count=behind_count if target is not None else "?",
+        base_sha=target.sha if target is not None else None,
+        base_source=target.source if target is not None else "unavailable",
+        tracking_relation=target.tracking_relation if target is not None else "unavailable",
+        upstream_ref=target.upstream_ref if target is not None else "",
     )
 
 
@@ -596,6 +695,7 @@ def probe_many_parallel(
     max_workers: int = 8,
     timeout_s: int = 3,
     host_head: str | None = None,
+    target_by_branch: Mapping[str, TargetSnapshot] | None = None,
 ) -> dict[str, GitStatus]:
     """Run `probe_container_git` for each (full_name, repo_dir, base_branch) target.
 
@@ -619,6 +719,7 @@ def probe_many_parallel(
             uid=uid,
             timeout_s=timeout_s,
             host_head=host_head,
+            target=(target_by_branch or {}).get(base_branch or ""),
         )
         return full_name, status
 
