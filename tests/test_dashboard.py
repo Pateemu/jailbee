@@ -1300,14 +1300,28 @@ def test_egress_add_prompt_cancellation_is_visible_and_does_not_dispatch(mocker,
     child = mocker.patch.object(dashboard.subprocess, "run")
     render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
 
-    assert _drive_run(
-        mocker,
-        [b"j", b"\r", *([b"j"] * network_index), b"\r", *([b"j"] * egress_index), b"\r", b"a", b"\x03"],
-        groups=[group],
-    ) == 0
+    assert (
+        _drive_run(
+            mocker,
+            [
+                b"j",
+                b"\r",
+                *([b"j"] * network_index),
+                b"\r",
+                *([b"j"] * egress_index),
+                b"\r",
+                b"a",
+                b"\x03",
+            ],
+            groups=[group],
+        )
+        == 0
+    )
 
     child.assert_not_called()
-    assert any("cancel" in str(call.kwargs.get("notice", "")).lower() for call in render.call_args_list)
+    assert any(
+        "cancel" in str(call.kwargs.get("notice", "")).lower() for call in render.call_args_list
+    )
 
 
 @pytest.mark.parametrize("returncode", [1, 2], ids=["mutation-failure", "invalid-destination"])
@@ -1331,11 +1345,23 @@ def test_egress_mutation_failure_is_visible(mocker, tmp_path, returncode):
     child.return_value.returncode = returncode
     render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
 
-    assert _drive_run(
-        mocker,
-        [b"j", b"\r", *([b"j"] * network_index), b"\r", *([b"j"] * egress_index), b"\r", b"a", b"\x03"],
-        groups=[group],
-    ) == 0
+    assert (
+        _drive_run(
+            mocker,
+            [
+                b"j",
+                b"\r",
+                *([b"j"] * network_index),
+                b"\r",
+                *([b"j"] * egress_index),
+                b"\r",
+                b"a",
+                b"\x03",
+            ],
+            groups=[group],
+        )
+        == 0
+    )
 
     child.assert_called_once()
     assert any(
@@ -1368,16 +1394,31 @@ def test_egress_panel_closes_when_container_disappears(mocker, tmp_path):
     child = mocker.patch.object(dashboard.subprocess, "run")
     render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
 
-    assert _drive_run(
-        mocker,
-        [b"j", b"\r", *([b"j"] * network_index), b"\r", *([b"j"] * egress_index), b"\r", b"a", b"\x03"],
-        groups=[group],
-    ) == 0
+    assert (
+        _drive_run(
+            mocker,
+            [
+                b"j",
+                b"\r",
+                *([b"j"] * network_index),
+                b"\r",
+                *([b"j"] * egress_index),
+                b"\r",
+                b"a",
+                b"\x03",
+            ],
+            groups=[group],
+        )
+        == 0
+    )
 
     child.assert_not_called()
     overlays = [call.kwargs.get("overlay") for call in render.call_args_list]
     assert not isinstance(overlays[-1], dashboard.EgressState)
-    assert any("no longer available" in str(call.kwargs.get("notice", "")) for call in render.call_args_list)
+    assert any(
+        "no longer available" in str(call.kwargs.get("notice", ""))
+        for call in render.call_args_list
+    )
 
 
 def test_egress_panel_closes_when_repo_disappears_during_dispatch(mocker, tmp_path):
@@ -1398,16 +1439,30 @@ def test_egress_panel_closes_when_repo_disappears_during_dispatch(mocker, tmp_pa
     child = mocker.patch.object(dashboard.subprocess, "run", side_effect=FileNotFoundError())
     render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
 
-    assert _drive_run(
-        mocker,
-        [b"j", b"\r", *([b"j"] * network_index), b"\r", *([b"j"] * egress_index), b"\r", b"a", b"\x03"],
-        groups=[group],
-    ) == 0
+    assert (
+        _drive_run(
+            mocker,
+            [
+                b"j",
+                b"\r",
+                *([b"j"] * network_index),
+                b"\r",
+                *([b"j"] * egress_index),
+                b"\r",
+                b"a",
+                b"\x03",
+            ],
+            groups=[group],
+        )
+        == 0
+    )
 
     child.assert_called_once()
     overlays = [call.kwargs.get("overlay") for call in render.call_args_list]
     assert not isinstance(overlays[-1], dashboard.EgressState)
-    assert any("no longer exists" in str(call.kwargs.get("notice", "")) for call in render.call_args_list)
+    assert any(
+        "no longer exists" in str(call.kwargs.get("notice", "")) for call in render.call_args_list
+    )
 
 
 def test_egress_loader_failure_is_visible_and_does_not_crash(mocker, tmp_path):
