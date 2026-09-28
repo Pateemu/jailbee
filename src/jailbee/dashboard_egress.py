@@ -27,6 +27,8 @@ class EgressState:
     container: str | None
     rows: tuple[EntryRow, ...]
     index: int = 0
+    can_add: bool = True
+    can_rm: bool = True
 
 
 def _clamped(state: EgressState, index: int) -> int:
@@ -81,6 +83,10 @@ def render_egress(state: EgressState, *, can_add: bool, can_rm: bool) -> Rendera
     if not state.rows:
         lines.append(Text("No egress entries in this scope."))
     else:
+        repo_sources: dict[str, set[str]] = {}
+        if state.container is None:
+            for row in state.rows:
+                repo_sources.setdefault(row.entry, set()).add(row.source)
         start, end = _window(state.index, len(state.rows))
         if start:
             lines.append(Text(f"↑ {start} more", style="dim"))
@@ -90,7 +96,10 @@ def render_egress(state: EgressState, *, can_add: bool, can_rm: bool) -> Rendera
                 "▸ " if i == state.index else "  ", style="bold magenta" if i == state.index else ""
             )
             line.append(row.entry, style="bold" if i == state.index else "")
-            line.append(f"  [{row.source}]")
+            sources = repo_sources.get(row.entry, set())
+            duplicate_repo_entry = {"local", "db (legacy)"} <= sources
+            source_note = f"[{row.source}; removes both repo copies]" if duplicate_repo_entry else f"[{row.source}]"
+            line.append(f"  {source_note}")
             if row.redundant:
                 line.append("  (redundant)", style="dim")
             lines.append(line)

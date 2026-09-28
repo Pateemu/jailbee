@@ -564,7 +564,8 @@ ignores `fields` entirely.
 Live, auto-refreshing TUI of all JailBee containers across registered repos + the cwd
 repo, grouped by repo. Keys: `↑/↓` or `j/k` move (spans repos; repo headers
 are cursor stops, not skipped), `Enter` action menu (on a repo header, a repo
-menu with New container and Fold/Unfold; on a container, its action menu),
+menu with New container, `Network → Egress…` and Fold/Unfold (orphan repos
+only offer Fold/Unfold; on a container, its action menu),
 `Space` toggle the selected setting
 in the settings overlay, `F2`/`S` settings overlay (columns + folding), `r`
 force refresh, `h`/`?` keybinding
@@ -573,11 +574,23 @@ dashboard stays visible and keeps refreshing behind it; `↑/↓` then move the
 menu cursor, `Enter` runs the entry, `Esc`/`q` closes it (`Ctrl-C` always quits
 the dashboard).
 
+Container actions group network mode switches and `Egress…` under `Network →`;
+stopped containers retain the read-only Egress view even though they have no
+mode switch. The inline Egress panel lists classified config, repo-local,
+legacy and container entries. Press `a` to add or `r` to remove the selected
+override; config entries and inherited repo entries in a container panel are
+not removable. Repo-level removal removes all stored copies of an entry, so a
+duplicate local/legacy entry is not presented as a single-source deletion.
+Changes run through the CLI from the selected repo, preserving DNS validation,
+ACL updates and repo `jailbee apply` advice. Over SSH, the read panel requires
+`net egress ls`; add/remove require their own permitted command leaves, and
+`restrict_host: true` keeps them unavailable even under a full command policy.
+
 The menu, in order: `job clear`, `job log`, `pr --open`, `pr`, `git push`,
 `git push --pr`, `git pull`, `git diff`, then tmux/shell, then one "Launch
 `<name>`" entry per app the repo's GUI registry declares (browsers, the
 JetBrains IDE, and any `apps:` entries, in that order — empty repos get
-none), then network mode switches, then restart/stop/destroy for Running
+none), then `Network →` with available mode switches and `Egress…`, then restart/stop/destroy for Running
 (start/destroy for Stopped). Each entry appears only when it would do
 something:
 

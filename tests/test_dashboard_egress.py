@@ -92,3 +92,15 @@ def test_remove_rules_and_explicit_argv():
         entry,
         "--repo",
     ]
+
+
+def test_duplicate_repo_copies_explain_both_are_removed():
+    state = EgressState(
+        "repo",
+        None,
+        (EntryRow("shared.example", "local"), EntryRow("shared.example", "db (legacy)")),
+    )
+    console = Console()
+    with console.capture() as captured:
+        console.print(render_egress(state, can_add=True, can_rm=True))
+    assert "removes both repo copies" in captured.get()
