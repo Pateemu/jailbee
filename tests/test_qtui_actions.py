@@ -196,6 +196,7 @@ def test_launch_mode_classifies_the_verbs():
         "git diff",
         "job log",
         "job log --follow",
+        "net egress ls",
     ):
         assert a.launch_mode(verb) == "output", verb
     for verb in (

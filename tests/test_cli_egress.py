@@ -40,15 +40,18 @@ def _repo(tmp_path, mocker, *, egress_allow=None, extras=None):
 def test_add_without_entry_prompts_and_stores_for_repo_scope(tmp_path, mocker):
     import jailbee.egress_interaction as interaction
 
-    _repo(tmp_path, mocker)
+    _cfg, incus = _repo(tmp_path, mocker)
+    incus.list_containers.return_value = []
     mocker.patch("jailbee.lifecycle._stdin_is_interactive", return_value=True)
     prompt = mocker.patch.object(interaction, "prompt_add_entry", return_value="example.com")
     mocker.patch("jailbee.egress_scope.resolve_entries", return_value=[])
 
-    result = runner.invoke(app, ["net", "egress", "add", "--repo"])
+    resolve = mocker.patch("jailbee.cli._resolve_existing", side_effect=AssertionError("resolved"))
+    result = runner.invoke(app, ["net", "egress", "add", "--repo", "--container", "ignored"])
 
     assert result.exit_code == 0, result.output
     prompt.assert_called_once()
+    resolve.assert_not_called()
     from jailbee.egress_scope import local_entries
 
     assert local_entries("myrepo") == ["example.com"]
@@ -105,6 +108,60 @@ def test_add_without_entry_prompts_for_container_scope(tmp_path, mocker):
     prompt.assert_called_once()
     setc.assert_called_once()
     assert setc.call_args.args[2] == ["example.com"]
+
+
+def test_add_without_entry_accepts_explicit_container_option(tmp_path, mocker):
+    import jailbee.egress_interaction as interaction
+
+    _cfg, incus = _repo(tmp_path, mocker)
+    incus.list_containers.return_value = []
+    mocker.patch("jailbee.lifecycle._stdin_is_interactive", return_value=True)
+    mocker.patch.object(interaction, "prompt_add_entry", return_value="example.com")
+    mocker.patch("jailbee.egress_scope.resolve_entries", return_value=[])
+    setc = mocker.patch("jailbee.egress_scope.set_container_extras")
+    resolve = mocker.patch(
+        "jailbee.cli._resolve_existing", return_value=(incus, "myrepo-other")
+    )
+
+    result = runner.invoke(app, ["net", "egress", "add", "--container", "myrepo-other"])
+
+    assert result.exit_code == 0, result.output
+    assert resolve.call_count >= 1
+    assert all(call.args[1] == "myrepo-other" for call in resolve.call_args_list)
+    assert setc.call_args.args[1] == "myrepo-other"
+
+
+def test_rm_without_entry_accepts_explicit_container_option(tmp_path, mocker):
+    import jailbee.egress_interaction as interaction
+
+    _cfg, incus = _repo(tmp_path, mocker)
+    incus.list_containers.return_value = []
+    mocker.patch("jailbee.lifecycle._stdin_is_interactive", return_value=True)
+    mocker.patch("jailbee.egress_scope.container_extras", return_value=["stored.example"])
+    pick = mocker.patch.object(interaction, "pick_remove_entry", return_value="stored.example")
+    setc = mocker.patch("jailbee.egress_scope.set_container_extras")
+    resolve = mocker.patch(
+        "jailbee.cli._resolve_existing", return_value=(incus, "myrepo-other")
+    )
+
+    result = runner.invoke(app, ["net", "egress", "rm", "--container", "myrepo-other"])
+
+    assert result.exit_code == 0, result.output
+    assert resolve.call_count >= 1
+    assert all(call.args[1] == "myrepo-other" for call in resolve.call_args_list)
+    pick.assert_called_once_with(["stored.example"], scope="container")
+    assert setc.call_args.args[1] == "myrepo-other"
+
+
+def test_add_rejects_conflicting_positional_and_option_container(tmp_path, mocker):
+    _repo(tmp_path, mocker)
+
+    result = runner.invoke(
+        app, ["net", "egress", "add", "example.com", "positional", "--container", "other"]
+    )
+
+    assert result.exit_code == 2
+    assert "NAME or --container, not both" in result.output
 
 
 def test_rm_without_entry_picks_only_container_overrides(tmp_path, mocker):

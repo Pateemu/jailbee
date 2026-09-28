@@ -1075,12 +1075,12 @@ def test_repo_menu_offers_egress_only_for_actionable_repo():
         dashboard.RepoGroup("alpha", "/alpha", None, []),
         dashboard.RepoGroup("orphan", None, None, [_ci("orphan-1", "orphan")]),
     ]
-    assert ("Network → Egress…", "net egress ls") in dashboard.open_repo_menu(
-        groups, "alpha", frozenset()
-    ).actions
-    assert ("Network → Egress…", "net egress ls") not in dashboard.open_repo_menu(
-        groups, "orphan", frozenset()
-    ).actions
+    actionable = dashboard.open_repo_menu(groups, "alpha", frozenset())
+    assert actionable is not None
+    assert dashboard.MenuGroup("Network →", (("Egress…", "net egress ls"),)) in actionable.actions
+    orphan = dashboard.open_repo_menu(groups, "orphan", frozenset())
+    assert orphan is not None
+    assert all(not isinstance(item, dashboard.MenuGroup) for item in orphan.actions)
 
 
 def test_repo_menu_egress_respects_ssh_read_permission():
@@ -1097,12 +1097,42 @@ def test_repo_menu_egress_respects_ssh_read_permission():
     denied_menu = dashboard.open_repo_menu(
         [group], "alpha", frozenset(), ssh_policy=denied, over_ssh=True
     )
-    assert (
-        allowed_menu is not None and ("Network → Egress…", "net egress ls") in allowed_menu.actions
+    assert allowed_menu is not None and any(
+        isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+        for item in allowed_menu.actions
     )
     assert denied_menu is not None and all(
-        verb != "net egress ls" for _, verb in denied_menu.actions
+        not isinstance(item, dashboard.MenuGroup) for item in denied_menu.actions
     )
+
+
+def test_repo_network_menu_is_a_submenu_and_escape_returns_to_parent():
+    group = dashboard.RepoGroup("alpha", "/alpha", None, [])
+    menu = dashboard.open_repo_menu([group], "alpha", frozenset())
+    assert menu is not None
+    assert menu.actions[1] == dashboard.MenuGroup("Network →", (("Egress…", "net egress ls"),))
+
+    menu.index = 1
+    child, verb = dashboard.enter_menu(menu)
+    assert verb is None
+    assert isinstance(child, dashboard.RepoMenuState)
+    assert child.active_group == "Network →"
+    assert dashboard.menu_verb(child) == "net egress ls"
+    parent = dashboard.back_menu(child)
+    assert parent is not None
+    assert parent.active_group is None
+    assert parent.index == 1
+    assert dashboard.menu_verb(parent) is None
+
+
+def test_repo_network_submenu_remains_gated_by_ssh_read_permission():
+    from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
+
+    group = dashboard.RepoGroup("alpha", "/alpha", None, [])
+    denied = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="disabled"))
+    menu = dashboard.open_repo_menu([group], "alpha", frozenset(), ssh_policy=denied, over_ssh=True)
+    assert menu is not None
+    assert all(not isinstance(item, dashboard.MenuGroup) for item in menu.actions)
 
 
 def test_run_opens_egress_panel_and_dispatches_scoped_add(mocker, tmp_path):
@@ -1262,7 +1292,9 @@ def test_repo_egress_dispatch_uses_repo_scope_and_explicit_config(mocker, tmp_pa
     child = mocker.patch.object(dashboard.subprocess, "run")
     child.return_value.returncode = 0
 
-    assert _drive_run(mocker, [b"\r", b"j", b"\r", b"a", b"\x1b", b"\x03"], groups=[group]) == 0
+    assert _drive_run(
+        mocker, [b"\r", b"j", b"\r", b"\r", b"a", b"\x1b", b"\x03"], groups=[group]
+    ) == 0
 
     child.assert_called_once_with(
         [
@@ -5331,11 +5363,10 @@ def test_repo_header_enter_opens_menu_without_folding(mocker, tmp_path):
     menus = [call.kwargs["overlay"] for call in render.call_args_list if call.kwargs["overlay"]]
     assert menus
     assert menus[0].repo == "alpha"
-    assert [label for label, _ in menus[0].actions] == [
-        "New container…",
-        "Network → Egress…",
-        "Fold",
-    ]
+    assert [
+        item.label if isinstance(item, dashboard.MenuGroup) else item[0]
+        for item in menus[0].actions
+    ] == ["New container…", "Network →", "Fold"]
     save.assert_not_called()
 
 

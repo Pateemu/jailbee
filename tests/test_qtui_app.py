@@ -881,6 +881,21 @@ def test_destroy_guard_reads_a_scratch_repos_config_from_its_root(mocker, tmp_pa
     load.assert_called_once_with(tmp_path)
 
 
+def test_net_egress_ls_opens_the_qt_output_window(mocker, tmp_path):
+    """The shared Egress action prints its table, which must stay visible in Qt."""
+    controller = _controller_with_group(mocker, tmp_path)
+    open_output = mocker.patch.object(qapp.AppController, "_open_output")
+    popen = mocker.patch.object(qapp.subprocess, "Popen")
+
+    controller.on_action("net egress ls", "p-foo")
+
+    open_output.assert_called_once()
+    assert open_output.call_args.args[0][:4] == ["jailbee", "net", "egress", "ls"]
+    assert open_output.call_args.args[1] == "jailbee net egress ls p-foo"
+    assert open_output.call_args.args[2] == tmp_path
+    popen.assert_not_called()
+
+
 def test_on_action_git_diff_opens_an_output_window_instead_of_spawning(mocker, tmp_path):
     """`git diff` exists for the text it prints: a detached Popen would throw
     that away, so the verb must go to the output window instead."""

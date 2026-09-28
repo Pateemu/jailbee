@@ -1149,7 +1149,7 @@ class RepoMenuState:
     """Repo-scoped actions for a selected header, distinct from container verbs."""
 
     repo: str
-    actions: list[tuple[str, str]]
+    actions: list[MenuItem]
     index: int = 0
     active_group: str | None = None
     parent_index: int = 0
@@ -1233,7 +1233,7 @@ def open_repo_menu(
     group = next((g for g in groups if g.prefix == prefix), None)
     if group is None:
         return None
-    actions: list[tuple[str, str]] = []
+    actions: list[MenuItem] = []
     if RepoTarget.of(group) is not None:
         actions.append(("New container…", "new"))
         try:
@@ -1243,7 +1243,7 @@ def open_repo_menu(
         except RouteError:
             pass
         else:
-            actions.append(("Network → Egress…", "net egress ls"))
+            actions.append(MenuGroup("Network →", (("Egress…", "net egress ls"),)))
     actions.append(("Unfold" if prefix in folded else "Fold", "fold"))
     return RepoMenuState(prefix, actions)
 
@@ -1309,7 +1309,7 @@ def _render_menu(menu: MenuState | RepoMenuState) -> RenderableType:
         for label in [item.label if isinstance(item, MenuGroup) else item[0]]
     ]
     if isinstance(menu, RepoMenuState):
-        title = f"{menu.repo} →"
+        title = f"{menu.repo} → {menu.active_group.removesuffix(' →')}" if menu.active_group else f"{menu.repo} →"
     elif menu.active_group:
         title = f"{menu.container} → {menu.active_group.removesuffix(' →')}"
     else:
@@ -2084,6 +2084,7 @@ PRINTING_VERBS: frozenset[str] = frozenset(
         "merge",
         "job log",
         "job log --follow",
+        "net egress ls",
     }
 )
 
@@ -3052,10 +3053,13 @@ def run(
                         if key in ("up", "down"):
                             overlay = move_menu(overlay, -1 if key == "up" else 1)
                         elif key == "enter":
+                            next_menu, verb = enter_menu(overlay)
+                            if verb is None:
+                                overlay = next_menu
+                                continue
                             if isinstance(overlay, RepoMenuState):
-                                verb = menu_verb(overlay)
                                 target = overlay.repo
-                                repo_parent = overlay
+                                repo_parent = next_menu
                                 overlay = None
                                 if verb == "new":
                                     create_container()
@@ -3068,22 +3072,16 @@ def run(
                                     egress_parent = repo_parent
                                     overlay = open_egress(target, None)
                             else:
-                                next_menu, verb = enter_menu(overlay)
-                                if verb is not None:
-                                    target = overlay.container
-                                    assert isinstance(next_menu, MenuState)
-                                    container_parent = next_menu
-                                    overlay = None
-                                    if verb == "net egress ls":
-                                        group = _find_group(groups, target)
-                                        egress_parent = container_parent
-                                        overlay = (
-                                            open_egress(group.prefix, target) if group else None
-                                        )
-                                    else:
-                                        dispatch(target, verb)
+                                target = overlay.container
+                                assert isinstance(next_menu, MenuState)
+                                container_parent = next_menu
+                                overlay = None
+                                if verb == "net egress ls":
+                                    group = _find_group(groups, target)
+                                    egress_parent = container_parent
+                                    overlay = open_egress(group.prefix, target) if group else None
                                 else:
-                                    overlay = next_menu
+                                    dispatch(target, verb)
                     continue
                 if key == "quit":
                     break
