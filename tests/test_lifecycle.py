@@ -7184,10 +7184,14 @@ def test_live_target_fields_and_json_metadata():
     specs = ls_field_specs(now=_NOW)
     by_name = {field.name: field for field in specs}
     assert "ahead_diff" not in by_name
-    assert [(f.name, f.header) for f in specs if f.name in ("target_diff", "ahead_count", "behind_count")] == [
-        ("target_diff", "DIFF ±"), ("ahead_count", "↑"), ("behind_count", "↓")
-    ]
-    assert all(by_name[name].default_table for name in ("target_diff", "ahead_count", "behind_count"))
+    assert [
+        (f.name, f.header)
+        for f in specs
+        if f.name in ("target_diff", "ahead_count", "behind_count")
+    ] == [("target_diff", "DIFF ±"), ("ahead_count", "↑"), ("behind_count", "↓")]
+    assert all(
+        by_name[name].default_table for name in ("target_diff", "ahead_count", "behind_count")
+    )
     assert by_name["target_diff"].json(c) == "clean"
     payload = by_name["git_status"].json(c)
     assert payload["target_diff"] == "clean"
@@ -7200,7 +7204,9 @@ def test_live_target_fields_and_json_metadata():
 def test_tracking_fallback_base_marker_and_grouped_notices():
     from jailbee.lifecycle import ls_field_specs, tracking_notices
 
-    first = _ci_with_status(base_source="tracking", tracking_relation="tracking-ahead", upstream_ref="origin/main")
+    first = _ci_with_status(
+        base_source="tracking", tracking_relation="tracking-ahead", upstream_ref="origin/main"
+    )
     first.base_branch = "main"
     second = _ci_with_status(tracking_relation="tracking-ahead", upstream_ref="origin/main")
     second.base_branch = "main"

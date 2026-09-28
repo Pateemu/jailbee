@@ -140,7 +140,14 @@ def test_pick_container_label_includes_base_and_git_status(mocker):
             memory_limit="4GB",
             repo="myrepo",
             base_branch="main",
-            git_status=GitStatus(wt="+1 -0", ahead_diff="+2 -0", target_diff="+2 -0", ahead_count="1", behind_count="1", conflict="ok"),
+            git_status=GitStatus(
+                wt="+1 -0",
+                ahead_diff="+2 -0",
+                target_diff="+2 -0",
+                ahead_count="1",
+                behind_count="1",
+                conflict="ok",
+            ),
         ),
         ContainerInfo(
             name="myrepo-legacy",
@@ -921,13 +928,22 @@ def test_render_submodule_pr_plan_handles_a_detached_submodule():
 
     assert "detached" in text
     assert "? commits" in text
+
+
 def test_choice_title_shows_live_diff_and_both_counts():
     from jailbee.git_status import GitStatus
     from jailbee.lifecycle import ContainerInfo
     from jailbee.tui import _choice_widths, _format_choice_title
 
     c = ContainerInfo(name="p-work", state="Running", network="strict", ip=None, memory_limit=None)
-    c.git_status = GitStatus(wt="clean", ahead_diff="+99 -1", target_diff="+3 -2", ahead_count="2", behind_count="1", conflict="ok")
+    c.git_status = GitStatus(
+        wt="clean",
+        ahead_diff="+99 -1",
+        target_diff="+3 -2",
+        ahead_count="2",
+        behind_count="1",
+        conflict="ok",
+    )
     title = _format_choice_title(c, _choice_widths([c]))
     assert "+3 -2" in title and "+99 -1" not in title
     assert "  2  " in title and "  1  " in title

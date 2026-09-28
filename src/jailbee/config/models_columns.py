@@ -242,7 +242,8 @@ def sanitize_column_blocks(
                 warnings.append(
                     f"{block_name}.hide: {RETIRED_DIFF_FIELD_NOTICE}; ignored"
                     if name == "ahead_diff"
-                    else f"{block_name}.hide: unknown field {raw_name!r} ignored; allowed: {allowed}"
+                    else f"{block_name}.hide: unknown field {raw_name!r} ignored; allowed: "
+                    + allowed
                 )
         if hide != block.hide:
             updates["hide"] = hide

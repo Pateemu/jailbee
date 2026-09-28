@@ -1359,7 +1359,14 @@ def test_ls_fields_filters_columns_and_supports_git_status_nested(mocker, tmp_pa
         "jailbee.lifecycle.probe_many_parallel",
         return_value={
             "myrepo-feat-x": GitStatus(
-                wt="clean", ahead_diff="+1 -0", target_diff="+1 -0", ahead_count="1", behind_count="0", conflict="ok", base_source="local", base_sha="abc123"
+                wt="clean",
+                ahead_diff="+1 -0",
+                target_diff="+1 -0",
+                ahead_count="1",
+                behind_count="0",
+                conflict="ok",
+                base_source="local",
+                base_sha="abc123",
             ),
         },
     )
@@ -1416,6 +1423,7 @@ def test_ls_fields_unknown_returns_error(mocker, tmp_path):
 
 def test_ls_explicit_retired_diff_field_explains_migration(mocker, tmp_path):
     from typer.testing import CliRunner
+
     from jailbee.cli import app
 
     repo = _setup_repo(tmp_path, "myrepo")
@@ -1425,6 +1433,7 @@ def test_ls_explicit_retired_diff_field_explains_migration(mocker, tmp_path):
     assert result.exit_code != 0
     assert "ahead_diff" in result.output and "target_diff" in result.output
     assert "--incoming" in result.output
+
 
 def test_ls_fields_help_lists_every_known_field_name() -> None:
     """The --fields help text (cli.py) is a hand-maintained list; it must
@@ -4939,7 +4948,12 @@ def test_ls_renders_base_and_git_columns(tmp_path, mocker):
             mode="clone",
             base_branch="main",
             git_status=GitStatus(
-                wt="+12 -3", ahead_diff="+245 -18", target_diff="+245 -18", ahead_count="3", behind_count="1", conflict="ok"
+                wt="+12 -3",
+                ahead_diff="+245 -18",
+                target_diff="+245 -18",
+                ahead_count="3",
+                behind_count="1",
+                conflict="ok",
             ),
         ),
         ContainerInfo(
@@ -5065,7 +5079,12 @@ def test_ls_merge_conflict_in_git_status_json(tmp_path, mocker):
         "jailbee.lifecycle.probe_many_parallel",
         return_value={
             "myrepo-feat-x": GitStatus(
-                wt="clean", ahead_diff="+1 -0", target_diff="+1 -0", ahead_count="1", behind_count="0", conflict="conflict"
+                wt="clean",
+                ahead_diff="+1 -0",
+                target_diff="+1 -0",
+                ahead_count="1",
+                behind_count="0",
+                conflict="conflict",
             ),
         },
     )

@@ -151,11 +151,22 @@ def test_the_documented_field_vocabularies_match_the_real_one() -> None:
         assert match is not None, f"{rel}: could not find the allowed-names list"
         documented = set(re.findall(r"[a-z_]+", match.group(1).replace("`", " ")))
         assert real - documented == set(), f"{rel} omits: {sorted(real - documented)}"
+
+
 def test_legacy_diff_column_has_targeted_migration_diagnostics():
-    from jailbee.config.models_columns import ColumnConfig, sanitize_column_blocks, validate_column_blocks
+    from jailbee.config.models_columns import (
+        ColumnConfig,
+        sanitize_column_blocks,
+        validate_column_blocks,
+    )
 
     issues = validate_column_blocks([("ls", ColumnConfig(fields=["ahead_diff"]))])
-    assert any("ahead_diff" in issue and "target_diff" in issue and "--incoming" in issue for issue in issues)
-    fixed, warnings = sanitize_column_blocks([("dashboard", ColumnConfig(fields=["name", "ahead_diff"]))])
+    assert any(
+        "ahead_diff" in issue and "target_diff" in issue and "--incoming" in issue
+        for issue in issues
+    )
+    fixed, warnings = sanitize_column_blocks(
+        [("dashboard", ColumnConfig(fields=["name", "ahead_diff"]))]
+    )
     assert fixed["dashboard"].fields == ["name"]
     assert any("ahead_diff" in warning and "target_diff" in warning for warning in warnings)

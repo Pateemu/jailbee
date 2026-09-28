@@ -2913,7 +2913,8 @@ def ls_field_specs(
             header="GIT STATUS",
             cell=lambda c: (
                 f"wt={c.git_status.wt} ±={c.git_status.target_diff} "
-                f"↑={c.git_status.ahead_count} ↓={c.git_status.behind_count} merge={c.git_status.conflict}"
+                f"↑={c.git_status.ahead_count} ↓={c.git_status.behind_count} "
+                f"merge={c.git_status.conflict}"
                 if c.git_status
                 else "—"
             ),

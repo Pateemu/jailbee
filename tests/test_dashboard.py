@@ -2358,6 +2358,7 @@ def test_seed_view_state_filters_a_stale_column_name(mocker):
 
 def test_seed_view_state_migrates_retired_diff_with_visible_notice(mocker):
     from sqlmodel import SQLModel, create_engine
+
     from jailbee.db.view_prefs import FRONTEND_TUI, ViewState, save_view_state
 
     engine = create_engine("sqlite:///:memory:")
@@ -2374,15 +2375,21 @@ def test_seed_view_state_migrates_retired_diff_with_visible_notice(mocker):
 
 def test_dashboard_config_migration_notice_is_visible_not_debug_only(mocker):
     mocker.patch.object(
-        dashboard, "load_global_config",
-        return_value=(dashboard.GlobalConfig(), ["dashboard.fields: 'ahead_diff' retired; use 'target_diff'"]),
+        dashboard,
+        "load_global_config",
+        return_value=(
+            dashboard.GlobalConfig(),
+            ["dashboard.fields: 'ahead_diff' retired; use 'target_diff'"],
+        ),
     )
     notice = dashboard.dashboard_config_migration_notice()
     assert notice is not None and "ahead_diff" in notice and "target_diff" in notice
 
 
 def test_dashboard_repo_migration_notice_uses_gathered_config_without_new_reads():
-    group = dashboard.RepoGroup("p", "/repo", None, [], column_notice="ls.fields: 'ahead_diff' retired; use 'target_diff'")
+    group = dashboard.RepoGroup(
+        "p", "/repo", None, [], column_notice="ls.fields: 'ahead_diff' retired; use 'target_diff'"
+    )
     notices = dashboard.dashboard_group_notices([group])
     assert len(notices) == 1 and "p" in notices[0] and "target_diff" in notices[0]
 

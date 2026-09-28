@@ -384,7 +384,8 @@ def seed_view_state(
         known = frozenset(all_column_names())
         filtered = tuple(
             dict.fromkeys(
-                c for n in state.columns
+                c
+                for n in state.columns
                 if (c := "target_diff" if n == "ahead_diff" else canonical_ls_field(n)) in known
             )
         )
@@ -476,7 +477,8 @@ def gather_rows(
                 push_source_default=cfg.push.default_source,
                 column_notice="; ".join(
                     warning for warning in cfg.column_warnings() if "ahead_diff" in warning
-                ) or None,
+                )
+                or None,
             )
         )
 
