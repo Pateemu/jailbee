@@ -563,8 +563,9 @@ ignores `fields` entirely.
 
 Live, auto-refreshing TUI of all JailBee containers across registered repos + the cwd
 repo, grouped by repo. Keys: `↑/↓` or `j/k` move (spans repos; repo headers
-are cursor stops, not skipped), `Enter` action menu (or fold/unfold the repo
-group when the cursor is on its header), `Space` toggle the selected setting
+are cursor stops, not skipped), `Enter` action menu (on a repo header, a repo
+menu with New container and Fold/Unfold; on a container, its action menu),
+`Space` toggle the selected setting
 in the settings overlay, `F2`/`S` settings overlay (columns + folding), `r`
 force refresh, `h`/`?` keybinding
 help, `q`/`Ctrl-C` quit. The action menu opens *inline below the table* — the
@@ -626,6 +627,9 @@ branch and about a branch autostart config that widens network access, and
 that question is asked in the foreground parent even under `--background`. A
 row in an orphan group (no repo config) gets a notice explaining why nothing
 happened.
+
+The repo-header menu's **New container…** runs this same flow; orphan repo
+headers only offer Fold/Unfold because there is no directory to create in.
 
 `F2` (or `S`) opens a settings overlay drawn below the live table: `↑`/`↓`
 move, `Space` toggles the row under the cursor, `Tab` switches between the

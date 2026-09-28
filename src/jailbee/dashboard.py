@@ -967,7 +967,7 @@ KEY_BINDINGS: tuple[KeyBinding, ...] = (
     ),
     KeyBinding("down", (b"\x1b[B", b"j"), "", "", "Navigate"),
     KeyBinding(
-        "enter", (b"\r", b"\n"), "Enter", "open a container menu or fold a repo header", "Navigate"
+        "enter", (b"\r", b"\n"), "Enter", "open a container or repo menu (fold there)", "Navigate"
     ),
     KeyBinding("cancel", (b"\x1b",), "Esc", "close the menu or help", "Navigate"),
     KeyBinding(
@@ -1082,8 +1082,17 @@ class MenuState:
     parent_index: int = 0
 
 
-# What occupies the slot under the table. All three overlays are mutually
-# exclusive by construction — no combination of them is a representable state.
+@dataclass
+class RepoMenuState:
+    """Repo-scoped actions for a selected header, distinct from container verbs."""
+
+    repo: str
+    actions: list[tuple[str, str]]
+    index: int = 0
+
+
+# What occupies the slot under the table. Overlays are mutually exclusive by
+# construction — no combination of them is a representable state.
 @dataclass(frozen=True)
 class CommandState:
     """Inline command editor state, independent of terminal/input handling."""
@@ -1123,7 +1132,7 @@ def edit_command(state: CommandState, key: bytes) -> CommandState:
     return state
 
 
-Overlay = MenuState | SettingsState | CommandState | Literal["help"]
+Overlay = MenuState | RepoMenuState | SettingsState | CommandState | Literal["help"]
 
 
 def open_menu(
@@ -1148,8 +1157,24 @@ def open_menu(
     return MenuState(name, actions)
 
 
-def _menu_entries(menu: MenuState) -> Sequence[MenuItem]:
+def open_repo_menu(
+    groups: list[RepoGroup], prefix: str, folded: frozenset[str]
+) -> RepoMenuState | None:
+    """Offer creation for actionable repos and folding for every visible header."""
+    group = next((g for g in groups if g.prefix == prefix and g.containers), None)
+    if group is None:
+        return None
+    actions: list[tuple[str, str]] = []
+    if RepoTarget.of(group) is not None:
+        actions.append(("New container…", "new"))
+    actions.append(("Unfold" if prefix in folded else "Fold", "fold"))
+    return RepoMenuState(prefix, actions)
+
+
+def _menu_entries(menu: MenuState | RepoMenuState) -> Sequence[MenuItem]:
     """Visible entries at this level, derived only from captured leaves."""
+    if isinstance(menu, RepoMenuState):
+        return menu.actions
     items = group_menu_actions(menu.actions)
     if menu.active_group is None:
         return items
@@ -1181,13 +1206,13 @@ def back_menu(menu: MenuState) -> MenuState | None:
     return replace(menu, active_group=None, index=menu.parent_index)
 
 
-def move_menu(menu: MenuState, delta: int) -> MenuState:
+def move_menu(menu: MenuState | RepoMenuState, delta: int) -> MenuState | RepoMenuState:
     """Move the cursor within the visible level, clamped at both ends."""
     last = max(0, len(_menu_entries(menu)) - 1)
     return replace(menu, index=max(0, min(last, menu.index + delta)))
 
 
-def menu_verb(menu: MenuState) -> str | None:
+def menu_verb(menu: MenuState | RepoMenuState) -> str | None:
     """Selected leaf verb, or None for a group or an empty menu."""
     entries = _menu_entries(menu)
     if not 0 <= menu.index < len(entries):
@@ -1196,7 +1221,7 @@ def menu_verb(menu: MenuState) -> str | None:
     return None if isinstance(entry, MenuGroup) else entry[1]
 
 
-def _render_menu(menu: MenuState) -> RenderableType:
+def _render_menu(menu: MenuState | RepoMenuState) -> RenderableType:
     """The action menu as a bordered panel: one row per action, cursor on the
     highlighted one."""
     lines = [
@@ -1204,11 +1229,12 @@ def _render_menu(menu: MenuState) -> RenderableType:
         for i, item in enumerate(_menu_entries(menu))
         for label in [item.label if isinstance(item, MenuGroup) else item[0]]
     ]
-    title = (
-        f"{menu.container} → {menu.active_group.removesuffix(' →')}"
-        if menu.active_group
-        else f"{menu.container} →"
-    )
+    if isinstance(menu, RepoMenuState):
+        title = f"{menu.repo} →"
+    elif menu.active_group:
+        title = f"{menu.container} → {menu.active_group.removesuffix(' →')}"
+    else:
+        title = f"{menu.container} →"
     return Panel(
         "\n".join(lines),
         title=f"[bold]{title}[/]",
@@ -1301,6 +1327,8 @@ def _hint_line(overlay: Overlay | None) -> str:
                 "[bold]Esc[/bold] back  ·  [bold]q[/bold] close"
             )
         return "[bold]↑/↓[/bold] move  ·  [bold]Enter[/bold] open/run  ·  [bold]Esc[/bold] cancel"
+    if isinstance(overlay, RepoMenuState):
+        return "[bold]↑/↓[/bold] move  ·  [bold]Enter[/bold] run  ·  [bold]Esc[/bold] cancel"
     if isinstance(overlay, SettingsState):
         return (
             "[bold]↑/↓[/bold] move  ·  [bold]Space[/bold] toggle  ·  "
@@ -1548,7 +1576,7 @@ def render(
         ),
     ]
     if overlay is not None:
-        if isinstance(overlay, MenuState):
+        if isinstance(overlay, (MenuState, RepoMenuState)):
             panel = _render_menu(overlay)
         elif isinstance(overlay, CommandState):
             lines = [f"> {overlay.text}▏"]
@@ -2292,8 +2320,8 @@ def run(
     def persist_view_state(state: ViewState) -> None:
         """Write ``state`` to ``view_prefs``, degrading instead of crashing.
 
-        Three call sites in this loop commit to SQLite straight from a
-        keypress (the fold key, Enter on a header, the overlay toggle).
+        The repo menu and settings overlay commit to SQLite straight from a
+        keypress (fold and setting toggles).
         ``run()``'s own ``try`` only catches ``KeyboardInterrupt``, so a
         write failure here (``database is locked`` against a concurrent
         background worker, a read-only state dir) would otherwise end the
@@ -2591,8 +2619,13 @@ def run(
                     # dispatch at a name that is no longer there.
                     set_notice(f"'{overlay.container}' is gone — menu closed")
                     overlay = None
+                if isinstance(overlay, RepoMenuState) and Row("repo", overlay.repo) not in rows:
+                    set_notice(f"'{overlay.repo}' is gone — menu closed")
+                    overlay = None
                 if isinstance(overlay, MenuState):
                     selected = Row("container", overlay.container)  # pinned while the menu is open
+                elif isinstance(overlay, RepoMenuState):
+                    selected = Row("repo", overlay.repo)
                 else:
                     selected = reconcile_selection(rows, selected, sel_index)
                 if selected in rows:
@@ -2700,17 +2733,27 @@ def run(
                             enabled = enabled_names(overlay)
                             folded = overlay.folded
                             persist_view_state(ViewState(enabled, folded))
-                    elif isinstance(overlay, MenuState):
+                    elif isinstance(overlay, (MenuState, RepoMenuState)):
                         if key in ("up", "down"):
                             overlay = move_menu(overlay, -1 if key == "up" else 1)
                         elif key == "enter":
-                            next_menu, verb = enter_menu(overlay)
-                            target = overlay.container
-                            if verb is not None:
+                            if isinstance(overlay, RepoMenuState):
+                                verb = menu_verb(overlay)
+                                target = overlay.repo
                                 overlay = None
-                                dispatch(target, verb)
+                                if verb == "new":
+                                    create_container()
+                                elif verb == "fold":
+                                    folded = toggle_folded(folded, target)
+                                    persist_view_state(ViewState(enabled, folded))
                             else:
-                                overlay = next_menu
+                                next_menu, verb = enter_menu(overlay)
+                                if verb is not None:
+                                    target = overlay.container
+                                    overlay = None
+                                    dispatch(target, verb)
+                                else:
+                                    overlay = next_menu
                     continue
                 if key == "quit":
                     break
@@ -2720,8 +2763,7 @@ def run(
                         sel_index = rows.index(selected)
                 elif key == "enter":
                     if selected is not None and selected.kind == "repo":
-                        folded = toggle_folded(folded, selected.key)
-                        persist_view_state(ViewState(enabled, folded))
+                        overlay = open_repo_menu(groups, selected.key, folded)
                     else:
                         container = container_of(selected)
                         overlay = open_menu(

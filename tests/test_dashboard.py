@@ -3301,7 +3301,7 @@ def test_render_help_overlay_documents_every_key(tmp_path):
         if b.hint:
             assert b.hint in out, f"{b.token}: hint {b.hint!r} missing from help"
             assert b.label in out, f"{b.token}: label {b.label!r} missing from help"
-    assert "fold a repo header" in out
+    assert "open a container or repo menu (fold there)" in out
     assert "toggle the selected setting" in out
     # Help replaces neither the table nor the hint line, and explains gating.
     assert "NAME" in out and "one" in out
@@ -4101,6 +4101,7 @@ def _drive_run(
     remote: bool = False,
     over_ssh: bool = False,
     ssh_policy=None,
+    view_state: dashboard.ViewState | None = None,
 ) -> int:
     """Run the real ``dashboard.run()`` key loop with a fake terminal.
 
@@ -4115,6 +4116,8 @@ def _drive_run(
     that needs a real, dispatchable container passes its own ``groups``.
     """
     _mock_terminal(mocker)
+    if view_state is not None:
+        mocker.patch.object(dashboard, "seed_view_state", return_value=view_state)
     mocker.patch.object(dashboard, "gather_live", return_value=groups or [])
     mocker.patch.object(dashboard.select, "select", return_value=([True], [], []))
 
@@ -4375,7 +4378,7 @@ def test_run_does_not_repeat_the_seeded_gather_when_git_is_disabled(mocker):
 
 
 def test_run_degrades_when_save_view_state_fails(mocker):
-    """A DB write failure on the keypress path (Space in settings, Enter on a header,
+    """A DB write failure on the keypress path (Space in settings, Fold in a repo menu,
     the settings overlay toggle) must not crash the session.
 
     Before this branch the TUI never wrote to the DB at all, so a failing
@@ -4452,6 +4455,77 @@ def test_run_dispatches_n_to_create_container(mocker):
     assert rc == 0
     notices = [call.kwargs.get("notice") for call in render.call_args_list]
     assert "Select a repo or a container first" in notices
+
+
+def test_repo_header_enter_opens_menu_without_folding(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    save = mocker.patch.object(dashboard, "save_view_state")
+
+    assert _drive_run(mocker, [b"\r"], groups=[group]) == 0
+
+    menus = [call.kwargs["overlay"] for call in render.call_args_list if call.kwargs["overlay"]]
+    assert menus
+    assert menus[0].repo == "alpha"
+    assert [label for label, _ in menus[0].actions] == ["New container…", "Fold"]
+    save.assert_not_called()
+
+
+def test_repo_menu_new_runs_the_existing_creation_flow(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    mocker.patch("typer.prompt", side_effect=["feature", "main"])
+    mocker.patch.object(dashboard, "new_container_base_default", return_value="main")
+    mocker.patch.object(dashboard, "_wait_for_return")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+
+    assert _drive_run(mocker, [b"\r", b"\r"], groups=[group]) == 0
+
+    child.assert_called_once_with(
+        ["jailbee", "new", "--", "feature", "main"], check=False, cwd=tmp_path
+    )
+
+
+@pytest.mark.parametrize("initially_folded", [False, True])
+def test_repo_menu_toggles_fold_and_persists_it(mocker, tmp_path, initially_folded):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    from jailbee.db.view_prefs import FRONTEND_TUI
+
+    save = mocker.patch.object(dashboard, "save_view_state")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert (
+        _drive_run(
+            mocker,
+            [b"\r", b"j", b"\r"],
+            groups=[group],
+            view_state=dashboard.ViewState(
+                folded=frozenset({"alpha"}) if initially_folded else frozenset()
+            ),
+        )
+        == 0
+    )
+
+    menus = [call.kwargs["overlay"] for call in render.call_args_list if call.kwargs["overlay"]]
+    assert menus[0].actions[1][0] == ("Unfold" if initially_folded else "Fold")
+    assert save.call_count == 1
+    assert save.call_args.args[1] == FRONTEND_TUI
+    assert save.call_args.args[2].folded == (
+        frozenset() if initially_folded else frozenset({"alpha"})
+    )
+
+
+def test_orphan_repo_menu_only_offers_folding(mocker):
+    group = dashboard.RepoGroup("orphan", None, None, [_ci("orphan-x", "orphan")])
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    mocker.patch.object(dashboard, "save_view_state")
+
+    assert _drive_run(mocker, [b"\r", b"\r"], groups=[group]) == 0
+
+    menus = [call.kwargs["overlay"] for call in render.call_args_list if call.kwargs["overlay"]]
+    assert menus[0].actions == [("Fold", "fold")]
+    child.assert_not_called()
 
 
 def test_run_reports_a_vanished_repo_root_instead_of_crashing(mocker, tmp_path):
