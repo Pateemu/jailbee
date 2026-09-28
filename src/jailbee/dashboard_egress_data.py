@@ -15,9 +15,7 @@ if TYPE_CHECKING:
     from jailbee.incus import Incus
 
 
-def load_egress_rows(
-    root: Path, incus: Incus, container: str | None
-) -> tuple[EntryRow, ...]:
+def load_egress_rows(root: Path, incus: Incus, container: str | None) -> tuple[EntryRow, ...]:
     """Load config and classify its applicable rows in a short-lived session."""
     cfg = load_repo_config(root)
     with Session(get_engine()) as session:

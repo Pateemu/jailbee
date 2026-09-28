@@ -5,7 +5,6 @@ from __future__ import annotations
 from rich.console import Console
 
 from jailbee import egress_scope
-from jailbee.egress_scope import EntryRow
 from jailbee.dashboard_egress import (
     EgressState,
     egress_argv,
@@ -14,6 +13,7 @@ from jailbee.dashboard_egress import (
     render_egress,
     replace_egress_rows,
 )
+from jailbee.egress_scope import EntryRow
 
 
 def test_empty_panel_and_argv(make_cfg, tmp_path, mocker):
@@ -45,9 +45,7 @@ def test_cursor_clamps_scrolls_and_replacement_preserves_selection():
     assert "↓" in captured.get()
 
 
-def test_loader_classifies_scoped_rows_and_preserves_redundant_sources(
-    make_cfg, tmp_path, mocker
-):
+def test_loader_classifies_scoped_rows_and_preserves_redundant_sources(make_cfg, tmp_path, mocker):
     from jailbee.dashboard_egress_data import load_egress_rows
 
     cfg = make_cfg(tmp_path, egress_allow=["config.example", "shared.example", "shared.example"])
@@ -59,7 +57,9 @@ def test_loader_classifies_scoped_rows_and_preserves_redundant_sources(
     incus.config_get.return_value = '["container.example", "shared.example"]'
     mocker.patch("jailbee.dashboard_egress_data.load_repo_config", return_value=cfg)
     mocker.patch("jailbee.dashboard_egress_data.get_engine")
-    mocker.patch("jailbee.dashboard_egress_data.Session").return_value.__enter__.return_value = session
+    mocker.patch(
+        "jailbee.dashboard_egress_data.Session"
+    ).return_value.__enter__.return_value = session
 
     rows = load_egress_rows(tmp_path, incus, "repo-feat")
     indexed = {(row.entry, row.source): row for row in rows}
@@ -86,5 +86,9 @@ def test_remove_rules_and_explicit_argv():
     assert removable_entry(container) == entry
     assert egress_argv(container, "add", entry) == ["net", "egress", "add", entry, "repo-feat"]
     assert egress_argv(EgressState("repo", None, ()), "add", entry) == [
-        "net", "egress", "add", entry, "--repo"
+        "net",
+        "egress",
+        "add",
+        entry,
+        "--repo",
     ]

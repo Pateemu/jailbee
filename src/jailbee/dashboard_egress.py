@@ -42,7 +42,11 @@ def replace_egress_rows(state: EgressState, rows: tuple[EntryRow, ...]) -> Egres
     """Replace loaded rows, retaining the selected entry/source where possible."""
     selected = state.rows[state.index] if state.rows and state.index < len(state.rows) else None
     index = next(
-        (i for i, row in enumerate(rows) if selected is not None and (row.entry, row.source) == (selected.entry, selected.source)),
+        (
+            i
+            for i, row in enumerate(rows)
+            if selected is not None and (row.entry, row.source) == (selected.entry, selected.source)
+        ),
         _clamped(replace(state, rows=rows), state.index),
     )
     return replace(state, rows=rows, index=index)
@@ -58,9 +62,7 @@ def removable_entry(state: EgressState) -> str | None:
     return row.entry if row.source == "container" else None
 
 
-def egress_argv(
-    state: EgressState, action: Literal["add", "rm"], entry: str
-) -> list[str]:
+def egress_argv(state: EgressState, action: Literal["add", "rm"], entry: str) -> list[str]:
     """Build explicit CLI arguments for the current scope (without executable)."""
     target = "--repo" if state.container is None else state.container
     return ["net", "egress", action, entry, target]
@@ -73,9 +75,7 @@ def _window(index: int, total: int) -> tuple[int, int]:
     return start, start + _VISIBLE_ROWS
 
 
-def render_egress(
-    state: EgressState, *, can_add: bool, can_rm: bool
-) -> RenderableType:
+def render_egress(state: EgressState, *, can_add: bool, can_rm: bool) -> RenderableType:
     """Render a compact, bounded panel; entry strings are always plain text."""
     lines: list[Text] = []
     if not state.rows:
@@ -86,7 +86,9 @@ def render_egress(
             lines.append(Text(f"↑ {start} more", style="dim"))
         for i in range(start, end):
             row = state.rows[i]
-            line = Text("▸ " if i == state.index else "  ", style="bold magenta" if i == state.index else "")
+            line = Text(
+                "▸ " if i == state.index else "  ", style="bold magenta" if i == state.index else ""
+            )
             line.append(row.entry, style="bold" if i == state.index else "")
             line.append(f"  [{row.source}]")
             if row.redundant:
