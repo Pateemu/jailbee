@@ -614,8 +614,8 @@ for exactly that column. `hide` only prunes the *built-in* default set.
 
 Allowed names: `name`, `full_name`, `repo`, `mode`, `base`, `state`,
 `created`, `job`, `network`, `ttl`, `loose_until`, `ip`, `memory_limit`,
-`mem`, `wt`, `ahead_diff`, `ahead_count`, `conflict`, `local_diff`,
-`local_count`, `git_status`, `pr`. Three things are problems: an unknown
+`mem`, `wt`, `target_diff`, `ahead_count`, `behind_count`, `conflict`,
+`local_diff`, `local_count`, `git_status`, `pr`. Three things are problems: an unknown
 name (reported with the allowed set listed), `fields: []` (no columns at
 all — use `fields: null` for the built-in default set), and a name repeated
 inside `fields`. None of these is fatal at load time, in either file — a
@@ -631,6 +631,22 @@ Applies to **table** output only — `jailbee ls -o json` always emits its own
 built-in field set regardless of this block, so a personal display
 preference can't silently narrow a script's expected JSON shape. An
 explicit `--fields` flag on the CLI beats this block in every format.
+
+Status compares directly with the host's local ref for the recorded base
+branch, falling back to the configured upstream's last-fetched tracking ref
+when the local branch is absent. It never fetches. When both refs exist the
+local ref wins; tracking-ahead/diverged notices describe only the fetched ref,
+not the remote server. Missing refs or an unreadable selected commit produce
+unknown comparison values rather than using a pinned anchor. Explicit JSON
+`git_status` exposes `target_diff`, `ahead_count`, `behind_count`, `base_source`,
+`base_sha`, `tracking_relation` and `upstream_ref`; its submodule line fields
+are `target_ins`/`target_del` (with `ahead_commits`/`behind_commits` for graph
+counts).
+
+The former `ahead_diff` column was retired because it represented a three-dot
+contribution diff. Configured `ahead_diff` values warn during migration, and
+explicit `--fields ahead_diff` errors. Use `target_diff` for the direct tree
+comparison or `jailbee git diff --incoming` for the former contribution patch.
 
 `ls:` lives in either layer, merged field-by-field like `loose_auto_revert`
 — *not* through the general deep-merge pipeline, which appends lists and

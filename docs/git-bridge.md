@@ -11,8 +11,9 @@ involved. Little travels either way: the container was cloned with
 `git clone --shared`, so its alternates point at the host's object store and
 only the objects the other side actually lacks are sent. Each container records
 the **base branch** it was forked from (`user.jailbee.base_branch`, set at
-`jailbee new` time); pulls merge into that base and `jailbee ls` /
-`jailbee git diff` measure "ahead" against it.
+`jailbee new` time); pulls merge into that branch. Status and the default
+committed diff compare against the host's live target commit for that branch,
+not a container's pinned transport anchor.
 
 **Container → host:**
 
@@ -134,8 +135,9 @@ By default `jailbee git push` fetches `origin/<source>` on the host and pushes
 `refs/remotes/origin/<branch>`; the local branch advances on `git pull`. So for
 a branch you never check out on the host — usually the base branch that `push`
 sends by default — the local ref is stale precisely when you just fetched.
-Pushing it would also force-move the container's `refs/jailbee/base/<base>` anchor
-backwards, inflating `jailbee ls` AHEAD counts.
+Pushing it can also force-move the container's `refs/jailbee/base/<base>`
+transport anchor backwards; status no longer uses that anchor, but in-container
+operations that read it may see the older point until the anchor is refreshed.
 
 - `--from-local` — push `refs/heads/<source>` as-is, skipping the fetch. Use
   when the host has commits not yet on origin.
@@ -167,19 +169,46 @@ A push updates up to three refs in the container:
 | Ref | When |
 |---|---|
 | `refs/jailbee/host/<source>` | always — the transport's landing ref, force-updated |
-| `refs/jailbee/base/<base>` | when the pushed source *is* the container's base branch, so `jailbee ls` AHEAD measures against the fresh base |
+| `refs/jailbee/base/<base>` | when the pushed source *is* the container's base branch, to refresh that container's in-clone transport anchor |
 | `refs/heads/<source>` | when it can be fast-forwarded (see below) |
 
-The AHEAD ±/↑ count uses the pinned `refs/jailbee/base/<base>` anchor inside
-the container. It follows the host's `<base>` branch: `jailbee checkout`,
-`jailbee git fetch` and `jailbee git pull` re-point it in **every running
-container of this repo based on that branch**, and print
-`AHEAD base refreshed: …`. Pushing the base branch with `jailbee git push`
-re-points the anchor in that container; a stopped container catches up when
-it starts, forward-only, so a stale local `<base>` never pulls the anchor back.
-`jailbee git merge` between containers moves no host branch and therefore no
-anchor. A host branch moved by plain `git` is picked up at the next of these
-JailBee operations.
+`refs/jailbee/base/<base>` remains a transport/bridge anchor for operations
+inside containers; it is **not** the `jailbee ls` status baseline. Each status
+gather snapshots the host's local `refs/heads/<base>` once per base branch and
+uses that same commit for all matching containers. If the local branch does not
+exist, status falls back to `refs/remotes/<upstream>/<base>` and marks BASE as
+tracking; it never fetches, fast-forwards, or rewrites anchors. A
+container-to-container `jailbee git merge` still transports directly and
+changes no host branch. After a bridge pull or merge moves the host target, the
+next status gather sees that new local tip automatically.
+
+When both local and tracking refs exist, local always wins. Tracking is only
+the last-fetched copy: if it is ahead of local, status reports `local target
+behind fetched <upstream>/<base>`; if the refs have diverged it reports
+`diverged`. These notices do not claim to know the remote server's current
+state. If neither ref exists, or the selected host commit object is unreadable
+from the container, comparison-dependent values are `?`; JailBee does not
+fall back to a pinned anchor or another branch. Live worktree and merge-state
+information remain independently available.
+
+In status output, **DIFF ±** is the direct committed-tree line diff
+(`git diff <host-target> HEAD`); equal trees are `clean` even when histories
+differ. **↑** counts commits unique to the container and **↓** counts commits
+unique to the host target, using graph ancestry, so both can be nonzero when
+DIFF ± is clean. WT remains separate. Explicit JSON `git_status` exposes
+`target_diff`, `ahead_count`, `behind_count`, `base_source`, `base_sha`,
+`tracking_relation` and `upstream_ref`; per-submodule line fields are
+`target_ins`/`target_del`, while commit counts remain `ahead_commits` and
+`behind_commits`. The old `ahead_diff`, `ahead_ins` and `ahead_del` names are
+retired; see [column migration](config.md#ls--dashboard--remembered-columns).
+
+`jailbee git diff <name>` uses the same live host target and direct comparison
+by default. `--incoming` selects the former three-dot contribution diff;
+`--stat` applies to either committed view, while `--wt` is unchanged and
+`--all` combines the default committed view with working-tree changes. A
+missing target or unreadable target object is a clear command error, not a
+silent comparison against an anchor. `LOCAL ±`/`L↑`, when opted in, remain a
+separate comparison against the host's currently checked-out HEAD.
 
 That last one exists because the `refs/jailbee/*` namespace is invisible to
 everyday git: a container whose local `dev` never moved makes an in-container
@@ -618,8 +647,8 @@ Two things the last `pull` does not cover:
 ## Choosing the starting point for `jailbee new`
 
 `<base>` always names the container's **base branch** — the
-`user.jailbee.base_branch` label and the `refs/jailbee/base/<base>` anchor that
-`jailbee ls` AHEAD/MERGE and `jailbee git pull` are measured against. Whether
+`user.jailbee.base_branch` label, transport anchor `refs/jailbee/base/<base>`,
+and host target used by status and `jailbee git pull`. Whether
 `jailbee new` *forks* off it depends on whether `<branch>` already exists in
 the source repo:
 
@@ -831,11 +860,13 @@ reviewed PR's *base* (e.g. `main`), not its head:
 
 - Opening a stacked PR offers to **retarget** the container onto the PR head
   (`--retarget` / `--no-retarget`; the default asks on a TTY and otherwise
-  skips, printing the command). Only then do `jailbee ls`'s AHEAD and
-  `jailbee git diff` count this container's own commits alone instead of
-  folding in the whole reviewed PR. The anchor comes from JailBee's own
-  `refs/jailbee/pr/<N>/head` — the PR head deliberately lives in no branch on
-  the host, so a same-named local branch cannot decide it.
+  skips, printing the command). This changes the container's recorded base;
+  status and diff then resolve that branch against the host's live local (or
+  last-fetched tracking) ref. If that target is available, its ↑ count measures
+  unique container commits from that target; without a matching host ref,
+  comparison status is `?` rather than a PR-anchor fallback. The fetched PR
+  head itself is stored in JailBee's `refs/jailbee/pr/<N>/head`, not necessarily
+  a host branch.
 - When PR #N merges, `jailbee git retarget <name> main` moves your stacked PR's
   container onto the merged base as usual.
 

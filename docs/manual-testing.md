@@ -1216,10 +1216,9 @@ jailbee git push feat-refsmoke --plain
 #         host-only commit count and suggesting --from-local
 git reset --hard HEAD~1
 
-# 4. Base anchor follows origin (jailbee ls AHEAD stays honest).
-jailbee ls   # AHEAD counted against the freshly-pushed base
-# NOTE: step 2 pushed the older local main over refs/jailbee/base/main, so
-# re-run step 1 before trusting these numbers.
+# 4. A push can still refresh the container's transport anchor, but status
+#    compares against the host's local main target.
+jailbee ls   # DIFF ±/↑/↓ use refs/heads/main, not the container anchor
 
 # 5. An unfetchable source degrades to the local ref, not a failure.
 git branch local-only-branch
@@ -2436,7 +2435,7 @@ cd ~/SampleApp/<submodule-path>
 printf 'a\nb\nc\n' >> some_tracked_file && git add . && git commit -m "sub edit"
 cd ~/SampleApp && git add <submodule-path> && git commit -m "bump submodule"
 exit
-jailbee ls            # feat-submod-vis AHEAD ± reflects the +3 from inside the submodule
+jailbee ls            # feat-submod-vis DIFF ± reflects the direct submodule gitlink change
 jailbee diff feat-submod-vis   # shows the submodule's file hunk inline
 # Working-tree (uncommitted) submodule changes show in the WT column too:
 jailbee shell feat-submod-vis
@@ -2800,15 +2799,27 @@ echo "" | jailbee destroy
 
 ## `jailbee ls` git-status columns + `jailbee git diff` smoke test
 
-AHEAD ± and ↑ are measured against the container's **base branch**
-(`user.jailbee.base_branch`, recorded at `jailbee new` time), not the host's
-checked-out HEAD. The comparison is `<base>...HEAD` (live merge-base,
-i.e. "PR view"), where `<base>` resolves in order:
-`refs/jailbee/base/<base>` (jailbee-managed; seeded at `jailbee new`, advanced by
-`jailbee pull`/`jailbee push` and not clobbered by an in-container `git fetch`) →
-`refs/remotes/origin/<base>` (legacy fallback) → `refs/heads/<base>` →
-`origin/<default>`. `jailbee git diff` uses the same base resolution so its
-output stays consistent with what AHEAD shows.
+DIFF ± compares committed trees directly (`git diff <target> HEAD`) against the
+host's live target branch. The target is the container's recorded base branch
+(`user.jailbee.base_branch`): use host `refs/heads/<base>` when present, else
+`refs/remotes/<configured-upstream>/<base>` as a last-fetched fallback. Local
+always wins when both exist. Listing does not fetch, fast-forward, or update
+container anchors. Mark tracking fallback on BASE; when tracking is ahead of
+local, expect a grouped `local target behind fetched <upstream>/<base>` notice,
+and when they diverge expect `diverged`. These describe local refs only, not the
+remote server's live state. If neither ref resolves, or the chosen target
+object cannot be read from a container, comparison-dependent values are `?`
+(and `jailbee git diff` errors); there is no stale-anchor/default-branch
+fallback. WT and live merge/rebase state remain independent.
+
+**↑** is the number of commits unique to container HEAD, **↓** the commits
+unique to the host target, calculated from `<target>...HEAD`. These graph counts
+are independent of DIFF ±: equal trees can have nonzero counts. `jailbee git
+diff` uses the same target for its direct default diff; `--incoming` gives the
+contribution-only three-dot diff. `--stat` applies to either committed view,
+`--wt` remains working-tree-only, and `--all` combines working-tree and default
+committed changes. `LOCAL ±`/`L↑`, when requested, still compare with the host's
+currently checked-out HEAD, not the base target.
 
 The **MERGE** column shows the container's live merge/rebase state when one is
 active, and otherwise a best-effort conflict prediction against the base. An
@@ -2821,29 +2832,29 @@ active state always outranks the prediction — see priority order below:
   is running
 - blank / `ok` — *prediction only*: container branch merges cleanly into its
   base branch
-- `?` — base ref not found in the host repo, or the live state couldn't be
-  probed
+- `?` — target ref/object unavailable for prediction, or the live state could
+  not be probed
 - `—` — container is stopped or in mount mode (no git access)
 
 ```bash
 # 1. Verify columns appear and update as the container's git state changes.
 jailbee new feat/lsstat --no-autostart
 jailbee ls
-# expect: feat-lsstat row shows BASE=main, WT=clean, AHEAD ±=clean, ↑=0, MERGE=ok
+# expect: feat-lsstat row shows BASE=main, WT=clean, DIFF ±=clean, ↑=0, ↓=0, MERGE=ok
 
 jailbee shell feat-lsstat
 cd ~/SampleApp
 echo dirty > dirty.txt && git add dirty.txt
 exit
 jailbee ls
-# expect: WT shows "+1 -0" (or similar), AHEAD ± still clean, ↑=0
+# expect: WT shows "+1 -0" (or similar), DIFF ± stays clean, ↑=0, ↓=0
 
 jailbee shell feat-lsstat
 cd ~/SampleApp
 git commit -m "smoke commit"
 exit
 jailbee ls
-# expect: WT=clean, AHEAD ±="+1 -0", ↑=1, MERGE=ok
+# expect: WT=clean, DIFF ±="+1 -0", ↑=1, ↓=0, MERGE=ok
 
 # 2. MERGE=conflict: create a divergence between the container and its base.
 # Advance main on the host with a change that conflicts with the container.
@@ -2874,7 +2885,8 @@ jailbee ls
 git revert HEAD --no-edit
 
 # 3. jailbee git diff variants
-jailbee git diff feat-lsstat                  # default: patch for the smoke commit (vs base)
+jailbee git diff feat-lsstat                  # default: direct patch for the smoke commit (vs host target)
+jailbee git diff feat-lsstat --incoming       # contribution-only (three-dot) patch
 jailbee git diff feat-lsstat --stat           # shortstat summary only
 jailbee git diff feat-lsstat --wt             # empty (nothing uncommitted)
 jailbee git diff feat-lsstat --all            # full patch (committed only since WT clean)
@@ -2882,11 +2894,11 @@ jailbee git diff feat-lsstat --all            # full patch (committed only since
 # 4. Edge cases: stopped + mount-mode show "—" in all four git columns.
 jailbee stop feat-lsstat
 jailbee ls
-# expect: feat-lsstat row WT/AHEAD ±/↑/MERGE all "—"
+# expect: feat-lsstat row WT/DIFF ±/↑/↓/MERGE all "—"
 
 jailbee new mountsmoke --mount
 jailbee ls
-# expect: mountsmoke row WT/AHEAD ±/↑/MERGE all "—"; BASE=main
+# expect: mountsmoke row WT/DIFF ±/↑/↓/MERGE all "—"; BASE=main
 jailbee git diff mountsmoke 2>&1 | grep "mount mode"
 
 # 5. Legacy containers (created before this feature)
@@ -2903,10 +2915,50 @@ jailbee destroy mountsmoke --force
 # 6. Picker shows the same fields
 jailbee new feat/pickersmoke --no-autostart
 jailbee destroy
-# expect: questionary checkbox row contains BASE=main, WT, AHEAD ±, ↑, MERGE
+# expect: questionary checkbox row contains BASE=main, WT, DIFF ±, ↑, ↓, MERGE
 # (Ctrl+C to cancel)
 jailbee destroy feat-pickersmoke --force
 ```
+
+The JSON status field is also versioned with these semantics: `git_status`
+contains `target_diff`, `ahead_count`, `behind_count`, `base_source` (`local`,
+`tracking`, or `unavailable`), `base_sha`, `tracking_relation`, and
+`upstream_ref`. Per-submodule line fields are `target_ins`/`target_del`;
+`ahead_ins`/`ahead_del` are retired. `ahead_diff` is removed from field
+selection: explicitly requesting it errors with a migration hint, and a
+configured `ls`/dashboard field emits a warning. Use `target_diff` or
+`jailbee git diff --incoming` as appropriate. `local_diff`/`local_count` remain
+the opt-in checked-out-HEAD comparison.
+
+### Maintainer-only live-target smoke: Incus objects and combined → workers
+
+This cannot be verified in the mocked test environment; run on a host with a
+real Incus daemon and the representative combined/worker repositories. Do not
+interpret a pass here as checking the remote server's live state.
+
+1. Make sure the local host `main` ref points at a commit not yet present in
+   one worker clone, while the shared object store makes it available; list
+   containers and confirm both workers show the same local `base_sha`,
+   `base_source=local`, and direct DIFF ±/↑/↓ values for `main`.
+2. Advance `origin/main` without moving local `main` (fetch it, but do not pull).
+   Confirm local remains the selected `base_sha` and a grouped
+   `local target behind fetched origin/main` notice appears. Then create a
+   local divergence and confirm the notice says `diverged`; listing must not
+   fetch, move refs, or rewrite `refs/jailbee/base/*`.
+3. Remove the local target branch in a disposable test repo and confirm the
+   last-fetched tracking ref becomes the selected target and BASE is marked
+   tracking. With neither target ref present, expect `?`; with a deliberately
+   unreadable target commit object, expect comparison fields `?` and a clear
+   `jailbee git diff` error rather than an anchor fallback.
+4. Create identical committed trees in two worker containers with different
+   histories. Merge the same `vaaka-combined` source into each using
+   `jailbee git merge vaaka-combined --into <worker-a> --into <worker-b>`.
+   Confirm their direct DIFF ± totals match the host target even if ↑/↓ differ.
+   Then `jailbee git pull <worker-a> --into main` (or the project's normal
+   combined-to-worker integration sequence) to move the host target, and
+   confirm the next listing uses the new local `main` SHA for both workers
+   without a merge-time anchor fan-out. Verify default diff, `--incoming`,
+   `--stat`, and submodule endpoints against that same target.
 
 ## `jailbee dashboard` smoke test
 
@@ -3020,7 +3072,7 @@ jailbee dashboard
 #     state.sqlite's view_prefs table.
 
 # Two-tier refresh: base state (state/ip/op) updates every ~3s; git columns
-# (WT/AHEAD/↑/MERGE) update every ~10s. Tune with -i / --git-interval, or
+# (WT/DIFF ±/↑/↓/MERGE) update every ~10s. Tune with -i / --git-interval, or
 # drop git entirely:
 jailbee dashboard --no-git -i 2
 
@@ -3036,22 +3088,22 @@ echo "" | jailbee dashboard
 # expect: exit 1, "jailbee dashboard requires an interactive terminal."
 ```
 
-## `refs/jailbee/base` AHEAD-after-pull smoke test
+## Host target status after pull smoke test
 
 ```bash
 git checkout main
 jailbee new feat/baseref
 jailbee shell feat-baseref
 cd ~/SampleApp && echo x > x.txt && git add . && git commit -m "baseref smoke" && exit
-jailbee ls            # feat-baseref AHEAD ±/↑ show the new commit (↑=1)
+jailbee ls            # feat-baseref DIFF ± shows the commit (↑=1, ↓=0)
 
 jailbee pull feat-baseref --into main --no-cleanup   # keep container; merges into base 'main'
-jailbee ls            # feat-baseref now ↑=0, AHEAD ±=clean (integrated into host main)
+jailbee ls            # feat-baseref now ↑=0, ↓=0, DIFF ±=clean (host main advanced)
 
 # A later in-container fetch must NOT re-inflate the number.
 jailbee shell feat-baseref
 cd ~/SampleApp && git fetch origin && exit
-jailbee ls            # still ↑=0 — refs/jailbee/base/main is untouched by git fetch
+jailbee ls            # still uses host refs/heads/main; container fetch changes no target
 
 jailbee destroy feat-baseref --force
 ```
@@ -3456,8 +3508,8 @@ Both features depend on real object presence in the container's and host's
 git object stores, so they need a real Incus daemon to exercise honestly.
 
 `LOCAL ±`/`L↑` (`local_diff`/`local_count`) compare the container's HEAD to
-the host's **currently checked-out branch** — not the container's pinned
-base branch, which is what `AHEAD ±`/`↑` already shows. Both are off by
+the host's **currently checked-out branch** — not the live host target branch
+used by **DIFF ±**/↑/↓. These local fields are off by
 default; request them with `--fields` or an `ls: {fields: [...]}` config
 block.
 
@@ -3510,7 +3562,7 @@ jailbee destroy feat-localdiffsmoke
 #    gets probed (it's running, not mount-mode), but the probe finds no
 #    .git to check — every field, including LOCAL, comes back "?".
 jailbee new noclonesmoke --no-clone --no-autostart
-jailbee ls --fields name,wt,ahead_diff,local_diff,local_count
+jailbee ls --fields name,wt,target_diff,local_diff,local_count
 # expect: noclonesmoke row shows "?" in every git column shown, LOCAL ± and
 # L↑ included — nothing was measured, and that is rendered as unknown, not
 # "clean"

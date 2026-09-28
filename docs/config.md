@@ -2000,10 +2000,10 @@ pushed with — the local ref is stale exactly when you just fetched. With
 tip, matching what `jailbee new` already does via
 [`new.clone_from`](#new)`: origin`.
 
-This also protects `jailbee ls`: when the source equals the container's base
-branch, the push force-updates `refs/jailbee/base/<base>`, so pushing a local
-base that trails origin would move that anchor *backwards* and inflate
-the AHEAD counts.
+When the source equals the container's base branch, the push force-updates
+`refs/jailbee/base/<base>` inside that container. Pushing a local base that
+trails origin can move that transport anchor *backwards*, but status no longer
+uses it: `jailbee ls` compares to the host's live local target branch.
 
 `--current` (or `default_source: current`) always resolves locally
 regardless of these keys: the host's checked-out branch is the work in
@@ -2090,7 +2090,13 @@ committed-tree comparison with the host target branch, or `jailbee git diff
 `tracking_relation` and `upstream_ref` instead of `ahead_diff`; its submodule
 line fields are `target_ins`/`target_del` instead of `ahead_ins`/`ahead_del`.
 `local_diff` and `local_count` remain opt-in comparisons with the host's
-checked-out HEAD, which can differ from the target branch.
+currently checked-out HEAD, which can differ from the target branch. If the
+host's local target branch is absent, status uses the configured upstream's
+last-fetched tracking ref and marks BASE as tracking; it never fetches. If
+neither ref or the selected commit object is available, comparison-dependent
+values are `?`, with no stale-anchor or unrelated-branch fallback. Where both
+local and tracking refs exist, local wins; a tracking-ahead/diverged relation
+is reported as a notice and does not claim the remote server's current state.
 
 Three things are problems: an unknown name (reported with the allowed set
 listed), `fields: []` (a table with no columns at all — write `fields: null`
@@ -2178,7 +2184,7 @@ active even after the legacy column keys are removed.
 
 The Qt dashboard's **Compact** card style is the one exception: it renders a
 hardcoded selection — name, state, `mode`/`base`/`network`, a job badge and
-a folded `wt`/`ahead_diff`/`ahead_count`/`conflict` summary — so a
+a folded `wt`/`target_diff`/`ahead_count`/`behind_count`/`conflict` summary — so a
 configured column outside that set (`local_diff`, say) reaches the tree and
 the Grid card style but never Compact. Switch card style to see it.
 
@@ -2204,12 +2210,14 @@ plus `container_prefix`, a real YAML key whose fallback is computed:
 
 ### Which branch is the default?
 
-`default_branch` is more than `jailbee new`'s starting point when the
-requested branch does not exist yet: it is also the comparison base for
-`jailbee ls`'s ahead/behind columns, for the container diff, and for a
-`jailbee pr` that names no base. It therefore has to be stable — a value that
-followed whatever the host has checked out would silently re-anchor all of
-those — so jailbee reads something that exists rather than guessing a name,
+`default_branch` is `jailbee new`'s starting point when the requested branch
+does not exist yet, and supplies the base branch when a command does not name
+one. Status and container diffs resolve each container's recorded base branch
+against the host's live local branch (tracking-ref fallback), not this computed
+default and not the host's checked-out branch. A `jailbee pr` that names no
+base still uses the default. The default therefore has to be stable — a value
+that followed whatever the host has checked out would silently change those
+defaults — so jailbee reads something that exists rather than guessing a name,
 taking the first of:
 
 1. `refs/remotes/<upstream_remote>/HEAD` — the project's own answer, written
