@@ -1396,7 +1396,11 @@ def repo_heading(group: RepoGroup, selected: Row | None, folded: frozenset[str])
 def _aligned_table(
     fields: list[FieldSpecCI], widths: tuple[int, ...], *, show_header: bool
 ) -> Table:
-    """An empty table with the dashboard's shared, fixed column geometry."""
+    """An empty table with the dashboard's shared, fixed column geometry.
+
+    The first title carries the same two-cell selection gutter that
+    :func:`repo_table` puts in front of every first-column cell.
+    """
     table = Table(
         box=None,
         pad_edge=False,
@@ -1405,9 +1409,10 @@ def _aligned_table(
         show_header=show_header,
         padding=(0, 1),
     )
-    for field_spec, width in zip(fields, widths, strict=True):
+    for index, (field_spec, width) in enumerate(zip(fields, widths, strict=True)):
+        title = ("  " if index == 0 else "") + field_spec.header
         table.add_column(
-            field_spec.header if show_header else "",
+            title if show_header else "",
             justify=field_spec.justify,
             width=width,
             min_width=1,

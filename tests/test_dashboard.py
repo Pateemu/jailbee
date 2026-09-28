@@ -2560,6 +2560,31 @@ def test_render_column_headers_stay_on_top_when_first_repo_is_empty(tmp_path):
     assert header_row < alpha_heading
 
 
+@pytest.mark.parametrize(
+    ("enabled", "title", "cell"),
+    [(None, "NAME", "one"), (("state", "network"), "STATE", "Running")],
+)
+def test_render_first_column_title_aligns_with_its_cells(tmp_path, enabled, title, cell):
+    """Every first-column cell carries the two-cell selection gutter, so the
+    title above it must too — whichever field happens to come first."""
+    group = dashboard.RepoGroup("alpha", "/repos/alpha", None, [_ci("alpha-one", "alpha")])
+    out = _render_text(
+        dashboard.render(
+            [group],
+            selected=None,
+            now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
+            last_refresh_age=1.0,
+            interval=3.0,
+            git_enabled=True,
+            enabled=enabled,
+        )
+    )
+    lines = out.splitlines()
+    header_line = next(ln for ln in lines if title in ln)
+    data_line = next(ln for ln in lines if cell in ln and "alpha" not in ln)
+    assert header_line.index(title) == data_line.index(cell)
+
+
 def test_render_empty_groups_shows_placeholder():
     out = _render_text(
         dashboard.render(
