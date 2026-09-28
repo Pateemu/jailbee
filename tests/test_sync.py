@@ -4903,7 +4903,9 @@ def _patch_diff_target(mocker, branch: str, sha: str | None = "live-target-sha")
     )
 
 
-def test_diff_from_container_committed_uses_live_target_and_two_endpoints(mocker, make_cfg, tmp_path):
+def test_diff_from_container_committed_uses_live_target_and_two_endpoints(
+    mocker, make_cfg, tmp_path
+):
     from jailbee.sync import diff_from_container
 
     cfg = make_cfg(tmp_path, default_branch="main")
@@ -5160,15 +5162,15 @@ def test_diff_stat_passes_mode_committed_without_submodules(mocker, make_cfg, tm
         ("committed", True, "live-target-sha...HEAD"),
     ],
 )
-def test_diff_committed_endpoint_selection(mocker, make_cfg, tmp_path, mode, incoming, expected_range):
+def test_diff_committed_endpoint_selection(
+    mocker, make_cfg, tmp_path, mode, incoming, expected_range
+):
     cfg = make_cfg(tmp_path)
     full = f"{cfg.container_prefix}-feat"
     incus = _stub_diff_env(mocker, cfg, full)
     incus.exec.side_effect = ["", "DIFF"]
 
-    sync.diff_from_container(
-        cfg, incus, "feat", mode=mode, incoming=incoming, color=False
-    )
+    sync.diff_from_container(cfg, incus, "feat", mode=mode, incoming=incoming, color=False)
 
     diff_cmd = incus.exec.call_args_list[-1].args[1]
     assert expected_range in " ".join(diff_cmd)
@@ -5180,9 +5182,7 @@ def test_diff_all_incoming_combines_worktree_and_incoming(mocker, make_cfg, tmp_
     incus = _stub_diff_env(mocker, cfg, full)
     incus.exec.side_effect = ["", "INCOMING", "WORKTREE"]
 
-    result = sync.diff_from_container(
-        cfg, incus, "feat", mode="all", incoming=True, color=False
-    )
+    result = sync.diff_from_container(cfg, incus, "feat", mode="all", incoming=True, color=False)
 
     assert "INCOMING" in result
     assert "WORKTREE" in result
