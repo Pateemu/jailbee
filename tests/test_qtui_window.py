@@ -91,8 +91,7 @@ def test_menu_labels_match_menu_actions_for_running(qtbot):
         )
     ]
     assert win.menu_labels_for("p-foo") == expected
-    assert expected[:5] == ["Attach tmux", "Open shell", "Launch JetBrains idea", "PR →", "Git →"]
-    assert "Launch JetBrains idea" in expected
+    assert expected[:5] == ["Attach tmux", "Open shell", "Launch →", "PR →", "Git →"]
     assert "Launch chrome" not in expected
     assert "Network: loose" in expected
     assert "Network: strict" not in expected

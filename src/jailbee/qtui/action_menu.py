@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 def populate_action_menu(
     menu: QMenu, actions: Sequence[tuple[str, str]], emit: Callable[[str], None]
 ) -> None:
-    """Add direct actions and native PR/Git submenus; only leaves dispatch."""
+    """Add direct actions and native Launch/PR/Git submenus; only leaves dispatch."""
     for item in group_menu_actions(actions):
         if isinstance(item, MenuGroup):
             destination = menu.addMenu(item.label)

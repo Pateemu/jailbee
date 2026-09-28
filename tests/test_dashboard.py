@@ -1099,6 +1099,24 @@ def test_group_menu_actions_separates_git_and_pr():
     assert dashboard.group_menu_actions([]) == []
 
 
+def test_group_menu_actions_collects_registry_launches_at_first_occurrence():
+    leaves = [
+        ("Attach tmux", "tmux"),
+        ("Launch Chrome (host)", "chrome"),
+        ("Open shell", "shell"),
+        ("Launch Figma", "apps run figma --container"),
+        ("Create/update PR", "pr"),
+        ("Show diff", "git diff"),
+    ]
+    assert dashboard.group_menu_actions(leaves) == [
+        leaves[0],
+        dashboard.MenuGroup("Launch →", (leaves[1], leaves[3])),
+        leaves[2],
+        dashboard.MenuGroup("PR →", (leaves[4],)),
+        dashboard.MenuGroup("Git →", (leaves[5],)),
+    ]
+
+
 def test_group_menu_actions_keeps_relative_order_and_unclassified_leaves():
     leaves = [
         ("Show diff", "git diff"),
@@ -1110,7 +1128,7 @@ def test_group_menu_actions_keeps_relative_order_and_unclassified_leaves():
     ]
     assert dashboard.group_menu_actions(leaves) == [
         dashboard.MenuGroup("Git →", (leaves[0], leaves[4])),
-        leaves[1],
+        dashboard.MenuGroup("Launch →", (leaves[1],)),
         leaves[2],
         dashboard.MenuGroup("PR →", (leaves[3], leaves[5])),
     ]
@@ -1410,6 +1428,27 @@ def test_menu_enters_groups_and_returns_to_saved_root_cursor():
     assert dashboard.enter_menu(git) == (git, "git diff")
     assert dashboard.back_menu(git).index == 2
     assert root.index == 0 and root.active_group is None
+
+
+def test_menu_launch_submenu_navigates_and_dispatches_original_verbs():
+    root = dashboard.MenuState(
+        "alpha-x",
+        [
+            ("Attach tmux", "tmux"),
+            ("Launch JetBrains idea", "ide"),
+            ("Launch Figma", "apps run figma --container"),
+            ("Destroy", "destroy"),
+        ],
+    )
+    selected = dashboard.move_menu(root, 1)
+    assert dashboard.menu_verb(selected) is None
+
+    launch, verb = dashboard.enter_menu(selected)
+    assert verb is None and launch.active_group == "Launch →"
+    assert dashboard.menu_verb(launch) == "ide"
+    assert dashboard.enter_menu(dashboard.move_menu(launch, 1))[1] == "apps run figma --container"
+    parent = dashboard.back_menu(launch)
+    assert parent is not None and parent.active_group is None and parent.index == 1
 
 
 def test_menu_group_cursor_clamps_within_visible_entries():

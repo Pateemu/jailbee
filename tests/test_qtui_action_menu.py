@@ -15,6 +15,8 @@ def test_populate_action_menu_builds_native_submenus_and_dispatches_only_leaves(
         menu,
         [
             ("Attach tmux", "tmux"),
+            ("Launch JetBrains idea", "ide"),
+            ("Launch Figma", "apps run figma --container"),
             ("Open PR", "pr --open"),
             ("Create/update PR", "pr"),
             ("Merge into…", "merge"),
@@ -25,10 +27,23 @@ def test_populate_action_menu_builds_native_submenus_and_dispatches_only_leaves(
     )
 
     root = menu.actions()
-    assert [action.text() for action in root] == ["Attach tmux", "PR →", "Git →", "Destroy"]
+    assert [action.text() for action in root] == [
+        "Attach tmux",
+        "Launch →",
+        "PR →",
+        "Git →",
+        "Destroy",
+    ]
     assert root[0].menu() is None
-    assert [action.text() for action in root[1].menu().actions()] == ["Open PR", "Create/update PR"]
+    assert [action.text() for action in root[1].menu().actions()] == [
+        "Launch JetBrains idea",
+        "Launch Figma",
+    ]
     assert [action.text() for action in root[2].menu().actions()] == [
+        "Open PR",
+        "Create/update PR",
+    ]
+    assert [action.text() for action in root[3].menu().actions()] == [
         "Merge into…",
         "Update from base (git push)",
     ]
@@ -40,8 +55,19 @@ def test_populate_action_menu_builds_native_submenus_and_dispatches_only_leaves(
     root[1].menu().actions()[1].trigger()
     root[2].menu().actions()[0].trigger()
     root[2].menu().actions()[1].trigger()
-    root[3].trigger()
-    assert emitted == ["tmux", "pr --open", "pr", "merge", "git push", "destroy"]
+    root[3].menu().actions()[0].trigger()
+    root[3].menu().actions()[1].trigger()
+    root[4].trigger()
+    assert emitted == [
+        "tmux",
+        "ide",
+        "apps run figma --container",
+        "pr --open",
+        "pr",
+        "merge",
+        "git push",
+        "destroy",
+    ]
 
 
 def test_populate_action_menu_omits_empty_groups(qtbot):

@@ -675,18 +675,23 @@ _GIT_MENU_VERBS = frozenset({"merge", "git pull", "git push", "git push --pr", "
 
 
 def group_menu_actions(actions: Sequence[tuple[str, str]]) -> list[MenuItem]:
-    """Group filtered PR and Git leaves at their first occurrence.
+    """Group filtered Launch, PR and Git leaves at their first occurrence.
 
     Relative order within each submenu and among ungrouped leaves is retained;
     this function never changes eligibility or adds executable verbs.
     """
+    launch_actions = tuple(action for action in actions if action[0].startswith("Launch "))
     pr_actions = tuple(action for action in actions if action[1] in _PR_MENU_VERBS)
     git_actions = tuple(action for action in actions if action[1] in _GIT_MENU_VERBS)
     result: list[MenuItem] = []
     seen: set[str] = set()
     for action in actions:
         verb = action[1]
-        if verb in _PR_MENU_VERBS:
+        if action[0].startswith("Launch "):
+            if "launch" not in seen:
+                result.append(MenuGroup("Launch →", launch_actions))
+                seen.add("launch")
+        elif verb in _PR_MENU_VERBS:
             if "pr" not in seen:
                 result.append(MenuGroup("PR →", pr_actions))
                 seen.add("pr")
