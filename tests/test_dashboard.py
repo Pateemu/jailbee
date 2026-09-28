@@ -1280,6 +1280,136 @@ def test_repo_egress_dispatch_uses_repo_scope_and_explicit_config(mocker, tmp_pa
     )
 
 
+def test_egress_add_prompt_cancellation_is_visible_and_does_not_dispatch(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    menu = dashboard.open_menu([group], "alpha-x")
+    assert menu is not None
+    root = dashboard.group_menu_actions(menu.actions, include_network=True)
+    network_index = next(
+        i
+        for i, item in enumerate(root)
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    network = root[network_index]
+    assert isinstance(network, dashboard.MenuGroup)
+    egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
+    mocker.patch.object(dashboard, "load_egress_rows", return_value=())
+    import typer
+
+    mocker.patch("typer.prompt", side_effect=typer.Abort())
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(
+        mocker,
+        [b"j", b"\r", *([b"j"] * network_index), b"\r", *([b"j"] * egress_index), b"\r", b"a", b"\x03"],
+        groups=[group],
+    ) == 0
+
+    child.assert_not_called()
+    assert any("cancel" in str(call.kwargs.get("notice", "")).lower() for call in render.call_args_list)
+
+
+@pytest.mark.parametrize("returncode", [1, 2], ids=["mutation-failure", "invalid-destination"])
+def test_egress_mutation_failure_is_visible(mocker, tmp_path, returncode):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    menu = dashboard.open_menu([group], "alpha-x")
+    assert menu is not None
+    root = dashboard.group_menu_actions(menu.actions, include_network=True)
+    network_index = next(
+        i
+        for i, item in enumerate(root)
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    network = root[network_index]
+    assert isinstance(network, dashboard.MenuGroup)
+    egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
+    mocker.patch.object(dashboard, "load_egress_rows", return_value=())
+    mocker.patch("typer.prompt", return_value="invalid..example")
+    mocker.patch.object(dashboard, "_wait_for_return")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = returncode
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(
+        mocker,
+        [b"j", b"\r", *([b"j"] * network_index), b"\r", *([b"j"] * egress_index), b"\r", b"a", b"\x03"],
+        groups=[group],
+    ) == 0
+
+    child.assert_called_once()
+    assert any(
+        f"exited {returncode}" in str(call.kwargs.get("notice", ""))
+        for call in render.call_args_list
+    )
+
+
+def test_egress_panel_closes_when_container_disappears(mocker, tmp_path):
+    container = _ci("alpha-x", "alpha")
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [container])
+    menu = dashboard.open_menu([group], "alpha-x")
+    assert menu is not None
+    root = dashboard.group_menu_actions(menu.actions, include_network=True)
+    network_index = next(
+        i
+        for i, item in enumerate(root)
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    network = root[network_index]
+    assert isinstance(network, dashboard.MenuGroup)
+    egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
+
+    def remove_container_during_prompt(*_args, **_kwargs):
+        group.containers.clear()
+        return "example.com"
+
+    mocker.patch.object(dashboard, "load_egress_rows", return_value=())
+    mocker.patch("typer.prompt", side_effect=remove_container_during_prompt)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(
+        mocker,
+        [b"j", b"\r", *([b"j"] * network_index), b"\r", *([b"j"] * egress_index), b"\r", b"a", b"\x03"],
+        groups=[group],
+    ) == 0
+
+    child.assert_not_called()
+    overlays = [call.kwargs.get("overlay") for call in render.call_args_list]
+    assert not isinstance(overlays[-1], dashboard.EgressState)
+    assert any("no longer available" in str(call.kwargs.get("notice", "")) for call in render.call_args_list)
+
+
+def test_egress_panel_closes_when_repo_disappears_during_dispatch(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    menu = dashboard.open_menu([group], "alpha-x")
+    assert menu is not None
+    root = dashboard.group_menu_actions(menu.actions, include_network=True)
+    network_index = next(
+        i
+        for i, item in enumerate(root)
+        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
+    )
+    network = root[network_index]
+    assert isinstance(network, dashboard.MenuGroup)
+    egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
+    mocker.patch.object(dashboard, "load_egress_rows", return_value=())
+    mocker.patch("typer.prompt", return_value="example.com")
+    child = mocker.patch.object(dashboard.subprocess, "run", side_effect=FileNotFoundError())
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(
+        mocker,
+        [b"j", b"\r", *([b"j"] * network_index), b"\r", *([b"j"] * egress_index), b"\r", b"a", b"\x03"],
+        groups=[group],
+    ) == 0
+
+    child.assert_called_once()
+    overlays = [call.kwargs.get("overlay") for call in render.call_args_list]
+    assert not isinstance(overlays[-1], dashboard.EgressState)
+    assert any("no longer exists" in str(call.kwargs.get("notice", "")) for call in render.call_args_list)
+
+
 def test_egress_loader_failure_is_visible_and_does_not_crash(mocker, tmp_path):
     group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
     menu = dashboard.open_menu([group], "alpha-x")

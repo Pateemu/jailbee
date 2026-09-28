@@ -2623,7 +2623,9 @@ def run(
                     return False
                 return True
 
-            def mutate_egress(state: EgressState, action: Literal["add", "rm"]) -> EgressState:
+            def mutate_egress(
+                state: EgressState, action: Literal["add", "rm"]
+            ) -> EgressState | None:
                 """Prompt, reauthorize and run one scoped mutation; reload rows."""
                 group = next((item for item in groups if item.prefix == state.prefix), None)
                 target = RepoTarget.of(group) if group is not None else None
@@ -2636,7 +2638,7 @@ def run(
                     )
                 ):
                     set_notice("Egress target is no longer available")
-                    return state
+                    return None
                 entry = ""
                 if action == "rm":
                     entry = removable_entry(state) or ""
@@ -2647,10 +2649,12 @@ def run(
                     set_notice(f"net egress {action} is not permitted by the SSH policy")
                     return state
 
+                outcome = "cancelled"
+
                 def prompt_and_run() -> int:
                     import typer
 
-                    nonlocal entry
+                    nonlocal entry, outcome
                     try:
                         if action == "add":
                             entry = typer.prompt(
@@ -2660,15 +2664,34 @@ def run(
                         return 0
                     if not entry:
                         return 0
+                    current_group = next(
+                        (item for item in groups if item.prefix == state.prefix), None
+                    )
+                    current_target = (
+                        RepoTarget.of(current_group) if current_group is not None else None
+                    )
+                    if (
+                        current_group is None
+                        or current_target is None
+                        or (
+                            state.container is not None
+                            and not any(c.name == state.container for c in current_group.containers)
+                        )
+                    ):
+                        outcome = "target-missing"
+                        set_notice("Egress target is no longer available")
+                        return 0
                     args = egress_argv(state, action, entry)
-                    argv = [*args, *(target.flags() if not over_ssh else [])]
+                    argv = [*args, *(current_target.flags() if not over_ssh else [])]
                     try:
                         check_dashboard_command(argv, ssh_policy, over_ssh=over_ssh)
                     except RouteError as exc:
+                        outcome = "blocked"
                         set_notice(str(exc))
                         return 0
+                    outcome = "dispatched"
                     rc = subprocess.run(
-                        ["jailbee", *argv], check=False, cwd=target.cwd()
+                        ["jailbee", *argv], check=False, cwd=current_target.cwd()
                     ).returncode
                     _wait_for_return()
                     return rc
@@ -2677,6 +2700,13 @@ def run(
                     rc = foreground(prompt_and_run)
                 except OSError:
                     _report_vanished_repo(target)
+                    return None
+                if outcome == "cancelled":
+                    set_notice("Egress change cancelled")
+                    return state
+                if outcome == "target-missing":
+                    return None
+                if outcome == "blocked":
                     return state
                 if rc != 0:
                     set_notice(f"'jailbee net egress {action}' exited {rc}")
