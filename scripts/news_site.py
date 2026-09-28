@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import re
 import shutil
+import sys
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, time
 from email.utils import format_datetime
@@ -127,3 +129,20 @@ def build(website_dir: Path, site_dir: Path) -> None:
         )
     _feed(posts, output / "feed.xml")
     _sitemap(website_dir, site_dir, sitemap_urls)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--website-dir", type=Path, default=WEBSITE)
+    parser.add_argument("--site-dir", type=Path, default=SITE)
+    args = parser.parse_args(argv)
+    try:
+        build(args.website_dir, args.site_dir)
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -199,3 +201,35 @@ def test_sitemap_contains_only_current_news_pages(site: tuple[Path, Path]) -> No
         "https://jailbee.gisgro.io/news/",
         "https://jailbee.gisgro.io/news/post-00/",
     }
+
+
+def test_builder_does_not_copy_editorial_sources_into_output(site: tuple[Path, Path]) -> None:
+    website, output = site
+    _add(website, "2026-09-28-release.md", META)
+    (website / "news" / "README.md").write_text("Editing instructions")
+    build(website, output)
+    assert sorted(p.relative_to(output) for p in output.rglob("*.md")) == []
+    assert not (output / "news" / "templates").exists()
+
+
+def test_cli_returns_path_specific_diagnostic_on_invalid_article(site: tuple[Path, Path]) -> None:
+    website, output = site
+    _add(website, "2026-09-28-bad.md", "title: Missing date\nsummary: Summary\n")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.news_site",
+            "--website-dir",
+            str(website),
+            "--site-dir",
+            str(output),
+        ],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "2026-09-28-bad.md" in result.stderr
+    assert "date" in result.stderr

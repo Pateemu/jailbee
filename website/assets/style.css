@@ -208,6 +208,10 @@ section {
   height: 18px;
 }
 
+.topbar__link--news + .topbar__link {
+  margin-left: 0;
+}
+
 .topbar__link,
 .topbar__source {
   transition: opacity 0.25s;

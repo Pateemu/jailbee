@@ -350,6 +350,16 @@ def test_every_local_reference_resolves_on_disk() -> None:
             problem = resolve(value)
             assert problem is None, f"{tag} {attr}={value!r}: {problem}"
             continue
+        if value == "news/":
+            from scripts.news_site import build
+
+            from tempfile import TemporaryDirectory
+
+            with TemporaryDirectory() as output:
+                built = Path(output)
+                build(SITE, built)
+                assert (built / "news" / "index.html").is_file()
+            continue
         target = (SITE / value.split("?", 1)[0]).resolve()
         # A directory reference (`./`, `subdir/`) is what a server resolves
         # to that directory's index.html — so check the file it will
@@ -758,7 +768,12 @@ def test_the_header_matches_the_docs_header() -> None:
         return found[0]
 
     the_one("header", "topbar")
-    assert the_one("a", "topbar__link").get("href") == "docs/"
+    header_links = [
+        a.get("href")
+        for t, a in elements
+        if t == "a" and "topbar__link" in (a.get("class") or "").split()
+    ]
+    assert header_links == ["news/", "docs/"]
 
     with (REPO_ROOT / "zensical.toml").open("rb") as handle:
         docs = tomllib.load(handle)["project"]

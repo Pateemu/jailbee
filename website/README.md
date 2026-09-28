@@ -7,8 +7,9 @@ when it renders `docs/`. `docs-theme/` is build input, not part of the
 shipped site.
 
 The published site is `_site/`, assembled by `make site`: it builds the docs
-from `docs/` using `docs-theme/`, then copies this directory (minus
-`docs-theme/` itself) into `_site/` alongside them.
+from `docs/` using `docs-theme/`, copies this directory (minus
+`docs-theme/` and the news sources), then builds `/news/` from the Markdown
+under `news/posts/`. See [`news/README.md`](news/README.md) for authoring.
 
 ## Previewing locally
 
@@ -66,7 +67,8 @@ the caption never claims what it wrote, and no stretch is sped up without the
 `.github/workflows/pages.yml` runs `make site` and `make site-check` on
 every push to `main` that touches `website/**`, `docs/**`, `zensical.toml`,
 or the workflow itself, plus manual dispatch, then publishes the resulting
-`_site/` to GitHub Pages.
+`_site/` to GitHub Pages. A Markdown article added under `news/posts/` is
+published on the next `main` deployment, without a separate CMS.
 
 `CNAME` pins the custom domain to `jailbee.gisgro.io`. That domain resolves
 only once a DNS record exists pointing it at `vrtfinland.github.io`, and
