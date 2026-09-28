@@ -9,9 +9,7 @@ from typing import Literal
 from jailbee import git
 
 TargetSource = Literal["local", "tracking", "unavailable"]
-TrackingRelation = Literal[
-    "equal", "local-ahead", "tracking-ahead", "diverged", "unavailable"
-]
+TrackingRelation = Literal["equal", "local-ahead", "tracking-ahead", "diverged", "unavailable"]
 
 
 @dataclass(frozen=True)
