@@ -1397,7 +1397,9 @@ def test_cleanup_destroy_guard_skips_second_prompt_when_clean(mocker, make_cfg, 
     assert result.destroyed is True
 
 
-def test_cleanup_guard_probes_live_target_but_still_blocks_stranded_work(mocker, make_cfg, tmp_path):
+def test_cleanup_guard_probes_live_target_but_still_blocks_stranded_work(
+    mocker, make_cfg, tmp_path
+):
     from jailbee.git_status import GitStatus
     from jailbee.host_target import TargetSnapshot
     from jailbee.sync import _warn_before_container_destroy
@@ -1405,10 +1407,15 @@ def test_cleanup_guard_probes_live_target_but_still_blocks_stranded_work(mocker,
     cfg = make_cfg(tmp_path)
     incus = mocker.MagicMock()
     full_name = f"{cfg.container_prefix}-feat-foo"
-    mocker.patch("jailbee.lifecycle.list_containers", return_value=[_guarded_container_info(full_name, cfg)])
+    mocker.patch(
+        "jailbee.lifecycle.list_containers", return_value=[_guarded_container_info(full_name, cfg)]
+    )
     snapshot = TargetSnapshot("main", "new-sha", "local", "refs/remotes/origin/main", "equal")
     resolve = mocker.patch("jailbee.lifecycle.resolve_target", return_value=snapshot)
-    probe = mocker.patch("jailbee.git_status.probe_container_git", return_value=GitStatus(wt="+1 -0", ahead_diff="clean", ahead_count="0", conflict="ok"))
+    probe = mocker.patch(
+        "jailbee.git_status.probe_container_git",
+        return_value=GitStatus(wt="+1 -0", ahead_diff="clean", ahead_count="0", conflict="ok"),
+    )
     mocker.patch("jailbee.destroy_guard.has_commit", return_value=False)
     confirm = mocker.patch("jailbee.tui.confirm_destroy_risk", return_value=False)
 

@@ -207,10 +207,14 @@ def snapshot_targets_for(
     from jailbee.db.models import RegisteredRepo
 
     eligible = [
-        c for c in containers
-        if c.repo and (all_repos or c.repo == cfg.container_prefix)
+        c
+        for c in containers
+        if c.repo
+        and (all_repos or c.repo == cfg.container_prefix)
         and (scope is None or scope.allows(c.repo))
-        and c.state == "Running" and c.mode != "mount" and c.repo_dir
+        and c.state == "Running"
+        and c.mode != "mount"
+        and c.repo_dir
     ]
     if not eligible:
         return {}
@@ -237,7 +241,9 @@ def snapshot_targets_for(
             if c.repo not in foreign_configs:
                 root = roots.get(c.repo)
                 try:
-                    foreign_configs[c.repo] = load_repo_config(root) if root and root.is_dir() else None
+                    foreign_configs[c.repo] = (
+                        load_repo_config(root) if root and root.is_dir() else None
+                    )
                 except (OSError, ValueError, ConfigError):
                     foreign_configs[c.repo] = None
             repo_cfg = foreign_configs[c.repo]
@@ -418,9 +424,14 @@ def list_containers(
             target_names = {name for name, _, _ in targets}
             target_by_name = {
                 c.name: snapshots[(c.repo, c.base_branch or cfg.default_branch)]
-                for c in out if c.name in target_names and c.repo
+                for c in out
+                if c.name in target_names and c.repo
             }
-            host_head = get_head_sha(cfg.repo_root) if any(c.repo == cfg.container_prefix for c in out if c.name in target_names) else None
+            host_head = (
+                get_head_sha(cfg.repo_root)
+                if any(c.repo == cfg.container_prefix for c in out if c.name in target_names)
+                else None
+            )
             statuses = probe_many_parallel(
                 incus,
                 targets,
@@ -428,13 +439,21 @@ def list_containers(
                 uid=cfg.container_user.uid,
                 host_head=host_head,
                 target_by_name=target_by_name,
-                host_head_by_name={name: host_head if any(c.name == name and c.repo == cfg.container_prefix for c in out) else None for name in target_names},
+                host_head_by_name={
+                    name: host_head
+                    if any(c.name == name and c.repo == cfg.container_prefix for c in out)
+                    else None
+                    for name in target_names
+                },
             )
         for c in out:
             status = statuses.get(c.name)
             c.git_status = (
-                None if status is None else
-                _resolve_local_on_host(cfg, status) if c.repo == cfg.container_prefix else status
+                None
+                if status is None
+                else _resolve_local_on_host(cfg, status)
+                if c.repo == cfg.container_prefix
+                else status
             )
 
     if with_background:

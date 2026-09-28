@@ -691,7 +691,9 @@ def probe_many_parallel(
             default_branch,
             uid=uid,
             timeout_s=timeout_s,
-            host_head=(host_head_by_name.get(full_name) if host_head_by_name is not None else host_head),
+            host_head=(
+                host_head_by_name.get(full_name) if host_head_by_name is not None else host_head
+            ),
             target=(target_by_name or {}).get(full_name),
         )
         return full_name, status
