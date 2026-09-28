@@ -55,6 +55,42 @@ may exercise the complete configured remote surface across every registered
 repo. Removing a key blocks new connections immediately but does not revoke an
 already-authenticated connection.
 
+An operator can narrow that shared repo surface at the host-controlled
+repository exclusion boundary using the
+`remote.ssh.excluded_repos` list in `~/.config/jailbee/global.yaml`:
+
+```yaml
+remote:
+  ssh:
+    restrict_host: true
+    excluded_repos: [private-app]
+```
+
+Each entry is an exact registered `container_prefix`, not a path, glob, or
+key-specific grant. The excluded repo is unavailable via direct SSH repo
+selection and is omitted from the remote dashboard and console. Supported
+aggregates such as `ls --all`, `job ls --all-repos`, `review ls --all-repos`,
+`base usage --all`, and repo summaries such as `net status` operate only on
+visible repos; filtering is applied before probing, rendering, totals, or
+actions. Unknown and excluded repo selections give the same error. This is one
+host-wide visibility boundary for all keys, not per-key authorization, and it
+does not alter local CLI, TUI, or Qt behavior. Each new SSH channel takes a
+policy snapshot; a running channel keeps that snapshot until it ends.
+
+With exclusions active, commands whose output or effects cannot safely be
+scoped are refused instead of exposing host-wide data: `config show --layer
+global`, `account ls`, `account group ls`, and `doctor`. Commands not
+classified for safe scoping also fail closed. Existing command-mode and
+host-restriction checks continue to apply; exclusions require
+`restrict_host: true`.
+
+This is an SSH routing and JailBee-command boundary, not filesystem or kernel
+isolation. It does not revoke data already made available inside an allowed
+container. For example, an allowed container may have a host directory exposed
+through a configured bind mount, or may reach a service over the network or
+use shared credentials. Review mounts and other host-to-container channels
+separately; excluding a repo does not remove an allowed container's mounts.
+
 The default listener is IPv4 loopback only (`127.0.0.1:8022`). It is not a
 network authentication boundary and is not remote-device deployment guidance:
 changing `listen`, exposing the port through a tunnel, VPN, firewall rule or

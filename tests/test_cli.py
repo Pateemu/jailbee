@@ -10432,6 +10432,7 @@ def _mount_mode_incus(mocker):
 def test_remote_exec_refuses_a_mount_mode_container(mocker, monkeypatch):
     """Inside a mount-mode container is the host's own working tree."""
     monkeypatch.setenv("JAILBEE_REMOTE_SSH", "1")
+    monkeypatch.setenv("JAILBEE_SSH_EXCLUDED_REPOS", "[]")
     mocker.patch("jailbee.cli._load_or_exit")
     incus = _mount_mode_incus(mocker)
     mocker.patch("jailbee.lifecycle.resolve_container_name", return_value="p-box")
@@ -10447,6 +10448,7 @@ def test_remote_exec_refuses_a_mount_mode_container(mocker, monkeypatch):
 @pytest.mark.parametrize("command", ["shell", "tmux"])
 def test_remote_attach_refuses_a_mount_mode_container(mocker, monkeypatch, command):
     monkeypatch.setenv("JAILBEE_REMOTE_SSH", "1")
+    monkeypatch.setenv("JAILBEE_SSH_EXCLUDED_REPOS", "[]")
     mocker.patch("jailbee.cli._load_or_exit")
     incus = _mount_mode_incus(mocker)
     mocker.patch("jailbee.lifecycle.resolve_container_for_interactive", return_value="p-box")

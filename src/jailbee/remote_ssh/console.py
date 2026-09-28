@@ -27,6 +27,7 @@ from sqlmodel import Session, select
 from jailbee.config.models_remote import RemoteSSHConfig
 from jailbee.db import get_engine, state_dir
 from jailbee.db.models import RegisteredRepo
+from jailbee.remote_ssh.repo_scope import RemoteRepoScope, scope_for_session
 from jailbee.remote_ssh.router import (
     RouteError,
     allowed_command_paths,
@@ -53,7 +54,9 @@ class RepoChoice:
     root: Path
 
 
-def registered_repos(*, engine: Engine | None = None) -> list[RepoChoice]:
+def registered_repos(
+    *, engine: Engine | None = None, scope: RemoteRepoScope | None = None
+) -> list[RepoChoice]:
     """Return registered repositories whose host directories still exist."""
     with Session(engine or get_engine()) as session:
         rows = session.exec(select(RegisteredRepo)).all()
@@ -62,6 +65,7 @@ def registered_repos(*, engine: Engine | None = None) -> list[RepoChoice]:
             RepoChoice(row.container_prefix, Path(row.repo_root))
             for row in rows
             if Path(row.repo_root).is_dir()
+            and (scope is None or scope.allows(row.container_prefix))
         ],
         key=lambda repo: repo.prefix,
     )
@@ -124,6 +128,7 @@ def _print_help(
     dashboard_enabled: bool,
     repo_root: Path,
     restrict_host: bool = True,
+    scope: RemoteRepoScope | None = None,
 ) -> int:
     """Render the console-local command panel, then this policy's Jailbee help.
 
@@ -158,12 +163,12 @@ def _print_help(
         return 0
 
     status = 0
-    if policy.mode == "full":
+    if policy.mode == "full" and not (scope is not None and scope.excluded):
         completed = _run_foreground([sys.executable, "-m", "jailbee", "--help"], repo_root)
         status = _returncode(completed)
     else:
         short_help = known_command_short_help()
-        allowed = _allowed_paths(policy, restrict_host=restrict_host)
+        allowed = _allowed_paths(policy, restrict_host=restrict_host, scope=scope)
         rows = [(path, short_help.get(path, "")) for path in sorted(allowed)]
         _render_command_panel(rich_console, "[bold]Allowed Jailbee commands[/bold]", rows)
 
@@ -193,12 +198,17 @@ def _history() -> FileHistory:
     return FileHistory(str(path))
 
 
-def _allowed_paths(policy: RemoteCommandPolicy, *, restrict_host: bool = True) -> frozenset[str]:
+def _allowed_paths(
+    policy: RemoteCommandPolicy,
+    *,
+    restrict_host: bool = True,
+    scope: RemoteRepoScope | None = None,
+) -> frozenset[str]:
     """Command paths this session may complete, per its own command policy.
 
     Paths are filtered by the same policy decision used when dispatching.
     """
-    return allowed_command_paths(policy, restrict_host=restrict_host)
+    return allowed_command_paths(policy, restrict_host=restrict_host, scope=scope)
 
 
 def _command_tree(paths: Sequence[str]) -> dict[str, Any]:
@@ -235,16 +245,24 @@ def _completer(paths: frozenset[str], repos: Sequence[RepoChoice]) -> NestedComp
 
 
 def _session(
-    repos: Sequence[RepoChoice], policy: RemoteCommandPolicy, *, restrict_host: bool = True
+    repos: Sequence[RepoChoice],
+    policy: RemoteCommandPolicy,
+    *,
+    restrict_host: bool = True,
+    scope: RemoteRepoScope | None = None,
 ) -> PromptSession[str]:
     return PromptSession(
         history=_history(),
-        completer=_completer(_allowed_paths(policy, restrict_host=restrict_host), repos),
+        completer=_completer(
+            _allowed_paths(policy, restrict_host=restrict_host, scope=scope), repos
+        ),
     )
 
 
-def _resolve_choice(prefix: str) -> RepoChoice:
-    return RepoChoice(prefix, resolve_repo(prefix))
+def _resolve_choice(prefix: str, scope: RemoteRepoScope | None = None) -> RepoChoice:
+    if scope is None or not scope.excluded:
+        return RepoChoice(prefix, resolve_repo(prefix))
+    return RepoChoice(prefix, resolve_repo(prefix, scope=scope))
 
 
 def _select_repo(repos: Sequence[RepoChoice], **kwargs: Any) -> RepoChoice | None:
@@ -338,12 +356,23 @@ def run(initial_repo: str | None = None, policy_json: str | None = None) -> int:
     ssh_config = _load_policy(policy_json)
     if ssh_config is None:
         return 1
-    repos = registered_repos()
+    try:
+        snapshot_scope = scope_for_session()
+    except ValueError as error:
+        _error(str(error))
+        return 1
+    scope = RemoteRepoScope(snapshot_scope.excluded | frozenset(ssh_config.excluded_repos))
+    repos = registered_repos(scope=scope)
     if not repos:
         _error("No registered repositories are available.")
         return 1
 
-    session = _session(repos, ssh_config.commands, restrict_host=ssh_config.restrict_host)
+    session = _session(
+        repos,
+        ssh_config.commands,
+        restrict_host=ssh_config.restrict_host,
+        scope=scope,
+    )
     if initial_repo is None:
         if len(repos) == 1:
             current = repos[0]
@@ -355,7 +384,7 @@ def run(initial_repo: str | None = None, policy_json: str | None = None) -> int:
             current = selected
     else:
         try:
-            current = _resolve_choice(initial_repo)
+            current = _resolve_choice(initial_repo, scope if scope.excluded else None)
         except RouteError as error:
             _error(str(error))
             return 1
@@ -394,17 +423,18 @@ def run(initial_repo: str | None = None, policy_json: str | None = None) -> int:
                 dashboard_enabled=ssh_config.dashboard,
                 repo_root=current.root,
                 restrict_host=ssh_config.restrict_host,
+                scope=scope,
             )
             continue
         if command == "repos":
             if len(argv) != 1:
                 _error("usage: repos")
                 continue
-            _print_repos(registered_repos())
+            _print_repos(registered_repos(scope=scope))
             continue
         if command == "use":
             if len(argv) == 1:
-                candidates = registered_repos()
+                candidates = registered_repos(scope=scope)
                 if not candidates:
                     _error("No registered repositories are available.")
                     continue
@@ -416,7 +446,7 @@ def run(initial_repo: str | None = None, policy_json: str | None = None) -> int:
                 _error("usage: use [PREFIX]")
                 continue
             try:
-                current = _resolve_choice(argv[1])
+                current = _resolve_choice(argv[1], scope if scope.excluded else None)
             except RouteError as error:
                 _error(str(error))
             continue
@@ -442,7 +472,13 @@ def run(initial_repo: str | None = None, policy_json: str | None = None) -> int:
             continue
 
         try:
-            policy_allows(argv, ssh_config.commands, restrict_host=ssh_config.restrict_host)
+            policy_allows(
+                argv,
+                ssh_config.commands,
+                restrict_host=ssh_config.restrict_host,
+                scope=scope,
+                allow_scoped_aggregates=True,
+            )
         except RouteError as error:
             _error(str(error))
             continue

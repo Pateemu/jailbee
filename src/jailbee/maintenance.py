@@ -7,11 +7,15 @@ import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from jailbee.config import Config
 from jailbee.global_config import GlobalConfig
 from jailbee.incus import Incus
 from jailbee.lifecycle import list_containers
+
+if TYPE_CHECKING:
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
 
 
 @dataclass
@@ -135,7 +139,9 @@ def humanize(n: int | None) -> str:
     return f"{n} B"
 
 
-def find_stale_stopped(cfg: Config, incus: Incus, days: int = 30) -> list[str]:
+def find_stale_stopped(
+    cfg: Config, incus: Incus, days: int = 30, *, scope: RemoteRepoScope | None = None
+) -> list[str]:
     """Return names of containers stopped for more than ``days`` days.
 
     Best-effort approximation: Incus does not directly expose 'last-stopped time'
@@ -143,7 +149,7 @@ def find_stale_stopped(cfg: Config, incus: Incus, days: int = 30) -> list[str]:
     """
     stale: list[str] = []
     now = datetime.now(UTC)
-    for c in list_containers(cfg, incus, all_repos=True):
+    for c in list_containers(cfg, incus, all_repos=True, scope=scope):
         if c.state != "Stopped":
             continue
         path = Path(f"/var/lib/incus/containers/{c.name}")

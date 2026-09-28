@@ -612,6 +612,39 @@ def test_ls_lists_pending_manifests_as_json(mocker, tmp_path):
     assert "001-x.json" in result.output
 
 
+def test_ls_all_repos_filters_hidden_repo_before_review_probe(mocker, tmp_path):
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+
+    cfg, _ = _setup(mocker, tmp_path, files={"001-x.json": _manifest_text()})
+    cfg.container_prefix = "allowed"
+    allowed = _running_ci(name="allowed-feat", pending=1)
+    allowed.repo = "allowed"
+    hidden = _running_ci(name="secret-feat", pending=1)
+    hidden.repo = "secret"
+    scope = RemoteRepoScope(frozenset({"secret"}))
+    mocker.patch("jailbee.remote_ssh.repo_scope.scope_for_session", return_value=scope)
+    reads = mocker.patch("jailbee.pr_outbox.read_outbox")
+    from jailbee.pr_outbox import Outbox
+
+    reads.return_value = Outbox(files={"001-x.json": _manifest_text()})
+    mocker.patch("jailbee.pr_outbox.resolve_target", return_value=_a_target())
+
+    def scoped_rows(*args, **kwargs):
+        assert kwargs["scope"] == scope
+        return [row for row in (allowed, hidden) if scope.allows(row.repo)]
+
+    mocker.patch("jailbee.lifecycle.list_containers", side_effect=scoped_rows)
+
+    result = runner.invoke(app, ["review", "ls", "--all-repos", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert len(rows) == 1
+    assert rows[0]["container"] == "feat-foo"
+    assert "secret-feat" not in result.stdout
+    reads.assert_called_once()
+
+
 def test_ls_marks_a_pr_null_manifest_as_for_jb_pr(mocker, tmp_path):
     _setup(mocker, tmp_path, files={"001-x.json": _manifest_text()})
     mocker.patch("jailbee.pr_outbox.resolve_target", return_value=_null_pr_target())

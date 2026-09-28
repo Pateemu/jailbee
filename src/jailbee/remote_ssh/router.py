@@ -16,6 +16,7 @@ from sqlmodel import Session
 from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
 from jailbee.db import get_engine
 from jailbee.db.models import RegisteredRepo
+from jailbee.remote_ssh.repo_scope import RemoteRepoScope
 from jailbee.remote_ssh.session import host_restricted
 
 if TYPE_CHECKING:
@@ -174,13 +175,16 @@ def known_command_paths() -> frozenset[str]:
 
 
 def allowed_command_paths(
-    policy: RemoteCommandPolicy, *, restrict_host: bool = True
+    policy: RemoteCommandPolicy,
+    *,
+    restrict_host: bool = True,
+    scope: RemoteRepoScope | None = None,
 ) -> frozenset[str]:
     """Return public leaf paths accepted by the common command decision."""
     allowed: set[str] = set()
     for path in known_command_paths():
         try:
-            policy_allows(path.split(), policy, restrict_host=restrict_host)
+            policy_allows(path.split(), policy, restrict_host=restrict_host, scope=scope)
         except RouteError:
             continue
         allowed.add(path)
@@ -483,7 +487,12 @@ def unknown_command(argv: Sequence[str], policy: RemoteCommandPolicy) -> bool:
 
 
 def policy_allows(
-    argv: Sequence[str], policy: RemoteCommandPolicy, *, restrict_host: bool = True
+    argv: Sequence[str],
+    policy: RemoteCommandPolicy,
+    *,
+    restrict_host: bool = True,
+    scope: RemoteRepoScope | None = None,
+    allow_scoped_aggregates: bool = True,
 ) -> str:
     """Return the public command path when the remote policy permits it.
 
@@ -520,6 +529,80 @@ def policy_allows(
         raise RouteError(f"Jailbee command is not allowed: {path}")
     if path == "dashboard":
         check_arguments(argv)
+    if scope is not None and scope.excluded:
+        # Until aggregate sources are individually audited, only commands
+        # whose scope is inherently the selected/specified single repo pass.
+        safe = {
+            "shell",
+            "config show",
+            "tmux",
+            "git diff",
+            "git pull",
+            "git push",
+            "git fetch",
+            "git checkout",
+            "git merge",
+            "pr",
+            "new",
+            "destroy",
+            "start",
+            "stop",
+            "restart",
+            "snapshot create",
+            "snapshot delete",
+            "snapshot ls",
+            "snapshot restore",
+            "branch",
+            "exec",
+            "job ls",
+            "review ls",
+            "prune",
+            "base usage",
+            "net status",
+        }
+        if path not in safe and path != "ls":
+            raise RouteError(
+                f"command is unavailable when SSH repository exclusions are active: {path}"
+            )
+        if not allow_scoped_aggregates:
+            _, typed = _resolve_leaf(argv)
+            command = _command_tree().leaf_commands[typed]
+            from typer._click.core import ParameterSource
+
+            words = typed.split()
+            try:
+                ctx = command.make_context(
+                    words[-1], list(argv[len(words) :]), resilient_parsing=True
+                )
+            except Exception as error:
+                raise RouteError(f"cannot parse remote command arguments: {path}") from error
+            with ctx:
+                if any(
+                    param.name in {"all", "all_repos"}
+                    and ctx.get_parameter_source(param.name) is ParameterSource.COMMANDLINE
+                    for param in command.params
+                ):
+                    raise RouteError(
+                        "aggregate options are unavailable when SSH repository exclusions are "
+                        f"active: {path}"
+                    )
+        if path == "config show":
+            _, typed = _resolve_leaf(argv)
+            command = _command_tree().leaf_commands[typed]
+
+            words = typed.split()
+            try:
+                ctx = command.make_context(
+                    words[-1], list(argv[len(words) :]), resilient_parsing=True
+                )
+            except Exception as error:
+                raise RouteError(f"cannot parse remote command arguments: {path}") from error
+            with ctx:
+                if ctx.params.get("layer", "effective") == "global":
+                    raise RouteError(
+                        "config show --layer global is unavailable when SSH repository "
+                        "exclusions are active"
+                    )
     if path in {"dashboard", "tui"}:
         raise RouteError(
             f"`{path}` is reserved; use the remote dashboard route or console navigation"
@@ -537,11 +620,13 @@ def policy_allows(
     return path
 
 
-def resolve_repo(prefix: str, *, engine: Engine | None = None) -> Path:
+def resolve_repo(
+    prefix: str, *, engine: Engine | None = None, scope: RemoteRepoScope | None = None
+) -> Path:
     """Resolve an exact registered-repository prefix to an existing directory."""
     with Session(engine or get_engine()) as session:
         row = session.get(RegisteredRepo, prefix)
-    if row is None:
+    if row is None or (scope is not None and not scope.allows(prefix)):
         raise RouteError(f"unknown registered repo: {prefix}")
     root = Path(row.repo_root)
     if not root.is_dir():
@@ -566,6 +651,9 @@ def route(
 ) -> Route:
     """Route one remote SSH command according to the restricted grammar."""
     argv = _parse(raw) if raw is not None else ()
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+
+    scope = RemoteRepoScope(frozenset(config.excluded_repos))
     if not argv:
         if config.default_entrypoint != "help":
             return route(config.default_entrypoint, config, engine=engine)
@@ -593,7 +681,7 @@ def route(
             console_argv = ("_remote-console",)
         elif len(argv) == 3 and argv[1] == "--repo":
             prefix = argv[2]
-            root = resolve_repo(prefix, engine=engine)
+            root = resolve_repo(prefix, engine=engine, scope=scope)
             console_argv = ("_remote-console", "--repo", prefix)
         else:
             raise RouteError("remote shell accepts only an optional --repo PREFIX")
@@ -606,8 +694,14 @@ def route(
 
     prefix = argv[1]
     command_argv = argv[2:]
-    policy_allows(command_argv, config.commands, restrict_host=config.restrict_host)
-    root = resolve_repo(prefix, engine=engine)
+    policy_allows(
+        command_argv,
+        config.commands,
+        restrict_host=config.restrict_host,
+        scope=scope,
+        allow_scoped_aggregates=True,
+    )
+    root = resolve_repo(prefix, engine=engine, scope=scope)
     return Route("command", command_argv, prefix, root, False)
 
 

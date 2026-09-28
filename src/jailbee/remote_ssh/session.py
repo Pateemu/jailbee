@@ -21,11 +21,12 @@ it runs under (see `host_restricted`).
 
 from __future__ import annotations
 
+import json
 import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
 REMOTE_SESSION_ENV = "JAILBEE_REMOTE_SSH"
 # Set for every child of the SSH server, restricted or not. It says only
@@ -33,10 +34,15 @@ REMOTE_SESSION_ENV = "JAILBEE_REMOTE_SSH"
 # decides what is pointless to offer (a Qt window, the setup steps, the
 # server's own working directory as a repo) rather than what is forbidden.
 SSH_SESSION_ENV = "JAILBEE_SSH_SESSION"
+SSH_EXCLUDED_REPOS_ENV = "JAILBEE_SSH_EXCLUDED_REPOS"
 
 
 def child_environment(
-    base: Mapping[str, str], *, term: str | None = None, restricted: bool = True
+    base: Mapping[str, str],
+    *,
+    term: str | None = None,
+    restricted: bool = True,
+    excluded_repos: Sequence[str] = (),
 ) -> dict[str, str]:
     """The environment for a child of the SSH server, built from ``base``.
 
@@ -49,6 +55,7 @@ def child_environment(
     """
     env = dict(base)
     env[SSH_SESSION_ENV] = "1"
+    env[SSH_EXCLUDED_REPOS_ENV] = json.dumps(list(excluded_repos))
     if restricted:
         env[REMOTE_SESSION_ENV] = "1"
         env["LESSSECURE"] = "1"

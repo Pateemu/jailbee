@@ -17,6 +17,15 @@ def test_security_reference_marks_full_remote_commands_as_high_trust() -> None:
     assert "`commands.mode: full` is a high-trust setting" in security
 
 
+def test_remote_repo_exclusions_are_documented_as_host_controlled() -> None:
+    config = (DOCS / "config.md").read_text()
+    security = (DOCS / "security.md").read_text()
+
+    assert "excluded_repos: [private-app]" in config
+    normalized_security = " ".join(security.split())
+    assert "host-controlled repository exclusion boundary" in normalized_security
+
+
 def test_config_reference_names_every_host_level_deep_merge_bypass() -> None:
     config = (DOCS / "config.md").read_text()
     section = config.split("### Keys that bypass the deep-merge pipeline", 1)[1].split(

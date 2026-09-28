@@ -785,7 +785,13 @@ def main(
 ) -> None:
     # No docstring: `help=` on the Typer() above is the command's help text,
     # and a docstring here would silently replace it.
-    pass
+    from jailbee.remote_ssh.repo_scope import RepoScopeError, scope_for_session
+
+    try:
+        scope_for_session()
+    except RepoScopeError as exc:
+        error(str(exc))
+        raise typer.Exit(2) from exc
 
 
 @app.command()
@@ -1622,8 +1628,15 @@ def list_cmd(
     _advise_setup(offer=fmt == "table")
     show_submodules = submodules and repo_has_submodules(cfg)
 
+    from jailbee.remote_ssh.repo_scope import scope_for_session
+
     containers = list_containers(
-        cfg, Incus(), all_repos=all_repos, with_git_status=True, with_background=True
+        cfg,
+        Incus(),
+        all_repos=all_repos,
+        with_git_status=True,
+        with_background=True,
+        scope=scope_for_session(),
     )
     now = _now()
     all_fields = ls_field_specs(now=now, all_repos=all_repos, show_submodules=show_submodules)
@@ -3520,6 +3533,7 @@ def _run_dashboard(
         error("The graphical dashboard is not available over remote SSH.")
         return 2
     ssh_policy: RemoteSSHConfig | None = None
+    scope = None
     if over_ssh:
         if remote_policy_json is None:
             error("remote SSH dashboard has no server policy")
@@ -3529,6 +3543,10 @@ def _run_dashboard(
         except ValidationError as exc:
             error(f"invalid remote SSH policy: {exc}")
             return 2
+        from jailbee.remote_ssh.repo_scope import RemoteRepoScope, scope_for_session
+
+        session_scope = scope_for_session()
+        scope = RemoteRepoScope(session_scope.excluded | frozenset(ssh_policy.excluded_repos))
     if over_ssh:
         cwd_root = None
     else:
@@ -3620,6 +3638,7 @@ def _run_dashboard(
         remote=remote,
         over_ssh=over_ssh,
         ssh_policy=ssh_policy,
+        scope=scope,
     )
 
 
@@ -3649,6 +3668,7 @@ if TYPE_CHECKING:
     from jailbee.pool import Pool
     from jailbee.pr_outbox import Manifest, Outbox
     from jailbee.registry_cache import CacheProgress, CacheReport
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
     from jailbee.setup_command import StepKey
     from jailbee.submodule_pr import SubCandidate, SubmodulePrPlan
     from jailbee.sync import (
@@ -9479,6 +9499,9 @@ def net_status_cmd() -> None:
 
     from jailbee.db import get_engine
     from jailbee.db.models import PoolIP, RefreshState, RegisteredRepo
+    from jailbee.remote_ssh.repo_scope import scope_for_session
+
+    scope = scope_for_session()
 
     proc = subprocess.run(
         ["systemctl", "--user", "is-active", "jailbee-net-refresh.timer"],
@@ -9491,7 +9514,11 @@ def net_status_cmd() -> None:
     typer.echo("")
 
     with Session(get_engine()) as session:
-        repos = session.exec(select(RegisteredRepo)).all()
+        repos = [
+            repo
+            for repo in session.exec(select(RegisteredRepo)).all()
+            if scope.allows(repo.container_prefix)
+        ]
         typer.echo(f"Registered repos: {len(repos)}")
         for repo in repos:
             typer.echo("")
@@ -9517,12 +9544,12 @@ def net_status_cmd() -> None:
                 typer.echo(f"  Pool: {host:30s} → {len(rows)} IPs")
 
     # Auto-revert: list each loose-mode container, with or without TTL.
-    _print_loose_status()
-    _print_port_forward_status()
-    _print_egress_override_status()
+    _print_loose_status(scope)
+    _print_port_forward_status(scope)
+    _print_egress_override_status(scope)
 
 
-def _print_loose_status() -> None:
+def _print_loose_status(scope: "RemoteRepoScope | None" = None) -> None:
     """Render the auto-revert section of `jailbee net status`.
 
     Best-effort — silently skips when no repo config is reachable from cwd
@@ -9536,7 +9563,12 @@ def _print_loose_status() -> None:
     except typer.Exit:
         return
     try:
-        infos = list_containers(cfg, Incus())
+        infos = list_containers(
+            cfg,
+            Incus(),
+            all_repos=bool(scope and scope.excluded),
+            scope=scope,
+        )
     except Exception:
         return
 
@@ -9565,7 +9597,7 @@ def _print_loose_status() -> None:
         )
 
 
-def _print_port_forward_status() -> None:
+def _print_port_forward_status(scope: "RemoteRepoScope | None" = None) -> None:
     """Render the port-forward section of `jailbee net status`.
 
     Best-effort, like `_print_loose_status`: silent when no repo config is
@@ -9587,7 +9619,12 @@ def _print_port_forward_status() -> None:
         return
     try:
         incus = Incus()
-        infos = list_containers(cfg, incus)
+        infos = list_containers(
+            cfg,
+            incus,
+            all_repos=bool(scope and scope.excluded),
+            scope=scope,
+        )
         by_container = ports.list_forwards(incus, [i.name for i in infos])
     except Exception:
         return
@@ -9614,14 +9651,19 @@ def _print_port_forward_status() -> None:
             )
 
 
-def _list_containers_for_status(cfg: "Config", incus: "IncusType") -> list[str]:
+def _list_containers_for_status(
+    cfg: "Config", incus: "IncusType", scope: "RemoteRepoScope | None" = None
+) -> list[str]:
     """Container names of this repo. Factored out so tests can patch one symbol."""
     from jailbee.lifecycle import list_containers
 
-    return [c.name for c in list_containers(cfg, incus)]
+    return [
+        c.name
+        for c in list_containers(cfg, incus, all_repos=bool(scope and scope.excluded), scope=scope)
+    ]
 
 
-def _print_egress_override_status() -> None:
+def _print_egress_override_status(scope: "RemoteRepoScope | None" = None) -> None:
     """Render the egress-override section of `jailbee net status`.
 
     Two separate exits, because they mean different things:
@@ -9655,12 +9697,14 @@ def _print_egress_override_status() -> None:
         cfg = load_config(find_repo_config())
     except Exception:
         return
+    if scope is not None and not scope.allows(cfg.container_prefix):
+        return
 
     try:
         from jailbee.incus import Incus
 
         incus = Incus()
-        names = _list_containers_for_status(cfg, incus)
+        names = _list_containers_for_status(cfg, incus, scope)
         with Session(get_engine()) as session:
             repo_rows = [
                 *egress_scope.local_entries(cfg.container_prefix),
@@ -9743,16 +9787,23 @@ job_app = typer.Typer(
 app.add_typer(job_app)
 
 
-def _jobs_for_repo(cfg: "Config", *, all_repos: bool) -> dict[str, "BackgroundJob"]:
+def _jobs_for_repo(
+    cfg: "Config", *, all_repos: bool, scope: "RemoteRepoScope | None" = None
+) -> dict[str, "BackgroundJob"]:
     """Job rows for this repo, or for every repo with ``all_repos``."""
     from sqlmodel import Session
 
     from jailbee import background
     from jailbee.db import get_engine
+    from jailbee.remote_ssh.repo_scope import scope_for_session
+
+    if scope is None:
+        scope = scope_for_session()
 
     with Session(get_engine()) as session:
         if all_repos:
-            return background.list_all_jobs(session)
+            rows = background.list_all_jobs(session)
+            return {name: row for name, row in rows.items() if scope.allows(row.container_prefix)}
         return background.list_jobs(session, cfg.container_prefix)
 
 
@@ -10161,6 +10212,10 @@ def base_prune_cmd(
 
         with Session(get_engine()) as session:
             repos = session.exec(select(RegisteredRepo)).all()
+        from jailbee.remote_ssh.repo_scope import scope_for_session
+
+        scope = scope_for_session()
+        repos = [repo for repo in repos if scope.allows(repo.container_prefix)]
         base_aliases = sorted({f"{r.container_prefix}-base" for r in repos})
         archives = find_all_archived_images(incus, base_aliases)
     else:
@@ -10220,6 +10275,10 @@ def base_usage_cmd(
 
         with Session(get_engine()) as session:
             repos = session.exec(select(RegisteredRepo)).all()
+        from jailbee.remote_ssh.repo_scope import scope_for_session
+
+        scope = scope_for_session()
+        repos = [repo for repo in repos if scope.allows(repo.container_prefix)]
         base_aliases = sorted({f"{r.container_prefix}-base" for r in repos})
     else:
         cfg = _load_or_exit(config)
@@ -11395,7 +11454,11 @@ def review_ls_cmd(
     rows: list[_ReviewRow] = []
     skipped: list[str] = []
 
-    for ci in list_containers(cfg, incus, all_repos=all_repos, with_git_status=True):
+    from jailbee.remote_ssh.repo_scope import scope_for_session
+
+    for ci in list_containers(
+        cfg, incus, all_repos=all_repos, with_git_status=True, scope=scope_for_session()
+    ):
         short = short_name(cfg, ci.name)
         if ci.state != "Running":
             skipped.append(short)
@@ -15266,12 +15329,20 @@ def prune(
 ) -> None:
     """Interactively clean up stopped containers older than 30 days."""
     from jailbee.incus import Incus
-    from jailbee.lifecycle import destroy_container, short_name
+    from jailbee.lifecycle import destroy_container, list_containers, short_name
     from jailbee.maintenance import find_stale_stopped
 
     cfg = _load_or_exit(config)
     incus = Incus()
-    stale = find_stale_stopped(cfg, incus, days=30)
+    from jailbee.remote_ssh.repo_scope import scope_for_session
+
+    scope = scope_for_session()
+    stale = find_stale_stopped(cfg, incus, days=30, scope=scope)
+    if scope.excluded:
+        visible = {
+            container.name for container in list_containers(cfg, incus, all_repos=True, scope=scope)
+        }
+        stale = [name for name in stale if name in visible]
     if not stale:
         info("Nothing to prune.")
         return

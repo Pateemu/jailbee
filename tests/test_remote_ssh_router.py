@@ -10,6 +10,7 @@ from sqlmodel import Session
 
 from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
 from jailbee.db.models import RegisteredRepo
+from jailbee.remote_ssh.repo_scope import RemoteRepoScope
 from jailbee.remote_ssh.router import (
     Route,
     RouteError,
@@ -142,6 +143,16 @@ def test_one_shot_resolves_repo_and_drops_remote_selector(engine, repo) -> None:
     assert result.repo_root == repo
 
 
+@pytest.mark.parametrize("raw", ["--repo project ls", "shell --repo project"])
+def test_excluded_repo_is_indistinguishable_from_unknown(raw: str, engine, repo) -> None:
+    cfg = RemoteSSHConfig(
+        exec=True, shell=True, excluded_repos=["project"], commands=RemoteCommandPolicy(mode="full")
+    )
+    with pytest.raises(RouteError) as excluded:
+        route(raw, cfg, engine=engine)
+    assert str(excluded.value) == "unknown registered repo: project"
+
+
 @pytest.mark.parametrize(
     "raw",
     ["ls", "--repo project", "--repo /tmp ls", "--repo project --repo other ls"],
@@ -226,6 +237,59 @@ def test_command_path_rejects_options_before_the_leaf() -> None:
     assert command_path(("git", "pull", "--ff-only")) == "git pull"
     with pytest.raises(RouteError, match="unknown Jailbee command"):
         command_path(("--verbose", "ls"))
+
+
+def test_exclusions_fail_closed_for_unclassified_command_but_allow_scoped_aggregate() -> None:
+    policy = RemoteCommandPolicy(mode="full")
+    with pytest.raises(RouteError, match="unavailable when SSH repository exclusions"):
+        policy_allows(("version",), policy, scope=RemoteRepoScope(frozenset({"secret"})))
+    scope = RemoteRepoScope(frozenset({"secret"}))
+    assert policy_allows(("ls", "--all"), policy, scope=scope) == "ls"
+    assert policy_allows(("base", "usage", "--all"), policy, scope=scope) == "base usage"
+    assert (
+        policy_allows(
+            ("job", "ls", "--all-repos"),
+            policy,
+            scope=RemoteRepoScope(frozenset({"secret"})),
+        )
+        == "job ls"
+    )
+
+
+@pytest.mark.parametrize(
+    "argv", [("config", "show", "--layer", "global"), ("config", "show", "--layer=global")]
+)
+def test_global_config_layer_is_denied_with_active_exclusions(argv) -> None:
+    with pytest.raises(RouteError, match="config show --layer global is unavailable"):
+        policy_allows(
+            argv,
+            RemoteCommandPolicy(mode="full"),
+            scope=RemoteRepoScope(frozenset({"hidden"})),
+            allow_scoped_aggregates=True,
+        )
+
+
+def test_repo_config_layer_remains_available_with_active_exclusions() -> None:
+    assert (
+        policy_allows(
+            ("config", "show", "--layer=repo"),
+            RemoteCommandPolicy(mode="full"),
+            scope=RemoteRepoScope(frozenset({"hidden"})),
+            allow_scoped_aggregates=True,
+        )
+        == "config show"
+    )
+
+
+@pytest.mark.parametrize("argv", [("account", "ls"), ("account", "group", "ls"), ("doctor",)])
+def test_host_wide_views_are_denied_with_active_exclusions(argv) -> None:
+    with pytest.raises(RouteError, match="unavailable when SSH repository exclusions"):
+        policy_allows(
+            argv,
+            RemoteCommandPolicy(mode="full"),
+            scope=RemoteRepoScope(frozenset({"hidden"})),
+            allow_scoped_aggregates=True,
+        )
 
 
 def test_allowlist_matches_the_exact_leaf_path() -> None:
@@ -546,6 +610,19 @@ def test_allowed_paths_uses_policy_and_host_restriction() -> None:
     assert allowed_command_paths(policy, restrict_host=False) == frozenset(
         {"git merge", "config edit"}
     )
+
+
+def test_completion_paths_respect_exclusions_like_command_gate() -> None:
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+    from jailbee.remote_ssh.router import allowed_command_paths
+
+    paths = allowed_command_paths(
+        RemoteCommandPolicy(mode="full"), scope=RemoteRepoScope(frozenset({"secret"}))
+    )
+
+    assert "version" not in paths
+    assert "ls" in paths
+    assert "base usage" in paths
 
 
 def test_nested_dashboard_and_tui_are_never_commands() -> None:

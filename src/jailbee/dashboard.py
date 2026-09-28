@@ -74,6 +74,7 @@ from jailbee.lifecycle import (
 from jailbee.paths import repo_config_path
 from jailbee.procstat import PRIME_INTERVAL_SECONDS, ActivitySampler
 from jailbee.remote_ssh import router as ssh_router
+from jailbee.remote_ssh.repo_scope import RemoteRepoScope
 from jailbee.remote_ssh.router import RouteError
 from jailbee.remote_ssh.session import host_restricted
 from jailbee.tui import console, error
@@ -230,7 +231,7 @@ class RepoTarget:
         return self.repo_root
 
 
-def registered_repo_roots() -> list[Path]:
+def registered_repo_roots(*, scope: RemoteRepoScope | None = None) -> list[Path]:
     """Repo roots for all ``RegisteredRepo`` rows whose directory still exists.
 
     This used to return config-file paths, which silently dropped a repo that
@@ -246,15 +247,20 @@ def registered_repo_roots() -> list[Path]:
     out: list[Path] = []
     with Session(get_engine()) as session:
         for repo in session.exec(select(RegisteredRepo)).all():
+            if scope is not None and not scope.allows(repo.container_prefix):
+                continue
             root = Path(repo.repo_root)
             if root.is_dir():
                 out.append(root)
     return out
 
 
-def collect_repo_roots(cwd_root: Path | None) -> list[Path]:
+def collect_repo_roots(
+    cwd_root: Path | None, *, scope: RemoteRepoScope | None = None
+) -> list[Path]:
     """Registered repo roots plus the cwd's, deduped, cwd first."""
-    candidates = ([cwd_root] if cwd_root is not None else []) + registered_repo_roots()
+    registered = registered_repo_roots() if scope is None else registered_repo_roots(scope=scope)
+    candidates = ([cwd_root] if cwd_root is not None else []) + registered
     seen: set[Path] = set()
     ordered: list[Path] = []
     for p in candidates:
@@ -366,6 +372,7 @@ def gather_rows(
     *,
     cwd_root: Path | None,
     with_git: bool,
+    scope: RemoteRepoScope | None = None,
 ) -> list[RepoGroup]:
     """Build per-repo groups, then append orphan groups.
 
@@ -384,10 +391,27 @@ def gather_rows(
     covered: set[str] = set()
     base_cfg = None
     gcfg = _global_config_or_defaults()
+    excluded_roots: set[Path] = set()
+    if scope is not None and scope.excluded:
+        from sqlmodel import Session, select
+
+        from jailbee.db import get_engine
+        from jailbee.db.models import RegisteredRepo
+
+        with Session(get_engine()) as session:
+            excluded_roots = {
+                Path(repo.repo_root).resolve()
+                for repo in session.exec(select(RegisteredRepo)).all()
+                if not scope.allows(repo.container_prefix)
+            }
     for root in repo_roots:
+        if root.resolve() in excluded_roots:
+            continue
         try:
             cfg = load_repo_config(root)
         except Exception:  # OSError, YAML parse, Pydantic validation, no scratch
+            continue
+        if scope is not None and not scope.allows(cfg.container_prefix):
             continue
         if base_cfg is None:
             base_cfg = cfg
@@ -428,7 +452,11 @@ def gather_rows(
         for c in all_rows:
             # `c.repo is None` is defensive AND narrows str|None -> str for
             # the dict key below (list_containers in practice always sets it).
-            if c.repo is None or c.repo in covered:
+            if (
+                c.repo is None
+                or c.repo in covered
+                or (scope is not None and not scope.allows(c.repo))
+            ):
                 continue
             orphans.setdefault(c.repo, []).append(c)
         for prefix in sorted(orphans):
@@ -444,7 +472,13 @@ def gather_rows(
     return groups
 
 
-def gather_live(incus: Incus, cwd_root: Path | None, *, with_git: bool) -> list[RepoGroup]:
+def gather_live(
+    incus: Incus,
+    cwd_root: Path | None,
+    *,
+    with_git: bool,
+    scope: RemoteRepoScope | None = None,
+) -> list[RepoGroup]:
     """One snapshot for a *live* dashboard: repo roots re-resolved per gather.
 
     Both dashboards refresh on a timer, and the set of registered repos moves
@@ -462,7 +496,14 @@ def gather_live(incus: Incus, cwd_root: Path | None, *, with_git: bool) -> list[
     database — cheap next to the `incus list` (and git probes) in the gather
     it precedes.
     """
-    return gather_rows(incus, collect_repo_roots(cwd_root), cwd_root=cwd_root, with_git=with_git)
+    kwargs = {} if scope is None else {"scope": scope}
+    return gather_rows(
+        incus,
+        collect_repo_roots(cwd_root, scope=scope),
+        cwd_root=cwd_root,
+        with_git=with_git,
+        **kwargs,
+    )
 
 
 def carry_forward_git_status(new_groups: list[RepoGroup], prev_groups: list[RepoGroup]) -> None:
@@ -2169,6 +2210,7 @@ def run(
     remote: bool = False,
     over_ssh: bool = False,
     ssh_policy: RemoteSSHConfig | None = None,
+    scope: RemoteRepoScope | None = None,
 ) -> int:
     """Main dashboard loop.
 
@@ -2190,7 +2232,10 @@ def run(
         return 1
 
     # Launch-time guard only; `gather_live` re-resolves the list per gather.
-    if not collect_repo_roots(cwd_root):
+    roots = (
+        collect_repo_roots(cwd_root) if scope is None else collect_repo_roots(cwd_root, scope=scope)
+    )
+    if not roots:
         error(NOTHING_TO_SHOW)
         return 1
 
@@ -2230,7 +2275,11 @@ def run(
 
     try:
         with console.status("⏳ Surveying containers…"):
-            seeded = gather_live(incus, cwd_root, with_git=False)
+            seeded = (
+                gather_live(incus, cwd_root, with_git=False)
+                if scope is None
+                else gather_live(incus, cwd_root, with_git=False, scope=scope)
+            )
             # Twice: the first call primes the sampler, the second turns it
             # into a rate. Only the /proc read repeats — never the gather.
             sample_activity(seeded, sampler)
@@ -2275,7 +2324,11 @@ def run(
                 if forced:
                     force.clear()
                 try:
-                    groups = gather_live(incus, cwd_root, with_git=do_git)
+                    groups = (
+                        gather_live(incus, cwd_root, with_git=do_git)
+                        if scope is None
+                        else gather_live(incus, cwd_root, with_git=do_git, scope=scope)
+                    )
                 except Exception as exc:  # surface any gather failure to the main thread
                     worker_error.append(exc)
                     stop.set()
@@ -2687,6 +2740,7 @@ def run(
                                 allowed_paths = ssh_router.allowed_command_paths(
                                     ssh_policy.commands,
                                     restrict_host=ssh_policy.restrict_host,
+                                    scope=scope,
                                 )
                         candidates = completion_candidates(
                             overlay.text,

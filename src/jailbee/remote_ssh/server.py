@@ -314,6 +314,7 @@ async def handle_process(
             cwd=selected.repo_root or state_dir(),
             requires_pty=selected.requires_pty,
             restrict_host=config.restrict_host,
+            excluded_repos=tuple(config.excluded_repos),
         )
         if selected.repo_root is None:
             spec.cwd.mkdir(parents=True, exist_ok=True)

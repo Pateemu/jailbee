@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from jailbee.config import Autostart
     from jailbee.db.models import BackgroundJob
     from jailbee.procstat import ProcessActivity
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
 
 
 @dataclass
@@ -198,6 +199,7 @@ def list_containers(
     with_background: bool = False,
     fast: bool = False,
     timeout: int | None = None,
+    scope: RemoteRepoScope | None = None,
 ) -> list[ContainerInfo]:
     """Return container infos for jailbee-managed containers.
 
@@ -233,6 +235,8 @@ def list_containers(
             continue  # not jailbee-managed
 
         if not all_repos and repo != cfg.container_prefix:
+            continue
+        if scope is not None and not scope.allows(repo):
             continue
 
         # Determine network mode from profile names. For own-repo we have a
@@ -458,6 +462,24 @@ def resolve_container_name(cfg: Config, incus: Incus, name: str) -> str:
     2. Else try ``f"{cfg.container_prefix}-{name}"``; return if it exists.
     3. Else raise ValueError listing both attempts.
     """
+    from jailbee.remote_ssh.repo_scope import scope_for_session
+
+    scope = scope_for_session()
+    if scope.excluded:
+        prefixed_candidate = f"{cfg.container_prefix}-{name}"
+        candidates = {name, prefixed_candidate}
+        for raw in incus.list_containers(fast=True):
+            container_name = raw.get("name")
+            if container_name not in candidates:
+                continue
+            profiles = raw.get("profiles") or []
+            repo = next(
+                (profile[: -len("-base")] for profile in profiles if profile.endswith("-base")),
+                None,
+            )
+            if not scope.allows(repo):
+                raise ValueError(f"no such container: '{name}' (also tried '{prefixed_candidate}')")
+
     if incus.exists(name):
         return name
     prefixed = f"{cfg.container_prefix}-{name}"

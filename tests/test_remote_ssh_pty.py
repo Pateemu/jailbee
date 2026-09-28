@@ -249,6 +249,7 @@ def test_fork_child_executes_literal_argv_cwd_and_only_trusted_env(spec, boundar
             "JAILBEE_SSH_SESSION": "1",
             "JAILBEE_REMOTE_SSH": "1",
             "LESSSECURE": "1",
+            "JAILBEE_SSH_EXCLUDED_REPOS": "[]",
         },
     )
     leave.assert_called_once_with(127)
@@ -383,6 +384,7 @@ def test_pipe_argv_env_and_separate_bounded_streams(spec, boundary, monkeypatch)
             "JAILBEE_SSH_SESSION": "1",
             "JAILBEE_REMOTE_SSH": "1",
             "LESSSECURE": "1",
+            "JAILBEE_SSH_EXCLUDED_REPOS": "[]",
         },
         start_new_session=True,
     )
@@ -979,7 +981,11 @@ def test_unrestricted_pipe_child_is_left_unmarked(spec, boundary, monkeypatch):
 
     asyncio.run(run_child(SSHProcess(), replace(spec, restrict_host=False)))
 
-    assert boundary.create.call_args.kwargs["env"] == {"PATH": "/bin", "JAILBEE_SSH_SESSION": "1"}
+    assert boundary.create.call_args.kwargs["env"] == {
+        "PATH": "/bin",
+        "JAILBEE_SSH_SESSION": "1",
+        "JAILBEE_SSH_EXCLUDED_REPOS": "[]",
+    }
 
 
 def test_unrestricted_pty_child_is_left_unmarked(spec, boundary, monkeypatch):
@@ -997,4 +1003,5 @@ def test_unrestricted_pty_child_is_left_unmarked(spec, boundary, monkeypatch):
         "PATH": "/bin",
         "TERM": "xterm",
         "JAILBEE_SSH_SESSION": "1",
+        "JAILBEE_SSH_EXCLUDED_REPOS": "[]",
     }
