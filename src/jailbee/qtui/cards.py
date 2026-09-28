@@ -246,6 +246,7 @@ class _GroupHeader(QWidget):
 
     clicked = Signal(str)  # Qt signal; payload: repo prefix
     newContainerRequested = Signal(str)  # noqa: N815 - payload: repo prefix
+    newPrContainerRequested = Signal(str)  # noqa: N815 - payload: repo prefix
 
     def __init__(
         self, prefix: str, label: str, count: int, *, collapsed: bool, actionable: bool
@@ -264,6 +265,10 @@ class _GroupHeader(QWidget):
             button = QPushButton("New…")
             button.clicked.connect(lambda: self.newContainerRequested.emit(self._prefix))
             self._row.addWidget(button)
+            pr_button = QPushButton("PR…")
+            pr_button.setToolTip("Create a review container from a pull request")
+            pr_button.clicked.connect(lambda: self.newPrContainerRequested.emit(self._prefix))
+            self._row.addWidget(pr_button)
         self.set_collapsed(collapsed)
 
     def set_collapsed(self, collapsed: bool) -> None:
@@ -285,6 +290,7 @@ class CardView(QScrollArea):
     actionRequested = Signal(str, str)  # noqa: N815 - (verb, container_name)
     collapsedChanged = Signal()  # noqa: N815 - Qt signal; a group was expanded/collapsed
     newContainerRequested = Signal(str)  # noqa: N815 - payload: repo prefix
+    newPrContainerRequested = Signal(str)  # noqa: N815 - payload: repo prefix
 
     def __init__(self) -> None:
         super().__init__()
@@ -424,6 +430,7 @@ class CardView(QScrollArea):
                 )
                 header.clicked.connect(self._toggle_group)
                 header.newContainerRequested.connect(self.newContainerRequested)
+                header.newPrContainerRequested.connect(self.newPrContainerRequested)
                 self._headers[prefix] = header
                 self._insert(header)
 

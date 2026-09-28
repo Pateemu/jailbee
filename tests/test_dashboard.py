@@ -3315,6 +3315,20 @@ def test_new_container_argv_carries_no_yes_flag(tmp_path):
     assert "--yes" not in argv and "-y" not in argv
 
 
+def test_new_pr_container_argv_targets_configured_repo_without_yes(tmp_path):
+    target = _dispatch_target(tmp_path, "c.yaml")
+
+    assert dashboard.new_pr_container_argv(target, 123) == [
+        "jailbee", "new", "--config", str(target.config_path), "--pr", "123"
+    ]
+
+
+def test_new_pr_container_argv_targets_scratch_repo(tmp_path):
+    assert dashboard.new_pr_container_argv(dashboard.RepoTarget(tmp_path, None), 123) == [
+        "jailbee", "new", "--pr", "123"
+    ]
+
+
 def test_parse_key_maps_arrows_and_letters():
     assert dashboard.parse_key(b"\x1b[A") == "up"
     assert dashboard.parse_key(b"\x1b[B") == "down"
@@ -4826,7 +4840,9 @@ def test_repo_header_enter_opens_menu_without_folding(mocker, tmp_path):
     menus = [call.kwargs["overlay"] for call in render.call_args_list if call.kwargs["overlay"]]
     assert menus
     assert menus[0].repo == "alpha"
-    assert [label for label, _ in menus[0].actions] == ["New container…", "Fold"]
+    assert [label for label, _ in menus[0].actions] == [
+        "New container…", "New from PR…", "Fold"
+    ]
     save.assert_not_called()
 
 
@@ -4845,6 +4861,34 @@ def test_repo_menu_new_runs_the_existing_creation_flow(mocker, tmp_path):
     )
 
 
+def test_repo_menu_new_from_pr_runs_review_creation_in_repo(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
+    mocker.patch("typer.prompt", return_value="123")
+    mocker.patch.object(dashboard, "_wait_for_return")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+
+    assert _drive_run(mocker, [b"\r", b"j", b"\r"], groups=[group]) == 0
+
+    child.assert_called_once_with(
+        ["jailbee", "new", "--pr", "123"], check=False, cwd=tmp_path
+    )
+
+
+@pytest.mark.parametrize(
+    "answer", ["0", "-2", "abc", "--yes", "  ", pytest.param("9" * 5000, id="oversized")]
+)
+def test_repo_menu_new_from_pr_rejects_nonpositive_or_non_numeric_input(mocker, tmp_path, answer):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
+    mocker.patch("typer.prompt", return_value=answer)
+    mocker.patch.object(dashboard, "_wait_for_return")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+
+    assert _drive_run(mocker, [b"\r", b"j", b"\r"], groups=[group]) == 0
+
+    child.assert_not_called()
+
+
 @pytest.mark.parametrize("initially_folded", [False, True])
 def test_repo_menu_toggles_fold_and_persists_it(mocker, tmp_path, initially_folded):
     group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
@@ -4856,7 +4900,7 @@ def test_repo_menu_toggles_fold_and_persists_it(mocker, tmp_path, initially_fold
     assert (
         _drive_run(
             mocker,
-            [b"\r", b"j", b"\r"],
+            [b"\r", b"j", b"j", b"\r"],
             groups=[group],
             view_state=dashboard.ViewState(
                 folded=frozenset({"alpha"}) if initially_folded else frozenset(),
@@ -4868,7 +4912,7 @@ def test_repo_menu_toggles_fold_and_persists_it(mocker, tmp_path, initially_fold
     )
 
     menus = [call.kwargs["overlay"] for call in render.call_args_list if call.kwargs["overlay"]]
-    assert menus[0].actions[1][0] == ("Unfold" if initially_folded else "Fold")
+    assert menus[0].actions[2][0] == ("Unfold" if initially_folded else "Fold")
     assert save.call_count == 1
     assert save.call_args.args[1] == FRONTEND_TUI
     assert save.call_args.args[2].folded == (

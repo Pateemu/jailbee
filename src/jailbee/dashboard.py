@@ -1210,6 +1210,7 @@ def open_repo_menu(
     actions: list[tuple[str, str]] = []
     if RepoTarget.of(group) is not None:
         actions.append(("New container…", "new"))
+        actions.append(("New from PR…", "new-pr"))
     actions.append(("Unfold" if prefix in folded else "Fold", "fold"))
     return RepoMenuState(prefix, actions)
 
@@ -1986,6 +1987,11 @@ def new_container_argv(target: RepoTarget, branch: str, base: str) -> list[str]:
     return ["jailbee", "new", *target.flags(), "--", branch, base]
 
 
+def new_pr_container_argv(target: RepoTarget, number: int) -> list[str]:
+    """Create a review container using the CLI's existing PR resolution flow."""
+    return ["jailbee", "new", *target.flags(), "--pr", str(number)]
+
+
 # Verbs routed through the CLI's attach guard, which asks "continue anyway?"
 # when the container's background job failed or is unfinished. Both dashboards
 # have already shown that state in the JOB column, so the question would only
@@ -2535,8 +2541,8 @@ def run(
                     set_notice(f"'jailbee {verb} {target}' exited {rc}")
                 force.set()  # an action likely changed state — refresh ASAP
 
-            def create_container() -> None:
-                """Ask for a branch and a base, then run `jailbee new` here.
+            def create_container(*, from_pr: bool = False) -> None:
+                """Ask for a branch and base, or a PR number, then run `jailbee new`.
 
                 The terminal is handed over rather than the command dispatched
                 detached, because `jailbee new` asks its own questions:
@@ -2560,36 +2566,46 @@ def run(
                 assert group is not None  # guaranteed by the note being None
                 repo = RepoTarget.of(group)
                 assert repo is not None  # ditto: new_container_target rejects rootless groups
-                base_default = new_container_base_default(group.repo_root)
+                base_default = None if from_pr else new_container_base_default(group.repo_root)
 
                 def ask_and_run() -> int:
                     import typer
 
                     try:
-                        branch = typer.prompt("New branch").strip()
-                        base = typer.prompt("Base branch", default=base_default or "").strip()
+                        if from_pr:
+                            answer = typer.prompt("PR number").strip()
+                            try:
+                                number = int(answer) if answer.isascii() and answer.isdecimal() else 0
+                            except ValueError:
+                                number = 0  # Python refuses excessively long integer strings
+                            if number < 1:
+                                console.print("\n[yellow]No container created — invalid PR number.[/yellow]")
+                                _wait_for_return()
+                                return 0
+                            argv = new_pr_container_argv(repo, number)
+                        else:
+                            branch = typer.prompt("New branch").strip()
+                            base = typer.prompt("Base branch", default=base_default or "").strip()
+                            if not branch or not base:
+                                empty = "branch" if not branch else "base branch"
+                                console.print(
+                                    f"\n[yellow]No container created — {empty} was empty.[/yellow]"
+                                )
+                                _wait_for_return()
+                                return 0
+                            argv = new_container_argv(repo, branch, base)
                     except (typer.Abort, EOFError, KeyboardInterrupt):
                         # Ctrl-C answers the prompt, not the dashboard: `run`'s
                         # own KeyboardInterrupt handler would quit outright.
                         return 0
-                    if not branch or not base:
-                        # Reachable two ways: a whitespace-only branch, and —
-                        # on a host repo in detached HEAD, where `base_default`
-                        # is empty — simply pressing Enter twice. Silently
-                        # returning here used to be indistinguishable from a
-                        # broken keypress, so say what happened before giving
-                        # the terminal back.
-                        empty = "branch" if not branch else "base branch"
-                        console.print(
-                            f"\n[yellow]No container created — {empty} was empty.[/yellow]"
+                    if over_ssh:
+                        # Remote sessions address their selected repo by cwd,
+                        # not by an explicit host config path.
+                        argv = (
+                            ["jailbee", "new", "--pr", str(number)]
+                            if from_pr
+                            else ["jailbee", "new", "--", branch, base]
                         )
-                        _wait_for_return()
-                        return 0
-                    argv = (
-                        ["jailbee", "new", "--", branch, base]
-                        if over_ssh
-                        else new_container_argv(repo, branch, base)
-                    )
                     try:
                         check_dashboard_command(argv[1:], ssh_policy, over_ssh=over_ssh)
                     except RouteError as exc:
@@ -2841,6 +2857,8 @@ def run(
                                 overlay = None
                                 if verb == "new":
                                     create_container()
+                                elif verb == "new-pr":
+                                    create_container(from_pr=True)
                                 elif verb == "fold":
                                     folded = toggle_folded(folded, target)
                                     persist_view_state(
