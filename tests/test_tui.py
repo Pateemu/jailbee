@@ -171,6 +171,55 @@ def test_pick_container_label_includes_base_and_git_status(mocker):
     assert "—" in titles[1]  # legacy: dashes
 
 
+def test_picker_marks_tracking_fallback_base_and_aligns_rows(mocker):
+    from jailbee.git_status import GitStatus
+    from jailbee.tui import _choice_widths, _format_choice_title
+
+    select = mocker.patch("questionary.select")
+    select.return_value.ask.return_value = "myrepo-tracking"
+    tracking = ContainerInfo(
+        name="myrepo-tracking",
+        state="Running",
+        network="strict",
+        ip=None,
+        memory_limit=None,
+        repo="myrepo",
+        base_branch="main",
+        git_status=GitStatus(
+            wt="clean",
+            ahead_diff="clean",
+            ahead_count="0",
+            conflict="ok",
+            base_source="tracking",
+        ),
+    )
+    local = ContainerInfo(
+        name="myrepo-local",
+        state="Running",
+        network="strict",
+        ip=None,
+        memory_limit=None,
+        repo="myrepo",
+        base_branch="main",
+        git_status=GitStatus(
+            wt="clean",
+            ahead_diff="clean",
+            ahead_count="0",
+            conflict="ok",
+            base_source="local",
+        ),
+    )
+    widths = _choice_widths([tracking, local])
+    assert widths["base"] == len("main (tracking)")
+    assert "main (tracking)" in _format_choice_title(tracking, widths)
+    assert "(tracking)" not in _format_choice_title(local, widths)
+
+    pick_container([tracking, local])
+    titles = [choice.title for choice in select.call_args.kwargs["choices"]]
+    assert "main (tracking)" in titles[0]
+    assert "(tracking)" not in titles[1]
+
+
 def test_pick_containers_multi_label_includes_base_and_git_status(mocker):
     cb = mocker.patch("jailbee.tui.checkbox")
     cb.return_value = []

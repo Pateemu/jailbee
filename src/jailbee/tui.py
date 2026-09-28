@@ -349,6 +349,15 @@ def confirm_destroy_risk(unknown: Sequence[str], summaries: Sequence[RiskSummary
     return typer.confirm("   Destroying loses this. Continue?", default=False)
 
 
+def _choice_base(c: ContainerInfo) -> str:
+    """BASE text for picker rows, including a tracking-ref fallback marker."""
+    if not c.base_branch:
+        return "—"
+    if c.git_status is not None and c.git_status.base_source == "tracking":
+        return f"{c.base_branch} (tracking)"
+    return c.base_branch
+
+
 def _choice_widths(containers: list[ContainerInfo]) -> dict[str, int]:
     # Function-local import: `background` pulls in sqlmodel, and `tui` sits
     # on the `jailbee --help` path, which stays fast deliberately. `lifecycle`
@@ -362,7 +371,7 @@ def _choice_widths(containers: list[ContainerInfo]) -> dict[str, int]:
         "state": max(len(c.state) for c in containers),
         "net": max(len(c.network or "-") for c in containers),
         "ip": max(len(c.ip or "-") for c in containers),
-        "base": max(len(c.base_branch or "—") for c in containers),
+        "base": max(len(_choice_base(c)) for c in containers),
         "wt": max(len(c.git_status.wt if c.git_status else "—") for c in containers),
         "ahead": max(len(c.git_status.target_diff if c.git_status else "—") for c in containers),
         "count": max(len(c.git_status.ahead_count if c.git_status else "—") for c in containers),
@@ -379,7 +388,7 @@ def _format_choice_title(c: ContainerInfo, widths: dict[str, int]) -> str:
     from jailbee import background
     from jailbee.git_status import merge_label
 
-    base = c.base_branch or "—"
+    base = _choice_base(c)
     if c.git_status is None:
         wt = "—"
         ahead = "—"
