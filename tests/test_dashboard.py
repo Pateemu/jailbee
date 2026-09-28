@@ -358,13 +358,7 @@ def test_gather_rows_includes_a_repo_with_no_config_file(tmp_path, monkeypatch, 
     (repo / ".git").mkdir(parents=True)
     prefix = _scratch_prefix(repo)  # slug plus a digest of the path
 
-    mocker.patch.object(
-        dashboard,
-        "list_containers",
-        side_effect=lambda cfg, incus, **kw: (
-            [] if kw.get("all_repos") else [_ci(f"{prefix}-x", prefix)]
-        ),
-    )
+    mocker.patch.object(dashboard, "list_containers", return_value=[])
 
     groups = dashboard.gather_rows(mocker.MagicMock(), [repo], cwd_root=repo, with_git=False)
 
@@ -372,6 +366,10 @@ def test_gather_rows_includes_a_repo_with_no_config_file(tmp_path, monkeypatch, 
     assert groups[0].repo_root == str(repo)
     # No file on disk -> no config path. Task 10b is what re-enables its menu.
     assert groups[0].config_path is None
+    assert groups[0].containers == []
+    target = dashboard.RepoTarget.of(groups[0])
+    assert target is not None
+    assert target.repo_root == repo
 
 
 def test_gather_rows_carries_the_repos_loose_ttl_default(tmp_path, mocker, make_cfg):
@@ -531,7 +529,7 @@ def test_gather_rows_cwd_none_orphans_sort_last(tmp_path, mocker, make_cfg):
     assert groups[-1].config_path is None
 
 
-def test_gather_rows_hides_repo_with_no_containers(tmp_path, mocker, make_cfg):
+def test_gather_rows_includes_empty_repo_for_targeting(tmp_path, mocker, make_cfg):
     empty_root = tmp_path / "alpha"
     populated_root = tmp_path / "beta"
     empty_cfg = make_cfg(empty_root)  # container_prefix == "alpha"
@@ -553,8 +551,10 @@ def test_gather_rows_hides_repo_with_no_containers(tmp_path, mocker, make_cfg):
     groups = dashboard.gather_rows(
         mocker.MagicMock(), [empty_root, populated_root], cwd_root=None, with_git=False
     )
-    # The empty repo produces no group at all; the populated one still appears.
-    assert [g.prefix for g in groups] == ["beta"]
+    assert [g.prefix for g in groups] == ["alpha", "beta"]
+    alpha = groups[0]
+    assert alpha.containers == []
+    assert dashboard.RepoTarget.of(alpha) is not None
 
 
 def test_gather_rows_empty_repo_roots_returns_empty(mocker):
@@ -809,11 +809,10 @@ def test_selectable_rows_skips_a_folded_groups_containers():
     ]
 
 
-def test_selectable_rows_omits_an_empty_group():
-    """An empty group draws no header either — `render` already skips it, and
-    a cursor stop on an invisible row would be a dead keypress."""
+def test_selectable_rows_includes_an_empty_group():
     groups = [dashboard.RepoGroup("a", "/a", None, [])]
-    assert dashboard.selectable_rows(groups) == []
+    assert dashboard.selectable_rows(groups) == [dashboard.Row("repo", "a")]
+    assert dashboard.new_container_target(groups, dashboard.Row("repo", "a")) is groups[0]
 
 
 def test_move_selection_clamps_at_edges():
@@ -2567,7 +2566,7 @@ def test_header_uses_more_than_first_column_at_narrow_width(tmp_path):
         assert heading_line.index("▾") < data_line.index("Running")
 
 
-def test_render_empty_repo_data_shows_placeholder(tmp_path):
+def test_render_empty_repo_shows_header_without_table(tmp_path):
     group = dashboard.RepoGroup("empty", str(tmp_path), None, [])
     out = _render_text(
         dashboard.render(
@@ -2579,7 +2578,26 @@ def test_render_empty_repo_data_shows_placeholder(tmp_path):
             git_enabled=True,
         )
     )
-    assert "no containers found" in out
+    assert "empty" in out
+    assert "(0)" in out
+    assert "no containers found" not in out
+    assert "NAME" not in out
+
+
+def test_render_all_filtered_repos_explains_visibility_settings(tmp_path):
+    out = _render_text(
+        dashboard.render(
+            [],
+            selected=None,
+            now=datetime(2026, 6, 8, tzinfo=UTC),
+            last_refresh_age=1.0,
+            interval=3.0,
+            git_enabled=True,
+            hidden_by_preferences=True,
+        )
+    )
+    assert "visibility" in out.lower()
+    assert "settings" in out.lower()
 
 
 def test_narrow_multi_column_render_stays_within_available_content_width(tmp_path):
@@ -4095,7 +4113,7 @@ def test_settings_repo_prefixes_keeps_a_folded_repo_that_is_not_on_screen():
 
     assert "alpha" in prefixes
     assert "vanished" in prefixes  # folded but absent — still reachable
-    assert "empty" not in prefixes  # draws nothing, folds nothing
+    assert "empty" in prefixes
     assert len(prefixes) == len(set(prefixes))  # no duplicate for a folded on-screen repo
 
 
@@ -4482,6 +4500,124 @@ def test_run_persists_view_state_when_the_write_succeeds(mocker):
     assert isinstance(state, dashboard.ViewState)
 
 
+def test_run_visibility_tab_uses_raw_prefixes_and_persists_complete_state(mocker, tmp_path):
+    from jailbee.dashboard_settings import SettingsState
+
+    alpha = dashboard.RepoGroup("alpha", str(tmp_path / "a"), None, [_ci("alpha-one", "alpha")])
+    empty = dashboard.RepoGroup("empty", str(tmp_path / "e"), None, [])
+    save = mocker.patch.object(dashboard, "save_view_state")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert (
+        _drive_run(
+            mocker,
+            [b"S", b"\t", b"\t", b"\x1b[B", b" "],
+            [alpha, empty],
+            view_state=dashboard.ViewState(("name",), frozenset({"vanished"})),
+        )
+        == 0
+    )
+
+    overlays = [call.kwargs.get("overlay") for call in render.call_args_list]
+    visibility = next(
+        overlay
+        for overlay in overlays
+        if isinstance(overlay, SettingsState) and overlay.tab == "visibility"
+    )
+    assert visibility.visibility_repo_prefixes == ("alpha", "empty")
+    state = save.call_args.args[2]
+    assert state.columns == ("name",)
+    assert state.folded == frozenset({"vanished"})
+    assert state.hidden_repos == frozenset({"alpha"})
+
+
+def test_run_new_from_empty_repo_header_dispatches_to_repo_root(mocker, tmp_path):
+    group = dashboard.RepoGroup("empty", str(tmp_path), None, [])
+    prompt = mocker.patch("typer.prompt", side_effect=["feature", "main"])
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "new_container_base_default", return_value="main")
+    mocker.patch.object(dashboard, "_wait_for_return")
+
+    assert _drive_run(mocker, [b"n"], [group]) == 0
+
+    assert prompt.call_count == 2
+    child.assert_called_once_with(
+        ["jailbee", "new", "--", "feature", "main"], check=False, cwd=tmp_path
+    )
+
+
+def test_run_empty_repo_header_menu_creates_container(mocker, tmp_path):
+    group = dashboard.RepoGroup("empty", str(tmp_path), None, [])
+    mocker.patch("typer.prompt", side_effect=["feature", "main"])
+    mocker.patch.object(dashboard, "new_container_base_default", return_value="main")
+    mocker.patch.object(dashboard, "_wait_for_return")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+
+    assert _drive_run(mocker, [b"\r", b"\r"], [group]) == 0
+
+    child.assert_called_once_with(
+        ["jailbee", "new", "--", "feature", "main"], check=False, cwd=tmp_path
+    )
+
+
+def test_run_cannot_create_from_a_row_hidden_by_visibility_settings(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-one", "alpha")])
+    prompt = mocker.patch("typer.prompt")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert (
+        _drive_run(mocker, [b"\x1b[B", b"S", b"\t", b"\t", b"\x1b[B", b" ", b"\x1b", b"n"], [group])
+        == 0
+    )
+
+    prompt.assert_not_called()
+    child.assert_not_called()
+    assert any("Select a repo" in str(call.kwargs.get("notice")) for call in render.call_args_list)
+
+
+def test_open_menu_closes_when_its_container_becomes_hidden(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-one", "alpha")])
+    _mock_terminal(mocker)
+    mocker.patch.object(dashboard, "gather_live", return_value=[group])
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    hiding = False
+    filter_groups = dashboard.visible_repo_groups
+
+    def hide_after_menu_opens(groups, *, show_empty_repos, hidden_repos):
+        active_hidden = hidden_repos | ({"alpha"} if hiding else set())
+        return filter_groups(
+            groups, show_empty_repos=show_empty_repos, hidden_repos=frozenset(active_hidden)
+        )
+
+    mocker.patch.object(dashboard, "visible_repo_groups", side_effect=hide_after_menu_opens)
+    selections = 0
+
+    def advance_to_hidden_snapshot(*args, **kwargs):
+        nonlocal hiding, selections
+        selections += 1
+        if selections == 3:  # menu is open; hide its selected repo before the next frame
+            hiding = True
+        return ([True], [], [])
+
+    mocker.patch.object(dashboard.select, "select", side_effect=advance_to_hidden_snapshot)
+    keys = itertools.chain([b"\x1b[B", b"\r", b"x", b"\r", b"\x03"], itertools.repeat(b"\x03"))
+    mocker.patch.object(dashboard.os, "read", side_effect=lambda fd, size: next(keys))
+
+    assert dashboard.run(mocker.Mock(), None, interval=0.5, git_interval=1.0, no_git=True) == 0
+
+    overlays = [call.kwargs.get("overlay") for call in render.call_args_list]
+    menu_frames = [overlay for overlay in overlays if isinstance(overlay, dashboard.MenuState)]
+    assert menu_frames  # the selected container really did have an open action menu
+    closed_at = overlays.index(None, overlays.index(menu_frames[-1]) + 1)
+    assert not any(isinstance(overlay, dashboard.MenuState) for overlay in overlays[closed_at:])
+    assert any("menu closed" in str(call.kwargs.get("notice")) for call in render.call_args_list)
+    child.assert_not_called()
+
+
 def test_settings_key_switches_from_another_overlay_instead_of_closing(mocker):
     """F2/S must mirror ``h``'s own toggle: pressing it while another
     overlay (the action menu, help) is open switches to settings, not just
@@ -4567,7 +4703,9 @@ def test_repo_menu_toggles_fold_and_persists_it(mocker, tmp_path, initially_fold
             [b"\r", b"j", b"\r"],
             groups=[group],
             view_state=dashboard.ViewState(
-                folded=frozenset({"alpha"}) if initially_folded else frozenset()
+                folded=frozenset({"alpha"}) if initially_folded else frozenset(),
+                show_empty_repos=False,
+                hidden_repos=frozenset({"other"}),
             ),
         )
         == 0
@@ -4580,6 +4718,8 @@ def test_repo_menu_toggles_fold_and_persists_it(mocker, tmp_path, initially_fold
     assert save.call_args.args[2].folded == (
         frozenset() if initially_folded else frozenset({"alpha"})
     )
+    assert save.call_args.args[2].show_empty_repos is False
+    assert save.call_args.args[2].hidden_repos == frozenset({"other"})
 
 
 def test_orphan_repo_menu_only_offers_folding(mocker):

@@ -511,6 +511,101 @@ def test_run_restores_enabled_columns_and_folded_repos(mocker):
     window.card_view.set_collapsed.assert_called_once_with({"repo-a"})
 
 
+def test_run_restores_qt_visibility_without_changing_tui_state(mocker):
+    mocker.patch("jailbee.qtui.app.QApplication")
+    mocker.patch("jailbee.qtui.app.collect_repo_roots", return_value=[Path("/x")])
+    mock_window_cls = mocker.patch("jailbee.qtui.app.MainWindow")
+    mocker.patch("jailbee.qtui.app.QThread")
+    mocker.patch("jailbee.qtui.app.RefreshWorker")
+    mocker.patch("jailbee.db.get_engine", return_value=mocker.sentinel.engine)
+    from jailbee.db.models import GuiState
+    from jailbee.db.view_prefs import ViewState
+
+    mocker.patch(
+        "jailbee.qtui.app.seed_view_state",
+        return_value=ViewState(show_empty_repos=False, hidden_repos=frozenset({"alpha"})),
+    )
+    mocker.patch("jailbee.db.gui_state.load_gui_state", return_value=GuiState())
+    mocker.patch("jailbee.db.gui_state.save_gui_state")
+
+    qapp.run(mocker.Mock(), None, interval=3.0, git_interval=10.0, no_git=False)
+
+    _args, kwargs = mock_window_cls.call_args
+    assert kwargs["show_empty_repos"] is False
+    assert kwargs["hidden_repos"] == frozenset({"alpha"})
+
+
+def test_visibility_persistence_saves_complete_qt_view_and_survives_write_failure(mocker, caplog):
+    import logging
+
+    save = mocker.patch("jailbee.db.view_prefs.save_view_state", side_effect=OSError("disk full"))
+    window = mocker.Mock()
+    window.enabled_columns.return_value = ("name", "state")
+    window.collapsed_repos.return_value = {"beta"}
+    window.show_empty_repos.return_value = False
+    window.hidden_repos.return_value = {"alpha"}
+    controller = qapp.AppController(
+        window, mocker.Mock(), interval=3.0, engine=mocker.sentinel.engine
+    )
+
+    with caplog.at_level(logging.WARNING):
+        controller.on_repo_visibility_changed()
+
+    state = save.call_args.args[2]
+    assert state.columns == ("name", "state")
+    assert state.folded == frozenset({"beta"})
+    assert state.show_empty_repos is False
+    assert state.hidden_repos == frozenset({"alpha"})
+    window.set_status.assert_called_once()
+    assert "disk full" in window.set_status.call_args.args[0]
+
+
+def test_on_groups_keeps_new_and_hidden_repositories_in_menu_snapshot(mocker):
+    groups = [
+        RepoGroup("alpha", "/alpha", None, []),
+        RepoGroup("beta", "/beta", None, []),
+    ]
+    window = mocker.Mock()
+    controller = qapp.AppController(window, mocker.Mock(), interval=3.0)
+
+    controller.on_groups(groups)
+
+    assert controller._latest == groups
+    window.set_groups.assert_called_once_with(groups, now=mocker.ANY)
+
+
+def test_on_groups_refresh_keeps_hidden_prefix_available_in_repository_menu(qtbot, mocker):
+
+    window = MainWindow(
+        git_enabled=False,
+        interval=3.0,
+        show_empty_repos=False,
+        hidden_repos=frozenset({"alpha"}),
+    )
+    qtbot.addWidget(window)
+    controller = qapp.AppController(window, mocker.Mock(), interval=3.0)
+
+    controller.on_groups(
+        [RepoGroup("alpha", "/alpha", None, []), RepoGroup("beta", "/beta", None, [])]
+    )
+
+    actions = {action.text(): action for action in window.repositories_menu.actions()}
+    assert "alpha" in actions
+    assert not actions["alpha"].isChecked()
+    assert "beta" in actions
+    assert controller._latest[0].prefix == "alpha"
+
+
+def test_on_action_does_not_dispatch_for_a_hidden_container(mocker, tmp_path):
+    controller = _controller_with_group(mocker, tmp_path)
+    controller._window.hidden_repos.return_value = frozenset({"p"})
+    popen = mocker.patch("jailbee.qtui.app.subprocess.Popen")
+
+    controller.on_action("start", "p-foo")
+
+    popen.assert_not_called()
+
+
 def _controller_with_group(
     mocker,
     tmp_path,

@@ -653,3 +653,25 @@ def test_compact_card_omits_an_idle_containers_activity(qtbot):
     texts = " | ".join(_label_texts(card))
     assert "strict" in texts  # the card still renders
     assert "—" not in texts
+
+
+def test_empty_actionable_group_has_new_control_but_orphan_does_not(qtbot):
+    from PySide6.QtWidgets import QPushButton
+
+    from jailbee.qtui.cards import _GroupHeader
+
+    view = CardView()
+    qtbot.addWidget(view)
+    now = datetime.now().astimezone()
+    view.set_groups(
+        [RepoGroup("scratch", "/scratch", None, []), RepoGroup("lost", None, None, [])],
+        now=now,
+    )
+    headers = {header._prefix: header for header in view.findChildren(_GroupHeader)}
+    buttons = {b.text(): b for b in view.findChildren(QPushButton)}
+    assert "New…" in buttons
+    assert headers["lost"].findChildren(QPushButton) == []
+    with qtbot.waitSignal(view.newContainerRequested, timeout=1000) as blocker:
+        buttons["New…"].click()
+    assert blocker.args == ["scratch"]
+    assert "0 containers" in headers["scratch"].text()

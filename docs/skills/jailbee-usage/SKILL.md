@@ -89,6 +89,11 @@ install), and within Cards, between a denser **Compact** style and a
 header). The chosen layout, card style, collapsed repo groups, table column
 widths/order, and refresh cadence / paused state persist across sessions
 (window size/position do not).
+Both dashboards include known repositories with no containers by default;
+toggle **Show empty repos** to hide or restore all such groups, or hide an
+individual repository by prefix. In the TUI, use **Settings > Visibility**;
+in Qt, use **View > Repositories**. The Qt repository menu tracks repositories
+as they become known, including hidden ones.
 
 Both dashboards can also *create* a container. In the TUI, `n` asks for a
 branch name and a base branch (pre-filled with the branch that repo's host
@@ -99,6 +104,10 @@ widens network access — still get asked. The Qt dashboard does the same from
 a terminal window for the run. Only those two fields are asked; network,
 memory, cpu, mount and autostart come from the repo's config exactly as they
 do for `jailbee new <branch> <base>` on the command line.
+An empty but registered repository can be targeted from its header: press `n`
+in the TUI, or use **View > Repositories** to restore it and then choose
+**Container > New…**, or **New…** on the Qt repository group header. Orphan
+groups remain view-only and cannot create containers.
 
 ## Creating containers — `jailbee new`
 

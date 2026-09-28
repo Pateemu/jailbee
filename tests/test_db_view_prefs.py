@@ -17,6 +17,8 @@ def test_load_returns_empty_defaults_when_absent() -> None:
     state = load_view_state(_engine(), FRONTEND_TUI)
     assert state.columns is None  # None = built-in default set
     assert state.folded == frozenset()
+    assert state.show_empty_repos is True
+    assert state.hidden_repos == frozenset()
 
 
 def test_save_then_load_round_trips() -> None:
@@ -56,13 +58,35 @@ def test_the_two_frontends_do_not_share_state() -> None:
     )
 
     engine = _engine()
-    save_view_state(engine, FRONTEND_TUI, ViewState(columns=("name",), folded=frozenset({"a"})))
-    save_view_state(engine, FRONTEND_QT, ViewState(columns=("name", "ip"), folded=frozenset()))
+    save_view_state(
+        engine,
+        FRONTEND_TUI,
+        ViewState(
+            columns=("name",),
+            folded=frozenset({"a"}),
+            show_empty_repos=False,
+            hidden_repos=frozenset({"alpha"}),
+        ),
+    )
+    save_view_state(
+        engine,
+        FRONTEND_QT,
+        ViewState(
+            columns=("name", "ip"),
+            folded=frozenset(),
+            show_empty_repos=False,
+            hidden_repos=frozenset({"beta"}),
+        ),
+    )
 
     assert load_view_state(engine, FRONTEND_TUI).columns == ("name",)
     assert load_view_state(engine, FRONTEND_TUI).folded == frozenset({"a"})
     assert load_view_state(engine, FRONTEND_QT).columns == ("name", "ip")
     assert load_view_state(engine, FRONTEND_QT).folded == frozenset()
+    assert load_view_state(engine, FRONTEND_TUI).show_empty_repos is False
+    assert load_view_state(engine, FRONTEND_TUI).hidden_repos == frozenset({"alpha"})
+    assert load_view_state(engine, FRONTEND_QT).show_empty_repos is False
+    assert load_view_state(engine, FRONTEND_QT).hidden_repos == frozenset({"beta"})
 
 
 def test_malformed_json_degrades_instead_of_raising() -> None:
@@ -81,6 +105,32 @@ def test_malformed_json_degrades_instead_of_raising() -> None:
     state = load_view_state(engine, FRONTEND_TUI)
     assert state.columns is None
     assert state.folded == frozenset()
+
+
+def test_malformed_hidden_repos_degrades_without_losing_other_preferences() -> None:
+    from sqlmodel import Session
+
+    from jailbee.db.models import ViewPrefs
+    from jailbee.db.view_prefs import FRONTEND_TUI, load_view_state
+
+    engine = _engine()
+    with Session(engine) as session:
+        session.add(
+            ViewPrefs(
+                frontend=FRONTEND_TUI,
+                columns='["name"]',
+                folded_repos='["folded"]',
+                show_empty_repos=False,
+                hidden_repos='[1, {"bad": true}]',
+            )
+        )
+        session.commit()
+
+    state = load_view_state(engine, FRONTEND_TUI)
+    assert state.hidden_repos == frozenset()
+    assert state.columns == ("name",)
+    assert state.folded == frozenset({"folded"})
+    assert state.show_empty_repos is False
 
 
 def test_decode_names_drops_non_strings_and_empty_lists() -> None:

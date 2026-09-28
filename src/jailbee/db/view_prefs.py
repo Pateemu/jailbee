@@ -38,6 +38,8 @@ class ViewState:
 
     columns: tuple[str, ...] | None = None
     folded: frozenset[str] = field(default_factory=frozenset)
+    show_empty_repos: bool = True
+    hidden_repos: frozenset[str] = field(default_factory=frozenset)
 
 
 def decode_names(raw: str | None) -> tuple[str, ...] | None:
@@ -77,7 +79,12 @@ def load_view_state(engine: Engine, frontend: str) -> ViewState:
         row = session.get(ViewPrefs, frontend)
         if row is None:
             return ViewState()
-        return ViewState(columns=decode_names(row.columns), folded=_decode_folded(row.folded_repos))
+        return ViewState(
+            columns=decode_names(row.columns),
+            folded=_decode_folded(row.folded_repos),
+            show_empty_repos=row.show_empty_repos,
+            hidden_repos=_decode_folded(row.hidden_repos),
+        )
 
 
 def save_view_state(engine: Engine, frontend: str, state: ViewState) -> None:
@@ -94,4 +101,6 @@ def save_view_state(engine: Engine, frontend: str, state: ViewState) -> None:
             session.add(row)
         row.columns = None if state.columns is None else json.dumps(list(state.columns))
         row.folded_repos = json.dumps(sorted(state.folded))
+        row.show_empty_repos = state.show_empty_repos
+        row.hidden_repos = json.dumps(sorted(state.hidden_repos))
         session.commit()

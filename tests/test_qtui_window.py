@@ -651,6 +651,53 @@ def test_group_row_context_menu_offers_new_container(qtbot):
     assert blocker.args == ["p"]
 
 
+def test_orphan_group_context_menu_does_not_offer_new_container(qtbot):
+    from PySide6.QtCore import QPoint, QTimer
+    from PySide6.QtWidgets import QApplication
+
+    win = MainWindow(git_enabled=True, interval=3.0, layout="table")
+    qtbot.addWidget(win)
+    win.set_groups([RepoGroup("gamma", None, None, [])], now=datetime.now().astimezone())
+    win.tree.setCurrentItem(win.tree.topLevelItem(0))
+    seen = []
+
+    def inspect_popup():
+        popup = QApplication.activePopupWidget()
+        if popup is not None:
+            seen.extend(action.text() for action in popup.actions())
+            popup.close()
+
+    QTimer.singleShot(0, inspect_popup)
+    win._on_context_menu(QPoint(0, 0))
+    assert seen == []
+
+
+@pytest.mark.parametrize("layout", ["table", "cards"])
+def test_filtered_all_repositories_show_visibility_guidance(qtbot, layout):
+    win = MainWindow(git_enabled=True, interval=3.0, layout=layout, hidden_repos=frozenset({"p"}))
+    qtbot.addWidget(win)
+    win.set_groups(_groups(), now=datetime.now().astimezone())
+    assert win.empty_state_label.text() == (
+        "No repositories are visible. Change visibility in View > Repositories."
+    )
+    assert win.stack.currentWidget() is win.empty_state_label
+
+
+def test_no_gathered_repositories_shows_ordinary_empty_state(qtbot):
+    win = MainWindow(git_enabled=True, interval=3.0, layout="table")
+    qtbot.addWidget(win)
+    win.set_groups([], now=datetime.now().astimezone())
+    assert win.empty_state_label.text() == "No repositories found."
+    assert win.stack.currentWidget() is win.empty_state_label
+
+
+def test_empty_repo_header_shows_zero_container_count(qtbot):
+    win = MainWindow(git_enabled=True, interval=3.0, layout="table")
+    qtbot.addWidget(win)
+    win.set_groups([RepoGroup("empty", "/empty", None, [])], now=datetime.now().astimezone())
+    assert "0 containers" in win.tree.topLevelItem(0).text(0)
+
+
 def test_config_menu_emits_the_selected_prefix(qtbot):
     win = MainWindow(git_enabled=True, interval=3.0)
     qtbot.addWidget(win)
@@ -676,3 +723,40 @@ def test_config_menu_emits_empty_string_without_a_selection(qtbot):
     win.edit_global_config_action.trigger()
 
     assert received == [("", False), ("", True)]
+
+
+def test_repository_visibility_menu_filters_and_tracks_registered_prefixes(qtbot):
+    win = MainWindow(git_enabled=True, interval=3.0)
+    qtbot.addWidget(win)
+    empty = RepoGroup("empty", "/empty", None, [])
+    win.set_groups([*_groups(), empty], now=datetime.now().astimezone())
+    actions = {a.text(): a for a in win.repositories_menu.actions()}
+    assert actions["Show empty repos"].isChecked()
+    assert actions["empty"].isChecked()
+    assert win.tree.topLevelItem(1).childCount() == 0
+
+    with qtbot.waitSignal(win.repoVisibilityChanged, timeout=1000):
+        actions["empty"].trigger()
+    assert win.hidden_repos() == frozenset({"empty"})
+    assert win.tree.topLevelItemCount() == 1
+
+    win.set_groups(
+        [*_groups(), empty, RepoGroup("later", "/later", None, [])], now=datetime.now().astimezone()
+    )
+    actions = {a.text(): a for a in win.repositories_menu.actions()}
+    assert "later" in actions and actions["empty"].isChecked() is False
+    win.set_groups(_groups(), now=datetime.now().astimezone())
+    assert "empty" in {a.text() for a in win.repositories_menu.actions()}
+
+    with qtbot.waitSignal(win.repoVisibilityChanged, timeout=1000):
+        actions["Show empty repos"].trigger()
+    assert not win.show_empty_repos()
+    assert win.tree.topLevelItemCount() == 1
+
+
+def test_synthetic_config_only_repo_remains_selectable_for_new(qtbot):
+    win = MainWindow(git_enabled=True, interval=3.0, layout="table")
+    qtbot.addWidget(win)
+    win.set_groups([RepoGroup("scratch", "/scratch", None, [])], now=datetime.now().astimezone())
+    win.tree.setCurrentItem(win.tree.topLevelItem(0))
+    assert win._selected_prefix() == "scratch"

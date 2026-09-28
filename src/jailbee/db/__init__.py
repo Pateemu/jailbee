@@ -26,7 +26,7 @@ from jailbee.db.models import SchemaMeta
 
 log = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 13
+CURRENT_SCHEMA_VERSION = 14
 
 
 def state_dir() -> Path:
@@ -225,6 +225,17 @@ def _migrate_to_v13(conn: Connection) -> None:
     return None
 
 
+def _migrate_to_v14(conn: Connection) -> None:
+    """v13 -> v14 adds per-front-end repository visibility preferences."""
+    cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(view_prefs)")}
+    if "show_empty_repos" not in cols:
+        conn.exec_driver_sql(
+            "ALTER TABLE view_prefs ADD COLUMN show_empty_repos BOOLEAN NOT NULL DEFAULT 1"
+        )
+    if "hidden_repos" not in cols:
+        conn.exec_driver_sql("ALTER TABLE view_prefs ADD COLUMN hidden_repos VARCHAR")
+
+
 # target_version -> non-destructive migration step
 _MIGRATIONS: dict[int, Callable[[Connection], None]] = {
     2: _migrate_to_v2,
@@ -239,6 +250,7 @@ _MIGRATIONS: dict[int, Callable[[Connection], None]] = {
     11: _migrate_to_v11,
     12: _migrate_to_v12,
     13: _migrate_to_v13,
+    14: _migrate_to_v14,
 }
 
 

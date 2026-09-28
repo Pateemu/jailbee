@@ -23,7 +23,7 @@ from rich.panel import Panel
 if TYPE_CHECKING:
     from rich.console import RenderableType
 
-Tab = Literal["fields", "repos"]
+Tab = Literal["fields", "repos", "visibility"]
 
 # The overlay is drawn *below* the live table (see module docstring), so every
 # row it draws is a line the table loses to `vertical_overflow="ellipsis"`
@@ -46,6 +46,8 @@ class SettingsState:
     :func:`enabled_names`). ``repo_prefixes`` is every group the user can
     reach — those on screen plus any folded prefix that is not currently
     present, so a repo whose containers are gone can still be unfolded.
+    ``visibility_repo_prefixes`` likewise retains every prefix available for
+    visibility choices, including currently hidden or empty repositories.
     """
 
     tab: Tab
@@ -53,6 +55,9 @@ class SettingsState:
     enabled: frozenset[str]
     repo_prefixes: tuple[str, ...]
     folded: frozenset[str]
+    visibility_repo_prefixes: tuple[str, ...]
+    show_empty_repos: bool
+    hidden_repos: frozenset[str]
     index: int = 0
 
 
@@ -62,6 +67,9 @@ def open_settings(
     enabled: frozenset[str],
     repo_prefixes: tuple[str, ...],
     folded: frozenset[str],
+    visibility_repo_prefixes: tuple[str, ...] = (),
+    show_empty_repos: bool = True,
+    hidden_repos: frozenset[str] = frozenset(),
 ) -> SettingsState:
     """A fresh overlay on the Fields tab, cursor at the top."""
     if not field_names:
@@ -72,27 +80,43 @@ def open_settings(
         enabled=enabled,
         repo_prefixes=repo_prefixes,
         folded=folded,
+        visibility_repo_prefixes=visibility_repo_prefixes,
+        show_empty_repos=show_empty_repos,
+        hidden_repos=hidden_repos,
     )
 
 
 def _rows(state: SettingsState) -> tuple[str, ...]:
     """The current tab's list."""
-    return state.field_names if state.tab == "fields" else state.repo_prefixes
+    if state.tab == "fields":
+        return state.field_names
+    if state.tab == "repos":
+        return state.repo_prefixes
+    return state.visibility_repo_prefixes
+
+
+def _row_count(state: SettingsState) -> int:
+    """Number of selectable rows on the current tab."""
+    return len(_rows(state)) + (1 if state.tab == "visibility" else 0)
 
 
 def move_settings(state: SettingsState, delta: int) -> SettingsState:
     """Move the cursor by ``delta`` within the current tab, clamped."""
-    last = max(0, len(_rows(state)) - 1)
+    last = max(0, _row_count(state) - 1)
     return replace(state, index=max(0, min(last, state.index + delta)))
 
 
 def switch_tab(state: SettingsState) -> SettingsState:
-    """Flip between Fields and Repos, resetting the cursor.
+    """Cycle Fields, Repos and Visibility, resetting the cursor.
 
-    The two lists differ in length, so carrying the index across could leave
+    The tab lists differ in length, so carrying the index across could leave
     the cursor past the end of the shorter one.
     """
-    return replace(state, tab="repos" if state.tab == "fields" else "fields", index=0)
+    if state.tab == "fields":
+        return replace(state, tab="repos", index=0)
+    if state.tab == "repos":
+        return replace(state, tab="visibility", index=0)
+    return replace(state, tab="fields", index=0)
 
 
 def toggle_current(state: SettingsState) -> SettingsState:
@@ -103,19 +127,30 @@ def toggle_current(state: SettingsState) -> SettingsState:
     broken rather than configured. Every repo *can* be folded — the headers
     stay on screen, so nothing becomes unreachable.
     """
-    rows = _rows(state)
-    if not rows:
-        return state
-    name = rows[state.index]
     if state.tab == "fields":
+        rows = _rows(state)
+        if not rows:
+            return state
+        name = rows[state.index]
         if name in state.enabled:
             if len(state.enabled) == 1:
                 return state
             return replace(state, enabled=state.enabled - {name})
         return replace(state, enabled=state.enabled | {name})
-    if name in state.folded:
-        return replace(state, folded=state.folded - {name})
-    return replace(state, folded=state.folded | {name})
+    if state.tab == "repos":
+        rows = _rows(state)
+        if not rows:
+            return state
+        name = rows[state.index]
+        if name in state.folded:
+            return replace(state, folded=state.folded - {name})
+        return replace(state, folded=state.folded | {name})
+    if state.index == 0:
+        return replace(state, show_empty_repos=not state.show_empty_repos)
+    name = state.visibility_repo_prefixes[state.index - 1]
+    if name in state.hidden_repos:
+        return replace(state, hidden_repos=state.hidden_repos - {name})
+    return replace(state, hidden_repos=state.hidden_repos | {name})
 
 
 def enabled_names(state: SettingsState) -> tuple[str, ...]:
@@ -159,18 +194,31 @@ def render_settings(state: SettingsState, *, dynamic: frozenset[str]) -> Rendera
     """
     tabs = " ".join(
         f"[reverse bold] {label} [/]" if state.tab == tab else f" {label} "
-        for tab, label in (("fields", "Fields"), ("repos", "Repos"))
+        for tab, label in (
+            ("fields", "Fields"),
+            ("repos", "Repos"),
+            ("visibility", "Visibility"),
+        )
     )
     lines = [tabs, ""]
     rows = _rows(state)
-    total = len(rows)
+    total = _row_count(state)
     start, end = _window_bounds(state.index, total, _VISIBLE_ROWS)
-    on = state.enabled if state.tab == "fields" else None
     if start > 0:
         lines.append(f"[dim]↑ {start} more[/dim]")
     for i in range(start, end):
-        name = rows[i]
-        checked = (name in on) if on is not None else (name not in state.folded)
+        if state.tab == "visibility" and i == 0:
+            name = "Show empty repos"
+            checked = state.show_empty_repos
+        else:
+            row_index = i - 1 if state.tab == "visibility" else i
+            name = rows[row_index]
+            if state.tab == "fields":
+                checked = name in state.enabled
+            elif state.tab == "repos":
+                checked = name not in state.folded
+            else:
+                checked = name not in state.hidden_repos
         box_mark = "[bold green]x[/]" if checked else " "
         cursor = "[bold cyan]▸[/] " if i == state.index else "  "
         note = (

@@ -58,6 +58,7 @@ from jailbee.dashboard_settings import (
     switch_tab,
     toggle_current,
 )
+from jailbee.dashboard_visibility import visible_repo_groups
 from jailbee.db.view_prefs import ViewState, load_view_state, save_view_state
 from jailbee.global_config import (
     GlobalConfig,
@@ -423,22 +424,21 @@ def gather_rows(
             with_background=True,
         )
         covered.add(cfg.container_prefix)
-        if containers:
-            groups.append(
-                RepoGroup(
-                    cfg.container_prefix,
-                    str(cfg.repo_root),
-                    repo_config_path(root),
-                    containers,
-                    apps=[
-                        AppMenuEntry(_app_menu_verb(spec), spec.description or spec.name)
-                        for spec in resolve_apps(cfg)
-                    ],
-                    loose_ttl_default=_loose_ttl_default(cfg, gcfg),
-                    push_action_default=cfg.push.default_action,
-                    push_source_default=cfg.push.default_source,
-                )
+        groups.append(
+            RepoGroup(
+                cfg.container_prefix,
+                str(cfg.repo_root),
+                repo_config_path(root),
+                containers,
+                apps=[
+                    AppMenuEntry(_app_menu_verb(spec), spec.description or spec.name)
+                    for spec in resolve_apps(cfg)
+                ],
+                loose_ttl_default=_loose_ttl_default(cfg, gcfg),
+                push_action_default=cfg.push.default_action,
+                push_source_default=cfg.push.default_source,
             )
+        )
 
     if base_cfg is not None:
         all_rows = list_containers(
@@ -553,15 +553,11 @@ class Row:
 def selectable_rows(groups: list[RepoGroup], folded: frozenset[str] = frozenset()) -> list[Row]:
     """Cursor stops in display order.
 
-    Every non-empty group contributes its header, folded or not; a folded
-    group contributes none of its containers. An empty group contributes
-    nothing at all, because :func:`render` draws no header for one and a
-    cursor stop on an invisible row is a dead keypress.
+    Every group contributes its header, folded or not; a folded group
+    contributes none of its containers.
     """
     rows: list[Row] = []
     for g in groups:
-        if not g.containers:
-            continue
         rows.append(Row("repo", g.prefix))
         if g.prefix in folded:
             continue
@@ -922,7 +918,7 @@ def settings_repo_prefixes(groups: list[RepoGroup], folded: frozenset[str]) -> t
     container created/destroyed while the Repos tab is open does not appear
     or disappear from the list until the overlay is closed and reopened.
     """
-    on_screen = [g.prefix for g in groups if g.containers]
+    on_screen = [g.prefix for g in groups]
     return tuple(dict.fromkeys(on_screen + sorted(folded)))
 
 
@@ -1202,7 +1198,7 @@ def open_repo_menu(
     groups: list[RepoGroup], prefix: str, folded: frozenset[str]
 ) -> RepoMenuState | None:
     """Offer creation for actionable repos and folding for every visible header."""
-    group = next((g for g in groups if g.prefix == prefix and g.containers), None)
+    group = next((g for g in groups if g.prefix == prefix), None)
     if group is None:
         return None
     actions: list[tuple[str, str]] = []
@@ -1548,6 +1544,7 @@ class _RepoSections:
     selected: Row | None
     folded: frozenset[str]
     empty: bool
+    hidden_by_preferences: bool = False
     hide_first: Sequence[str] = ()
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
@@ -1558,11 +1555,15 @@ class _RepoSections:
         sections: list[RenderableType] = []
         headers_shown = False
         if self.empty:
-            sections.append("(no containers found)")
+            sections.append(
+                "All repositories are hidden — open Settings > Visibility to show them"
+                if self.hidden_by_preferences
+                else "(no containers found)"
+            )
         else:
             for group in self.groups:
                 sections.append(repo_heading(group, self.selected, self.folded))
-                if group.prefix not in self.folded:
+                if group.containers and group.prefix not in self.folded:
                     sections.append(
                         repo_table(
                             group, fields, widths, self.selected, show_header=not headers_shown
@@ -1585,6 +1586,7 @@ def render(
     notice: str | None = None,
     folded: frozenset[str] = frozenset(),
     hide_first: Sequence[str] = (),
+    hidden_by_preferences: bool = False,
 ) -> RenderableType:
     """Build the Rich renderable for one dashboard frame.
 
@@ -1602,7 +1604,7 @@ def render(
     visible = [c for g in groups if g.prefix not in folded for c in g.containers]
     fields = visible_fields(now, visible, enabled)
 
-    visible_groups = [g for g in groups if g.containers]
+    visible_groups = groups
     visible_rows = [(g, c) for g in visible_groups if g.prefix not in folded for c in g.containers]
     widths = _dashboard_column_widths(fields, visible_rows)
     body: list[RenderableType] = [
@@ -1612,7 +1614,8 @@ def render(
             widths,
             selected,
             folded,
-            empty=not all_containers,
+            empty=not groups,
+            hidden_by_preferences=hidden_by_preferences,
             hide_first=hide_first,
         ),
     ]
@@ -2248,6 +2251,8 @@ def run(
     view_state = seed_view_state(engine, FRONTEND_TUI)
     enabled: tuple[str, ...] | None = view_state.columns
     folded: frozenset[str] = view_state.folded
+    show_empty_repos = view_state.show_empty_repos
+    hidden_repos = view_state.hidden_repos
     hide_first = tuple(_global_config_or_defaults().dashboard.auto_hide.hide_first)
 
     interval = max(0.5, interval)
@@ -2397,8 +2402,11 @@ def run(
         return open_settings(
             field_names=all_column_names(),
             enabled=frozenset(enabled if enabled is not None else default_columns()),
-            repo_prefixes=settings_repo_prefixes(groups, folded),
+            repo_prefixes=settings_repo_prefixes(all_groups, folded),
             folded=folded,
+            visibility_repo_prefixes=tuple(dict.fromkeys(g.prefix for g in all_groups)),
+            show_empty_repos=show_empty_repos,
+            hidden_repos=hidden_repos,
         )
 
     worker = threading.Thread(target=refresher, name="jailbee-dashboard-refresh", daemon=True)
@@ -2658,10 +2666,17 @@ def run(
                     set_notice(f"'jailbee {' '.join(argv)}' exited {rc}")
                 force.set()
 
+            all_groups: list[RepoGroup] = seeded
+            groups: list[RepoGroup] = visible_repo_groups(
+                all_groups, show_empty_repos=show_empty_repos, hidden_repos=hidden_repos
+            )
             while not stop.is_set():
                 with lock:
-                    groups = shared_groups
+                    all_groups = shared_groups
                     last_full = shared_last_full
+                groups = visible_repo_groups(
+                    all_groups, show_empty_repos=show_empty_repos, hidden_repos=hidden_repos
+                )
                 rows = selectable_rows(groups, folded)
                 if (
                     isinstance(overlay, MenuState)
@@ -2705,6 +2720,7 @@ def run(
                         notice=notice,
                         folded=folded,
                         hide_first=hide_first,
+                        hidden_by_preferences=bool(all_groups) and not groups,
                     ),
                     refresh=True,
                 )
@@ -2786,7 +2802,11 @@ def run(
                             overlay = toggle_current(overlay)
                             enabled = enabled_names(overlay)
                             folded = overlay.folded
-                            persist_view_state(ViewState(enabled, folded))
+                            show_empty_repos = overlay.show_empty_repos
+                            hidden_repos = overlay.hidden_repos
+                            persist_view_state(
+                                ViewState(enabled, folded, show_empty_repos, hidden_repos)
+                            )
                     elif isinstance(overlay, (MenuState, RepoMenuState)):
                         if key in ("up", "down"):
                             overlay = move_menu(overlay, -1 if key == "up" else 1)
@@ -2799,7 +2819,9 @@ def run(
                                     create_container()
                                 elif verb == "fold":
                                     folded = toggle_folded(folded, target)
-                                    persist_view_state(ViewState(enabled, folded))
+                                    persist_view_state(
+                                        ViewState(enabled, folded, show_empty_repos, hidden_repos)
+                                    )
                             else:
                                 next_menu, verb = enter_menu(overlay)
                                 if verb is not None:
