@@ -142,6 +142,12 @@ make docs-serve    # preview the docs alone
   `https://jailbee.gisgro.io/docs/<page>/`; `tests/docs_links.py` resolves each
   one against `docs/*.md` without running the generator.
 
+### Writing news articles
+
+Before drafting or editing a blog or news article, read
+[`website/news/README.md`](website/news/README.md). It is the authoritative
+guide to article metadata, images, links, previewing, and publishing.
+
 ## Coding patterns
 
 ### Always use `incus.list_containers()`, not `incus.list()`
