@@ -1379,18 +1379,20 @@ def _hint_line(overlay: Overlay | None) -> str:
 
 
 def repo_heading(group: RepoGroup, selected: Row | None, folded: frozenset[str]) -> Text:
-    """Render a repo heading independently of the table's data columns."""
+    """Render a repo heading independently of the table's data columns.
+
+    The cursor heading is marked by reverse video, not by the container
+    rows' ``▸`` gutter arrow: a heading has no gutter cell, so an inserted
+    arrow would shift the whole line whenever the cursor landed on it.
+    """
     marker = "▸" if group.prefix in folded else "▾"
     label = f"{marker} {group.prefix}  ({len(group.containers)})"
     style = "bold yellow" if group.repo_root is None else "bold cyan"
     if group.repo_root is None:
         label += "  (orphan)"
-    result = Text.from_markup(
-        f"{'▸ ' if selected == Row('repo', group.prefix) else ''}[{style}]{label}[/]"
-    )
     if selected == Row("repo", group.prefix):
-        result.stylize("bold bright_white")
-    return result
+        style += " reverse"
+    return Text(label, style=style)
 
 
 def _aligned_table(

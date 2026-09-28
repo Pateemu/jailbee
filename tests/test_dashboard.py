@@ -4016,37 +4016,39 @@ def test_render_marks_a_folded_group_and_hides_its_rows(tmp_path):
 
 
 def test_render_marks_a_selected_repo_header(tmp_path):
-    """A header the cursor sits on must look selected.
+    """A header the cursor sits on must look selected — without moving.
 
-    Headers became cursor stops one commit earlier, where `render` did not
-    consult `selected` for them at all — so the stop was state-correct and
-    invisible, and pressing Down onto a header made the highlight vanish
-    with nothing replacing it. The gutter arrow is what marks the cursor row
-    for containers; a selected header carries it too, so both kinds of stop
-    read as one cursor.
+    Headers became cursor stops at a point where `render` did not consult
+    `selected` for them at all, so pressing Down onto a header made the
+    highlight vanish. The first fix prefixed the header with the container
+    rows' `▸` gutter arrow, but a header has no gutter cell of its own, so
+    the whole line jumped two cells right whenever the cursor landed on it.
+    The cursor header is now marked by reverse video alone: same text, same
+    position, different style.
     """
-    now = datetime(2026, 6, 8, 12, 0, tzinfo=UTC)
     g = dashboard.RepoGroup("alpha", "/a", tmp_path / "a.yaml", [_ci("alpha-one", "alpha")])
-    kwargs = dict(now=now, last_refresh_age=1.0, interval=3.0, git_enabled=True)
+    kwargs = dict(
+        now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
+        last_refresh_age=1.0,
+        interval=3.0,
+        git_enabled=True,
+    )
 
     unselected = _render_text(dashboard.render([g], selected=None, **kwargs))
     on_header = _render_text(
         dashboard.render([g], selected=dashboard.Row("repo", "alpha"), **kwargs)
     )
+    # The plain text is identical: nothing is inserted, so nothing shifts.
+    assert unselected == on_header
 
-    assert unselected != on_header  # the header renders differently as the cursor row
-    # The group is unfolded, so its fold marker is `▾`; `▸` can only be the
-    # selection gutter. That makes this assertion discriminating rather than
-    # matching whichever glyph happens to be present.
-    #
-    # The exclusion clause must name what the container row actually
-    # contains: `display_name` strips the `<repo>-` prefix, so the row reads
-    # "one", never "alpha-one" — filtering on the full name was inert (it
-    # excluded nothing, since that string never appears in either line) and
-    # would have let the container's own row satisfy this `next()` by
-    # accident if it had ever picked up a `▸` of its own.
-    header_line = next(ln for ln in on_header.splitlines() if "alpha" in ln and "one" not in ln)
-    assert "▸" in header_line
+    plain = dashboard.repo_heading(g, None, frozenset())
+    selected = dashboard.repo_heading(g, dashboard.Row("repo", "alpha"), frozenset())
+    assert selected.plain == plain.plain
+    assert "reverse" in str(selected.style) or any(
+        "reverse" in str(span.style) for span in selected.spans
+    )
+    assert not any("reverse" in str(span.style) for span in plain.spans)
+    assert "reverse" not in str(plain.style)
 
 
 def test_render_gutter_lands_on_the_first_enabled_column_not_just_name(tmp_path):
