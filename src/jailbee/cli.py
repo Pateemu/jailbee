@@ -8802,7 +8802,7 @@ def _egress_container_mode(cfg: "Config", incus: "IncusType", name: str) -> str:
 @egress_app.command("add")
 def egress_add_cmd(
     entry: Annotated[
-        str,
+        str | None,
         typer.Argument(
             help=(
                 "Destination to allow, as 'host', 'host:port', an IPv4 address "
@@ -8812,7 +8812,7 @@ def egress_add_cmd(
                 "what the ACL carries."
             ),
         ),
-    ],
+    ] = None,
     name: Annotated[
         str | None,
         typer.Argument(
@@ -8834,6 +8834,17 @@ def egress_add_cmd(
     from jailbee.egress import NetworkResolveError, parse_egress_entry
 
     cfg = _load_or_exit(config)
+    if entry is None:
+        from jailbee.lifecycle import _stdin_is_interactive
+
+        if not _stdin_is_interactive():
+            error("ENTRY is required without an interactive terminal; pass ENTRY explicitly.")
+            raise typer.Exit(2)
+        from jailbee.egress_interaction import prompt_add_entry
+
+        entry = prompt_add_entry()
+        if entry is None:
+            return
     try:
         parse_egress_entry(entry)
     except ValueError as e:
@@ -8896,7 +8907,7 @@ def egress_add_cmd(
 @egress_app.command("rm")
 def egress_rm_cmd(
     entry: Annotated[
-        str,
+        str | None,
         typer.Argument(
             help=(
                 "Override to remove, spelled exactly as `jailbee net egress ls` "
@@ -8905,7 +8916,7 @@ def egress_rm_cmd(
                 "config.yaml cannot be removed here."
             ),
         ),
-    ],
+    ] = None,
     name: Annotated[
         str | None,
         typer.Argument(
@@ -8939,6 +8950,36 @@ def egress_rm_cmd(
     from jailbee.db import get_engine
 
     cfg = _load_or_exit(config)
+    if entry is None:
+        from jailbee.lifecycle import _stdin_is_interactive
+
+        if not _stdin_is_interactive():
+            error("ENTRY is required without an interactive terminal; pass ENTRY explicitly.")
+            raise typer.Exit(2)
+        from jailbee import egress_scope
+        from jailbee.egress_interaction import pick_remove_entry
+
+        if repo:
+            with Session(get_engine()) as session:
+                entries = list(
+                    dict.fromkeys(
+                        [
+                            *egress_scope.local_entries(cfg.container_prefix),
+                            *egress_scope.legacy_repo_extras(session, cfg.container_prefix),
+                        ]
+                    )
+                )
+            entry = pick_remove_entry(entries, scope="repo")
+        else:
+            incus, container = _egress_target(name, repo, cfg)
+            assert container is not None
+            entries = egress_scope.container_extras(incus, container)
+            name = container
+            entry = pick_remove_entry(entries, scope="container")
+        if entry is None:
+            if not entries:
+                info("There are no stored overrides to remove.")
+            return
     if repo:
         removed = egress_scope.remove_local_entry(cfg.container_prefix, entry)
         with Session(get_engine()) as session:
