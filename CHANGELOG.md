@@ -10,6 +10,10 @@ before editing `## Unreleased`.
 
 ### Added
 
+- **Pick a PR container for `jb push --pr`.** On a TTY, omitting the name
+  offers a single-select list of running clone-mode PR containers (or uses
+  the only eligible one). Scripts still pass an explicit name.
+
 - **Host-local per-repo configuration.** Per-host overrides now live outside
   the checkout in `~/.config/jailbee/repos/<container_prefix>.yaml`, above
   the committed repo layer in configuration precedence. Use `jailbee config

@@ -1002,9 +1002,9 @@ the answer: the container's commits **into** PR #1234's head
 see below). Off a TTY the choice must come from a flag: `--yes` for the first,
 `--stacked` for the second.
 
-`git push --pr` needs the container named explicitly (it reads the container's
-own `user.jailbee.pr` label, so there is nothing for a picker to offer), but the
-action flag is optional: without it the merge/rebase/plain choice follows
+`git push --pr` with no name on a TTY selects one running clone-mode PR
+container (or uses the only eligible one). Name it explicitly in scripts.
+The action flag is optional: without it the merge/rebase/plain choice follows
 `push.default_action`, which is `ask` by default — a prompt on a TTY, an error
 off one. Both dashboards carry it as **"Refresh from PR head"**, shown only on a
 review container (a PR JailBee opened from the container's own branch has its

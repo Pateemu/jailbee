@@ -5889,6 +5889,8 @@ def _pr_head_for(incus: "IncusType", full: str) -> tuple[int, str] | None:
         number = int(raw)
     except (TypeError, ValueError):
         return None
+    if number <= 0:
+        return None
     head_ref = incus.config_get(full, "user.jailbee.branch")
     if not isinstance(head_ref, str) or not head_ref:
         return None
@@ -6291,7 +6293,8 @@ def push(
                 "Omit it and jailbee picks among the containers eligible for a "
                 "push (running, not in mount mode): the only one is used, "
                 "otherwise a multi-select picker opens and each selection is "
-                "pushed to in turn (TTY required)."
+                "pushed to in turn (TTY required). With --pr, only PR "
+                "containers are eligible and the picker selects one."
             ),
             autocompletion=completion.complete_container,
         ),
@@ -6365,8 +6368,8 @@ def push(
             "--pr",
             help="Refresh this container's PR head from the GitHub origin "
             "and push it. Only valid for containers created with "
-            "'jailbee new --pr'. Requires an explicit container name; mutually "
-            "exclusive with --from and --current.",
+            "'jailbee new --pr'. Without a name, select one eligible PR "
+            "container interactively. Mutually exclusive with --from and --current.",
         ),
     ] = False,
     from_origin: Annotated[
@@ -6437,7 +6440,8 @@ def push(
 
     With --pr (PR containers only), the container's PR head is re-fetched
     from the GitHub origin before the push, bringing in commits the PR
-    author pushed since the container was created.
+    author pushed since the container was created. Without a name, a TTY
+    selects one running clone-mode PR container (or uses the only one).
 
     Which *copy* of the source branch travels is a separate question from
     which branch. By default (push.push_from='origin', push.autofetch=true)
@@ -6470,6 +6474,7 @@ def push(
       jailbee git push feat-foo --plain         # transport only, no apply
       jailbee git push feat-foo --from develop --force   # replace container branch + worktree
       jailbee git push feat-foo --pr            # refresh from the PR head on GitHub
+      jailbee git push --pr                     # select one eligible PR container
       jailbee git push feat-foo --from-local    # send the host's local branch as-is
       jailbee git push feat-foo --no-fetch      # use origin/<source> without fetching first
       jailbee git push --no-confirm             # skip the auto-target confirmation
@@ -6512,15 +6517,42 @@ def push(
             "local-vs-origin choice to make."
         )
         raise typer.Exit(2)
-    if pr_refresh and name is None:
-        error("--pr requires an explicit container name (batch mode is not supported with --pr).")
-        raise typer.Exit(1)
-
     from jailbee import git as git_helpers
     from jailbee import sync
     from jailbee.lifecycle import _stdin_is_interactive, short_name
 
     cfg = _load_or_exit(config)
+    selected_pr: tuple[IncusType, str] | None = None
+    if pr_refresh and name is None:
+        from jailbee import tui
+        from jailbee.incus import Incus
+        from jailbee.lifecycle import list_containers
+
+        if not _stdin_is_interactive():
+            error(
+                "No container name given. Pass a PR container name, or run in a TTY to select one."
+            )
+            raise typer.Exit(1)
+
+        pr_incus = Incus()
+        candidates = [
+            c
+            for c in list_containers(cfg, pr_incus, with_git_status=False)
+            if c.state == "Running" and c.mode != "mount" and _pr_head_for(pr_incus, c.name)
+        ]
+        if not candidates:
+            error("No running clone-mode PR containers to push to.")
+            raise typer.Exit(1)
+        if len(candidates) == 1:
+            full = candidates[0].name
+            info(f"Only one eligible PR container; pushing to '{short_name(cfg, full)}'.")
+        else:
+            picked_pr = tui.pick_container(candidates, message="Select a PR container to push to:")
+            if picked_pr is None:
+                raise typer.Abort()
+            full = picked_pr
+        selected_pr = (pr_incus, full)
+
     ref_pref = _resolve_push_ref_pref(
         cfg,
         origin_flag=from_origin,
@@ -6543,7 +6575,7 @@ def push(
     # the user never made.
     merge_confirm = default_confirm if _stdin_is_interactive() else None
 
-    if name is None:
+    if name is None and selected_pr is None:
         from jailbee import tui
         from jailbee.incus import Incus
         from jailbee.lifecycle import list_containers
@@ -6716,7 +6748,7 @@ def push(
             raise typer.Exit(1)
         return
 
-    incus, full = _resolve_existing(cfg, name)
+    incus, full = selected_pr if selected_pr is not None else _resolve_existing(cfg, name)
     short = short_name(cfg, full)
 
     # Named `single_source` (not `resolved_source` like the batch path above)
