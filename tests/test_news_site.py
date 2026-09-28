@@ -101,9 +101,15 @@ def test_feature_image_and_metadata_are_escaped(site: tuple[Path, Path]) -> None
     "body",
     [
         "![Remote](https://cdn.example.com/image.png)\n",
+        "![Remote][picture]\n\n[picture]: https://cdn.example.com/image.png\n",
+        "![An [illustrated] update](/assets/missing.png)\n",
+        "![Missing][picture]\n\n[picture]: /assets/missing.png\n",
         '<img src="https://cdn.example.com/image.png">\n',
+        '<pre><code><script src="https://cdn.example.com/x.js"></script></code></pre>\n',
         "![Missing](/assets/missing.png)\n",
         "# Another title\n",
+        "Another title\n=============\n",
+        "> # Quoted title\n",
     ],
 )
 def test_bad_body_fails_with_article_path(site: tuple[Path, Path], body: str) -> None:
@@ -111,6 +117,23 @@ def test_bad_body_fails_with_article_path(site: tuple[Path, Path], body: str) ->
     _add(website, "2026-09-28-release.md", META, body)
     with pytest.raises(ValueError, match=r"2026-09-28-release\.md"):
         build(website, output)
+
+
+def test_code_examples_are_not_treated_as_raw_html_or_headings(site: tuple[Path, Path]) -> None:
+    website, output = site
+    _add(
+        website,
+        "2026-09-28-release.md",
+        META,
+        '```html\n<img src="https://example.com/demo.png">\n```\n\n'
+        '```sh\n# this is a shell comment\n```\n\n'
+        '`<img src="example">` is only an example.\n',
+    )
+    build(website, output)
+    html = (output / "news" / "release" / "index.html").read_text()
+    assert html.count("<h1") == 1
+    assert "&lt;img src=" in html
+    assert "# this is a shell comment" in html
 
 
 @pytest.mark.parametrize("count,expected_pages", [(0, 1), (10, 1), (11, 2), (21, 3)])

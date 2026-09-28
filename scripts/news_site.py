@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import re
 import shutil
 import sys
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, time
 from email.utils import format_datetime
+from html.parser import HTMLParser
 from pathlib import Path
 
 import markdown
@@ -22,21 +22,48 @@ WEBSITE = REPO / "website"
 SITE = REPO / "_site"
 URL = "https://jailbee.gisgro.io"
 DEFAULT_IMAGE = "/assets/img/jailbee-og.png"
-_IMAGE = re.compile(r"!\[[^]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)")
-_HTML = re.compile(r"</?[a-zA-Z][^>]*>|<!--|<!")
-_H1 = re.compile(r"(?m)^\s{0,3}#(?:\s|$)")
 _SITEMAP_NS = "http://www.sitemaps.org/schemas/sitemap/0.9"
+_ARTICLE_TAGS = {
+    "a", "blockquote", "br", "code", "em", "h1", "h2", "h3", "h4", "h5", "h6",
+    "hr", "img", "li", "ol", "p", "pre", "strong", "table", "tbody", "td",
+    "th", "thead", "tr", "ul",
+}
+
+
+class _ArticleElements(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.h1_count = 0
+        self.images: list[str] = []
+        self.invalid_tag: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag not in _ARTICLE_TAGS or any(name.startswith("on") or name == "style" for name, _ in attrs):
+            self.invalid_tag = tag
+        if tag == "h1":
+            self.h1_count += 1
+        if tag == "img":
+            self.images.append(dict(attrs).get("src") or "")
 
 
 def _content(post: Post, assets_dir: Path) -> str:
     source = Path(f"{post.date}-{post.slug}.md")
-    if _HTML.search(post.body_md):
-        raise ValueError(f"{source}: raw HTML is not allowed in article Markdown")
-    if _H1.search(post.body_md):
+    parser = markdown.Markdown(extensions=["fenced_code", "tables"])
+    html = parser.convert(post.body_md)
+    # Python-Markdown stashes fenced code as a generated <pre><code> block;
+    # reject other raw HTML, without mistaking an example inside a fence for it.
+    for raw in parser.htmlStash.rawHtmlBlocks:
+        if not raw.startswith("<pre><code"):
+            raise ValueError(f"{source}: raw HTML is not allowed in article Markdown")
+    elements = _ArticleElements()
+    elements.feed(html)
+    if elements.invalid_tag:
+        raise ValueError(f"{source}: unsupported HTML in article: {elements.invalid_tag}")
+    if elements.h1_count:
         raise ValueError(f"{source}: use ## for article headings, not a second # title")
-    for path in _IMAGE.findall(post.body_md):
+    for path in elements.images:
         asset_path(path, assets_dir, source)
-    return markdown.markdown(post.body_md, extensions=["fenced_code", "tables"])
+    return html
 
 
 def _hash(path: Path) -> str:
