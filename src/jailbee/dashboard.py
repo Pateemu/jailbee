@@ -1262,7 +1262,7 @@ def _render_menu(menu: MenuState | RepoMenuState) -> RenderableType:
     """The action menu as a bordered panel: one row per action, cursor on the
     highlighted one."""
     lines = [
-        f"[bold cyan]▸[/] [bold bright_white]{label}[/]" if i == menu.index else f"  {label}"
+        f"[bold cyan]▸[/] [{_CURSOR_STYLE}]{label}[/]" if i == menu.index else f"  {label}"
         for i, item in enumerate(_menu_entries(menu))
         for label in [item.label if isinstance(item, MenuGroup) else item[0]]
     ]
@@ -1378,20 +1378,26 @@ def _hint_line(overlay: Overlay | None) -> str:
     return ""
 
 
+# The cursor row's text style, shared by container rows, repo headings and
+# menu entries so every kind of cursor stop reads as the same cursor.
+_CURSOR_STYLE = "bold bright_white"
+
+
 def repo_heading(group: RepoGroup, selected: Row | None, folded: frozenset[str]) -> Text:
     """Render a repo heading independently of the table's data columns.
 
-    The cursor heading is marked by reverse video, not by the container
-    rows' ``▸`` gutter arrow: a heading has no gutter cell, so an inserted
-    arrow would shift the whole line whenever the cursor landed on it.
+    The cursor heading takes the container rows' cursor style but not their
+    ``▸`` gutter arrow: a heading has no gutter cell, so an inserted arrow
+    would shift the whole line whenever the cursor landed on it.
     """
     marker = "▸" if group.prefix in folded else "▾"
     label = f"{marker} {group.prefix}  ({len(group.containers)})"
-    style = "bold yellow" if group.repo_root is None else "bold cyan"
     if group.repo_root is None:
         label += "  (orphan)"
     if selected == Row("repo", group.prefix):
-        style += " reverse"
+        style = _CURSOR_STYLE
+    else:
+        style = "bold yellow" if group.repo_root is None else "bold cyan"
     return Text(label, style=style)
 
 
@@ -1448,7 +1454,7 @@ def repo_table(
             if index == 0:
                 value = ("[bold cyan]▸[/] " if is_selected else "  ") + value
             cells.append(value)
-        table.add_row(*cells, style="bold bright_white" if is_selected else None)
+        table.add_row(*cells, style=_CURSOR_STYLE if is_selected else None)
     return table
 
 

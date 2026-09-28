@@ -4023,8 +4023,8 @@ def test_render_marks_a_selected_repo_header(tmp_path):
     highlight vanish. The first fix prefixed the header with the container
     rows' `▸` gutter arrow, but a header has no gutter cell of its own, so
     the whole line jumped two cells right whenever the cursor landed on it.
-    The cursor header is now marked by reverse video alone: same text, same
-    position, different style.
+    The cursor header now takes the container rows' cursor style without
+    their arrow: same text, same position, same highlight as a cursor row.
     """
     g = dashboard.RepoGroup("alpha", "/a", tmp_path / "a.yaml", [_ci("alpha-one", "alpha")])
     kwargs = dict(
@@ -4044,11 +4044,10 @@ def test_render_marks_a_selected_repo_header(tmp_path):
     plain = dashboard.repo_heading(g, None, frozenset())
     selected = dashboard.repo_heading(g, dashboard.Row("repo", "alpha"), frozenset())
     assert selected.plain == plain.plain
-    assert "reverse" in str(selected.style) or any(
-        "reverse" in str(span.style) for span in selected.spans
-    )
-    assert not any("reverse" in str(span.style) for span in plain.spans)
-    assert "reverse" not in str(plain.style)
+    assert str(plain.style) == "bold cyan"
+    # Exactly the style a selected container row gets from `repo_table`.
+    row = dashboard.repo_table(g, [], (), dashboard.Row("container", "alpha-one"))
+    assert str(selected.style) == str(row.rows[0].style) == "bold bright_white"
 
 
 def test_render_gutter_lands_on_the_first_enabled_column_not_just_name(tmp_path):
