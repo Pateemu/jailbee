@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,10 @@ def site(tmp_path: Path) -> tuple[Path, Path]:
     (assets / "style.css").write_text("body { color: red; }")
     (assets / "news.css").write_text("article { max-width: 60ch; }")
     (assets / "feature.png").write_bytes(b"image")
+    (website / "sitemap.xml").write_text(
+        '<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        "<url><loc>https://jailbee.gisgro.io/</loc></url></urlset>"
+    )
     return website, output
 
 
@@ -104,3 +109,93 @@ def test_bad_body_fails_with_article_path(site: tuple[Path, Path], body: str) ->
     _add(website, "2026-09-28-release.md", META, body)
     with pytest.raises(ValueError, match="2026-09-28-release.md"):
         build(website, output)
+
+
+@pytest.mark.parametrize("count,expected_pages", [(0, 1), (10, 1), (11, 2), (21, 3)])
+def test_pagination_obeys_ten_posts_per_page(
+    site: tuple[Path, Path], count: int, expected_pages: int
+) -> None:
+    website, output = site
+    for number in range(count):
+        _add(website, f"2026-09-28-post-{number:02}.md", META)
+    build(website, output)
+
+    pages = [output / "news" / "index.html"] + [
+        output / "news" / "page" / str(n) / "index.html"
+        for n in range(2, expected_pages + 1)
+    ]
+    assert all(page.is_file() for page in pages)
+    assert [page.read_text().count('class="news-card"') for page in pages] == (
+        [min(count, 10)] + [min(count - 10 * (n - 1), 10) for n in range(2, expected_pages + 1)]
+    )
+    assert not (output / "news" / "page" / str(expected_pages + 1)).exists()
+    assert '<link rel="canonical" href="https://jailbee.gisgro.io/news/"' in pages[
+        0
+    ].read_text()
+    if count > 10:
+        assert 'href="/news/page/2/"' in pages[0].read_text()
+        assert '<link rel="canonical" href="https://jailbee.gisgro.io/news/page/2/"' in pages[
+            1
+        ].read_text()
+        assert 'href="/news/"' in pages[1].read_text()
+
+
+def test_rss_is_valid_ordered_and_discoverable(site: tuple[Path, Path]) -> None:
+    website, output = site
+    _add(
+        website,
+        "2026-09-28-new.md",
+        'title: "New & <important>"\ndate: 2026-09-28\nsummary: "A & B"\n',
+    )
+    _add(website, "2026-09-27-old.md", META.replace("2026-09-28", "2026-09-27"))
+    build(website, output)
+
+    tree = ET.parse(output / "news" / "feed.xml")
+    items = tree.findall("./channel/item")
+    assert [item.findtext("title") for item in items] == ["New & <important>", "JailBee 1.5"]
+    assert [item.findtext("link") for item in items] == [
+        "https://jailbee.gisgro.io/news/new/",
+        "https://jailbee.gisgro.io/news/old/",
+    ]
+    assert items[0].findtext("guid") == "https://jailbee.gisgro.io/news/new/"
+    assert items[0].findtext("description") == "A & B"
+    assert items[0].findtext("pubDate") == "Mon, 28 Sep 2026 00:00:00 GMT"
+    html = (output / "news" / "index.html").read_text()
+    assert 'type="application/rss+xml"' in html
+    assert 'href="/news/feed.xml"' in html
+
+
+def _sitemap_urls(output: Path) -> set[str]:
+    namespace = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    tree = ET.parse(output / "sitemap.xml")
+    return {loc.text or "" for loc in tree.findall(".//s:loc", namespace)}
+
+
+def test_sitemap_contains_only_current_news_pages(site: tuple[Path, Path]) -> None:
+    website, output = site
+    for number in range(11):
+        _add(website, f"2026-09-28-post-{number:02}.md", META)
+    build(website, output)
+    assert _sitemap_urls(output) == {
+        "https://jailbee.gisgro.io/",
+        "https://jailbee.gisgro.io/news/",
+        "https://jailbee.gisgro.io/news/page/2/",
+        *(f"https://jailbee.gisgro.io/news/post-{number:02}/" for number in range(11)),
+    }
+
+    (output / "index.html").write_text("Home")
+    docs = output / "docs" / "index.html"
+    docs.parent.mkdir()
+    docs.write_text("Docs")
+    for number in range(1, 11):
+        (website / "news" / "posts" / f"2026-09-28-post-{number:02}.md").unlink()
+    build(website, output)
+    assert (output / "index.html").read_text() == "Home"
+    assert docs.read_text() == "Docs"
+    assert not (output / "news" / "page" / "2").exists()
+    assert not (output / "news" / "post-01").exists()
+    assert _sitemap_urls(output) == {
+        "https://jailbee.gisgro.io/",
+        "https://jailbee.gisgro.io/news/",
+        "https://jailbee.gisgro.io/news/post-00/",
+    }

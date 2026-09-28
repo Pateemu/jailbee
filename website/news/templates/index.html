@@ -15,5 +15,12 @@
     </div>
   </article>
   {% endfor %}
+  {% if previous or next %}
+  <nav class="news-pagination" aria-label="News pages">
+    {% if previous %}<a href="{{ previous }}">← Newer</a>{% endif %}
+    {% if next %}<a href="{{ next }}">Older →</a>{% endif %}
+  </nav>
+  {% endif %}
+  <p><a href="/news/feed.xml">Subscribe via RSS</a></p>
 </div>
 {% endblock %}
