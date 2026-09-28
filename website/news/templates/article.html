@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% set description = post.summary %}
+{% block content %}
+<article class="news-article">
+  <a class="news-back" href="/news/">← All news</a>
+  <header class="news-article__header">
+    <time datetime="{{ post.date.isoformat() }}">{{ post.date.isoformat() }}</time>
+    <h1>{{ post.title }}</h1>
+    <p class="news-summary">{{ post.summary }}</p>
+  </header>
+  {% if post.image %}<img class="news-feature" src="{{ post.image }}" alt="{{ post.image_alt }}" />{% endif %}
+  <div class="news-article__body">{{ body_html | safe }}</div>
+</article>
+{% endblock %}

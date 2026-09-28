@@ -1110,9 +1110,9 @@ def test_repo_network_menu_is_a_submenu_and_escape_returns_to_parent():
     group = dashboard.RepoGroup("alpha", "/alpha", None, [])
     menu = dashboard.open_repo_menu([group], "alpha", frozenset())
     assert menu is not None
-    assert menu.actions[1] == dashboard.MenuGroup("Network →", (("Egress…", "net egress ls"),))
+    assert menu.actions[2] == dashboard.MenuGroup("Network →", (("Egress…", "net egress ls"),))
 
-    menu.index = 1
+    menu.index = 2
     child, verb = dashboard.enter_menu(menu)
     assert verb is None
     assert isinstance(child, dashboard.RepoMenuState)
@@ -1121,7 +1121,7 @@ def test_repo_network_menu_is_a_submenu_and_escape_returns_to_parent():
     parent = dashboard.back_menu(child)
     assert parent is not None
     assert parent.active_group is None
-    assert parent.index == 1
+    assert parent.index == 2
     assert dashboard.menu_verb(parent) is None
 
 
@@ -1293,7 +1293,7 @@ def test_repo_egress_dispatch_uses_repo_scope_and_explicit_config(mocker, tmp_pa
     child.return_value.returncode = 0
 
     assert (
-        _drive_run(mocker, [b"\r", b"j", b"\r", b"\r", b"a", b"\x1b", b"\x03"], groups=[group]) == 0
+        _drive_run(mocker, [b"\r", b"j", b"j", b"\r", b"\r", b"a", b"\x1b", b"\x03"], groups=[group]) == 0
     )
 
     child.assert_called_once_with(
@@ -3851,6 +3851,28 @@ def test_new_container_argv_carries_no_yes_flag(tmp_path):
     assert "--yes" not in argv and "-y" not in argv
 
 
+def test_new_pr_container_argv_targets_configured_repo_without_yes(tmp_path):
+    target = _dispatch_target(tmp_path, "c.yaml")
+
+    assert dashboard.new_pr_container_argv(target, 123) == [
+        "jailbee",
+        "new",
+        "--config",
+        str(target.config_path),
+        "--pr",
+        "123",
+    ]
+
+
+def test_new_pr_container_argv_targets_scratch_repo(tmp_path):
+    assert dashboard.new_pr_container_argv(dashboard.RepoTarget(tmp_path, None), 123) == [
+        "jailbee",
+        "new",
+        "--pr",
+        "123",
+    ]
+
+
 def test_parse_key_maps_arrows_and_letters():
     assert dashboard.parse_key(b"\x1b[A") == "up"
     assert dashboard.parse_key(b"\x1b[B") == "down"
@@ -5366,7 +5388,7 @@ def test_repo_header_enter_opens_menu_without_folding(mocker, tmp_path):
     assert [
         item.label if isinstance(item, dashboard.MenuGroup) else item[0]
         for item in menus[0].actions
-    ] == ["New container…", "Network →", "Fold"]
+    ] == ["New container…", "New from PR…", "Network →", "Fold"]
     save.assert_not_called()
 
 
@@ -5385,6 +5407,32 @@ def test_repo_menu_new_runs_the_existing_creation_flow(mocker, tmp_path):
     )
 
 
+def test_repo_menu_new_from_pr_runs_review_creation_in_repo(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
+    mocker.patch("typer.prompt", return_value="123")
+    mocker.patch.object(dashboard, "_wait_for_return")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+
+    assert _drive_run(mocker, [b"\r", b"j", b"\r"], groups=[group]) == 0
+
+    child.assert_called_once_with(["jailbee", "new", "--pr", "123"], check=False, cwd=tmp_path)
+
+
+@pytest.mark.parametrize(
+    "answer", ["0", "-2", "abc", "--yes", "  ", pytest.param("9" * 5000, id="oversized")]
+)
+def test_repo_menu_new_from_pr_rejects_nonpositive_or_non_numeric_input(mocker, tmp_path, answer):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
+    mocker.patch("typer.prompt", return_value=answer)
+    mocker.patch.object(dashboard, "_wait_for_return")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+
+    assert _drive_run(mocker, [b"\r", b"j", b"\r"], groups=[group]) == 0
+
+    child.assert_not_called()
+
+
 @pytest.mark.parametrize("initially_folded", [False, True])
 def test_repo_menu_toggles_fold_and_persists_it(mocker, tmp_path, initially_folded):
     group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
@@ -5396,7 +5444,7 @@ def test_repo_menu_toggles_fold_and_persists_it(mocker, tmp_path, initially_fold
     assert (
         _drive_run(
             mocker,
-            [b"\r", b"j", b"j", b"\r"],
+            [b"\r", b"j", b"j", b"j", b"\r"],
             groups=[group],
             view_state=dashboard.ViewState(
                 folded=frozenset({"alpha"}) if initially_folded else frozenset(),
@@ -5408,7 +5456,7 @@ def test_repo_menu_toggles_fold_and_persists_it(mocker, tmp_path, initially_fold
     )
 
     menus = [call.kwargs["overlay"] for call in render.call_args_list if call.kwargs["overlay"]]
-    assert menus[0].actions[2][0] == ("Unfold" if initially_folded else "Fold")
+    assert menus[0].actions[3][0] == ("Unfold" if initially_folded else "Fold")
     assert save.call_count == 1
     assert save.call_args.args[1] == FRONTEND_TUI
     assert save.call_args.args[2].folded == (
