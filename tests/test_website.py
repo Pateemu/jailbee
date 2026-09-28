@@ -351,9 +351,9 @@ def test_every_local_reference_resolves_on_disk() -> None:
             assert problem is None, f"{tag} {attr}={value!r}: {problem}"
             continue
         if value == "news/":
-            from scripts.news_site import build
-
             from tempfile import TemporaryDirectory
+
+            from scripts.news_site import build
 
             with TemporaryDirectory() as output:
                 built = Path(output)

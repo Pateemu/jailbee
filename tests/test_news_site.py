@@ -73,7 +73,7 @@ def test_article_has_body_brand_and_canonical_url(site: tuple[Path, Path]) -> No
     assert "2026-09-28" in html
     assert "Release notes" in html
     assert "topbar" in html and "footer" in html
-    assert '/assets/style.css?v=' in html and '/assets/news.css?v=' in html
+    assert "/assets/style.css?v=" in html and "/assets/news.css?v=" in html
     assert "https://jailbee.gisgro.io/assets/img/jailbee-og.png" in html
 
 
@@ -109,7 +109,7 @@ def test_feature_image_and_metadata_are_escaped(site: tuple[Path, Path]) -> None
 def test_bad_body_fails_with_article_path(site: tuple[Path, Path], body: str) -> None:
     website, output = site
     _add(website, "2026-09-28-release.md", META, body)
-    with pytest.raises(ValueError, match="2026-09-28-release.md"):
+    with pytest.raises(ValueError, match=r"2026-09-28-release\.md"):
         build(website, output)
 
 
@@ -123,22 +123,20 @@ def test_pagination_obeys_ten_posts_per_page(
     build(website, output)
 
     pages = [output / "news" / "index.html"] + [
-        output / "news" / "page" / str(n) / "index.html"
-        for n in range(2, expected_pages + 1)
+        output / "news" / "page" / str(n) / "index.html" for n in range(2, expected_pages + 1)
     ]
     assert all(page.is_file() for page in pages)
     assert [page.read_text().count('class="news-card"') for page in pages] == (
         [min(count, 10)] + [min(count - 10 * (n - 1), 10) for n in range(2, expected_pages + 1)]
     )
     assert not (output / "news" / "page" / str(expected_pages + 1)).exists()
-    assert '<link rel="canonical" href="https://jailbee.gisgro.io/news/"' in pages[
-        0
-    ].read_text()
+    assert '<link rel="canonical" href="https://jailbee.gisgro.io/news/"' in pages[0].read_text()
     if count > 10:
         assert 'href="/news/page/2/"' in pages[0].read_text()
-        assert '<link rel="canonical" href="https://jailbee.gisgro.io/news/page/2/"' in pages[
-            1
-        ].read_text()
+        assert (
+            '<link rel="canonical" href="https://jailbee.gisgro.io/news/page/2/"'
+            in pages[1].read_text()
+        )
         assert 'href="/news/"' in pages[1].read_text()
 
 

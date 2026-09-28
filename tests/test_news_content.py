@@ -63,7 +63,11 @@ def test_sorts_latest_first_then_slug_and_accepts_missing_directory(tmp_path: Pa
     ("name", "metadata", "problem"),
     [
         ("2026-09-28-release.md", "date: 2026-09-28\nsummary: Fine\n", "title"),
-        ("2026-09-28-release.md", "title: [Not, scalar]\ndate: 2026-09-28\nsummary: Fine\n", "title"),
+        (
+            "2026-09-28-release.md",
+            "title: [Not, scalar]\ndate: 2026-09-28\nsummary: Fine\n",
+            "title",
+        ),
         ("2026-09-28-release.md", VALID.replace("2026-09-28", "2026-09-28T12:00:00"), "date"),
         ("2026-09-27-release.md", VALID, "date"),
         ("2026-09-28-Wrong.md", VALID, "filename"),
@@ -97,7 +101,7 @@ def test_rejects_duplicate_slugs_across_dates(tmp_path: Path) -> None:
     _post(posts, "2026-09-27-release.md", VALID.replace("2026-09-28", "2026-09-27"))
 
     # Alphabetical source order reads the 27th first; the 28th is the duplicate.
-    with pytest.raises(ValueError, match="2026-09-28-release.md"):
+    with pytest.raises(ValueError, match=r"2026-09-28-release\.md"):
         load_posts(posts, tmp_path / "assets")
 
 
