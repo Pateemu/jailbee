@@ -2575,11 +2575,15 @@ def run(
                         if from_pr:
                             answer = typer.prompt("PR number").strip()
                             try:
-                                number = int(answer) if answer.isascii() and answer.isdecimal() else 0
+                                number = (
+                                    int(answer) if answer.isascii() and answer.isdecimal() else 0
+                                )
                             except ValueError:
                                 number = 0  # Python refuses excessively long integer strings
                             if number < 1:
-                                console.print("\n[yellow]No container created — invalid PR number.[/yellow]")
+                                console.print(
+                                    "\n[yellow]No container created — invalid PR number.[/yellow]"
+                                )
                                 _wait_for_return()
                                 return 0
                             argv = new_pr_container_argv(repo, number)

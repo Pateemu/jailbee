@@ -3319,13 +3319,21 @@ def test_new_pr_container_argv_targets_configured_repo_without_yes(tmp_path):
     target = _dispatch_target(tmp_path, "c.yaml")
 
     assert dashboard.new_pr_container_argv(target, 123) == [
-        "jailbee", "new", "--config", str(target.config_path), "--pr", "123"
+        "jailbee",
+        "new",
+        "--config",
+        str(target.config_path),
+        "--pr",
+        "123",
     ]
 
 
 def test_new_pr_container_argv_targets_scratch_repo(tmp_path):
     assert dashboard.new_pr_container_argv(dashboard.RepoTarget(tmp_path, None), 123) == [
-        "jailbee", "new", "--pr", "123"
+        "jailbee",
+        "new",
+        "--pr",
+        "123",
     ]
 
 
@@ -4840,9 +4848,7 @@ def test_repo_header_enter_opens_menu_without_folding(mocker, tmp_path):
     menus = [call.kwargs["overlay"] for call in render.call_args_list if call.kwargs["overlay"]]
     assert menus
     assert menus[0].repo == "alpha"
-    assert [label for label, _ in menus[0].actions] == [
-        "New container…", "New from PR…", "Fold"
-    ]
+    assert [label for label, _ in menus[0].actions] == ["New container…", "New from PR…", "Fold"]
     save.assert_not_called()
 
 
@@ -4870,9 +4876,7 @@ def test_repo_menu_new_from_pr_runs_review_creation_in_repo(mocker, tmp_path):
 
     assert _drive_run(mocker, [b"\r", b"j", b"\r"], groups=[group]) == 0
 
-    child.assert_called_once_with(
-        ["jailbee", "new", "--pr", "123"], check=False, cwd=tmp_path
-    )
+    child.assert_called_once_with(["jailbee", "new", "--pr", "123"], check=False, cwd=tmp_path)
 
 
 @pytest.mark.parametrize(

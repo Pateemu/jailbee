@@ -1411,7 +1411,12 @@ def test_on_new_pr_container_launches_in_a_terminal_for_selected_repo(mocker):
     assert prompt.call_args.kwargs["minValue"] == 1
     action = resolve.call_args.args[0]
     assert action.argv == [
-        "jailbee", "new", "--config", "/repo/.jailbee/config.yaml", "--pr", "123"
+        "jailbee",
+        "new",
+        "--config",
+        "/repo/.jailbee/config.yaml",
+        "--pr",
+        "123",
     ]
     assert action.launch == "terminal"
     assert action.cwd == Path("/repo")
