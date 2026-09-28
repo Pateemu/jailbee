@@ -729,6 +729,29 @@ def test_is_merged_into_handles_oserror(mocker, tmp_path):
     assert is_merged_into(tmp_path, "feat/foo", "HEAD") is False
 
 
+def test_is_ancestor_distinguishes_false_from_execution_failure(mocker, tmp_path):
+    from jailbee.git import is_ancestor
+
+    run = mocker.patch("jailbee.git.subprocess.run")
+    run.side_effect = [
+        CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+        CompletedProcess(args=[], returncode=1, stdout="", stderr=""),
+        CompletedProcess(args=[], returncode=128, stdout="", stderr="fatal"),
+    ]
+
+    assert is_ancestor(tmp_path, "old", "new") is True
+    assert is_ancestor(tmp_path, "old", "new") is False
+    assert is_ancestor(tmp_path, "old", "new") is None
+
+
+def test_is_ancestor_returns_none_when_git_cannot_execute(mocker, tmp_path):
+    from jailbee.git import is_ancestor
+
+    mocker.patch("jailbee.git.subprocess.run", side_effect=FileNotFoundError("git"))
+
+    assert is_ancestor(tmp_path, "old", "new") is None
+
+
 def test_checkout_branch_invokes_git_checkout(mocker, tmp_path):
     from jailbee.git import checkout_branch
 

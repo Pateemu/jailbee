@@ -822,6 +822,29 @@ def rev_parse(repo_root: Path, ref: str) -> str | None:
     return oid or None
 
 
+def is_ancestor(repo_root: Path, old: str, new: str) -> bool | None:
+    """Return whether `old` is an ancestor of `new`, or None on git failure.
+
+    Git uses exit 1 for a successful negative ancestry result; other non-zero
+    statuses and execution errors mean the relation could not be determined.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", old, new],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (FileNotFoundError, OSError):
+        return None
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    return None
+
+
 def list_refs(repo_root: Path, prefix: str) -> list[str]:
     """Return all refs under `prefix` (e.g. ``refs/jailbee/feat-foo/``)."""
     try:
