@@ -5719,7 +5719,14 @@ def test_repo_header_enter_opens_menu_without_folding(mocker, tmp_path):
     assert [
         item.label if isinstance(item, dashboard.MenuGroup) else item[0]
         for item in menus[0].actions
-    ] == ["New container…", "New from PR…", "Credential group…", "Network →", "Fold"]
+    ] == [
+        "New container…",
+        "New from PR…",
+        "Credential group…",
+        "Network →",
+        "Apply config…",
+        "Fold",
+    ]
     save.assert_not_called()
 
 
@@ -5799,7 +5806,7 @@ def test_repo_menu_toggles_fold_and_persists_it(mocker, tmp_path, initially_fold
     assert (
         _drive_run(
             mocker,
-            [b"\r", b"j", b"j", b"j", b"j", b"\r"],
+            _repo_menu_keys(group, "fold"),
             groups=[group],
             view_state=dashboard.ViewState(
                 folded=frozenset({"alpha"}) if initially_folded else frozenset(),
@@ -5811,7 +5818,7 @@ def test_repo_menu_toggles_fold_and_persists_it(mocker, tmp_path, initially_fold
     )
 
     menus = [call.kwargs["overlay"] for call in render.call_args_list if call.kwargs["overlay"]]
-    assert menus[0].actions[4][0] == ("Unfold" if initially_folded else "Fold")
+    assert menus[0].actions[-1] == (("Unfold" if initially_folded else "Fold"), "fold")
     assert save.call_count == 1
     assert save.call_args.args[1] == FRONTEND_TUI
     assert save.call_args.args[2].folded == (
@@ -5832,6 +5839,179 @@ def test_orphan_repo_menu_only_offers_folding(mocker):
     menus = [call.kwargs["overlay"] for call in render.call_args_list if call.kwargs["overlay"]]
     assert menus[0].actions == [("Fold", "fold")]
     child.assert_not_called()
+
+
+# --- Repo-level CLI entries (apply, diagnostics, prune) ----------------------
+
+
+def _cfg_group(tmp_path: Path, containers: tuple[ContainerInfo, ...] = ()) -> dashboard.RepoGroup:
+    """Repo ``alpha`` with a config path: a local child gets ``--config``, an SSH one must not."""
+    return dashboard.RepoGroup(
+        "alpha", str(tmp_path), tmp_path / ".jailbee" / "config.yaml", list(containers)
+    )
+
+
+def _repo_menu_keys(group: dashboard.RepoGroup, verb: str, **menu_kwargs) -> list[bytes]:
+    """Keys that choose repo-menu ``verb`` from the first row (the repo header).
+
+    Finds a top-level leaf or one inside a submenu, so no test counts entries.
+    ``menu_kwargs`` (``ssh_policy``/``over_ssh``) must match the ``run()`` call.
+    """
+    menu = dashboard.open_repo_menu([group], group.prefix, frozenset(), **menu_kwargs)
+    assert menu is not None
+    for i, item in enumerate(menu.actions):
+        if isinstance(item, dashboard.MenuGroup):
+            leaves = [leaf_verb for _label, leaf_verb in item.actions]
+            if verb in leaves:
+                return [_ENTER, *[b"j"] * i, _ENTER, *[b"j"] * leaves.index(verb), _ENTER]
+        elif item[1] == verb:
+            return [_ENTER, *[b"j"] * i, _ENTER]
+    raise AssertionError(f"{verb!r} is not in the repo menu")
+
+
+def _repo_menu_verbs(menu: dashboard.RepoMenuState | None) -> set[str]:
+    """Every leaf verb of a repo menu, submenus included."""
+    assert menu is not None
+    return {
+        leaf[1]
+        for item in menu.actions
+        for leaf in (item.actions if isinstance(item, dashboard.MenuGroup) else (item,))
+    }
+
+
+def _notices(render) -> list[str]:
+    return [c.kwargs["notice"] for c in render.call_args_list if c.kwargs.get("notice")]
+
+
+def test_repo_menu_offers_apply_after_network_and_before_fold(tmp_path):
+    menu = dashboard.open_repo_menu([_cfg_group(tmp_path)], "alpha", frozenset())
+    assert menu is not None
+    labels = [i.label if isinstance(i, dashboard.MenuGroup) else i[0] for i in menu.actions]
+    assert labels.index("Network →") < labels.index("Apply config…") < labels.index("Fold")
+
+
+def test_orphan_repo_menu_offers_no_apply():
+    group = dashboard.RepoGroup("orphan", None, None, [_ci("orphan-x", "orphan")])
+    assert "apply" not in _repo_menu_verbs(dashboard.open_repo_menu([group], "orphan", frozenset()))
+
+
+@pytest.mark.parametrize(
+    ("over_ssh", "policy_kwargs", "offered"),
+    [
+        (False, None, True),
+        (False, {"commands": {"mode": "disabled"}}, True),
+        (True, {}, False),
+        (True, {"commands": {"mode": "allowlist", "allow": ["apply"]}}, False),
+        (
+            True,
+            {"commands": {"mode": "allowlist", "allow": ["apply"]}, "restrict_host": False},
+            True,
+        ),
+        (
+            True,
+            {"commands": {"mode": "allowlist", "allow": ["shell"]}, "restrict_host": False},
+            False,
+        ),
+    ],
+    ids=[
+        "local",
+        "local-ignores-policy",
+        "ssh-default",
+        "ssh-allowlist-restricted",
+        "ssh-allowlist-unrestricted",
+        "ssh-allowlist-without-it",
+    ],
+)
+def test_repo_menu_apply_follows_the_ssh_policy(tmp_path, over_ssh, policy_kwargs, offered):
+    menu = dashboard.open_repo_menu(
+        [_cfg_group(tmp_path)],
+        "alpha",
+        frozenset(),
+        ssh_policy=_ssh_policy(policy_kwargs),
+        over_ssh=over_ssh,
+    )
+    assert ("apply" in _repo_menu_verbs(menu)) is offered
+
+
+@pytest.mark.parametrize(
+    ("downs", "tail"), [(0, []), (1, ["--no-restart"])], ids=["restart", "no-restart"]
+)
+def test_repo_apply_runs_in_the_terminal_with_the_chosen_restart_policy(
+    mocker, tmp_path, downs, tail
+):
+    group = _cfg_group(tmp_path)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_repo_menu_keys(group, "apply"), *[b"j"] * downs, _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    picker = _rendered(render, dashboard.Picker)[0]
+    assert [e.value for e in picker.entries] == ["restart", "no-restart"]
+    child.assert_called_once_with(
+        ["jailbee", "apply", *tail, "--config", str(group.config_path)], check=False, cwd=tmp_path
+    )
+    wait.assert_called_once()
+
+
+@pytest.mark.parametrize("key", [_ESC, b"\x03"], ids=["escape", "ctrl-c"])
+def test_repo_apply_cancel_runs_nothing(mocker, tmp_path, key):
+    group = _cfg_group(tmp_path)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [*_repo_menu_keys(group, "apply"), key], [group]) == 0
+
+    child.assert_not_called()
+    assert _rendered(render, dashboard.Picker)
+    if key == _ESC:
+        assert "Cancelled" in _notices(render)
+
+
+def test_repo_apply_over_unrestricted_ssh_sends_no_config_flag(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path)
+    policy = RemoteSSHConfig(restrict_host=False)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+
+    keys = [*_repo_menu_keys(group, "apply", ssh_policy=policy, over_ssh=True), _ENTER]
+    assert _drive_run(mocker, keys, [group], over_ssh=True, ssh_policy=policy) == 0
+
+    child.assert_called_once_with(["jailbee", "apply"], check=False, cwd=tmp_path)
+
+
+def test_repo_apply_is_not_offered_to_a_default_ssh_session(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert (
+        _drive_run(
+            mocker, [_ENTER], [group], remote=True, over_ssh=True, ssh_policy=RemoteSSHConfig()
+        )
+        == 0
+    )
+
+    menus = _rendered(render, dashboard.RepoMenuState)
+    assert menus and "apply" not in _repo_menu_verbs(menus[0])
+
+
+def test_repo_apply_nonzero_exit_is_a_notice(mocker, tmp_path):
+    group = _cfg_group(tmp_path)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 2
+    mocker.patch.object(dashboard, "_wait_for_return")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    _drive_run(mocker, [*_repo_menu_keys(group, "apply"), _ENTER], [group])
+
+    assert "'jailbee apply' exited 2" in _notices(render)
 
 
 # --- Credential group… in the repo menu ------------------------------------

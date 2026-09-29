@@ -1355,7 +1355,9 @@ def open_repo_menu(
     ssh_policy: RemoteSSHConfig | None = None,
     over_ssh: bool = False,
 ) -> RepoMenuState | None:
-    """Offer creation, the credential group and egress for actionable repos, folding for all.
+    """Offer creation, the credential group, egress and repo-level CLI entries, folding for all.
+
+    Everything but folding is offered for actionable repos only.
 
     The credential group and egress entries are hidden when the SSH policy
     refuses them, so a session never sees an entry that can only fail.
@@ -1372,6 +1374,9 @@ def open_repo_menu(
             actions.append(("Credential group…", "credential-group"))
         if permitted(["net", "egress", "ls", "--repo"], ssh_policy, over_ssh=over_ssh):
             actions.append(MenuGroup("Network →", (("Egress…", "net egress ls"),)))
+        extras = dact.repo_extras(ssh_policy, over_ssh=over_ssh)
+        if extras.apply is not None:
+            actions.append(extras.apply)
     actions.append(("Unfold" if prefix in folded else "Fold", "fold"))
     return RepoMenuState(prefix, actions)
 
@@ -3004,6 +3009,50 @@ def run(
                     set_notice(f"'jailbee new' exited {rc}")
                 force.set()  # the new container should appear on the next frame
 
+            def run_dashboard_command(
+                target: str,
+                kind: Literal["repo", "container"],
+                argv: list[str],
+                *,
+                style: DispatchStyle = "output",
+            ) -> None:
+                """Hand the terminal to one dashboard-built `jailbee` command; notice a failure.
+
+                ``target`` is re-resolved here because the row may have vanished
+                while a picker was open. The policy is checked before `foreground`
+                blanks the screen, and again by `_run_cli_foreground` right
+                before the spawn.
+                """
+                repo = repo_for(target, kind)
+                if repo is None:
+                    set_notice(f"'{target}' is gone")
+                    return
+                try:
+                    check_dashboard_command(argv, ssh_policy, over_ssh=over_ssh)
+                except RouteError as exc:
+                    set_notice(str(exc), seconds=_FAILURE_NOTICE_SECONDS)
+                    return
+                try:
+                    rc = foreground(
+                        lambda: _run_cli_foreground(
+                            repo,
+                            argv,
+                            style=style,
+                            remote=remote,
+                            over_ssh=over_ssh,
+                            ssh_policy=ssh_policy,
+                        )
+                    )
+                except RouteError as exc:
+                    set_notice(str(exc), seconds=_FAILURE_NOTICE_SECONDS)
+                    return
+                except OSError:
+                    _report_vanished_repo(repo)
+                    return
+                if rc != 0:
+                    set_notice(f"'jailbee {dact.command_label(argv)}' exited {rc}")
+                force.set()  # the command likely changed state: refresh now
+
             def repo_for(
                 target: str, kind: Literal["repo", "container"] = "repo"
             ) -> RepoTarget | None:
@@ -3322,6 +3371,13 @@ def run(
                         da.container_group_reset_argv(picker.target)
                         if entry.value == "__reset__"
                         else da.container_group_use_argv(entry.value, picker.target),
+                    )
+                    return None
+                if picker.purpose == "repo-apply":
+                    run_dashboard_command(
+                        picker.target,
+                        "repo",
+                        dact.apply_argv(no_restart=entry.value == dact.APPLY_NO_RESTART),
                     )
                     return None
                 if picker.purpose.startswith("acct-"):
@@ -3710,6 +3766,8 @@ def run(
                                     overlay = start_new_container(from_pr=True)
                                 elif verb == "credential-group":
                                     overlay = open_group_picker("repo-group", target)
+                                elif verb == dact.REPO_APPLY:
+                                    overlay = dact.apply_picker(target)
                                 elif verb == "fold":
                                     folded = toggle_folded(folded, target)
                                     persist_view_state(
