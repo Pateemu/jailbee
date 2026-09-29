@@ -10757,7 +10757,9 @@ def litellm_ls_cmd() -> None:
     gcfg = _load_global()
     cfg = gcfg.litellm
     if not cfg.enabled:
-        warn("LiteLLM is disabled (`litellm.enabled: false`); this is what enabling it would serve.")
+        warn(
+            "LiteLLM is disabled (`litellm.enabled: false`); this is what enabling it would serve."
+        )
     views, issues = all_local_litellm_views(cfg)
     for line in listing_lines(cfg, views, global_origin=str(default_global_config_path())):
         typer.echo(line)
