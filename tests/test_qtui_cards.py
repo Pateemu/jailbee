@@ -655,6 +655,83 @@ def test_compact_card_omits_an_idle_containers_activity(qtbot):
     assert "—" not in texts
 
 
+def _agent_label(card):
+    from jailbee.qtui.cards import _AGENT_OBJECT_NAME
+
+    return card.findChild(QLabel, _AGENT_OBJECT_NAME)
+
+
+def test_compact_card_shows_the_agent_state_with_its_reason(qtbot):
+    from jailbee.qtui.cards import _AGENT_WAITING, _Card
+    from jailbee.qtui.model import CardContent, CardField
+
+    cc = CardContent(
+        name="feat",
+        state="Running",
+        fields=[CardField("agent", "AGENT", "claude: waiting 4m")],
+        agent_tooltip="claude: input needed",
+        agent_waiting=True,
+    )
+    card = _Card("p-feat", cc, style="compact", selected=False)
+    qtbot.addWidget(card)
+
+    label = _agent_label(card)
+    assert label is not None
+    assert label.text() == "claude: waiting 4m"
+    assert "input needed" in label.toolTip()
+    assert _AGENT_WAITING in label.styleSheet()
+
+
+def test_compact_card_renders_agent_text_as_plain_text(qtbot):
+    """State and reason come from a file the container writes, and a QLabel
+    in AutoText mode renders anything that looks like HTML."""
+    from PySide6.QtCore import Qt
+
+    from jailbee.qtui.cards import _Card
+    from jailbee.qtui.model import CardContent, CardField
+
+    cc = CardContent(
+        name="feat",
+        state="Running",
+        fields=[CardField("agent", "AGENT", "claude: <b>x</b>")],
+        agent_tooltip="claude: <img src=x>",
+    )
+    card = _Card("p-feat", cc, style="compact", selected=False)
+    qtbot.addWidget(card)
+
+    label = _agent_label(card)
+    assert label.textFormat() == Qt.TextFormat.PlainText
+    assert "<img" not in label.toolTip()
+    assert "&lt;img src=x&gt;" in label.toolTip()
+
+
+def test_compact_card_omits_the_agent_line_without_a_session(qtbot):
+    from jailbee.qtui.cards import _Card
+    from jailbee.qtui.model import CardContent, CardField
+
+    cc = CardContent(name="feat", state="Running", fields=[CardField("agent", "AGENT", "—")])
+    card = _Card("p-feat", cc, style="compact", selected=False)
+    qtbot.addWidget(card)
+
+    assert _agent_label(card) is None
+
+
+def test_grid_card_values_are_plain_text(qtbot):
+    from PySide6.QtCore import Qt
+
+    from jailbee.qtui.cards import _Card
+    from jailbee.qtui.model import CardContent, CardField
+
+    cc = CardContent(
+        name="feat", state="Running", fields=[CardField("agent", "AGENT", "claude: <b>x</b>")]
+    )
+    card = _Card("p-feat", cc, style="grid", selected=False)
+    qtbot.addWidget(card)
+
+    values = [w for w in card.findChildren(QLabel) if w.text() == "claude: <b>x</b>"]
+    assert values and all(w.textFormat() == Qt.TextFormat.PlainText for w in values)
+
+
 def test_empty_actionable_group_has_new_control_but_orphan_does_not(qtbot):
     from PySide6.QtWidgets import QPushButton
 

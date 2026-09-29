@@ -5,6 +5,7 @@ emits the same ``actionRequested(verb, name)`` contract.
 
 from __future__ import annotations
 
+import html
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, Signal
@@ -60,6 +61,10 @@ _DIM = "#6b6b6b"
 
 # Job badge colours by `model.job_badge` kind.
 _JOB_BADGE_COLORS = {"failed": "#c62828", "running": "#ef6c00"}
+
+# The AGENT line: orange while an agent is waiting for you, dim otherwise.
+_AGENT_WAITING = "#ef6c00"
+_AGENT_OBJECT_NAME = "agentStatus"
 
 
 def _clear_layout(layout: QLayout) -> None:
@@ -188,6 +193,20 @@ class _Card(QFrame):
             busy = QLabel(doing)
             busy.setStyleSheet(f"color:{_DIM};")
             self._outer.addWidget(busy)
+        agent = card_field(self._content, "agent")
+        if agent:
+            line = QLabel(agent)
+            line.setObjectName(_AGENT_OBJECT_NAME)
+            # Plain text: the state and its reason come from a file the
+            # container writes, and a QLabel renders anything HTML-looking.
+            line.setTextFormat(Qt.TextFormat.PlainText)
+            color = _AGENT_WAITING if self._content.agent_waiting else _DIM
+            line.setStyleSheet(f"color:{color};")
+            if self._content.agent_tooltip:
+                # A tooltip has no plain-text switch; escape it into rich text.
+                escaped = html.escape(self._content.agent_tooltip).replace("\n", "<br>")
+                line.setToolTip(f"<p>{escaped}</p>")
+            self._outer.addWidget(line)
         segs = git_segments(self._content)
         if segs:
             git = QHBoxLayout()
@@ -220,7 +239,10 @@ class _Card(QFrame):
             key.setStyleSheet(f"color:{_DIM};")
             key.setFixedWidth(72)
             row.addWidget(key)
-            row.addWidget(QLabel(value))
+            shown = QLabel(value)
+            # Values include container-written text (AGENT, DOING).
+            shown.setTextFormat(Qt.TextFormat.PlainText)
+            row.addWidget(shown)
             row.addStretch(1)
             self._outer.addLayout(row)
 

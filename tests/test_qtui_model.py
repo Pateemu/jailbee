@@ -315,3 +315,35 @@ def test_card_content_carries_the_job_error():
     fields = dashboard.visible_fields(datetime.now().astimezone(), [c])
     cc = m.card_content(c, fields)
     assert cc.job_error == "autostart step 'deps' failed"
+
+
+def test_card_content_carries_the_agent_tooltip_and_waiting_flag():
+    from jailbee.agent_status import AgentSummary
+
+    c = ContainerInfo(
+        name="p-foo",
+        state="Running",
+        network="strict",
+        ip=None,
+        memory_limit=None,
+        repo="p",
+        agent_status=(
+            AgentSummary("claude", "waiting", None, "input needed", 1),
+            AgentSummary("codex", "busy", None, None, 1),
+        ),
+    )
+    fields = dashboard.visible_fields(datetime.now().astimezone(), [c])
+    cc = m.card_content(c, fields)
+
+    assert m.card_field(cc, "agent") == "claude: waiting, codex: busy"
+    assert cc.agent_tooltip == "claude: input needed"
+    assert cc.agent_waiting is True
+
+
+def test_card_content_without_agents_has_no_tooltip():
+    c = ContainerInfo(
+        name="p-foo", state="Running", network="strict", ip=None, memory_limit=None, repo="p"
+    )
+    cc = m.card_content(c, dashboard.visible_fields(datetime.now().astimezone(), [c]))
+
+    assert (cc.agent_tooltip, cc.agent_waiting) == (None, False)

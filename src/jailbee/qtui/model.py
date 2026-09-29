@@ -83,6 +83,11 @@ class CardContent:
     # Recorded job failure message, shown as the job badge's tooltip. Part of
     # the value so an equality check picks up a changed error on refresh.
     job_error: str | None = None
+    # The AGENT line's tooltip (each agent's `waiting_for`) and whether any
+    # agent is waiting, which colours the line. Part of the value for the
+    # same reason as `job_error`.
+    agent_tooltip: str | None = None
+    agent_waiting: bool = False
 
 
 def card_content(c: ContainerInfo, fields: list[FieldSpec[ContainerInfo]]) -> CardContent:
@@ -99,7 +104,15 @@ def card_content(c: ContainerInfo, fields: list[FieldSpec[ContainerInfo]]) -> Ca
             state = cell
         else:
             card_fields.append(CardField(field.name, field.header, cell))
-    return CardContent(name=name, state=state, fields=card_fields, job_error=c.job_error)
+    reasons = [f"{s.agent}: {s.waiting_for}" for s in c.agent_status if s.waiting_for]
+    return CardContent(
+        name=name,
+        state=state,
+        fields=card_fields,
+        job_error=c.job_error,
+        agent_tooltip="\n".join(reasons) or None,
+        agent_waiting=any(s.state == "waiting" for s in c.agent_status),
+    )
 
 
 # Git field values that mean "nothing to report".
