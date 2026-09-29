@@ -828,7 +828,10 @@ def test_run_apply_reapplies_docker_proxy_when_mirror_enabled(
     [
         (None, None),
         ({"json": {"version": 1}, "keys": {"default": "/host/key"}}, None),
-        ({"json": {"version": 1}, "keys": {"default": "/host/key"}}, FileNotFoundError("key removed")),
+        (
+            {"json": {"version": 1}, "keys": {"default": "/host/key"}},
+            FileNotFoundError("key removed"),
+        ),
     ],
 )
 def test_run_apply_syncs_or_removes_litellm_for_running_containers(

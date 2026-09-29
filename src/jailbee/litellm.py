@@ -407,7 +407,9 @@ def _deployed_accounts(incus: Incus) -> set[str]:
         "systemctl list-units --all --plain --no-legend 'jailbee-litellm@*.service' || true; "
         "ls -1 /etc/systemd/system/multi-user.target.wants/ 2>/dev/null || true"
     )
-    return set(_UNIT_NAME.findall(incus.exec(LITELLM_CONTAINER, ["bash", "-c", script], timeout=30)))
+    return set(
+        _UNIT_NAME.findall(incus.exec(LITELLM_CONTAINER, ["bash", "-c", script], timeout=30))
+    )
 
 
 def _retire_accounts(incus: Incus, keep: set[str]) -> list[str]:

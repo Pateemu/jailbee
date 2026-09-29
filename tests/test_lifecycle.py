@@ -1332,7 +1332,9 @@ def test_new_container_syncs_litellm_only_when_payload_supplied(tmp_path, mocker
         "base",
         True,
         autostart=False,
-        litellm_payload={"json": {"version": 1}, "keys": {"default": str(key)}} if with_payload else None,
+        litellm_payload={"json": {"version": 1}, "keys": {"default": str(key)}}
+        if with_payload
+        else None,
     )
 
     new_container(cfg, incus, opts)
