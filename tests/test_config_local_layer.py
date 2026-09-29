@@ -236,6 +236,26 @@ def test_all_views_skip_a_broken_file_and_keep_the_rest():
     assert scopes["good"].effective_routes()["sol-xhigh"].effort == "max"
 
 
+def test_a_yaml_syntax_error_reports_path_and_line_never_the_snippet():
+    _write_local("good", {"litellm": {"routes": {"sol-xhigh": {"effort": "max"}}}})
+    path = local_config_path("bad")
+    path.write_text("egress_allow: []\ntoken: ghp_SECRETSECRET: x\n")
+    views, issues = all_local_litellm_views(LiteLLMConfig())
+    assert [v.prefix for v in views] == ["good"]
+    assert len(issues) == 1
+    assert issues[0] == f"{path} is not valid YAML (line 2); skipped"
+    assert "SECRET" not in issues[0] and "cannot use its override" not in issues[0]
+
+
+def test_a_file_that_is_not_a_mapping_is_skipped_without_the_override_wording():
+    path = local_config_path("list")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("- a\n- b\n")
+    views, issues = all_local_litellm_views(LiteLLMConfig())
+    assert views == [] and len(issues) == 1
+    assert str(path) in issues[0] and "cannot use its override" not in issues[0]
+
+
 def test_a_prefix_only_override_is_a_view_but_not_a_scope():
     _write_local("only", {"litellm": {"default_profile": "codex"}})
     views, _ = all_local_litellm_views(LiteLLMConfig())

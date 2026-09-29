@@ -10,6 +10,7 @@ import stat
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import yaml
 from pydantic import ValidationError
 
 from jailbee.config.common import _HOST_LEVEL_KEYS, _read_yaml_or_empty
@@ -175,7 +176,21 @@ def all_local_litellm_views(host: LiteLLMConfig) -> tuple[list[LocalLiteLLMView]
         if not _PREFIX_RE.match(prefix):
             continue
         try:
-            overlay = local_litellm_overlay(_read_yaml_or_empty(path), str(path))
+            raw = _read_yaml_or_empty(path)
+        except ConfigError as e:
+            # No `litellm` block was read, so no override is lost by name. A
+            # YAML error's own text quotes the offending line, which may
+            # hold a token: report the line number only.
+            cause = e.__cause__
+            if isinstance(cause, yaml.YAMLError):
+                mark = getattr(cause, "problem_mark", None)
+                where = f" (line {mark.line + 1})" if mark is not None else ""
+                issues.append(f"{path} is not valid YAML{where}; skipped")
+            else:
+                issues.append(f"{e}; skipped")
+            continue
+        try:
+            overlay = local_litellm_overlay(raw, str(path))
             if overlay is None:
                 continue
             views.append(
