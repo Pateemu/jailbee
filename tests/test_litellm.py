@@ -1069,16 +1069,34 @@ def test_up_restarts_only_the_account_whose_files_changed():
 def test_up_retires_the_unit_of_a_removed_account():
     incus = _incus(present=True)
     healthy = incus.exec.side_effect
+    scripts: list[str] = []
+    listing = (
+        # `systemctl list-units` half: a configured account and a removed one.
+        "jailbee-litellm@default.service loaded active running JailBee LiteLLM proxy\n"
+        "jailbee-litellm@old.service loaded active running JailBee LiteLLM proxy (old)\n"
+        # `ls multi-user.target.wants/` half: the configured account's symlink and
+        # a removed account that is only enabled, not loaded.
+        "jailbee-litellm@default.service\n"
+        "jailbee-litellm@enabled-only.service\n"
+        "cloud-init.service\n"
+    )
 
     def exec_(name, cmd, **kw):
         if "list-units" in " ".join(cmd):
-            return "jailbee-litellm@old.service loaded active running JailBee LiteLLM proxy (old)\n"
+            scripts.append(cmd[-1])
+            return listing
         return healthy(name, cmd, **kw)
 
     incus.exec.side_effect = exec_
     result = ll.litellm_up(incus, _gcfg())
-    assert result.retired == ["old"]
-    assert "systemctl disable --now jailbee-litellm@old.service" in _execs(incus)
+    assert "systemctl list-units" in scripts[0]
+    assert "multi-user.target.wants" in scripts[0]
+    assert result.retired == ["enabled-only", "old"]
+    disabled = [e for e in _execs(incus) if "disable --now" in e]
+    assert disabled == [
+        "systemctl disable --now jailbee-litellm@enabled-only.service",
+        "systemctl disable --now jailbee-litellm@old.service",
+    ]
 
 
 def test_up_refuses_a_missing_secret_before_touching_incus():
