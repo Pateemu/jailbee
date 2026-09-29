@@ -85,8 +85,6 @@ def test_command_binding_and_inline_render_keep_table_visible():
             [group],
             dashboard.Row("container", "alpha-x"),
             now=datetime.now(UTC),
-            last_refresh_age=0,
-            interval=1,
             git_enabled=True,
             overlay=overlay,
         )
@@ -96,6 +94,18 @@ def test_command_binding_and_inline_render_keep_table_visible():
     assert "  x" in rendered
     assert "git d" in rendered
     assert "git diff" in rendered
+
+
+def test_render_title_has_no_refresh_clock():
+    group = dashboard.RepoGroup("alpha", "/alpha", None, [_ci("alpha-x", "alpha")])
+    frame = _render_text(
+        dashboard.render(
+            [group], None, now=datetime(2026, 6, 8, 12, 0, 5, tzinfo=UTC), git_enabled=True
+        )
+    )
+    assert "12:00:05" in frame
+    assert "↻" not in frame
+    assert "s/" not in frame.splitlines()[0]
 
 
 def test_nothing_to_show_message_blames_no_single_cause():
@@ -3093,11 +3103,7 @@ def test_render_hides_job_column_until_a_job_exists(tmp_path):
     g_noop = dashboard.RepoGroup(
         "alpha", "/repos/alpha", tmp_path / "a.yaml", [_ci("alpha-one", "alpha")]
     )
-    out = _render_text(
-        dashboard.render(
-            [g_noop], selected=None, now=now, last_refresh_age=1.0, interval=3.0, git_enabled=True
-        )
-    )
+    out = _render_text(dashboard.render([g_noop], selected=None, now=now, git_enabled=True))
     # The header row must not contain the JOB column header.
     # We check the header line specifically (second line of the output).
     header_line = next(ln for ln in out.splitlines() if "NAME" in ln)
@@ -3109,11 +3115,7 @@ def test_render_hides_job_column_until_a_job_exists(tmp_path):
     c = _ci("alpha-two", "alpha")
     c.job_phase = "cloning"
     g_op = dashboard.RepoGroup("alpha", "/repos/alpha", tmp_path / "a.yaml", [c])
-    out2 = _render_text(
-        dashboard.render(
-            [g_op], selected=None, now=now, last_refresh_age=1.0, interval=3.0, git_enabled=True
-        )
-    )
+    out2 = _render_text(dashboard.render([g_op], selected=None, now=now, git_enabled=True))
     assert "cloning" in out2
     header_line2 = next(ln for ln in out2.splitlines() if "NAME" in ln)
     assert " JOB " in header_line2 or header_line2.startswith("JOB ")
@@ -3135,8 +3137,6 @@ def test_render_shows_repo_headers_and_rows(tmp_path):
             groups,
             selected=dashboard.Row("container", "alpha-one"),
             now=now,
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
         )
     )
@@ -3155,8 +3155,6 @@ def test_render_shows_repo_headers_and_rows(tmp_path):
                 groups,
                 selected=dashboard.Row("container", "alpha-one"),
                 now=now,
-                last_refresh_age=1.0,
-                interval=3.0,
                 git_enabled=True,
             )
         )
@@ -3176,8 +3174,6 @@ def test_render_column_headers_sit_above_every_repo_heading(tmp_path):
             groups,
             selected=None,
             now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
         )
     )
@@ -3198,8 +3194,6 @@ def test_render_column_headers_stay_on_top_when_first_repo_is_empty(tmp_path):
             groups,
             selected=None,
             now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
         )
     )
@@ -3222,8 +3216,6 @@ def test_render_first_column_title_aligns_with_its_cells(tmp_path, enabled, titl
             [group],
             selected=None,
             now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
             enabled=enabled,
         )
@@ -3240,8 +3232,6 @@ def test_render_empty_groups_shows_placeholder():
             [],
             selected=None,
             now=datetime(2026, 6, 8, tzinfo=UTC),
-            last_refresh_age=0.0,
-            interval=3.0,
             git_enabled=False,
         )
     )
@@ -3257,8 +3247,6 @@ def test_header_uses_more_than_first_column_at_narrow_width(tmp_path):
             [group],
             selected=None,
             now=datetime(2026, 6, 8, tzinfo=UTC),
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
             enabled=("state",),
         ),
@@ -3271,8 +3259,6 @@ def test_header_uses_more_than_first_column_at_narrow_width(tmp_path):
                 [group],
                 selected=None,
                 now=datetime(2026, 6, 8, tzinfo=UTC),
-                last_refresh_age=1.0,
-                interval=3.0,
                 git_enabled=True,
                 enabled=("state",),
             ),
@@ -3292,8 +3278,6 @@ def test_render_empty_repo_shows_header_without_table(tmp_path):
             [group],
             selected=None,
             now=datetime(2026, 6, 8, tzinfo=UTC),
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
         )
     )
@@ -3309,8 +3293,6 @@ def test_render_all_filtered_repos_explains_visibility_settings(tmp_path):
             [],
             selected=None,
             now=datetime(2026, 6, 8, tzinfo=UTC),
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
             hidden_by_preferences=True,
         )
@@ -3331,8 +3313,6 @@ def test_narrow_multi_column_render_stays_within_available_content_width(tmp_pat
             [group],
             selected=None,
             now=datetime(2026, 6, 8, tzinfo=UTC),
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
             enabled=("state", "network", "name"),
         ),
@@ -3349,8 +3329,6 @@ def test_render_temporarily_hides_columns_and_restores_them_on_resize(tmp_path):
         [group],
         selected=None,
         now=datetime(2026, 6, 8, tzinfo=UTC),
-        last_refresh_age=1.0,
-        interval=3.0,
         git_enabled=True,
         enabled=("name", "state", "created", "network"),
     )
@@ -3371,8 +3349,6 @@ def test_render_uses_configured_auto_hide_order(tmp_path):
         [group],
         selected=None,
         now=datetime(2026, 6, 8, tzinfo=UTC),
-        last_refresh_age=1.0,
-        interval=3.0,
         git_enabled=True,
         enabled=("name", "state", "created", "network"),
         hide_first=("state",),
@@ -3389,8 +3365,6 @@ def test_render_keeps_only_enabled_column_at_tiny_width(tmp_path):
         [group],
         selected=None,
         now=datetime(2026, 6, 8, tzinfo=UTC),
-        last_refresh_age=1.0,
-        interval=3.0,
         git_enabled=True,
         enabled=("state",),
     )
@@ -3404,8 +3378,6 @@ def test_render_highlight_stays_on_row_when_first_column_is_hidden(tmp_path):
         [group],
         selected=dashboard.Row("container", "alpha-one"),
         now=datetime(2026, 6, 8, tzinfo=UTC),
-        last_refresh_age=1.0,
-        interval=3.0,
         git_enabled=True,
         enabled=("state", "network"),
         hide_first=("state",),
@@ -3431,8 +3403,6 @@ def test_render_column_offsets_align_across_repos_of_different_lengths(tmp_path)
             groups,
             selected=None,
             now=datetime(2026, 6, 8, tzinfo=UTC),
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
             enabled=("state",),
         )
@@ -3452,8 +3422,6 @@ def test_render_forwards_enabled_columns_to_visible_fields(tmp_path):
             [g],
             selected=None,
             now=now,
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
             enabled=["name", "created"],
         )
@@ -3463,15 +3431,13 @@ def test_render_forwards_enabled_columns_to_visible_fields(tmp_path):
     assert "STATE" not in header_line
 
 
-def _title_line(groups, *, age: float = 1.0, git_enabled: bool = True, **kwargs) -> str:
+def _title_line(groups, *, git_enabled: bool = True, **kwargs) -> str:
     """The panel's top border line, which carries the dashboard title."""
     out = _render_text(
         dashboard.render(
             groups,
             selected=kwargs.pop("selected", None),
             now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
-            last_refresh_age=age,
-            interval=3.0,
             git_enabled=git_enabled,
             **kwargs,
         )
@@ -3496,29 +3462,6 @@ def test_render_title_is_left_aligned(tmp_path):
     assert line.index("jailbee dashboard") <= 3
 
 
-def test_render_title_refresh_field_is_fixed_width(tmp_path):
-    """A one- and a two-digit age must occupy the same number of columns, or
-    the title jumps every time the age ticks past 9s."""
-    g = dashboard.RepoGroup(
-        "alpha", "/repos/alpha", tmp_path / "a.yaml", [_ci("alpha-one", "alpha")]
-    )
-    fresh = _title_line([g], age=1.0)
-    stale = _title_line([g], age=12.0)
-
-    assert "1s/3s" in fresh
-    assert "12s/3s" in stale
-    # Same amount of border fill => the title text is the same width.
-    assert fresh.count("─") == stale.count("─")
-
-
-def test_render_title_clamps_an_absurd_refresh_age(tmp_path):
-    """A stalled gather must not widen the field past two digits."""
-    g = dashboard.RepoGroup(
-        "alpha", "/repos/alpha", tmp_path / "a.yaml", [_ci("alpha-one", "alpha")]
-    )
-    assert "99s/3s" in _title_line([g], age=4000.0)
-
-
 def test_render_title_carries_the_no_git_marker(tmp_path):
     """`--no-git` is constant for the run, so it belongs in the title."""
     g = dashboard.RepoGroup(
@@ -3538,8 +3481,6 @@ def test_render_subtitle_is_empty_without_a_notice(tmp_path):
             [g],
             selected=None,
             now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
         )
     )
@@ -3562,8 +3503,6 @@ def test_render_keeps_the_table_visible_under_the_menu_overlay(tmp_path):
             [g],
             selected=dashboard.Row("container", "alpha-one"),
             now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
             overlay=menu,
         )
@@ -3588,8 +3527,6 @@ def test_normal_mode_help_is_in_frame_not_footer(tmp_path):
     kwargs = {
         "selected": dashboard.Row("container", "alpha-one"),
         "now": datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
-        "last_refresh_age": 1.0,
-        "interval": 3.0,
         "git_enabled": True,
     }
     browsing = _render_text(dashboard.render([g], **kwargs))
@@ -3613,8 +3550,6 @@ def test_small_width_keeps_help_cue_in_the_top_border(tmp_path):
             [g],
             selected=None,
             now=datetime(2026, 6, 8, tzinfo=UTC),
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
         ),
         width=42,
@@ -3629,8 +3564,6 @@ def test_render_shows_a_notice_and_omits_it_when_none(tmp_path):
     kwargs = {
         "selected": None,
         "now": datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
-        "last_refresh_age": 1.0,
-        "interval": 3.0,
         "git_enabled": True,
     }
     with_notice = _render_text(dashboard.render([g], **kwargs, notice="alpha-one is view-only"))
@@ -4111,8 +4044,6 @@ def test_render_help_overlay_documents_every_key(tmp_path):
             [g],
             selected=dashboard.Row("container", "alpha-one"),
             now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
             overlay="help",
         )
@@ -4139,8 +4070,6 @@ def test_render_swaps_the_hint_line_while_the_menu_is_open(tmp_path):
             [g],
             selected=dashboard.Row("container", "alpha-one"),
             now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
             overlay=dashboard.MenuState("alpha-one", [("Attach tmux", "tmux")]),
         )
@@ -4160,8 +4089,6 @@ def test_render_menu_submenu_title_and_contextual_back_hint(tmp_path):
                 [g],
                 selected=dashboard.Row("container", "alpha-x"),
                 now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
-                last_refresh_age=1.0,
-                interval=3.0,
                 git_enabled=True,
                 overlay=menu,
             )
@@ -4287,8 +4214,6 @@ def test_render_shows_memory_used_and_limit(tmp_path):
             [g],
             selected=None,
             now=now,
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
         )
     )
@@ -4671,8 +4596,6 @@ def test_render_marks_a_folded_group_and_hides_its_rows(tmp_path):
             groups,
             selected=None,
             now=now,
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
             folded=frozenset({"alpha"}),
         )
@@ -4701,8 +4624,6 @@ def test_render_marks_a_selected_repo_header(tmp_path):
     g = dashboard.RepoGroup("alpha", "/a", tmp_path / "a.yaml", [_ci("alpha-one", "alpha")])
     kwargs = dict(
         now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
-        last_refresh_age=1.0,
-        interval=3.0,
         git_enabled=True,
     )
 
@@ -4752,8 +4673,6 @@ def test_render_gutter_lands_on_the_first_enabled_column_not_just_name(tmp_path)
             [g],
             selected=None,
             now=now,
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
             enabled=("state", "network"),  # `name` disabled; `state` is first
         )
@@ -4788,8 +4707,6 @@ def test_render_counts_every_container_even_when_folded(tmp_path):
             groups,
             selected=None,
             now=now,
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
             folded=frozenset({"alpha"}),
         )
@@ -4807,7 +4724,7 @@ def test_show_if_is_computed_from_visible_containers_only(tmp_path):
         dashboard.RepoGroup("alpha", "/a", tmp_path / "a.yaml", [with_pr]),
         dashboard.RepoGroup("beta", "/b", tmp_path / "b.yaml", [_ci("beta-one", "beta")]),
     ]
-    kwargs = dict(selected=None, now=now, last_refresh_age=1.0, interval=3.0, git_enabled=True)
+    kwargs = dict(selected=None, now=now, git_enabled=True)
     unfolded = _render_text(dashboard.render(groups, **kwargs))
     folded = _render_text(dashboard.render(groups, folded=frozenset({"alpha"}), **kwargs))
 
@@ -4889,8 +4806,6 @@ def test_render_draws_the_settings_overlay_below_the_table(tmp_path):
             [g],
             selected=None,
             now=now,
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
             overlay=overlay,
         )
@@ -5771,8 +5686,6 @@ def test_new_binding_appears_in_the_help_overlay(tmp_path):
             [g],
             selected=None,
             now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
-            last_refresh_age=1.0,
-            interval=3.0,
             git_enabled=True,
             overlay="help",
         )

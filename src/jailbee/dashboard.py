@@ -1695,8 +1695,6 @@ def render(
     selected: Row | None,
     *,
     now: datetime,
-    last_refresh_age: float,
-    interval: float,
     git_enabled: bool,
     enabled: Sequence[str] | None = None,
     overlay: Overlay | None = None,
@@ -1710,8 +1708,8 @@ def render(
     Repo sections are rendered in the dashboard body with aligned columns.
     The selected row, heading or container, is marked by its
     :data:`CURSOR_STYLE` highlight alone. Wrapped in a rounded Panel whose
-    left-aligned title carries the summary, the clock and a fixed-width
-    refresh field; the subtitle carries a transient notice and nothing else.
+    left-aligned title carries the summary and the clock; the subtitle carries
+    a transient notice and nothing else.
 
     ``overlay`` is an open action menu or the keybinding help, drawn *below*
     the table so the dashboard it acts on stays on screen. ``notice`` is a
@@ -1761,16 +1759,12 @@ def render(
     n_folded = len({g.prefix for g in groups if g.prefix in folded and g.containers})
     folded_note = f" · {n_folded} folded" if n_folded else ""
     git_note = "" if git_enabled else "  ·  [dim](no-git)[/dim]"
-    # Fixed-width refresh field: the age is clamped to two digits and the
-    # interval is constant for the run, so the title never changes width as
-    # the age ticks — a title that resizes drags the whole line with it.
-    age_field = f"{min(last_refresh_age, 99.0):>2.0f}s/{interval:.0f}s"
     title = (
         f"[bold]jailbee dashboard[/]  ·  [dim]h/? help[/]  ·  {n_repos} repos · {n_ctr} containers"
-        f"{folded_note}{git_note}  ·  {now:%H:%M:%S}  ·  [dim]↻[/dim] {age_field}"
+        f"{folded_note}{git_note}  ·  {now:%H:%M:%S}"
     )
     # Subtitle is notice-only: a transient message on the bottom border cannot
-    # push the table around, and the refresh timing now lives in the title.
+    # push the table around.
     subtitle = f"[yellow]{notice}[/yellow]" if notice else None
     return Panel(
         Group(*body),
@@ -2433,11 +2427,10 @@ def run(
     stop = threading.Event()
     force = threading.Event()
     shared_groups: list[RepoGroup] = seeded
-    shared_last_full = seeded_at
     worker_error: list[BaseException] = []
 
     def refresher() -> None:
-        nonlocal shared_groups, shared_last_full
+        nonlocal shared_groups
         # Continues the schedule from the pre-gather instead of restarting it.
         # `first` forces an immediate git-inclusive gather, which is exactly
         # what is still missing — but with `--no-git` there is nothing left to
@@ -2481,7 +2474,6 @@ def run(
                 ts = time.monotonic()
                 with lock:
                     shared_groups = groups
-                    shared_last_full = ts
                 prev_groups = groups
                 last_base = ts
                 if do_git:
@@ -2953,7 +2945,6 @@ def run(
             while not stop.is_set():
                 with lock:
                     all_groups = shared_groups
-                    last_full = shared_last_full
                 groups = visible_repo_groups(
                     all_groups, show_empty_repos=show_empty_repos, hidden_repos=hidden_repos
                 )
@@ -3006,7 +2997,6 @@ def run(
                 if title != last_title:
                     set_terminal_title(title, stream=sys.stdout)
                     last_title = title
-                age = (time.monotonic() - last_full) if last_full else 0.0
                 tracking = tracking_notices([c for g in all_groups for c in g.containers])
                 tracking.extend(dashboard_group_notices(all_groups))
                 live.update(
@@ -3014,8 +3004,6 @@ def run(
                         groups,
                         selected,
                         now=now(),
-                        last_refresh_age=age,
-                        interval=interval,
                         git_enabled=git_enabled,
                         enabled=enabled,
                         overlay=overlay,
