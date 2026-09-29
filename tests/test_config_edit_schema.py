@@ -233,7 +233,7 @@ def test_collections_of_models_stay_leaves():
 
 
 def test_build_specs_covers_every_config_leaf():
-    """95 leaves under Config, 33 under GlobalConfig, as measured.
+    """95 leaves under Config, 36 under GlobalConfig, as measured.
 
     A count, not a list: it fails loudly when a field is added or a
     recursion rule changes, and the reviewer then decides which.
@@ -269,11 +269,12 @@ def test_build_specs_covers_every_config_leaf():
     `dashboard.auto_hide.hide_first` adds one editable global leaf.
     The five `litellm` leaves (`enabled`, `version`, `default_profile`,
     `routes`, `profiles`) add 5 to GlobalConfig: 28 + 5 = 33.
+    Phase 2 of LiteLLM adds `accounts`, `egress` and `extra`: 33 + 3 = 36.
     """
     from jailbee.config_edit.schema import build_specs
 
     assert len(build_specs(Config)) == 95
-    assert len(build_specs(GlobalConfig)) == 33
+    assert len(build_specs(GlobalConfig)) == 36
 
 
 def test_a_default_factory_field_reports_its_real_default():

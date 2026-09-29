@@ -142,7 +142,7 @@ def test_payload_context_window_is_the_largest_of_the_profiles_routes():
     cfg = LiteLLMConfig.model_validate(
         {
             "routes": {"sol-medium": {"context_window": 400_000}},
-            "profiles": {"small": {"sonnet": "sol-medium"}},
+            "profiles": {"small": {"account": "default", "sonnet": "sol-medium"}},
         }
     )
     payload = container_payload(cfg, base_url="u", key_file="k")

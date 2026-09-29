@@ -356,8 +356,26 @@ def validate_global_raw(
                 joined = ", ".join(unknown)
                 raise ValueError(f"unknown remote Jailbee command path(s): {joined}")
         return config
-    except (ValidationError, ValueError) as e:
+    except ValidationError as e:
+        raise ConfigError(
+            f"Global config validation failed in {path}:\n{_validation_text(e)}"
+        ) from e
+    except ValueError as e:
         raise ConfigError(f"Global config validation failed in {path}:\n{e}") from e
+
+
+def _validation_text(error: ValidationError) -> str:
+    """Pydantic's own text, or input-free lines when a `litellm` value is at fault.
+
+    `litellm.routes.<r>.api_key` takes a secrets.env *name*; someone who pastes
+    the key itself would otherwise get it echoed back as `input_value`.
+    `hide_input_in_errors` on the nested model does not help: pydantic honours
+    it only on the model being validated, which here is `GlobalConfig`.
+    """
+    errors = error.errors(include_url=False)
+    if not any(err["loc"][:1] == ("litellm",) for err in errors):
+        return str(error)
+    return "\n".join(f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in errors)
 
 
 def _load_unsanitized(path: Path) -> GlobalConfig:

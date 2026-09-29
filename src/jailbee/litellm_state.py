@@ -20,7 +20,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import secrets
 import tempfile
 from collections.abc import Iterator
@@ -33,6 +32,7 @@ from typing import TYPE_CHECKING, Literal
 
 import yaml
 
+from jailbee.config.models_litellm import ACCOUNT_NAME_RE
 from jailbee.litellm_render import (
     render_callback_data,
     render_instance_config,
@@ -44,7 +44,6 @@ if TYPE_CHECKING:
     from jailbee.config.models_litellm import LiteLLMConfig
 
 BASE_PORT = 4100
-_ACCOUNT_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 
 
 def state_dir() -> Path:
@@ -60,7 +59,7 @@ def _private_dir(path: Path) -> Path:
 
 def _checked(account: str) -> str:
     """An account name becomes a path component, so it must not be able to leave the state dir."""
-    if not _ACCOUNT_NAME.fullmatch(account):
+    if not ACCOUNT_NAME_RE.fullmatch(account):
         raise ValueError(
             f"invalid LiteLLM account name {account!r}: use 1-32 lowercase letters, digits, "
             "'-' or '_', starting with a letter or digit"
