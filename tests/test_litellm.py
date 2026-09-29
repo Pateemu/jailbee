@@ -1353,9 +1353,9 @@ def test_up_skips_a_broken_override_and_reports_it(xdg):
     result = ll.litellm_up(incus, _gcfg())
     names = {
         m["model_name"]
-        for m in yaml.safe_load(
-            _pushed(incus)[f"{ll.CONTAINER_STATE_DIR}/default/config.yaml"]
-        )["model_list"]
+        for m in yaml.safe_load(_pushed(incus)[f"{ll.CONTAINER_STATE_DIR}/default/config.yaml"])[
+            "model_list"
+        ]
     }
     assert "jb-good.sol-xhigh" in names
     assert not any(n.startswith("jb-broken.") for n in names)
