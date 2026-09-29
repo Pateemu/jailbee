@@ -473,3 +473,15 @@ def test_spec_has_no_private_subpaths_by_default(tmp_path):
     cfg = _with_private_codex(tmp_path, [])
     spec = next(s for s in enabled_agent_specs(cfg) if s.name == "codex")
     assert spec.private == ()
+
+
+def test_the_loaded_claude_spec_mounts_its_runtime_dirs_per_container(tmp_path):
+    """Through the real load path (preset merge), not a hand-built agent."""
+    cfg = make_cfg(tmp_path, claude={"enabled": True})
+    spec = next(s for s in enabled_agent_specs(cfg) if s.name == "claude")
+
+    assert [(p.host_subpath, p.container_path) for p in spec.private] == [
+        ("claude/sessions", "~/.claude/sessions"),
+        ("claude/daemon", "~/.claude/daemon"),
+        ("claude/jobs", "~/.claude/jobs"),
+    ]
