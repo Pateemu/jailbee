@@ -3,7 +3,7 @@
 Stored at $XDG_CONFIG_HOME/jailbee/global.yaml (default
 ~/.config/jailbee/global.yaml). Optional file — if absent, defaults are used.
 Carries `docker_registry_mirror`, `loose_auto_revert`, `credentials`,
-and the `ls` / `dashboard` column preferences.
+`litellm`, and the `ls` / `dashboard` column preferences.
 
 Per-repo configuration lives in <repo>/.jailbee/config.yaml — see config.py.
 """
@@ -27,6 +27,7 @@ from jailbee.config import (
     _split_host_keys,
     normalize_credentials_key,
 )
+from jailbee.config.models_litellm import LiteLLMConfig
 from jailbee.config.models_remote import RemoteConfig
 from jailbee.paths import expand_path, xdg_data_home
 
@@ -270,6 +271,14 @@ class GlobalConfig(BaseModel):
         description=(
             "Remote access settings shared by every repo on this host. Host-level only: "
             "a repo's `.jailbee/config.yaml` cannot enable or broaden remote access."
+        ),
+    )
+    litellm: LiteLLMConfig = Field(
+        default_factory=LiteLLMConfig,
+        description=(
+            "Claude Code on non-Anthropic models through a jailbee-managed LiteLLM "
+            "proxy: routes, profiles and `claude-jb`'s default. Host-level only: "
+            "routes name this host's proxy and subscription login."
         ),
     )
 

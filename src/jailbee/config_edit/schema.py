@@ -31,8 +31,8 @@ from jailbee.global_config import GlobalConfig
 class FieldKind(StrEnum):
     """How the editor renders and edits one field.
 
-    Twelve kinds cover every leaf `build_specs` produces — 77 of them under
-    `repo_specs()`, 85 under `global_specs()`. `OPAQUE` is the honest
+    Twelve kinds cover every leaf `build_specs` produces — 95 of them under
+    `repo_specs()`, 121 under `global_specs()`. `OPAQUE` is the honest
     thirteenth: a field whose schema cannot generate a form.
     """
 
