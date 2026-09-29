@@ -2588,3 +2588,127 @@ def test_restart_one_runs_every_stage_in_the_foreground(
     _restart_one(cfg, incus, "a")
 
     assert ran == ["schema", "deps"]
+
+
+def _strict_profile_without_services(cfg: Any, *, extra_device_key: bool = False) -> str:
+    """The strict net profile as a pre-services-ACL jailbee stored it."""
+    import yaml
+
+    from jailbee.network import SERVICES_ACL
+    from jailbee.profiles import net_profile_yaml
+
+    profile = yaml.safe_load(net_profile_yaml(cfg, "strict"))
+    eth0 = profile["devices"]["eth0"]
+    eth0["security.acls"] = ",".join(
+        a for a in eth0["security.acls"].split(",") if a != SERVICES_ACL
+    )
+    if extra_device_key:
+        eth0["limits.egress"] = "10Mbit"
+    return yaml.safe_dump(profile)
+
+
+def _apply_with_strict_change(
+    make_cfg: Any, tmp_path: Path, mocker: MockerFixture, old_yaml: str, *, litellm: bool
+) -> list[str]:
+    """Run apply with one running container; return the restart prompts shown."""
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+    from jailbee.lifecycle import ContainerInfo
+    from jailbee.profiles import profile_names
+
+    cfg = make_cfg(tmp_path)
+    names = profile_names(cfg)
+    incus = MagicMock(spec=Incus)
+    incus.list_containers.return_value = []
+    incus.network_acl_list.return_value = []
+    incus.network_acl_exists.return_value = True
+    incus.network_get.return_value = ""
+    incus.profile_exists.return_value = True
+    incus.profile_show.return_value = old_yaml
+    mocker.patch(
+        "jailbee.apply._profile_differs", side_effect=lambda _i, n, _y: n == names.net_strict
+    )
+    mocker.patch("jailbee.apply._acl_differs", return_value=False)
+    mocker.patch("jailbee.apply._restart_one")
+    mocker.patch(
+        "jailbee.apply._list_containers",
+        return_value=[
+            ContainerInfo(
+                name=f"{tmp_path.name}-a",
+                state="Running",
+                network="strict",
+                ip="10.0.0.1",
+                memory_limit="16GiB",
+                repo=tmp_path.name,
+            )
+        ],
+    )
+    prompts: list[str] = []
+    gcfg = GlobalConfig.model_validate({"litellm": {"enabled": litellm}})
+    result = run_apply(cfg, incus, gcfg, confirm_fn=lambda m: prompts.append(m) or False)
+    assert names.net_strict in result.profiles_changed
+    incus.profile_set_yaml.assert_called_once()
+    return prompts
+
+
+def test_services_acl_attach_alone_does_not_offer_a_restart_without_litellm(
+    make_cfg, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """Every upgrader's strict profile gains `jailbee-services`; with LiteLLM off
+    that ACL is empty, so asking them to restart running containers is noise."""
+    old = _strict_profile_without_services(make_cfg(tmp_path))
+    assert _apply_with_strict_change(make_cfg, tmp_path, mocker, old, litellm=False) == []
+
+
+def test_services_acl_attach_still_offers_a_restart_with_litellm_enabled(
+    make_cfg, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    old = _strict_profile_without_services(make_cfg(tmp_path))
+    prompts = _apply_with_strict_change(make_cfg, tmp_path, mocker, old, litellm=True)
+    assert len(prompts) == 1 and "need restart" in prompts[0]
+
+
+def test_other_profile_changes_still_offer_a_restart_without_litellm(
+    make_cfg, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    old = _strict_profile_without_services(make_cfg(tmp_path), extra_device_key=True)
+    prompts = _apply_with_strict_change(make_cfg, tmp_path, mocker, old, litellm=False)
+    assert len(prompts) == 1
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "expected"),
+    [
+        (
+            "devices: {eth0: {security.acls: a}}",
+            "devices: {eth0: {security.acls: 'a,jailbee-services'}}",
+            True,
+        ),
+        (
+            "devices: {eth0: {type: nic}}",
+            "devices: {eth0: {type: nic, security.acls: jailbee-services}}",
+            True,
+        ),
+        (
+            "devices: {eth0: {security.acls: a}}",
+            "devices: {eth0: {security.acls: 'b,jailbee-services'}}",
+            False,
+        ),
+        (
+            "devices: {eth0: {security.acls: a}}",
+            "devices: {eth0: {security.acls: 'jailbee-services,a'}}",
+            False,
+        ),
+        ("devices: {eth0: {security.acls: a}}", "devices: {eth0: {security.acls: a}}", False),
+        ("config: {x: '1'}\ndevices: {}", "config: {x: '2'}\ndevices: {}", False),
+        (
+            "devices: {eth0: {security.acls: a}}",
+            "devices: {eth0: {security.acls: 'a,jailbee-services', mtu: '1400'}}",
+            False,
+        ),
+    ],
+)
+def test_only_attaches_services_acl(old: str, new: str, expected: bool) -> None:
+    from jailbee.apply import _only_attaches_services_acl
+
+    assert _only_attaches_services_acl(old, new) is expected

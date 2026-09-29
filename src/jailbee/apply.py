@@ -76,6 +76,39 @@ def _profile_differs(incus: Incus, name: str, new_yaml: str) -> bool:
     return _yaml_subset_differs(incus.profile_show(name), new_yaml, keys=("config", "devices"))
 
 
+def _only_attaches_services_acl(existing: str, candidate: str) -> bool:
+    """True if `candidate` differs from `existing` only by appending `jailbee-services`.
+
+    That is the one change every strict net profile gets on the upgrade that
+    introduces the shared services ACL. While no service container is up the
+    ACL has no rules, so the attach changes nothing for a running container
+    and a restart to pick it up would be pure disruption.
+    """
+    from jailbee.network import SERVICES_ACL
+
+    if not isinstance(existing, str):
+        return False
+    old, new = yaml.safe_load(existing) or {}, yaml.safe_load(candidate) or {}
+    if old.get("config") != new.get("config"):
+        return False
+    old_devices, new_devices = old.get("devices") or {}, new.get("devices") or {}
+    if old_devices.keys() != new_devices.keys():
+        return False
+    attached = False
+    for name, old_device in old_devices.items():
+        new_device = new_devices[name]
+        if old_device == new_device:
+            continue
+        old_acls = str(old_device.get("security.acls", "")).split(",")
+        new_acls = str(new_device.get("security.acls", "")).split(",")
+        rest_old = {k: v for k, v in old_device.items() if k != "security.acls"}
+        rest_new = {k: v for k, v in new_device.items() if k != "security.acls"}
+        if rest_old != rest_new or new_acls != [*[a for a in old_acls if a], SERVICES_ACL]:
+            return False
+        attached = True
+    return attached
+
+
 def _acl_differs(incus: Incus, name: str, new_yaml: str) -> bool:
     """True if the rendered ACL YAML differs from Incus's stored ACL."""
     return _yaml_subset_differs(
@@ -286,6 +319,10 @@ def run_apply(
     ensure_services_acl(incus)
     info("Checking profiles...")
     profiles_changed: list[str] = []
+    # Profiles whose change a running container only picks up on restart. The
+    # services-ACL attach is left out while LiteLLM is off: the ACL is empty
+    # then, so users who never enable it are not asked to restart for nothing.
+    restart_profiles: list[str] = []
     profiles_unchanged: list[str] = []
     for name, new_yaml in profile_yamls.items():
         if not incus.profile_exists(name):
@@ -297,10 +334,14 @@ def run_apply(
             incus.profile_create(name)
             incus.profile_set_yaml(name, new_yaml)
             profiles_changed.append(name)
+            restart_profiles.append(name)
         elif _profile_differs(incus, name, new_yaml):
             info(f"  Updating profile {name}...")
+            existing = incus.profile_show(name)
             incus.profile_set_yaml(name, new_yaml)
             profiles_changed.append(name)
+            if gcfg.litellm.enabled or not _only_attaches_services_acl(existing, new_yaml):
+                restart_profiles.append(name)
         else:
             profiles_unchanged.append(name)
 
@@ -445,7 +486,7 @@ def run_apply(
 
     restarted: list[str] = []
     restart_failures: list[tuple[str, str]] = []
-    should_restart = bool(profiles_changed) and bool(running_names) and not no_restart
+    should_restart = bool(restart_profiles) and bool(running_names) and not no_restart
     if should_restart and unresolved_pools:
         # Every boot runs `pool.allocate_startup` -> `ensure_pool_dirs`, so
         # with a root still polluted each restart raises the very PoolError

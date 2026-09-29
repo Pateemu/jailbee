@@ -88,6 +88,24 @@ state separately, without deleting any pre-existing Incus resources or real
 credentials. Do not count this recipe as executed merely because the mocked
 unit suite passes.
 
+Checks that only a real daemon can settle, and that the mocked suite cannot:
+
+- The proxy container's ACL pins DNS to the `jailbee-loose` gateway and DHCP
+  to broadcast/multicast/link-local. Incus must accept the comma-separated,
+  mixed IPv4/IPv6 `destination` values, and the container must still get a
+  lease and resolve `chatgpt.com`. From inside it, `dig @1.1.1.1 example.com`
+  must time out.
+- From a strict dev container the proxy's `ip:port` is reachable, `ip:22` and
+  another dev container are not, and after `jailbee litellm down` the proxy is
+  not reachable either. Repeat on the `jailbee-work` bridge.
+- Editing a strict NIC's `security.acls` on a profile reaches a *running*
+  container without a restart (`jailbee apply` no longer offers one when
+  LiteLLM is off). If a running container cannot reach the proxy after
+  `litellm up`, it needs a restart and this assumption is wrong.
+- Interrupt `jailbee litellm up` after the install (block DNS for the provider
+  hosts), then run it again: it must attach the state mount and come up
+  without `--reinstall`.
+
 ## Optional SSH service loopback smoke test
 
 This recipe exercises the real SSH listener, PTY relay and systemd user unit.
