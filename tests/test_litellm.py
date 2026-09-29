@@ -536,9 +536,28 @@ def test_failed_acl_resolution_after_install_restricts_container(monkeypatch: py
         ll.litellm_up(incus, _gcfg())
     acl = yaml.safe_load(incus.network_acl_set_yaml.call_args.args[1])
     assert all(rule["destination_port"] in {"67", "547", "53"} for rule in acl["egress"])
+    assert all("destination" in rule for rule in acl["egress"])
     profile = yaml.safe_load(incus.profile_set_yaml.call_args.args[1])["devices"]["eth0"]
     assert profile["security.acls"] == ll.EGRESS_ACL
     assert all(c.args[0] != "jailbee-services" for c in incus.network_acl_set_yaml.call_args_list)
+
+
+def test_every_proxy_acl_write_pins_dns_and_dhcp_to_the_bridge():
+    """Install-time and final ACLs alike: no destination-less infrastructure rule."""
+    incus = _incus(present=False)
+    ll.litellm_up(incus, _gcfg())
+    writes = [
+        yaml.safe_load(c.args[1])
+        for c in incus.network_acl_set_yaml.call_args_list
+        if c.args[0] == ll.EGRESS_ACL
+    ]
+    assert len(writes) >= 2
+    for acl in writes:
+        infra = [r for r in acl["egress"] if not r["description"].startswith("allowlisted: ")]
+        assert infra
+        assert all("destination" in r for r in infra)
+        dns = [r for r in infra if r["destination_port"] == "53"]
+        assert dns and all(r["destination"].startswith("10.79.115.1/32") for r in dns)
 
 
 def test_failed_acl_write_after_install_retries_restrictive_acl():

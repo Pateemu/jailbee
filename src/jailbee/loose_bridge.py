@@ -15,6 +15,25 @@ if TYPE_CHECKING:
 LOOSE_BRIDGE = "jailbee-loose"
 
 
+def loose_bridge_gateways(incus: Incus) -> list[str]:
+    """The bridge's own addresses (IPv4 first): where dnsmasq answers DNS and DHCP.
+
+    Empty when the bridge has no concrete address. Callers scope a service
+    container's DNS allowance to these, so a compromised service cannot use
+    port 53 as an open channel to arbitrary hosts.
+    """
+    gateways: list[str] = []
+    for key in ("ipv4.address", "ipv6.address"):
+        raw = incus.network_get(LOOSE_BRIDGE, key)
+        if not isinstance(raw, str) or raw.strip() in ("", "none", "auto"):
+            continue
+        try:
+            gateways.append(str(ipaddress.ip_interface(raw.strip()).ip))
+        except ValueError:
+            continue
+    return gateways
+
+
 def loose_bridge_host_ip(incus: Incus, index: int) -> str | None:
     if index < 0:
         return None

@@ -556,7 +556,9 @@ def test_services_acl_allows_each_port():
 def test_service_container_acl_has_dhcp_dns_egress_and_listen_ingress():
     entries = [EgressEntry(destinations=["1.2.3.4"], port=443, description="chatgpt.com:443")]
     acl = yaml.safe_load(
-        service_container_acl_yaml("jailbee-litellm-egress", entries, listen_ports=[4100])
+        service_container_acl_yaml(
+            "jailbee-litellm-egress", entries, listen_ports=[4100], gateways=["10.9.0.1"]
+        )
     )
     ports = {(r.get("destination_port"), r.get("protocol")) for r in acl["egress"]}
     assert {
@@ -574,6 +576,42 @@ def test_service_container_acl_has_dhcp_dns_egress_and_listen_ingress():
         "state": "enabled",
     } in acl["ingress"]
     assert {r.get("destination_port") for r in acl["ingress"]} >= {"68", "546", "4100"}
+
+
+def _service_egress(entries, gateways):
+    acl = yaml.safe_load(
+        service_container_acl_yaml("svc", entries, listen_ports=[4100], gateways=gateways)
+    )
+    return acl["egress"]
+
+
+def test_service_container_acl_pins_every_infrastructure_rule_to_the_bridge():
+    """No DHCP/DNS rule may reach an arbitrary host: the token holder's covert channel."""
+    entries = [EgressEntry(destinations=["1.2.3.4"], port=443, description="chatgpt.com:443")]
+    egress = _service_egress(entries, ["10.9.0.1", "fd42:9::1"])
+    infra = [r for r in egress if not r["description"].startswith("allowlisted: ")]
+    assert infra, "expected DHCP/DNS rules"
+    assert all("destination" in r for r in infra)
+    by_port = {(r["destination_port"], r["protocol"]): r["destination"] for r in infra}
+    assert by_port[("53", "udp")] == "10.9.0.1/32,fd42:9::1/128"
+    assert by_port[("53", "tcp")] == "10.9.0.1/32,fd42:9::1/128"
+    assert by_port[("67", "udp")] == "255.255.255.255/32,10.9.0.1/32"
+    assert by_port[("547", "udp")] == "ff02::1:2/128,fe80::/10"
+
+
+def test_service_container_acl_without_gateways_has_no_dns_rule():
+    """Unknown bridge address must fail closed, not fall back to any-host DNS."""
+    egress = _service_egress([], [])
+    assert not [r for r in egress if r["destination_port"] == "53"]
+    assert all("destination" in r for r in egress)
+
+
+def test_repo_allowlist_dns_stays_unscoped():
+    """Only the token-holding service container is pinned; dev containers are not."""
+    from jailbee.network import _base_egress_rules
+
+    dns = [r for r in _base_egress_rules() if r["destination_port"] == "53"]
+    assert dns and all("destination" not in r for r in dns)
 
 
 def test_allowlist_acl_yaml_unchanged_by_refactor(make_cfg, tmp_path):

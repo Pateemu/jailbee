@@ -24,7 +24,7 @@ from jailbee import litellm_state
 from jailbee.config import CONTAINER_USERNAME
 from jailbee.incus import IncusError
 from jailbee.litellm_render import ACCOUNT_DEFAULT, CONTAINER_STATE_DIR, egress_hosts
-from jailbee.loose_bridge import LOOSE_BRIDGE, loose_bridge_host_ip
+from jailbee.loose_bridge import LOOSE_BRIDGE, loose_bridge_gateways, loose_bridge_host_ip
 from jailbee.network import service_container_acl_yaml
 from jailbee.services_acl import set_services_endpoint
 
@@ -100,12 +100,23 @@ def _resolve_egress(hosts: list[str]) -> list[EgressEntry]:
     return build_egress_entries([h if ":" in h else f"{h}:443" for h in hosts])
 
 
-def _set_egress(incus: Incus, entries: list[EgressEntry], port: int) -> None:
+def _write_egress_acl(incus: Incus, entries: list[EgressEntry], listen_ports: list[int]) -> None:
+    """Create-if-missing and set the proxy's NIC ACL, DNS pinned to the bridge."""
     if not incus.network_acl_exists(EGRESS_ACL):
         incus.network_acl_create(EGRESS_ACL)
     incus.network_acl_set_yaml(
-        EGRESS_ACL, service_container_acl_yaml(EGRESS_ACL, entries, listen_ports=[port])
+        EGRESS_ACL,
+        service_container_acl_yaml(
+            EGRESS_ACL,
+            entries,
+            listen_ports=listen_ports,
+            gateways=loose_bridge_gateways(incus),
+        ),
     )
+
+
+def _set_egress(incus: Incus, entries: list[EgressEntry], port: int) -> None:
+    _write_egress_acl(incus, entries, [port])
 
 
 def _check_static_ip(incus: Incus, ip: str, containers: list[dict[str, object]]) -> None:
@@ -269,11 +280,7 @@ def _secure_failed_install(incus: Incus, ip: str, error: BaseException) -> None:
     Keep the original install exception and annotate any cleanup failure.
     """
     try:
-        if not incus.network_acl_exists(EGRESS_ACL):
-            incus.network_acl_create(EGRESS_ACL)
-        incus.network_acl_set_yaml(
-            EGRESS_ACL, service_container_acl_yaml(EGRESS_ACL, [], listen_ports=[])
-        )
+        _write_egress_acl(incus, [], [])
         _set_profile(incus, ip, with_acl=True)
     except Exception as restore_error:
         details = [f"Failed to restore restrictive LiteLLM NIC ACL: {restore_error}"]
@@ -365,11 +372,7 @@ def litellm_up(
         # install. Restrict it before start: Incus may report a failed start
         # after the instance has already reached Running.
         try:
-            if not incus.network_acl_exists(EGRESS_ACL):
-                incus.network_acl_create(EGRESS_ACL)
-            incus.network_acl_set_yaml(
-                EGRESS_ACL, service_container_acl_yaml(EGRESS_ACL, [], listen_ports=[])
-            )
+            _write_egress_acl(incus, [], [])
             _set_profile(incus, ip, with_acl=True)
             incus.start(LITELLM_CONTAINER)
         except BaseException as error:
@@ -393,12 +396,7 @@ def litellm_up(
             _provision(incus, version, pinned)
 
         on_step("writing the proxy's egress allowlist")
-        acl_yaml = service_container_acl_yaml(
-            EGRESS_ACL, _resolve_egress(egress_hosts(cfg)), listen_ports=[port]
-        )
-        if not incus.network_acl_exists(EGRESS_ACL):
-            incus.network_acl_create(EGRESS_ACL)
-        incus.network_acl_set_yaml(EGRESS_ACL, acl_yaml)
+        _set_egress(incus, _resolve_egress(egress_hosts(cfg)), port)
         _set_profile(incus, ip, with_acl=True)
         if needs_install:
             incus.config_device_add(
