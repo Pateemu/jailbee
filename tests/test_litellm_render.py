@@ -425,3 +425,41 @@ def test_instance_files_digest_changes_when_a_scope_is_added():
         scopes={"myrepo": _scope(routes={"sol-xhigh": {"effort": "max"}})},
     )
     assert base.digest("cb") != scoped.digest("cb")
+
+
+def _api_route(model: str, effort: str) -> dict[str, object]:
+    return {"model": model, "context_window": 200000, "effort": effort, "api_key": "K"}
+
+
+def test_scopes_whose_prefix_and_route_names_interleave_stay_apart_on_one_instance():
+    scopes = {
+        "a-b": _scope(routes={"c": _api_route("openrouter/m-ab-c", "low")}),
+        "a": _scope(routes={"b-c": _api_route("openrouter/m-a-bc", "high")}),
+        "default": _scope(
+            routes={
+                "sol-xhigh": {
+                    "model": "chatgpt/gpt-6-other",
+                    "context_window": 200000,
+                    "effort": "max",
+                }
+            }
+        ),
+    }
+    host = LiteLLMConfig()
+    rendered = render_instance_config(host, "default", scopes=scopes)
+    names = [m["model_name"] for m in rendered["model_list"]]
+    assert len(names) == len(set(names))
+    models = _by_name(rendered)
+    assert models["jb-a-b.c"]["litellm_params"]["model"] == "openrouter/m-ab-c"
+    assert models["jb-a.b-c"]["litellm_params"]["model"] == "openrouter/m-a-bc"
+    assert models["jb-default.sol-xhigh"]["litellm_params"]["model"] == "chatgpt/gpt-6-other"
+    assert models["jb-default-sol-xhigh"]["litellm_params"]["model"] == "chatgpt/gpt-6-sol"
+
+    table = render_callback_data(host, "default", scopes=scopes)["aliases"]
+    for name in ("jb-a-b.c", "jb-a.b-c", "jb-default.sol-xhigh", "jb-default-sol-xhigh"):
+        assert name in table
+    assert table["jb-a-b.c"]["effort"] == "low"
+    assert table["jb-a.b-c"]["effort"] == "high"
+    assert table["jb-default.sol-xhigh"]["effort"] == "max"
+    assert table["jb-default-sol-xhigh"]["effort"] == "xhigh"
+    assert set(table) == set(names) - {CATCH_ALL}

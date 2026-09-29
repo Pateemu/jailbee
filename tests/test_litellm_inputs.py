@@ -249,3 +249,41 @@ def test_secrets_referenced_only_by_a_repo_scope_are_loaded():
     )
     assert referenced_secrets(LiteLLMConfig(), None) == []
     assert referenced_secrets(LiteLLMConfig(), None, [scope]) == ["OPENROUTER_API_KEY"]
+
+
+def _repo_scope_with_key(name: str):
+    from jailbee.config.models_litellm import LiteLLMConfig, LiteLLMRepoOverlay
+
+    return LiteLLMConfig().with_overlay(
+        LiteLLMRepoOverlay.model_validate(
+            {
+                "routes": {
+                    "kimi": {
+                        "model": "openrouter/moonshotai/kimi-k3",
+                        "context_window": 262144,
+                        "api_key": name,
+                    }
+                }
+            }
+        )
+    )
+
+
+def test_load_host_inputs_loads_a_secret_only_a_repo_scope_references(config_home: Path):
+    from jailbee.config.models_litellm import LiteLLMConfig
+
+    _write_secrets("OPENROUTER_API_KEY=sk-repo\nUNUSED=x\n")
+    scope = _repo_scope_with_key("OPENROUTER_API_KEY")
+    assert load_host_inputs(LiteLLMConfig()).secrets == {}
+    assert load_host_inputs(LiteLLMConfig(), [scope]).secrets == {"OPENROUTER_API_KEY": "sk-repo"}
+
+
+def test_a_secret_only_a_repo_scope_references_is_reported_when_missing(config_home: Path):
+    from jailbee.config.models_litellm import LiteLLMConfig
+
+    _write_secrets("OTHER=x\n")
+    scope = _repo_scope_with_key("OPENROUTER_API_KEY")
+    with pytest.raises(LiteLLMInputError, match="does not define OPENROUTER_API_KEY"):
+        load_host_inputs(LiteLLMConfig(), [scope])
+    with pytest.raises(LiteLLMInputError, match="does not define OPENROUTER_API_KEY"):
+        load_secrets(LiteLLMConfig(), None, scopes=[scope])
