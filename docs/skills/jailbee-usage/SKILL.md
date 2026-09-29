@@ -690,14 +690,22 @@ On the host, enable `litellm.enabled: true` in `global.yaml`, then run
 device code), `jailbee base build` per repo and `jailbee apply` per repo. Inside a
 container, `claude-jb` runs Claude Code through the proxy while plain `claude`
 remains native. Choose a gateway profile with `claude-jb --profile NAME`, then
-`JAILBEE_LITELLM_PROFILE`, then the global `litellm.default_profile` (`codex`).
-The host also supports `jailbee litellm status`, `logs [ACCOUNT] [-f]`,
+`JAILBEE_LITELLM_PROFILE`, then `litellm.default_profile` (`codex`), which a
+repo's host-local override may change for its own containers. The host also
+supports `jailbee litellm ls` (profiles and routes as `claude-jb` uses them,
+globally and per repo override; read-only, also over remote SSH),
+`jailbee litellm status`, `logs [ACCOUNT] [-f]`,
 `logout [ACCOUNT]` and `down [--purge]`. After `down`, run `jailbee apply` to
 remove stale proxy settings from running dev containers. Several ChatGPT
 accounts (`litellm.accounts`, one per profile via `profiles.<p>.account`) and
 API-key providers (keys in the host's `~/.config/jailbee/litellm/secrets.env`)
-are supported; per-repo overrides, LiteLLM autostart and `jailbee litellm ls`
-are not. Inside the container there is no key and no login: `claude-jb` only
+are supported. A repo can override routes, profiles, `default_profile` and
+`autostart` in its host-local `~/.config/jailbee/repos/<prefix>.yaml` under
+`litellm:` (never in the committed repo config); edit it on the host with
+`jailbee config edit --local`, then run `jailbee apply` (`jailbee new` alone
+does not update the proxy; `apply --no-restart` defers the restart of changed
+proxy instances). With `litellm.autostart`, the Claude autostart window runs
+`claude-jb`. Inside the container there is no key and no login: `claude-jb` only
 reads `/etc/jailbee/litellm.json` and the proxy key for the profile's account.
 ChatGPT subscription use through this gateway is
 unofficial and may break or risk account sanctions. Full setup and limits:

@@ -11,10 +11,10 @@ and history, but neither command changes the other's environment.
 > requests or sanction the account without notice. Use it at your own risk.
 
 Several ChatGPT accounts can run side by side (one proxy instance each), and
-routes can use any LiteLLM provider with an API key. Per-repo LiteLLM overrides,
-`litellm.autostart` and `jailbee litellm ls` are not implemented yet. LiteLLM
-settings belong in the host's `global.yaml`, not a committed repo config or a
-host-local per-repo file. See [Configuration](config.md#litellm) and
+routes can use any LiteLLM provider with an API key. LiteLLM settings belong in
+the host's `global.yaml`; a repo may override routes and profiles in its
+host-local file ([Per-repo overrides](#per-repo-overrides)), never in a
+committed `.jailbee/config.yaml`. See [Configuration](config.md#litellm) and
 [Commands](commands.md).
 
 ## Setup
@@ -95,6 +95,69 @@ larger value would compact only after the backend had refused the prompt. A new
 model needs an explicit `context_window`; the wrapper exports
 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` as the largest window among the selected
 profile's mapped routes.
+
+## Per-repo overrides
+
+A repo can change routes and profiles for its own containers in its host-local
+file, `~/.config/jailbee/repos/<prefix>.yaml` (`<prefix>` is the repo's
+`container_prefix`). The `litellm:` block there accepts four keys: `routes`,
+`profiles`, `default_profile` and `autostart`. `enabled`, `version`, `accounts`,
+`egress` and `extra` describe the shared proxy and are refused. A `litellm:`
+block in a committed `.jailbee/config.yaml` is refused too.
+
+```yaml
+# ~/.config/jailbee/repos/myrepo.yaml
+litellm:
+  default_profile: fast
+  routes:
+    luna-high: {effort: low}          # this repo's Haiku tier thinks less
+  profiles:
+    fast: {sonnet: luna-high, haiku: luna-high, effort: low}
+  autostart: true
+```
+
+The layers stack as built-in, then `global.yaml`, then the repo. The merge is
+per route field and per profile tier: a route or profile named like an existing
+one overrides only the fields it sets, and a field set in the repo replaces the
+value below it whole. `params` and `egress` are replaced, not appended, unlike
+list keys elsewhere in jailbee's config. An explicit `null` tier unmaps it. The
+merged result must be valid as a whole (known routes, accounts and so on),
+otherwise the repo's config fails to load.
+
+The proxy serves the two scopes under different model aliases:
+`jb-default-<route>` for the host's routes and `jb-<prefix>.<route>` for a repo
+whose override sets non-empty `routes` or `profiles`. A repo that only sets
+`default_profile` or `autostart` has no scope of its own and uses the host's
+aliases. Route names match `[a-z0-9][a-z0-9_-]{0,63}` (no dots, as container
+prefixes have none either), so the two alias forms never collide. Inspect the
+result with `jailbee litellm ls`.
+
+After editing an override, run `jailbee apply` in that repo. It re-renders the
+proxy configuration and restarts only the instances whose routes changed,
+saying which, and it syncs the repo's running containers. `jailbee apply
+--no-restart` writes nothing to a running instance and warns which ones still
+serve the previous routes; a later plain `jailbee apply` restarts them.
+`jailbee new` does not update the proxy. If the proxy needs more than a
+restart (a different LiteLLM version, a new account, an unattached state
+volume), `apply` says so and points at `jailbee litellm up`.
+
+A broken override does not stop the proxy: `jailbee litellm up`, `jailbee
+apply` and `jailbee litellm ls` skip it with a warning naming the file, and
+`claude-jb` in that repo's containers cannot use the override until it is
+fixed. Only that repo's own commands fail to load its config, with the same
+file named.
+
+`jailbee config edit --local` offers the four keys in the repo's local layer.
+
+## Autostart
+
+`litellm.autostart: true` (in `global.yaml`, overridable per repo as above)
+starts the Claude autostart window with `claude-jb` instead of `claude`. It
+needs `litellm.enabled` and the Claude agent with `autostart` on. Only a command
+whose first word is `claude`, or a path ending in `claude`, is rewritten and its
+flags are kept; anything else (`env X=1 claude`, a wrapper script) is left as
+configured. The profile is `claude-jb`'s own selection, so the repo's
+`default_profile` applies.
 
 ## Accounts
 
@@ -198,9 +261,9 @@ back on; that is your choice.
 - Claude Code's claude.ai connectors are disabled in gateway sessions.
   Resuming a native session with signed Opus thinking blocks through
   `claude-jb` is untested.
-- Changing routes via `jailbee litellm up` restarts the proxy instance when
-  its rendered files change, interrupting in-flight streams. `jailbee apply`
-  does not restart or re-render the proxy in this phase: run `up` after edits.
+- Changing a route restarts that account's instance (`jailbee litellm up`, or
+  `jailbee apply` in any repo), interrupting every container's streams on that
+  account. `apply --no-restart` defers it.
 
 ## Troubleshooting
 
@@ -224,8 +287,9 @@ On the host, `jailbee litellm up`, `login` and `jailbee apply` can report:
 | `Several LiteLLM accounts are configured` | Name the account: `jailbee litellm login work`. |
 | `profile(s) ... have no proxy instance yet` (from `jailbee apply` or `jailbee new`) | Run `jailbee litellm up`, then `jailbee apply`. |
 
-On the host, use `jailbee litellm status`, `jailbee litellm logs [ACCOUNT] [-f]`,
-and `jailbee doctor`. Doctor reports unreadable LiteLLM inputs (`secrets.env`,
+On the host, use `jailbee litellm ls` (profiles, tiers, routes, efforts and
+context windows, globally and per repo override), `jailbee litellm status`,
+`jailbee litellm logs [ACCOUNT] [-f]`, and `jailbee doctor`. Doctor reports unreadable LiteLLM inputs (`secrets.env`,
 `extra`), one `litellm version` row for the installed-versus-configured
 version, and per account an instance row (not set up, or unhealthy) and a login
 row. A missing login fails doctor only for the account that serves the default

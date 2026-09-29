@@ -132,6 +132,29 @@ Use a throwaway `XDG_CONFIG_HOME`/`XDG_DATA_HOME` exactly as above.
 7. `jailbee litellm down --purge`: the volume is gone from
    `incus storage volume list default`.
 
+### Per-repo overrides and autostart
+
+Same throwaway rig, `litellm.enabled: true`, proxy up and logged in, one dev
+container running in a repo whose `container_prefix` is `<prefix>`. Use Luna,
+never Astra.
+
+1. Write `$XDG_CONFIG_HOME/jailbee/repos/<prefix>.yaml` with
+   `litellm: {routes: {luna-high: {effort: low}}}` and run `jailbee apply`.
+   Expect `Restarted LiteLLM instance(s) default on the new routes`. In the
+   container `claude-jb -p 'say hi' --model haiku` answers, and
+   `jailbee litellm logs` shows requests for `jb-<prefix>.luna-high`.
+   `jailbee litellm ls` lists a `repo <prefix>` block with `luna-high  chatgpt/gpt-6-luna  low (fixed)`.
+2. Run `jailbee apply` again: no restart message.
+3. Change the effort to `medium` and run `jailbee apply --no-restart`: it warns
+   that instance `default` still serves the previous routes. A plain
+   `jailbee apply` then restarts it.
+4. Break the file (`litellm: {enabled: true}`): `jailbee litellm ls` and
+   `jailbee apply` warn and skip it, while a command run in that repo fails
+   naming the file. Restore the file.
+5. Set `litellm: {autostart: true}` in the same file, run `jailbee apply`, then
+   `jailbee restart <container>` and `jailbee tmux`: the Claude window runs
+   `claude-jb`.
+
 ## Optional SSH service loopback smoke test
 
 This recipe exercises the real SSH listener, PTY relay and systemd user unit.
