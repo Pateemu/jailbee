@@ -8129,3 +8129,110 @@ def test_cancel_autostart_yes_runs_the_cancel(mocker, tmp_path, over_ssh):
     child.assert_called_once_with(
         ["jailbee", "autostart", "cancel", "alpha-x", *flags], check=False, cwd=tmp_path
     )
+
+
+# --- Vanish, inert and stale-policy protection of the terminal-only entries --
+
+
+def _drive_with_vanish(mocker, keys, groups, vanish, *, when: str) -> int:
+    """Run the loop; ``vanish()`` fires after ``keys``, in the frame before Enter or the Enter read."""
+    script = iter([*keys, "vanish", *([_ENTER] if when == "frame-before-enter" else [])])
+
+    def read(_fd, _n):
+        item = next(script, b"\x03")
+        if item == "vanish":
+            vanish()
+            return b"z" if when == "frame-before-enter" else _ENTER
+        return item
+
+    return _drive_run_with_reader(mocker, read, groups)
+
+
+_VANISH_WHEN = pytest.mark.parametrize("when", ["frame-before-enter", "same-read-as-enter"])
+
+
+@_VANISH_WHEN
+def test_container_vanishing_while_the_autostart_cancel_picker_is_open_runs_nothing(
+    mocker, tmp_path, when
+):
+    group = _cfg_group(tmp_path, (_autostart_ci(),))
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    # ``j`` moves the cursor from "No" to "Yes"; the container then disappears
+    keys = [*_container_menu_keys(group, "autostart-cancel"), b"j"]
+    assert _drive_with_vanish(mocker, keys, [group], group.containers.clear, when=when) == 0
+
+    child.assert_not_called()
+    assert "'alpha-x' is gone" in " ".join(str(n) for n in _notices(render))
+
+
+@pytest.mark.parametrize("when", ["frame-before-enter", "same-read-as-enter"])
+def test_repo_vanishing_while_the_apply_picker_is_open_runs_nothing(mocker, tmp_path, when):
+    group = _cfg_group(tmp_path)
+    groups = [group]
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    gone = False
+    real_target_group = dashboard.target_group
+
+    def target_group(seen, target, kind):
+        return None if gone and kind == "repo" else real_target_group(seen, target, kind)
+
+    mocker.patch.object(dashboard, "target_group", side_effect=target_group)
+
+    def vanish():
+        nonlocal gone
+        if when == "frame-before-enter":
+            groups.clear()  # the next frame's loop-top guard closes the picker
+        else:
+            gone = True  # the frame still lists it; only the submit's re-resolve can notice
+
+    assert (
+        _drive_with_vanish(mocker, _repo_menu_keys(group, "apply"), groups, vanish, when=when) == 0
+    )
+
+    child.assert_not_called()
+    assert "'alpha' is gone" in " ".join(str(n) for n in _notices(render))
+
+
+@pytest.mark.parametrize("verb", ["snapshots", "mount-add", "mount-remove"])
+def test_unbuilt_container_entries_are_inert(mocker, tmp_path, verb):
+    """A menu verb the dashboard has no handler for must never reach the CLI dispatcher."""
+    group = _cfg_group(tmp_path, (_autostart_ci(),))
+    group.optional_mounts = ("aws", "gcloud")
+    group.containers[0] = dataclasses.replace(group.containers[0], optional_mounts=("gcloud",))
+    menu = dashboard.open_menu([group], "alpha-x")
+    assert menu is not None
+    assert verb in [v for _label, v in menu.actions]
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    dispatch = mocker.patch.object(dashboard, "_dispatch_action")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, _container_menu_keys(group, verb), [group]) == 0
+
+    child.assert_not_called()
+    dispatch.assert_not_called()
+    # `dispatch`'s own guard would answer a fall-through with this notice
+    assert not [n for n in _notices(render) if "no longer available" in str(n)]
+    assert render.call_args_list[-1].kwargs["overlay"] is None
+
+
+def test_stale_menu_refused_by_the_policy_at_submit_spawns_nothing(mocker, tmp_path):
+    group = _cfg_group(tmp_path, (_autostart_ci(),))
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    keys = _container_menu_keys(group, "autostart-status")  # built while the menu offers it
+    real_check = dashboard.check_dashboard_command
+
+    def refuse(argv, policy, *, over_ssh):
+        if argv[:2] == ["autostart", "status"]:
+            raise dashboard.RouteError("autostart status is not permitted")
+        return real_check(argv, policy, over_ssh=over_ssh)
+
+    mocker.patch.object(dashboard, "check_dashboard_command", side_effect=refuse)
+
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    child.assert_not_called()
+    assert "autostart status is not permitted" in _notices(render)
