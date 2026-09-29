@@ -8,10 +8,14 @@ from pydantic import ValidationError
 from jailbee.config.errors import ConfigError
 from jailbee.config.models_litellm import (
     PINNED_LITELLM_VERSION,
+    ROUTE_NAME_RE,
     LiteLLMConfig,
+    LiteLLMRepoOverlay,
+    LiteLLMRepoView,
     ResolvedProfile,
     ResolvedRoute,
     api_base_endpoint,
+    input_free_lines,
 )
 from jailbee.global_config import GlobalConfig, validate_global_raw
 
@@ -324,3 +328,122 @@ def test_extra_is_an_optional_path():
     assert LiteLLMConfig().extra is None
     cfg = LiteLLMConfig.model_validate({"extra": "~/.config/jailbee/litellm/extra.yaml"})
     assert cfg.extra == "~/.config/jailbee/litellm/extra.yaml"
+
+
+def _overlay(**raw: object) -> LiteLLMRepoOverlay:
+    return LiteLLMRepoOverlay.model_validate(raw)
+
+
+@pytest.mark.parametrize("name", ["sol.xhigh", "Sol", "-sol", "a" * 65, "sol xhigh"])
+def test_route_names_are_alias_safe(name):
+    """No `.`: a host alias (`jb-default-<route>`) must never equal a repo one
+    (`jb-<prefix>.<route>`)."""
+    with pytest.raises(ValidationError, match="invalid route name"):
+        LiteLLMConfig.model_validate({"routes": {name: {"model": "chatgpt/gpt-6-sol"}}})
+
+
+def test_builtin_route_names_satisfy_the_rule():
+    assert all(ROUTE_NAME_RE.fullmatch(n) for n in LiteLLMConfig().effective_routes())
+
+
+def test_autostart_defaults_off():
+    assert LiteLLMConfig().autostart is False
+
+
+def test_overlay_stacks_on_the_global_route_field_by_field():
+    host = LiteLLMConfig.model_validate({"routes": {"sol-xhigh": {"effort": "max"}}})
+    merged = host.with_overlay(_overlay(routes={"sol-xhigh": {"context_window": 500_000}}))
+    route = merged.effective_routes()["sol-xhigh"]
+    assert (route.model, route.effort, route.context_window) == (
+        "chatgpt/gpt-6-sol",
+        "max",
+        500_000,
+    )
+    assert host.effective_routes()["sol-xhigh"].context_window == 922_000
+
+
+def test_overlay_params_and_egress_replace_the_global_value():
+    host = LiteLLMConfig.model_validate(
+        {
+            "routes": {
+                "kimi": {
+                    **_KIMI,
+                    "params": {"temperature": 0.6, "top_p": 0.9},
+                    "egress": ["a.example.com"],
+                }
+            }
+        }
+    )
+    merged = host.with_overlay(
+        _overlay(routes={"kimi": {"params": {"temperature": 0.2}, "egress": ["b.example.com"]}})
+    )
+    route = merged.effective_routes()["kimi"]
+    assert route.params == {"temperature": 0.2}
+    assert route.egress == ("b.example.com",)
+
+
+def test_overlay_null_tier_unmaps_and_keeps_the_rest_of_the_profile():
+    merged = LiteLLMConfig().with_overlay(_overlay(profiles={"codex": {"fable": None}}))
+    codex = merged.effective_profiles()["codex"]
+    assert "fable" not in codex.tiers
+    assert codex.tiers["opus"] == "sol-xhigh"
+    assert codex.account == "default"
+
+
+def test_overlay_adds_routes_profiles_and_overrides_default_profile_and_autostart():
+    host = LiteLLMConfig.model_validate({"autostart": True})
+    merged = host.with_overlay(
+        _overlay(
+            routes={"luna-low": {"model": "chatgpt/gpt-6-luna", "effort": "low"}},
+            profiles={"cheap": {"account": "default", "opus": "luna-low", "haiku": "luna-low"}},
+            default_profile="cheap",
+            autostart=False,
+        )
+    )
+    assert merged.default_profile == "cheap"
+    assert merged.autostart is False
+    assert merged.effective_profiles()["cheap"].tiers == {"opus": "luna-low", "haiku": "luna-low"}
+
+
+def test_an_empty_overlay_keeps_every_host_value():
+    host = LiteLLMConfig.model_validate(
+        {"autostart": True, "accounts": ["a"], "profiles": {"codex": {"account": "a"}}}
+    )
+    merged = host.with_overlay(_overlay())
+    assert (merged.autostart, merged.accounts, merged.default_profile) == (True, ["a"], "codex")
+
+
+def test_overlay_is_validated_in_the_merged_view():
+    with pytest.raises(ValidationError, match="unknown route 'nope'"):
+        LiteLLMConfig().with_overlay(_overlay(profiles={"codex": {"opus": "nope"}}))
+    with pytest.raises(ValidationError, match="default_profile 'nope'"):
+        LiteLLMConfig().with_overlay(_overlay(default_profile="nope"))
+    with pytest.raises(ValidationError, match="not in `litellm.accounts`"):
+        LiteLLMConfig().with_overlay(_overlay(profiles={"codex": {"account": "work"}}))
+
+
+@pytest.mark.parametrize("key", ["enabled", "version", "accounts", "egress", "extra"])
+def test_overlay_model_has_no_host_keys(key):
+    with pytest.raises(ValidationError):
+        LiteLLMRepoOverlay.model_validate({key: []})
+
+
+def test_input_free_lines_never_echo_a_pasted_key():
+    key = "sk-or-v1-" + "a" * 40
+    with pytest.raises(ValidationError) as caught:
+        LiteLLMRepoOverlay.model_validate({"routes": {"kimi": {**_KIMI, "api_key": key}}})
+    text = input_free_lines(caught.value, ("litellm",))
+    assert key not in text
+    assert "litellm.routes.kimi.api_key" in text
+
+
+def test_input_free_lines_without_a_location_is_just_the_message():
+    with pytest.raises(ValidationError) as caught:
+        LiteLLMConfig().with_overlay(_overlay(default_profile="nope"))
+    assert input_free_lines(caught.value).startswith("Value error, default_profile 'nope'")
+
+
+def test_the_default_view_is_the_disabled_host_config():
+    view = LiteLLMRepoView()
+    assert view.scope is None and view.origin is None
+    assert view.config.enabled is False

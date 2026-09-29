@@ -374,10 +374,11 @@ def _validation_text(error: ValidationError) -> str:
     `hide_input_in_errors` on the nested model does not help: pydantic honours
     it only on the model being validated, which here is `GlobalConfig`.
     """
-    errors = error.errors(include_url=False)
-    if not any(err["loc"][:1] == ("litellm",) for err in errors):
+    from jailbee.config.models_litellm import input_free_lines
+
+    if not any(err["loc"][:1] == ("litellm",) for err in error.errors(include_url=False)):
         return str(error)
-    return "\n".join(f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in errors)
+    return input_free_lines(error)
 
 
 def _load_unsanitized(path: Path) -> GlobalConfig:

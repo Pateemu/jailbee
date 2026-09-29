@@ -20,11 +20,18 @@ only `up`, not every command that loads `global.yaml`.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from jailbee.egress import parse_egress_entry
 
@@ -39,7 +46,17 @@ ACCOUNT_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 """An account name becomes a state path component, a systemd instance name and
 a dev-container key file name, so it must not be able to leave any of them."""
 
-SUBSCRIPTION_PROVIDERS: frozenset[str] = frozenset({"chatgpt"})
+ROUTE_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+"""A route name becomes part of a proxy model name: `jb-default-<route>` for the
+host's routes, `jb-<prefix>.<route>` for a repo override's. Neither a route name
+nor a container prefix may hold a `.`, so a host alias never contains one and a
+repo alias contains exactly one: no two aliases can be equal."""
+
+REPO_REFUSED_KEYS: tuple[str, ...] = ("enabled", "version", "accounts", "egress", "extra")
+"""`litellm:` keys a repo's `repos/<prefix>.yaml` may not set: they describe the
+proxy container and its logins, which every repo on the host shares."""
+
+SUBSCRIPTION_PROVIDERS: frozenset[str] =frozenset({"chatgpt"})
 """Providers that log in with `jailbee litellm login` instead of taking an API key."""
 
 PROVIDER_HOSTS: dict[str, tuple[str, ...]] = {
@@ -149,6 +166,34 @@ def _check_egress(entries: list[str]) -> list[str]:
     return entries
 
 
+def _check_route_names(routes: dict[str, object]) -> None:
+    bad = sorted(name for name in routes if not ROUTE_NAME_RE.fullmatch(name))
+    if bad:
+        raise ValueError(
+            f"invalid route name(s) {', '.join(repr(n) for n in bad)}: use 1-64 lowercase "
+            "letters, digits, '-' or '_', starting with a letter or digit"
+        )
+
+
+def input_free_lines(error: ValidationError, root: tuple[str, ...] = ()) -> str:
+    """Pydantic's messages without `input_value`, one per line.
+
+    `api_key` takes a secrets.env *name*; someone who pastes the key itself
+    would otherwise get it echoed back. `root` prefixes each location, for a
+    block validated on its own (`("litellm",)`).
+    """
+    lines: list[str] = []
+    for err in error.errors(include_url=False, include_input=False):
+        where = ".".join(str(part) for part in (*root, *err["loc"]))
+        lines.append(f"{where}: {err['msg']}" if where else err["msg"])
+    return "\n".join(lines)
+
+
+def _written(model: BaseModel | None) -> dict[str, object]:
+    """The fields a layer actually wrote, explicit nulls included."""
+    return {} if model is None else {k: getattr(model, k) for k in model.model_fields_set}
+
+
 class LiteLLMRoute(BaseModel):
     """One model and its settings; every field is optional for built-in overlays."""
 
@@ -255,6 +300,48 @@ class LiteLLMProfile(BaseModel):
     )
 
 
+class LiteLLMRepoOverlay(BaseModel):
+    """A repo's `litellm:` block in `~/.config/jailbee/repos/<prefix>.yaml`.
+
+    Stacked on the host block by `LiteLLMConfig.with_overlay`. Host-local like
+    the block it overrides; a committed `.jailbee/config.yaml` may not carry it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    routes: dict[str, LiteLLMRoute] = Field(
+        default_factory=dict,
+        description=(
+            "Routes for this repo only. An entry named like a global or built-in route "
+            "overrides it field by field; a field set here replaces the global value whole "
+            "(`params` and `egress` included)."
+        ),
+    )
+    profiles: dict[str, LiteLLMProfile] = Field(
+        default_factory=dict,
+        description=(
+            "Profiles for this repo only. An entry named like a global or built-in profile "
+            "overrides it tier by tier; `null` unmaps a tier."
+        ),
+    )
+    default_profile: str | None = Field(
+        default=None,
+        description="Profile `claude-jb` uses in this repo's containers by default.",
+    )
+    autostart: bool | None = Field(
+        default=None,
+        description=(
+            "Overrides `litellm.autostart` for this repo: run the Claude autostart window "
+            "with `claude-jb` (true) or `claude` (false)."
+        ),
+    )
+
+    @field_validator("routes")
+    @classmethod
+    def _route_names(cls, value: dict[str, LiteLLMRoute]) -> dict[str, LiteLLMRoute]:
+        _check_route_names(dict(value))
+        return value
+
+
 @dataclass(frozen=True)
 class ResolvedRoute:
     name: str
@@ -328,6 +415,14 @@ class LiteLLMConfig(BaseModel):
         description="Profile `claude-jb` uses when neither `--profile` nor "
         "`JAILBEE_LITELLM_PROFILE` names one.",
     )
+    autostart: bool = Field(
+        default=False,
+        description=(
+            "Start the Claude agent's autostart window with `claude-jb` instead of `claude`: "
+            "the command's first word is replaced and its flags are kept. A repo's "
+            "`repos/<prefix>.yaml` can override it."
+        ),
+    )
     routes: dict[str, LiteLLMRoute] = Field(
         default_factory=dict,
         description=(
@@ -377,8 +472,47 @@ class LiteLLMConfig(BaseModel):
     def _egress_parses(cls, value: list[str]) -> list[str]:
         return _check_egress(value)
 
+    @field_validator("routes")
+    @classmethod
+    def _route_names(cls, value: dict[str, LiteLLMRoute]) -> dict[str, LiteLLMRoute]:
+        _check_route_names(dict(value))
+        return value
+
     def effective_version(self) -> str:
         return self.version or PINNED_LITELLM_VERSION
+
+    def with_overlay(self, overlay: LiteLLMRepoOverlay) -> LiteLLMConfig:
+        """This host config with one repo's overrides on top, validated as a whole.
+
+        Route by route and field by field, profile by profile and tier by
+        tier — the rule a global entry already follows over a built-in one,
+        so built-in ← global ← repo is one mechanism. Raises
+        `pydantic.ValidationError` when the result does not hold together.
+        """
+        data = _written(self)
+        data["routes"] = {
+            **self.routes,
+            **{
+                name: LiteLLMRoute.model_validate(
+                    {**_written(self.routes.get(name)), **_written(r)}
+                )
+                for name, r in overlay.routes.items()
+            },
+        }
+        data["profiles"] = {
+            **self.profiles,
+            **{
+                name: LiteLLMProfile.model_validate(
+                    {**_written(self.profiles.get(name)), **_written(p)}
+                )
+                for name, p in overlay.profiles.items()
+            },
+        }
+        if overlay.default_profile is not None:
+            data["default_profile"] = overlay.default_profile
+        if overlay.autostart is not None:
+            data["autostart"] = overlay.autostart
+        return LiteLLMConfig.model_validate(data)
 
     def instance_account(self, profile: ResolvedProfile) -> str:
         """The account whose instance serves `profile`; API-key-only profiles use the first."""
@@ -475,3 +609,19 @@ class LiteLLMConfig(BaseModel):
         if self.default_profile not in profiles:
             raise ValueError(f"default_profile '{self.default_profile}' is not a profile")
         return self
+
+
+@dataclass(frozen=True)
+class LiteLLMRepoView:
+    """One repo's view of `litellm:` — what `claude-jb` uses in its containers.
+
+    `config` is the host block with the repo's override on top. `scope` is the
+    repo prefix when the override changes routes or profiles, so the proxy
+    serves this repo under its own aliases (`jb-<prefix>.<route>`); None when
+    it uses the host's (`jb-default-<route>`). `origin` names the override's
+    file, None without one.
+    """
+
+    config: LiteLLMConfig = field(default_factory=LiteLLMConfig)
+    scope: str | None = None
+    origin: str | None = None

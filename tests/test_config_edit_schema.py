@@ -270,11 +270,12 @@ def test_build_specs_covers_every_config_leaf():
     The five `litellm` leaves (`enabled`, `version`, `default_profile`,
     `routes`, `profiles`) add 5 to GlobalConfig: 28 + 5 = 33.
     Phase 2 of LiteLLM adds `accounts`, `egress` and `extra`: 33 + 3 = 36.
+    Phase 3 of LiteLLM adds `autostart`: 36 + 1 = 37.
     """
     from jailbee.config_edit.schema import build_specs
 
     assert len(build_specs(Config)) == 95
-    assert len(build_specs(GlobalConfig)) == 36
+    assert len(build_specs(GlobalConfig)) == 37
 
 
 def test_a_default_factory_field_reports_its_real_default():
