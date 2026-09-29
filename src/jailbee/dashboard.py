@@ -1316,15 +1316,27 @@ def open_menu(
     or a view-only (orphan) group. Callers surface :func:`view_only_note`
     instead, because an empty menu frame is indistinguishable from a broken one.
 
-    The terminal menu also offers ``Credential group…``, which the dashboard
-    handles itself rather than dispatching. It is added here, not in
-    :func:`menu_actions`, because the Qt dashboard shares that list.
+    The terminal menu also offers ``Credential group…`` and the
+    :mod:`jailbee.dashboard_actions` entries (autostart, snapshots, mounts),
+    which the dashboard handles itself rather than dispatching. They are added
+    here, not in :func:`menu_actions`, because the Qt dashboard shares that list.
     """
     actions = actions_for_container(
         groups, name, remote=remote, ssh_policy=ssh_policy, over_ssh=over_ssh
     )
     if name is None or not actions:
         return None
+    group = _find_group(groups, name)
+    container = (
+        next((c for c in group.containers if c.name == name), None) if group is not None else None
+    )
+    if group is not None and container is not None:
+        extras = dact.container_extras(
+            container, group.optional_mounts, ssh_policy, over_ssh=over_ssh
+        )
+        actions = _insert_after_job(actions, extras.after_job)
+        if extras.before_network:
+            actions = _insert_before_network(actions, extras.before_network)
     # Probed with placeholders: the policy judges the command, not its values.
     if permitted(["account", "group", "use", "x", "y"], ssh_policy, over_ssh=over_ssh):
         actions = _with_credential_group(actions)
@@ -1332,14 +1344,17 @@ def open_menu(
 
 
 _CONTAINER_LIFECYCLE_VERBS = frozenset({"restart", "stop", "destroy"})
+_JOB_VERBS = frozenset({"job clear", "job log", "job log --follow"})
+
+# Container-menu verbs the terminal dashboard handles itself. They are never in
+# the Qt-shared `menu_actions` list and never passed to `dispatch`.
+TERMINAL_MENU_VERBS: frozenset[str] = frozenset({"credential-group", *dact.CONTAINER_VERBS})
 
 
-def _with_credential_group(actions: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """``actions`` with ``Credential group…`` just before network and lifecycle.
-
-    That is before the first ``net …`` leaf (the ``Network →`` group), or the
-    first lifecycle leaf when there is no network entry; last otherwise.
-    """
+def _insert_before_network(
+    actions: Sequence[tuple[str, str]], extra: Sequence[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """``extra`` before the first ``net …`` leaf, else before lifecycle, else last."""
     at = next(
         (i for i, (_label, verb) in enumerate(actions) if verb.startswith("net ")),
         None,
@@ -1349,7 +1364,30 @@ def _with_credential_group(actions: list[tuple[str, str]]) -> list[tuple[str, st
             (i for i, (_label, verb) in enumerate(actions) if verb in _CONTAINER_LIFECYCLE_VERBS),
             len(actions),
         )
-    return [*actions[:at], ("Credential group…", "credential-group"), *actions[at:]]
+    return [*actions[:at], *extra, *actions[at:]]
+
+
+def _insert_after_job(
+    actions: Sequence[tuple[str, str]], extra: Sequence[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """``extra`` right after the last job entry; before network when there is none.
+
+    There may be none: an SSH policy can hide `job log` while permitting
+    `autostart status`.
+    """
+    at = max((i for i, (_label, verb) in enumerate(actions) if verb in _JOB_VERBS), default=None)
+    if at is None:
+        return _insert_before_network(actions, extra)
+    return [*actions[: at + 1], *extra, *actions[at + 1 :]]
+
+
+def _with_credential_group(actions: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """``actions`` with ``Credential group…`` just before network and lifecycle.
+
+    That is before the first ``net …`` leaf (the ``Network →`` group), or the
+    first lifecycle leaf when there is no network entry; last otherwise.
+    """
+    return _insert_before_network(actions, (("Credential group…", "credential-group"),))
 
 
 def open_repo_menu(
@@ -3062,6 +3100,17 @@ def run(
                     set_notice(f"'jailbee {dact.command_label(argv)}' exited {rc}")
                 force.set()  # the command likely changed state: refresh now
 
+            def open_container_entry(container: str, verb: str) -> Overlay | None:
+                """The first step of a terminal-only container entry; None once it has run."""
+                if verb == dact.AUTOSTART_STATUS:
+                    run_dashboard_command(
+                        container, "container", dact.autostart_status_argv(container)
+                    )
+                    return None
+                if verb == dact.AUTOSTART_CANCEL:
+                    return dact.autostart_cancel_picker(container)
+                return None
+
             def repo_for(
                 target: str, kind: Literal["repo", "container"] = "repo"
             ) -> RepoTarget | None:
@@ -3388,6 +3437,14 @@ def run(
                         "repo",
                         dact.apply_argv(no_restart=entry.value == dact.APPLY_NO_RESTART),
                     )
+                    return None
+                if picker.purpose == "container-autostart-cancel":
+                    if entry.value == "yes":
+                        run_dashboard_command(
+                            picker.target, "container", dact.autostart_cancel_argv(picker.target)
+                        )
+                    else:
+                        set_notice("Cancelled")
                     return None
                 if picker.purpose.startswith("acct-"):
                     # every account picker is opened from the Accounts panel
@@ -3805,6 +3862,8 @@ def run(
                                 elif verb == "credential-group":
                                     # Handled here: it is not a CLI verb to dispatch.
                                     overlay = open_group_picker("container-group", target)
+                                elif verb in dact.CONTAINER_VERBS:
+                                    overlay = open_container_entry(target, verb)
                                 else:
                                     dispatch(target, verb)
                     continue

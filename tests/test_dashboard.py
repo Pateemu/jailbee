@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import io
 import itertools
+import os
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1960,8 +1962,8 @@ def test_open_menu_captures_the_actions_with_the_cursor_at_the_top(tmp_path):
     assert menu is not None
     assert menu.container == "alpha-x"
     assert menu.index == 0
-    # the shared (Qt too) action list, plus the terminal-only credential group entry
-    assert [a for a in menu.actions if a[1] != "credential-group"] == (
+    # the shared (Qt too) action list, plus the terminal-only entries
+    assert [a for a in menu.actions if a[1] not in dashboard.TERMINAL_MENU_VERBS] == (
         dashboard.actions_for_container([group], "alpha-x")
     )
     assert ("Attach tmux", "tmux") in menu.actions
@@ -7973,3 +7975,157 @@ def test_repo_doctor_failure_is_a_notice(mocker, tmp_path):
     _drive_run(mocker, _repo_menu_keys(group, "doctor"), [group])
 
     assert "'jailbee doctor' exited 1" in _notices(render)
+
+
+# --- Terminal-only container entries (autostart, snapshots, mounts) ---------
+
+
+def _autostart_ci(phase: str = "autostart") -> ContainerInfo:
+    """A container whose job row is an autostart run; os.getpid() keeps the worker alive."""
+    return dataclasses.replace(
+        _ci("alpha-x", "alpha", job_phase=phase, job_pid=os.getpid()), job_kind="autostart"
+    )
+
+
+def _container_menu_keys(group: dashboard.RepoGroup, verb: str, **menu_kwargs) -> list[bytes]:
+    """Keys that choose top-level container-menu leaf ``verb`` for the first container.
+
+    ``menu_kwargs`` (``remote``/``over_ssh``/``ssh_policy``) must match the ``run()`` call.
+    """
+    menu = dashboard.open_menu([group], group.containers[0].name, **menu_kwargs)
+    assert menu is not None
+    entries = list(dashboard._menu_entries(menu))
+    at = next(
+        i
+        for i, entry in enumerate(entries)
+        if not isinstance(entry, dashboard.MenuGroup) and entry[1] == verb
+    )
+    return [b"j", _ENTER, *[b"j"] * at, _ENTER]
+
+
+def test_container_menu_places_autostart_after_the_job_log_and_snapshots_before_the_group(
+    tmp_path,
+):
+    menu = dashboard.open_menu([_cfg_group(tmp_path, (_autostart_ci(),))], "alpha-x")
+    assert menu is not None
+    verbs = [verb for _label, verb in menu.actions]
+    at = verbs.index("job log --follow")
+    assert verbs[at + 1 : at + 3] == ["autostart-status", "autostart-cancel"]
+    assert verbs[verbs.index("snapshots") + 1] == "credential-group"
+    # Credential group… still sits directly above the Network → group
+    assert verbs[verbs.index("credential-group") + 1].startswith("net ")
+
+
+def test_terminal_only_verbs_never_reach_the_shared_action_list(tmp_path):
+    group = _cfg_group(tmp_path, (_autostart_ci(),))
+    group.optional_mounts = ("aws",)
+    shared = {verb for _label, verb in dashboard.actions_for_container([group], "alpha-x")}
+    assert not shared & dashboard.TERMINAL_MENU_VERBS
+
+
+@pytest.mark.parametrize(
+    ("verbs", "expected"),
+    [
+        (["tmux", "job log", "net loose", "destroy"], ["tmux", "job log", "X", "net loose"]),
+        (["tmux", "net loose", "destroy"], ["tmux", "X", "net loose"]),
+        (["tmux", "restart", "destroy"], ["tmux", "X", "restart"]),
+    ],
+    ids=["after-the-job-entry", "no-job-entry-before-network", "no-network-before-lifecycle"],
+)
+def test_insert_after_job_falls_back_to_before_network(verbs, expected):
+    actions = [(verb.title(), verb) for verb in verbs]
+    placed = [verb for _label, verb in dashboard._insert_after_job(actions, [("X", "X")])]
+    assert placed[: len(expected)] == expected
+
+
+@pytest.mark.parametrize(
+    ("over_ssh", "policy_kwargs", "expected"),
+    [
+        (False, None, {"autostart-status", "autostart-cancel"}),
+        (False, {"commands": {"mode": "disabled"}}, {"autostart-status", "autostart-cancel"}),
+        (True, {}, {"autostart-status", "autostart-cancel"}),
+        (
+            True,
+            {"commands": {"mode": "allowlist", "allow": ["shell", "autostart status"]}},
+            {"autostart-status"},
+        ),
+        (True, {"commands": {"mode": "allowlist", "allow": ["shell"]}}, set()),
+        (True, {"excluded_repos": ["other"]}, set()),
+    ],
+    ids=[
+        "local",
+        "local-ignores-policy",
+        "ssh-default",
+        "ssh-allowlist-status",
+        "ssh-allowlist-without",
+        "ssh-excluded-repos",
+    ],
+)
+def test_container_menu_autostart_entries_follow_the_ssh_policy(
+    tmp_path, over_ssh, policy_kwargs, expected
+):
+    menu = dashboard.open_menu(
+        [_cfg_group(tmp_path, (_autostart_ci(),))],
+        "alpha-x",
+        remote=over_ssh,
+        over_ssh=over_ssh,
+        ssh_policy=_ssh_policy(policy_kwargs),
+    )
+    assert menu is not None
+    assert {verb for _label, verb in menu.actions} & {"autostart-status", "autostart-cancel"} == (
+        expected
+    )
+
+
+@pytest.mark.parametrize("over_ssh", [False, True], ids=["local", "ssh-default"])
+def test_autostart_status_runs_in_the_terminal(mocker, tmp_path, over_ssh):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_autostart_ci(),))
+    policy = RemoteSSHConfig() if over_ssh else None
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+    kwargs = {"remote": over_ssh, "over_ssh": over_ssh, "ssh_policy": policy}
+
+    keys = _container_menu_keys(group, "autostart-status", **kwargs)
+    assert _drive_run(mocker, keys, [group], **kwargs) == 0
+
+    flags = [] if over_ssh else ["--config", str(group.config_path)]
+    child.assert_called_once_with(
+        ["jailbee", "autostart", "status", "alpha-x", *flags], check=False, cwd=tmp_path
+    )
+    wait.assert_called_once()
+
+
+def test_cancel_autostart_asks_first_and_no_runs_nothing(mocker, tmp_path):
+    group = _cfg_group(tmp_path, (_autostart_ci(),))
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_menu_keys(group, "autostart-cancel"), _ENTER]  # Enter on "No"
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert [e.value for e in _rendered(render, dashboard.Picker)[0].entries] == ["no", "yes"]
+    child.assert_not_called()
+    assert "Cancelled" in _notices(render)
+
+
+@pytest.mark.parametrize("over_ssh", [False, True], ids=["local", "ssh-default"])
+def test_cancel_autostart_yes_runs_the_cancel(mocker, tmp_path, over_ssh):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_autostart_ci(),))
+    policy = RemoteSSHConfig() if over_ssh else None
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+    kwargs = {"remote": over_ssh, "over_ssh": over_ssh, "ssh_policy": policy}
+
+    keys = [*_container_menu_keys(group, "autostart-cancel", **kwargs), b"j", _ENTER]
+    assert _drive_run(mocker, keys, [group], **kwargs) == 0
+
+    flags = [] if over_ssh else ["--config", str(group.config_path)]
+    child.assert_called_once_with(
+        ["jailbee", "autostart", "cancel", "alpha-x", *flags], check=False, cwd=tmp_path
+    )
