@@ -3747,3 +3747,16 @@ def test_doctor_reports_a_socket_at_the_root_of_a_shared_mount(tmp_path):
 
     assert len(rows) == 1
     assert "app-server-control.sock" in rows[0].detail
+
+
+def test_litellm_doctor_names_a_broken_repo_override(mocker):
+    from jailbee import litellm as ll
+
+    gcfg = _litellm_up(mocker, [ll.InstanceStatus("default", 4100, True, True, "present")])
+    mocker.patch(
+        "jailbee.config.local_layer.local_litellm_scopes",
+        return_value=({}, ["/h/repos/app.yaml is not valid YAML (line 2); skipped"]),
+    )
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    row = _rows(gcfg)["litellm repo override"]
+    assert not row.ok and "/h/repos/app.yaml" in row.detail

@@ -251,3 +251,20 @@ def test_ls_says_when_litellm_is_disabled(mocker, tmp_path, monkeypatch):
     result = runner.invoke(app, ["litellm", "ls"])
     assert result.exit_code == 0, result.output
     assert "disabled" in result.output and "codex*" in result.output
+
+
+def test_up_prints_an_issue_with_brackets_verbatim(mocker, context):
+    issue = "/x/repos/a.yaml: routes.kimi [type=missing, input_type=dict] skipped"
+    mocker.patch(
+        "jailbee.litellm.litellm_up",
+        return_value=ll.UpResult(
+            ip="10.0.0.3",
+            ports={"default": 4100},
+            restarted=[],
+            retired=[],
+            installed=False,
+            issues=[issue],
+        ),
+    )
+    result = runner.invoke(app, ["litellm", "up"])
+    assert " ".join(issue.split()) in " ".join(result.output.split())

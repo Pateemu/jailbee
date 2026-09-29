@@ -14,7 +14,7 @@ file: both hold keys.
 from __future__ import annotations
 
 import stat
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -171,14 +171,33 @@ def _parse(path: Path) -> dict[str, str]:
     return values
 
 
+def _referenced_by(
+    names: Iterable[str], scopes: Sequence[LiteLLMConfig], labels: Sequence[str]
+) -> str:
+    """` (named by <file>, ...)` for the repo overrides whose routes use `names`."""
+    wanted = set(names)
+    files = sorted(
+        label
+        for label, scope in zip(labels, scopes, strict=False)
+        if any(r.api_key in wanted for r in scope.effective_routes().values())
+    )
+    return f" (named by {', '.join(files)})" if files else ""
+
+
 def load_secrets(
     cfg: LiteLLMConfig,
     extra: dict[str, object] | None,
     path: Path | None = None,
     *,
     scopes: Iterable[LiteLLMConfig] = (),
+    scope_labels: Sequence[str] = (),
 ) -> dict[str, str]:
-    """The referenced secrets by name. Raises `LiteLLMInputError` naming the fix."""
+    """The referenced secrets by name. Raises `LiteLLMInputError` naming the fix.
+
+    `scope_labels` names each of `scopes` (the repo override file it came
+    from), so a missing secret says which file asks for it.
+    """
+    scopes = tuple(scopes)
     names = referenced_secrets(cfg, extra, scopes)
     if not names:
         return {}
@@ -187,6 +206,7 @@ def load_secrets(
         raise LiteLLMInputError(
             f"routes name {', '.join(names)} but {path} does not exist: create it with "
             "NAME=value lines and `chmod 600` it"
+            f"{_referenced_by(names, scopes, scope_labels)}"
         )
     mode = stat.S_IMODE(path.stat().st_mode)
     if mode & 0o077:
@@ -196,10 +216,18 @@ def load_secrets(
     values = _parse(path)
     missing = [n for n in names if not values.get(n)]
     if missing:
-        raise LiteLLMInputError(f"{path} does not define {', '.join(missing)}")
+        raise LiteLLMInputError(
+            f"{path} does not define {', '.join(missing)}"
+            f"{_referenced_by(missing, scopes, scope_labels)}"
+        )
     return {n: values[n] for n in names}
 
 
-def load_host_inputs(cfg: LiteLLMConfig, scopes: Iterable[LiteLLMConfig] = ()) -> HostInputs:
+def load_host_inputs(
+    cfg: LiteLLMConfig,
+    scopes: Iterable[LiteLLMConfig] = (),
+    scope_labels: Sequence[str] = (),
+) -> HostInputs:
     extra = load_extra(cfg)
-    return HostInputs(secrets=load_secrets(cfg, extra, scopes=tuple(scopes)), extra=extra)
+    secrets = load_secrets(cfg, extra, scopes=scopes, scope_labels=scope_labels)
+    return HostInputs(secrets=secrets, extra=extra)

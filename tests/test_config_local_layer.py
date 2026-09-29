@@ -18,6 +18,7 @@ from jailbee.config.local_layer import (
     local_litellm_scopes,
     read_local_raw,
     repo_litellm_view,
+    scope_files,
     split_local_raw,
     validate_local_raw,
 )
@@ -266,3 +267,8 @@ def test_a_prefix_only_override_is_a_view_but_not_a_scope():
 def test_validate_local_raw_checks_the_litellm_block():
     with pytest.raises(ConfigError, match="litellm"):
         validate_local_raw({"litellm": {"autostart": "sometimes"}}, "/tmp/x.yaml")
+
+
+def test_scope_files_follow_the_scope_order():
+    scopes = {"b": LiteLLMConfig(), "a": LiteLLMConfig()}
+    assert scope_files(scopes) == [str(local_config_path("b")), str(local_config_path("a"))]

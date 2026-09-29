@@ -287,3 +287,25 @@ def test_a_secret_only_a_repo_scope_references_is_reported_when_missing(config_h
         load_host_inputs(LiteLLMConfig(), [scope])
     with pytest.raises(LiteLLMInputError, match="does not define OPENROUTER_API_KEY"):
         load_secrets(LiteLLMConfig(), None, scopes=[scope])
+
+
+def test_a_missing_secret_names_the_repo_file_that_references_it(config_home: Path):
+    from jailbee.config.models_litellm import LiteLLMConfig
+
+    _write_secrets("OTHER=x\n")
+    scope = _repo_scope_with_key("OPENROUTER_API_KEY")
+    with pytest.raises(LiteLLMInputError, match=r"named by /r/app\.yaml") as caught:
+        load_host_inputs(LiteLLMConfig(), [scope], ["/r/app.yaml"])
+    assert "sk-" not in str(caught.value)
+    with pytest.raises(LiteLLMInputError, match=r"named by /r/app\.yaml"):
+        load_secrets(LiteLLMConfig(), None, scopes=[scope], scope_labels=["/r/app.yaml"])
+
+
+def test_a_file_free_of_the_missing_secret_is_not_blamed(config_home: Path):
+    from jailbee.config.models_litellm import LiteLLMConfig
+
+    _write_secrets("OTHER=x\n")
+    scopes = [_repo_scope_with_key("OPENROUTER_API_KEY"), LiteLLMConfig()]
+    with pytest.raises(LiteLLMInputError) as caught:
+        load_host_inputs(LiteLLMConfig(), scopes, ["/r/a.yaml", "/r/b.yaml"])
+    assert "/r/a.yaml" in str(caught.value) and "/r/b.yaml" not in str(caught.value)

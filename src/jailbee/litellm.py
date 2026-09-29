@@ -23,7 +23,7 @@ import yaml
 
 from jailbee import litellm_state
 from jailbee.config import CONTAINER_USERNAME
-from jailbee.config.local_layer import local_litellm_scopes
+from jailbee.config.local_layer import local_litellm_scopes, scope_files
 from jailbee.incus import IncusError
 from jailbee.litellm_inputs import load_host_inputs
 from jailbee.litellm_render import (
@@ -489,7 +489,7 @@ def litellm_up(
         raise ValueError("LiteLLM is disabled: set `litellm.enabled: true` in global.yaml first.")
     # Host inputs first: a missing secret must fail before anything changes.
     scopes, issues = local_litellm_scopes(cfg)
-    inputs = load_host_inputs(cfg, scopes.values())
+    inputs = load_host_inputs(cfg, scopes.values(), scope_files(scopes))
     version = cfg.effective_version()
     pinned = cfg.version is None
 
@@ -672,7 +672,7 @@ def litellm_reconcile(
             issues=issues,
         )
     known = {account: port for account, port in ports.items() if port is not None}
-    inputs = load_host_inputs(cfg, scopes.values())
+    inputs = load_host_inputs(cfg, scopes.values(), scope_files(scopes))
     callback_source = _read("jailbee_callback.py")
     files = _render_all(cfg, scopes, known, inputs)
     changed = [

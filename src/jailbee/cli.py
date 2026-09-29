@@ -10674,7 +10674,7 @@ def litellm_up_cmd(
             "their logins are kept."
         )
     for issue in result.issues:
-        warn(issue)
+        warn_plain(issue)
     info(
         "Next: `jailbee litellm login <account>` for each new account, then "
         "`jailbee apply` in each repo that uses `claude-jb`."

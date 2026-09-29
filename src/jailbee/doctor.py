@@ -98,12 +98,12 @@ def _check_litellm(incus: Incus, gcfg: GlobalConfig) -> list[CheckResult]:
     cfg = gcfg.litellm
     if not cfg.enabled:
         return [CheckResult("litellm", True, "not enabled")]
-    from jailbee.config.local_layer import local_litellm_scopes
+    from jailbee.config.local_layer import local_litellm_scopes, scope_files
 
-    scopes, _issues = local_litellm_scopes(cfg)
-    rows: list[CheckResult] = []
+    scopes, issues = local_litellm_scopes(cfg)
+    rows: list[CheckResult] = [CheckResult("litellm repo override", False, issue) for issue in issues]
     try:
-        litellm_inputs.load_host_inputs(cfg, scopes.values())
+        litellm_inputs.load_host_inputs(cfg, scopes.values(), scope_files(scopes))
     except litellm_inputs.LiteLLMInputError as e:
         rows.append(CheckResult("litellm inputs", False, f"{e} — then run 'jailbee litellm up'"))
     try:

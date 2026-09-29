@@ -210,6 +210,11 @@ def local_litellm_scopes(host: LiteLLMConfig) -> tuple[dict[str, LiteLLMConfig],
     return {v.prefix: v.view.config for v in views if v.view.scope is not None}, issues
 
 
+def scope_files(scopes: dict[str, LiteLLMConfig]) -> list[str]:
+    """The repo override file behind each scope, in `scopes` order (for error messages)."""
+    return [str(local_config_path(prefix)) for prefix in scopes]
+
+
 def check_token_perms(path: Path, overlay: dict[str, object]) -> None:
     """Require a local config file carrying `github.token` to be private."""
     github = overlay.get("github")
