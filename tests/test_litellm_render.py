@@ -3,7 +3,7 @@ per-container file — pure functions, no Incus."""
 
 import pytest
 
-from jailbee.config.models_litellm import LiteLLMConfig
+from jailbee.config.models_litellm import LiteLLMConfig, LiteLLMRepoOverlay
 from jailbee.litellm_render import (
     CATCH_ALL,
     InstanceFiles,
@@ -27,7 +27,20 @@ def _by_name(cfg: dict) -> dict[str, dict]:
 
 
 def test_alias_shape():
-    assert alias("default", "sol-xhigh") == "jb-default-sol-xhigh"
+    assert alias(None, "sol-xhigh") == "jb-default-sol-xhigh"
+    assert alias("myrepo", "sol-xhigh") == "jb-myrepo.sol-xhigh"
+
+
+@pytest.mark.parametrize(
+    "a,b",
+    [
+        (("a-b", "c"), ("a", "b-c")),
+        (("default", "sol"), (None, "sol")),
+        ((None, "a-b"), ("a", "b")),
+    ],
+)
+def test_aliases_of_different_scopes_never_collide(a, b):
+    assert alias(*a) != alias(*b)
 
 
 def test_instance_config_has_one_deployment_per_route_plus_catch_all():
@@ -342,3 +355,73 @@ def test_egress_is_derived_from_served_routes_api_base_and_host_egress():
 def test_upstream_targets_skip_cidrs():
     cfg = LiteLLMConfig.model_validate({"egress": ["10.0.0.0/24"]})
     assert all(host != "10.0.0.0/24" for host, _ in upstream_targets(cfg))
+
+
+def _scope(**overlay: object) -> LiteLLMConfig:
+    return LiteLLMConfig().with_overlay(LiteLLMRepoOverlay.model_validate(overlay))
+
+
+def test_every_scope_is_rendered_beside_the_host_routes():
+    scopes = {"myrepo": _scope(routes={"sol-xhigh": {"effort": "max"}})}
+    models = _by_name(render_instance_config(LiteLLMConfig(), "default", scopes=scopes))
+    assert "jb-default-sol-xhigh" in models and "jb-myrepo.sol-xhigh" in models
+    assert "jb-myrepo.astra" in models
+    table = render_callback_data(LiteLLMConfig(), "default", scopes=scopes)["aliases"]
+    assert table["jb-myrepo.sol-xhigh"]["effort"] == "max"
+    assert table["jb-default-sol-xhigh"]["effort"] == "xhigh"
+
+
+def test_the_catch_all_stays_the_hosts():
+    scopes = {"myrepo": _scope(routes={"luna-high": {"model": "chatgpt/gpt-6-sol"}})}
+    models = _by_name(render_instance_config(LiteLLMConfig(), "default", scopes=scopes))
+    assert models[CATCH_ALL]["litellm_params"]["model"] == "chatgpt/gpt-6-luna"
+
+
+def test_a_scope_serves_its_subscription_routes_only_on_its_profiles_account():
+    host = LiteLLMConfig.model_validate({"accounts": ["default", "work"]})
+    scopes = {
+        "myrepo": host.with_overlay(
+            LiteLLMRepoOverlay.model_validate({"profiles": {"codex": {"account": "work"}}})
+        )
+    }
+    on_work = _by_name(render_instance_config(host, "work", scopes=scopes))
+    on_default = _by_name(render_instance_config(host, "default", scopes=scopes))
+    assert "jb-myrepo.sol-xhigh" in on_work and "jb-myrepo.sol-xhigh" not in on_default
+    assert "jb-default-sol-xhigh" in on_default and "jb-default-sol-xhigh" not in on_work
+
+
+def test_container_profiles_use_the_scope_aliases():
+    cfg = _scope(routes={"sol-xhigh": {"effort": "max"}})
+    profiles = container_profiles(cfg, base_urls={"default": "u"}, scope="myrepo")
+    assert profiles["codex"]["tiers"]["opus"] == "jb-myrepo.sol-xhigh"
+    host = container_profiles(LiteLLMConfig(), base_urls={"default": "u"})
+    assert host["codex"]["tiers"]["opus"] == "jb-default-sol-xhigh"
+
+
+def test_egress_and_probe_targets_include_every_scope():
+    scopes = {
+        "myrepo": _scope(
+            routes={
+                "kimi": {
+                    "model": "openrouter/moonshotai/kimi-k3",
+                    "context_window": 262144,
+                    "api_key": "OPENROUTER_API_KEY",
+                }
+            }
+        )
+    }
+    assert "openrouter.ai:443" in egress_hosts(LiteLLMConfig(), scopes=scopes)
+    assert "openrouter.ai:443" not in egress_hosts(LiteLLMConfig())
+    assert ("openrouter.ai", 443) in upstream_targets(LiteLLMConfig(), scopes=scopes)
+
+
+def test_instance_files_digest_changes_when_a_scope_is_added():
+    base = render_instance_files(LiteLLMConfig(), "default", port=4100, master_key="k")
+    scoped = render_instance_files(
+        LiteLLMConfig(),
+        "default",
+        port=4100,
+        master_key="k",
+        scopes={"myrepo": _scope(routes={"sol-xhigh": {"effort": "max"}})},
+    )
+    assert base.digest("cb") != scoped.digest("cb")

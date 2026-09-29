@@ -12,6 +12,12 @@ always sends its own session effort (`output_config.effort`), so the value
 would never apply. The jailbee callback (`provision/litellm/jailbee_callback.py`)
 applies fixed and floor efforts from `render_callback_data`'s table instead.
 
+Every instance renders every **scope**: the host's own routes under
+`jb-default-<route>`, and each repo override that changes routes or profiles
+under `jb-<prefix>.<route>`. Repos with different overrides then share one
+instance, and one login, without answering each other's model names. The
+catch-all stays the host's.
+
 Secrets appear in the rendered config only as `os.environ/<NAME>`; their
 values live in the per-instance `instance.env`.
 """
@@ -20,7 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -32,14 +38,28 @@ from jailbee.egress import parse_egress_entry
 if TYPE_CHECKING:
     from jailbee.config.models_litellm import LiteLLMConfig, ResolvedProfile, ResolvedRoute
 
-SCOPE_DEFAULT = "default"
 CATCH_ALL = "claude-*"
 CONTAINER_STATE_DIR = "/var/lib/jailbee-litellm"
 _CHEAPEST_FIRST = ("haiku", "sonnet", "opus", "fable")
 
+Scopes = Mapping[str, "LiteLLMConfig"]
+"""Repo prefix → that repo's merged config, for repos served under their own aliases."""
 
-def alias(scope: str, route: str) -> str:
-    return f"jb-{scope}-{route}"
+
+def alias(scope: str | None, route: str) -> str:
+    """`jb-default-<route>` for the host's routes, `jb-<prefix>.<route>` for a repo's.
+
+    Neither a route name nor a prefix may contain `.`, so the two forms never meet.
+    """
+    return f"jb-default-{route}" if scope is None else f"jb-{scope}.{route}"
+
+
+def _scoped(
+    cfg: LiteLLMConfig, scopes: Scopes | None
+) -> Iterator[tuple[str | None, LiteLLMConfig]]:
+    yield None, cfg
+    for prefix in sorted(scopes or {}):
+        yield prefix, (scopes or {})[prefix]
 
 
 def container_key_file(account: str) -> str:
@@ -114,10 +134,17 @@ def merge_extra(base: dict[str, object], extra: Mapping[str, object]) -> dict[st
 
 
 def render_instance_config(
-    cfg: LiteLLMConfig, account: str, *, extra: Mapping[str, object] | None = None
+    cfg: LiteLLMConfig,
+    account: str,
+    *,
+    extra: Mapping[str, object] | None = None,
+    scopes: Scopes | None = None,
 ) -> dict[str, object]:
-    served = served_routes(cfg, account)
-    model_list = [_deployment(alias(SCOPE_DEFAULT, n), r) for n, r in served.items()]
+    model_list = [
+        _deployment(alias(scope, name), route)
+        for scope, view in _scoped(cfg, scopes)
+        for name, route in served_routes(view, account).items()
+    ]
     catch_all = catch_all_route(cfg, account)
     if catch_all is not None:
         model_list.append(_deployment(CATCH_ALL, catch_all))
@@ -138,11 +165,15 @@ def _entry(route: ResolvedRoute) -> dict[str, object]:
     return {"chatgpt": route.subscription, "effort": route.effort, "min_effort": route.min_effort}
 
 
-def render_callback_data(cfg: LiteLLMConfig, account: str) -> dict[str, object]:
+def render_callback_data(
+    cfg: LiteLLMConfig, account: str, *, scopes: Scopes | None = None
+) -> dict[str, object]:
     catch_all = catch_all_route(cfg, account)
     return {
         "aliases": {
-            alias(SCOPE_DEFAULT, n): _entry(r) for n, r in served_routes(cfg, account).items()
+            alias(scope, name): _entry(route)
+            for scope, view in _scoped(cfg, scopes)
+            for name, route in served_routes(view, account).items()
         },
         "catch_all": None if catch_all is None else _entry(catch_all),
     }
@@ -201,13 +232,14 @@ def render_instance_files(
     master_key: str,
     secrets: Mapping[str, str] | None = None,
     extra: Mapping[str, object] | None = None,
+    scopes: Scopes | None = None,
 ) -> InstanceFiles:
     return InstanceFiles(
         account=account,
         config_yaml=yaml.safe_dump(
-            render_instance_config(cfg, account, extra=extra), sort_keys=False
+            render_instance_config(cfg, account, extra=extra, scopes=scopes), sort_keys=False
         ),
-        callback_json=json.dumps(render_callback_data(cfg, account), indent=2) + "\n",
+        callback_json=json.dumps(render_callback_data(cfg, account, scopes=scopes), indent=2) + "\n",
         instance_env=render_instance_env(
             port=port, master_key=master_key, account=account, secrets=secrets
         ),
@@ -215,9 +247,9 @@ def render_instance_files(
 
 
 def container_profiles(
-    cfg: LiteLLMConfig, *, base_urls: Mapping[str, str]
+    cfg: LiteLLMConfig, *, base_urls: Mapping[str, str], scope: str | None = None
 ) -> dict[str, dict[str, object]]:
-    """`claude-jb`'s view of every profile whose account has a running instance."""
+    """`claude-jb`'s view of every profile whose account has a running instance, in one scope."""
     routes = cfg.effective_routes()
     out: dict[str, dict[str, object]] = {}
     for name, profile in cfg.effective_profiles().items():
@@ -228,7 +260,7 @@ def container_profiles(
             "base_url": base_urls[account],
             "key_file": container_key_file(account),
             "effort": profile.effort,
-            "tiers": {t: alias(SCOPE_DEFAULT, r) for t, r in profile.tiers.items()},
+            "tiers": {t: alias(scope, r) for t, r in profile.tiers.items()},
             "context_window": max(routes[r].context_window for r in profile.tiers.values()),
         }
     return out
@@ -242,18 +274,25 @@ def _route_egress(route: ResolvedRoute) -> list[str]:
     return [*hosts, *route.egress]
 
 
-def egress_hosts(cfg: LiteLLMConfig) -> list[str]:
+def egress_hosts(cfg: LiteLLMConfig, *, scopes: Scopes | None = None) -> list[str]:
     """`host[:port]` entries the proxy container may reach (no port = 443)."""
-    served = {n: r for a in cfg.accounts for n, r in served_routes(cfg, a).items()}
-    entries = {e for route in served.values() for e in _route_egress(route)}
+    entries = {
+        entry
+        for _, view in _scoped(cfg, scopes)
+        for account in view.accounts
+        for route in served_routes(view, account).values()
+        for entry in _route_egress(route)
+    }
     entries.update(cfg.egress)
     return sorted(entries)
 
 
-def upstream_targets(cfg: LiteLLMConfig) -> list[tuple[str, int]]:
+def upstream_targets(
+    cfg: LiteLLMConfig, *, scopes: Scopes | None = None
+) -> list[tuple[str, int]]:
     """Hosts `jailbee doctor` probes from inside the proxy; CIDR entries are not probeable."""
     targets: list[tuple[str, int]] = []
-    for raw in egress_hosts(cfg):
+    for raw in egress_hosts(cfg, scopes=scopes):
         spec = parse_egress_entry(raw)
         if spec.is_literal and "/" in spec.target:
             continue

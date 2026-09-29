@@ -228,3 +228,24 @@ def test_load_host_inputs_bundles_both(tmp_path: Path):
     inputs = load_host_inputs(cfg)
     assert inputs.secrets == {"OPENROUTER_API_KEY": "sk-or-1"}
     assert inputs.extra == {"router_settings": {"num_retries": 2}}
+
+
+def test_secrets_referenced_only_by_a_repo_scope_are_loaded():
+    from jailbee.config.models_litellm import LiteLLMConfig, LiteLLMRepoOverlay
+    from jailbee.litellm_inputs import referenced_secrets
+
+    scope = LiteLLMConfig().with_overlay(
+        LiteLLMRepoOverlay.model_validate(
+            {
+                "routes": {
+                    "kimi": {
+                        "model": "openrouter/moonshotai/kimi-k3",
+                        "context_window": 262144,
+                        "api_key": "OPENROUTER_API_KEY",
+                    }
+                }
+            }
+        )
+    )
+    assert referenced_secrets(LiteLLMConfig(), None) == []
+    assert referenced_secrets(LiteLLMConfig(), None, [scope]) == ["OPENROUTER_API_KEY"]

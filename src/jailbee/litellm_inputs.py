@@ -14,6 +14,7 @@ file: both hold keys.
 from __future__ import annotations
 
 import stat
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -136,8 +137,17 @@ def load_extra(cfg: LiteLLMConfig) -> dict[str, object] | None:
     return raw
 
 
-def referenced_secrets(cfg: LiteLLMConfig, extra: dict[str, object] | None) -> list[str]:
-    names = {r.api_key for r in cfg.effective_routes().values() if r.api_key}
+def referenced_secrets(
+    cfg: LiteLLMConfig,
+    extra: dict[str, object] | None,
+    scopes: Iterable[LiteLLMConfig] = (),
+) -> list[str]:
+    names = {
+        r.api_key
+        for view in (cfg, *scopes)
+        for r in view.effective_routes().values()
+        if r.api_key
+    }
     names |= extra_secret_names(extra or {})
     return sorted(names)
 
@@ -165,10 +175,14 @@ def _parse(path: Path) -> dict[str, str]:
 
 
 def load_secrets(
-    cfg: LiteLLMConfig, extra: dict[str, object] | None, path: Path | None = None
+    cfg: LiteLLMConfig,
+    extra: dict[str, object] | None,
+    path: Path | None = None,
+    *,
+    scopes: Iterable[LiteLLMConfig] = (),
 ) -> dict[str, str]:
     """The referenced secrets by name. Raises `LiteLLMInputError` naming the fix."""
-    names = referenced_secrets(cfg, extra)
+    names = referenced_secrets(cfg, extra, scopes)
     if not names:
         return {}
     path = path or secrets_path()
@@ -189,6 +203,6 @@ def load_secrets(
     return {n: values[n] for n in names}
 
 
-def load_host_inputs(cfg: LiteLLMConfig) -> HostInputs:
+def load_host_inputs(cfg: LiteLLMConfig, scopes: Iterable[LiteLLMConfig] = ()) -> HostInputs:
     extra = load_extra(cfg)
-    return HostInputs(secrets=load_secrets(cfg, extra), extra=extra)
+    return HostInputs(secrets=load_secrets(cfg, extra, scopes=tuple(scopes)), extra=extra)
