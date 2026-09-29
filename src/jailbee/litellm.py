@@ -23,7 +23,8 @@ import yaml
 from jailbee import litellm_state
 from jailbee.config import CONTAINER_USERNAME
 from jailbee.incus import IncusError
-from jailbee.litellm_render import ACCOUNT_DEFAULT, CONTAINER_STATE_DIR, egress_hosts
+from jailbee.config.models_litellm import DEFAULT_ACCOUNT
+from jailbee.litellm_render import CONTAINER_STATE_DIR, container_key_file, egress_hosts
 from jailbee.loose_bridge import LOOSE_BRIDGE, loose_bridge_gateways, loose_bridge_host_ip
 from jailbee.network import SERVICES_ACL, service_container_acl_yaml
 from jailbee.services_acl import set_services_endpoint
@@ -52,7 +53,7 @@ _PACKAGE_ENDPOINTS = (
     "ports.ubuntu.com:443",
 )
 CONTAINER_FILE = "/etc/jailbee/litellm.json"
-CONTAINER_KEY_FILE = "/etc/jailbee/litellm-default.key"
+CONTAINER_KEY_FILE = container_key_file(DEFAULT_ACCOUNT)
 
 
 def unit(account: str) -> str:
@@ -340,7 +341,7 @@ def litellm_up(
     cfg = gcfg.litellm
     if not cfg.enabled:
         raise ValueError("LiteLLM is disabled: set `litellm.enabled: true` in global.yaml first.")
-    account = ACCOUNT_DEFAULT
+    account = DEFAULT_ACCOUNT
     version = cfg.effective_version()
     pinned = cfg.version is None
 
@@ -447,7 +448,7 @@ def endpoint(incus: Incus) -> tuple[str, int] | None:
     ip = loose_bridge_host_ip(incus, _IP_INDEX)
     if ip is None:
         return None
-    return ip, litellm_state.port_for(ACCOUNT_DEFAULT)
+    return ip, litellm_state.port_for(DEFAULT_ACCOUNT)
 
 
 def container_sync_payload(incus: Incus, gcfg: GlobalConfig) -> dict[str, object] | None:
@@ -457,13 +458,13 @@ def container_sync_payload(incus: Incus, gcfg: GlobalConfig) -> dict[str, object
     if not gcfg.litellm.enabled:
         return None
     ep = endpoint(incus)
-    key_path = litellm_state.state_dir() / ACCOUNT_DEFAULT / "master.key"
+    key_path = litellm_state.state_dir() / DEFAULT_ACCOUNT / "master.key"
     if ep is None or not key_path.exists():
         return None
     ip, port = ep
     return {
         "json": container_payload(
-            gcfg.litellm, base_url=f"http://{ip}:{port}", key_file=CONTAINER_KEY_FILE
+            gcfg.litellm, base_urls={DEFAULT_ACCOUNT: f"http://{ip}:{port}"}
         ),
         "key_path": str(key_path),
     }
@@ -510,13 +511,13 @@ def litellm_status(incus: Incus) -> LiteLLMStatus:
     ip = loose_bridge_host_ip(incus, _IP_INDEX)
     if info.get("status") != "Running":
         return LiteLLMStatus(ContainerState.STOPPED, ip, None, [])
-    port = litellm_state.port_for(ACCOUNT_DEFAULT)
+    port = litellm_state.port_for(DEFAULT_ACCOUNT)
     instance = InstanceStatus(
-        account=ACCOUNT_DEFAULT,
+        account=DEFAULT_ACCOUNT,
         port=port,
-        active=_active(incus, ACCOUNT_DEFAULT),
+        active=_active(incus, DEFAULT_ACCOUNT),
         healthy=_healthy(incus, port),
-        login=litellm_state.auth_state(ACCOUNT_DEFAULT),
+        login=litellm_state.auth_state(DEFAULT_ACCOUNT),
     )
     return LiteLLMStatus(ContainerState.RUNNING, ip, _installed_version(incus), [instance])
 

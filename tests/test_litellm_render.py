@@ -1,15 +1,24 @@
 """Rendering `litellm:` into LiteLLM's config, the callback table and the
 per-container file — pure functions, no Incus."""
 
+import pytest
+
 from jailbee.config.models_litellm import LiteLLMConfig
 from jailbee.litellm_render import (
     CATCH_ALL,
+    InstanceFiles,
     alias,
+    catch_all_route,
+    container_key_file,
     container_payload,
     egress_hosts,
+    merge_extra,
     render_callback_data,
     render_instance_config,
     render_instance_env,
+    render_instance_files,
+    served_routes,
+    upstream_targets,
 )
 
 
@@ -22,7 +31,7 @@ def test_alias_shape():
 
 
 def test_instance_config_has_one_deployment_per_route_plus_catch_all():
-    rendered = render_instance_config(LiteLLMConfig())
+    rendered = render_instance_config(LiteLLMConfig(), "default")
     models = _by_name(rendered)
     assert set(models) == {
         "jb-default-astra",
@@ -38,13 +47,13 @@ def test_instance_config_has_one_deployment_per_route_plus_catch_all():
 
 def test_effort_is_not_put_in_litellm_params():
     """Claude Code sends its own effort; the callback applies configured effort."""
-    models = _by_name(render_instance_config(LiteLLMConfig()))
+    models = _by_name(render_instance_config(LiteLLMConfig(), "default"))
     assert "reasoning_effort" not in models["jb-default-sol-xhigh"]["litellm_params"]
 
 
 def test_route_params_pass_through():
     cfg = LiteLLMConfig.model_validate({"routes": {"astra": {"params": {"timeout": 600}}}})
-    models = _by_name(render_instance_config(cfg))
+    models = _by_name(render_instance_config(cfg, "default"))
     assert models["jb-default-astra"]["litellm_params"] == {
         "model": "chatgpt/gpt-6-astra",
         "timeout": 600,
@@ -52,18 +61,18 @@ def test_route_params_pass_through():
 
 
 def test_catch_all_targets_default_profiles_haiku_route():
-    models = _by_name(render_instance_config(LiteLLMConfig()))
+    models = _by_name(render_instance_config(LiteLLMConfig(), "default"))
     assert models[CATCH_ALL]["litellm_params"] == {"model": "chatgpt/gpt-6-luna"}
 
 
 def test_catch_all_falls_back_to_sonnet_when_haiku_unmapped():
     cfg = LiteLLMConfig.model_validate({"profiles": {"codex": {"haiku": None}}})
-    models = _by_name(render_instance_config(cfg))
+    models = _by_name(render_instance_config(cfg, "default"))
     assert models[CATCH_ALL]["litellm_params"] == {"model": "chatgpt/gpt-6-sol"}
 
 
 def test_proxy_settings_always_set():
-    rendered = render_instance_config(LiteLLMConfig())
+    rendered = render_instance_config(LiteLLMConfig(), "default")
     assert rendered["litellm_settings"] == {
         "drop_params": True,
         "turn_off_message_logging": True,
@@ -73,7 +82,7 @@ def test_proxy_settings_always_set():
 
 
 def test_callback_data_marks_chatgpt_and_efforts():
-    data = render_callback_data(LiteLLMConfig())
+    data = render_callback_data(LiteLLMConfig(), "default")
     assert data["aliases"]["jb-default-sol-xhigh"] == {
         "chatgpt": True,
         "effort": "xhigh",
@@ -91,7 +100,7 @@ def test_callback_data_keeps_effort_floor_for_overridden_route():
     cfg = LiteLLMConfig.model_validate(
         {"routes": {"luna-high": {"effort": None, "min_effort": "medium"}}}
     )
-    data = render_callback_data(cfg)
+    data = render_callback_data(cfg, "default")
     assert data["aliases"]["jb-default-luna-high"] == {
         "chatgpt": True,
         "effort": None,
@@ -113,11 +122,7 @@ def test_instance_env():
 
 
 def test_container_payload():
-    payload = container_payload(
-        LiteLLMConfig(),
-        base_url="http://10.0.0.3:4100",
-        key_file="/etc/jailbee/litellm-default.key",
-    )
+    payload = container_payload(LiteLLMConfig(), base_urls={"default": "http://10.0.0.3:4100"})
     assert payload == {
         "version": 1,
         "default_profile": "codex",
@@ -145,10 +150,200 @@ def test_payload_context_window_is_the_largest_of_the_profiles_routes():
             "profiles": {"small": {"account": "default", "sonnet": "sol-medium"}},
         }
     )
-    payload = container_payload(cfg, base_url="u", key_file="k")
+    payload = container_payload(cfg, base_urls={"default": "u"})
     assert payload["profiles"]["small"]["context_window"] == 400_000
     assert payload["profiles"]["codex"]["context_window"] == 922_000
 
 
 def test_egress_hosts_for_chatgpt():
-    assert egress_hosts(LiteLLMConfig()) == ["auth.openai.com", "chatgpt.com"]
+    assert egress_hosts(LiteLLMConfig()) == ["auth.openai.com:443", "chatgpt.com:443"]
+
+
+_KIMI = {
+    "model": "openrouter/moonshotai/kimi-k3",
+    "context_window": 262144,
+    "api_key": "OPENROUTER_API_KEY",
+}
+
+
+def _two_accounts() -> LiteLLMConfig:
+    """codex on `personal`; `work` maps Opus to its own low-effort Sol route; kimi everywhere."""
+    return LiteLLMConfig.model_validate(
+        {
+            "accounts": ["personal", "work"],
+            "default_profile": "codex",
+            "routes": {"kimi": _KIMI, "sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "low"}},
+            "profiles": {
+                "codex": {"account": "personal"},
+                "work": {"account": "work", "opus": "sol-low", "haiku": "kimi"},
+                "kimi": {"opus": "kimi", "sonnet": "kimi", "haiku": "kimi"},
+            },
+        }
+    )
+
+
+def test_subscription_routes_are_served_by_their_accounts_and_api_key_routes_everywhere():
+    cfg = _two_accounts()
+    assert set(served_routes(cfg, "personal")) == {
+        "astra",
+        "sol-xhigh",
+        "sol-medium",
+        "luna-high",
+        "kimi",
+    }
+    assert set(served_routes(cfg, "work")) == {"sol-low", "kimi"}
+
+
+def test_an_unreferenced_subscription_route_is_served_nowhere():
+    cfg = LiteLLMConfig.model_validate({"routes": {"spare": {"model": "chatgpt/gpt-6-luna"}}})
+    assert "spare" not in served_routes(cfg, "default")
+
+
+def test_api_key_is_rendered_as_an_env_reference_never_a_value():
+    cfg = LiteLLMConfig.model_validate(
+        {"routes": {"kimi": {**_KIMI, "api_base": "https://openrouter.ai/api/v1"}}}
+    )
+    kimi = _by_name(render_instance_config(cfg, "default"))["jb-default-kimi"]
+    assert kimi["litellm_params"] == {
+        "model": "openrouter/moonshotai/kimi-k3",
+        "api_key": "os.environ/OPENROUTER_API_KEY",
+        "api_base": "https://openrouter.ai/api/v1",
+    }
+    assert kimi["model_info"] == {"max_input_tokens": 262144}  # no Responses mode
+
+
+def test_catch_all_is_per_account():
+    cfg = _two_accounts()
+    assert catch_all_route(cfg, "personal").name == "luna-high"  # default profile's haiku
+    assert catch_all_route(cfg, "work").name == "kimi"  # first profile bound to work: its haiku
+
+
+def test_an_api_key_default_profile_is_every_instances_catch_all():
+    cfg = _two_accounts().model_copy(update={"default_profile": "kimi"})
+    assert catch_all_route(cfg, "personal").name == "kimi"
+    assert catch_all_route(cfg, "work").name == "kimi"
+
+
+def test_an_account_no_profile_uses_has_no_catch_all():
+    cfg = LiteLLMConfig.model_validate({"accounts": ["default", "spare"]})
+    assert catch_all_route(cfg, "spare") is None
+    assert CATCH_ALL not in _by_name(render_instance_config(cfg, "spare"))
+    assert render_callback_data(cfg, "spare") == {"aliases": {}, "catch_all": None}
+
+
+def test_callback_data_covers_only_the_served_aliases():
+    data = render_callback_data(_two_accounts(), "work")
+    assert set(data["aliases"]) == {"jb-default-sol-low", "jb-default-kimi"}
+    assert data["aliases"]["jb-default-kimi"]["chatgpt"] is False
+    assert data["aliases"]["jb-default-sol-low"] == {
+        "chatgpt": True,
+        "effort": "low",
+        "min_effort": None,
+    }
+
+
+def test_instance_env_carries_referenced_secrets_single_quoted_and_sorted():
+    env = render_instance_env(
+        port=4101,
+        master_key="sk-jb-x",
+        account="work",
+        secrets={"XAI_API_KEY": "xai-2", "OPENROUTER_API_KEY": "sk-or-1"},
+    )
+    lines = env.splitlines()
+    assert lines[:2] == ["PORT=4101", "LITELLM_MASTER_KEY=sk-jb-x"]
+    assert "CHATGPT_TOKEN_DIR=/var/lib/jailbee-litellm/work/auth" in lines
+    assert lines[-2:] == ["OPENROUTER_API_KEY='sk-or-1'", "XAI_API_KEY='xai-2'"]
+
+
+def test_instance_env_refuses_a_value_it_cannot_quote():
+    with pytest.raises(ValueError):
+        render_instance_env(port=1, master_key="k", account="a", secrets={"K": "it's"})
+
+
+def test_extra_merges_last_with_lists_appended_and_scalars_winning():
+    extra = {
+        "model_list": [{"model_name": "mine", "litellm_params": {"model": "mistral/large"}}],
+        "litellm_settings": {"callbacks": ["my.handler"], "drop_params": False},
+        "router_settings": {"num_retries": 2},
+    }
+    rendered = render_instance_config(LiteLLMConfig(), "default", extra=extra)
+    assert [m["model_name"] for m in rendered["model_list"]][-1] == "mine"
+    assert rendered["litellm_settings"]["callbacks"] == [
+        "jailbee_callback.proxy_handler_instance",
+        "my.handler",
+    ]
+    assert rendered["litellm_settings"]["drop_params"] is False
+    assert rendered["general_settings"] == {"master_key": "os.environ/LITELLM_MASTER_KEY"}
+    assert rendered["router_settings"] == {"num_retries": 2}
+
+
+def test_merge_extra_does_not_mutate_its_inputs():
+    base = {"a": {"b": [1]}}
+    merge_extra(base, {"a": {"b": [2]}})
+    assert base == {"a": {"b": [1]}}
+
+
+def test_instance_files_digest_changes_with_every_part():
+    files = render_instance_files(LiteLLMConfig(), "default", port=4100, master_key="k1")
+    base = files.digest("callback v1")
+    assert files.digest("callback v1") == base
+    assert files.digest("callback v2") != base
+    rekeyed = render_instance_files(LiteLLMConfig(), "default", port=4100, master_key="k2")
+    assert rekeyed.digest("callback v1") != base
+    secret = render_instance_files(
+        LiteLLMConfig(), "default", port=4100, master_key="k1", secrets={"K": "v"}
+    )
+    assert secret.digest("callback v1") != base
+    assert isinstance(files, InstanceFiles) and files.account == "default"
+
+
+def test_container_payload_points_each_profile_at_its_account():
+    cfg = _two_accounts()
+    payload = container_payload(
+        cfg, base_urls={"personal": "http://10.0.0.3:4100", "work": "http://10.0.0.3:4101"}
+    )
+    profiles = payload["profiles"]
+    assert profiles["codex"]["base_url"] == "http://10.0.0.3:4100"
+    assert profiles["codex"]["key_file"] == container_key_file("personal")
+    assert profiles["work"]["base_url"] == "http://10.0.0.3:4101"
+    assert profiles["kimi"]["base_url"] == "http://10.0.0.3:4100"  # accounts[0]
+    assert container_key_file("work") == "/etc/jailbee/litellm-work.key"
+
+
+def test_container_payload_leaves_out_profiles_without_an_instance():
+    payload = container_payload(_two_accounts(), base_urls={"personal": "http://10.0.0.3:4100"})
+    assert set(payload["profiles"]) == {"codex", "kimi"}
+
+
+def test_egress_is_derived_from_served_routes_api_base_and_host_egress():
+    cfg = LiteLLMConfig.model_validate(
+        {
+            "routes": {
+                "kimi": _KIMI,
+                "local": {
+                    "model": "openai/qwen",
+                    "context_window": 32768,
+                    "api_base": "https://llm.example.com:8443/v1",
+                    "egress": ["extra.example.com"],
+                },
+            },
+            "egress": ["10.0.0.5:11434"],
+        }
+    )
+    assert egress_hosts(cfg) == sorted(
+        [
+            "10.0.0.5:11434",
+            "auth.openai.com:443",
+            "chatgpt.com:443",
+            "extra.example.com",
+            "llm.example.com:8443",  # api_base replaces api.openai.com
+            "openrouter.ai:443",
+        ]
+    )
+    assert ("extra.example.com", 443) in upstream_targets(cfg)
+    assert ("llm.example.com", 8443) in upstream_targets(cfg)
+
+
+def test_upstream_targets_skip_cidrs():
+    cfg = LiteLLMConfig.model_validate({"egress": ["10.0.0.0/24"]})
+    assert all(host != "10.0.0.0/24" for host, _ in upstream_targets(cfg))
