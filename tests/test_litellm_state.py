@@ -91,6 +91,21 @@ def test_second_write_without_change_reports_unchanged() -> None:
     assert st.write_instance_files(LiteLLMConfig(), "default").changed is False
 
 
+def test_config_applied_tracks_the_files_the_unit_last_restarted_on() -> None:
+    assert st.config_applied("default") is False
+    st.write_instance_files(LiteLLMConfig(), "default")
+    assert st.config_applied("default") is False  # written, not yet applied
+    st.record_applied("default")
+    assert st.config_applied("default") is True
+    st.write_instance_files(LiteLLMConfig(), "default")
+    assert st.config_applied("default") is True  # unchanged rewrite stays applied
+    changed = LiteLLMConfig.model_validate({"routes": {"sol-xhigh": {"effort": "max"}}})
+    st.write_instance_files(changed, "default")
+    assert st.config_applied("default") is False
+    st.record_applied("default")
+    assert st.config_applied("default") is True
+
+
 def test_config_change_reports_changed() -> None:
     st.write_instance_files(LiteLLMConfig(), "default")
     changed = LiteLLMConfig.model_validate({"routes": {"sol-xhigh": {"effort": "max"}}})

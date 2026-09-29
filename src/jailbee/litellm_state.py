@@ -8,6 +8,7 @@
       <account>/config.yaml           rendered
       <account>/callback.json         rendered
       <account>/instance.env          0600, rendered (holds the master key)
+      <account>/applied.sha256        digest of the files the running unit last restarted on
 
 State survives `jailbee litellm down` and container rebuilds, so a rebuild
 does not require a new login. LiteLLM writes auth.json; its file mode depends
@@ -16,6 +17,7 @@ on the proxy process umask, not this module. The auth directory is kept 0700.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -143,6 +145,39 @@ def write_instance_files(cfg: LiteLLMConfig, account: str) -> WriteResult:
         ),
     ]
     return WriteResult(changed=any(changed))
+
+
+def config_digest(account: str) -> str:
+    """Digest of every file the proxy unit reads from the state directory."""
+    base = state_dir() / account
+    sha = hashlib.sha256()
+    for path in (
+        state_dir() / "callback" / "jailbee_callback.py",
+        base / "config.yaml",
+        base / "callback.json",
+        base / "instance.env",
+    ):
+        sha.update(path.name.encode() + b"\0")
+        sha.update(path.read_bytes() if path.exists() else b"")
+    return sha.hexdigest()
+
+
+def config_applied(account: str) -> bool:
+    """Whether the running unit was last restarted on exactly the files now on disk.
+
+    Files are written before the restart, so a run that fails in between would
+    otherwise leave a stale proxy that a re-run, seeing unchanged files, never
+    restarts. A missing stamp counts as not applied.
+    """
+    try:
+        stamp = (state_dir() / account / "applied.sha256").read_text().strip()
+    except OSError:
+        return False
+    return stamp == config_digest(account)
+
+
+def record_applied(account: str) -> None:
+    _write_private(_account_dir(account) / "applied.sha256", config_digest(account) + "\n")
 
 
 def _auth_file(account: str) -> Path:

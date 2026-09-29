@@ -264,6 +264,57 @@ def test_up_restarts_once_after_config_change():
     assert sum("systemctl restart" in e for e in _execs(incus)) == 1
 
 
+def test_up_restarts_again_after_a_run_that_failed_before_the_restart():
+    """Files are on disk after the failed run, so `changed` alone would skip the restart."""
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    changed = GlobalConfig.model_validate(
+        {"litellm": {"enabled": True, "routes": {"sol-xhigh": {"effort": "max"}}}}
+    )
+    healthy = incus.exec.side_effect
+
+    def restart_fails(name, cmd, **kw):
+        if "restart" in cmd:
+            raise IncusError("restart failed")
+        return healthy(name, cmd, **kw)
+
+    incus.exec.side_effect = restart_fails
+    with pytest.raises(IncusError, match="restart failed"):
+        ll.litellm_up(incus, changed)
+
+    incus.exec.side_effect = healthy
+    incus.exec.reset_mock()
+    result = ll.litellm_up(incus, changed)
+    assert result.restarted is True
+    assert sum("systemctl restart" in e for e in _execs(incus)) == 1
+    incus.exec.reset_mock()
+    assert ll.litellm_up(incus, changed).restarted is False
+
+
+def test_up_reattaches_state_mount_after_a_failure_between_install_and_mount():
+    incus = _incus(present=True)
+    incus.config_show.return_value = yaml.safe_dump({"devices": {}})
+    result = ll.litellm_up(incus, _gcfg())
+    assert result.installed is False
+    incus.config_device_add.assert_called_once()
+    assert incus.config_device_add.call_args.args[:3] == (ll.LITELLM_CONTAINER, "state", "disk")
+    incus.config_set.assert_any_call(ll.LITELLM_CONTAINER, "boot.autostart", "true")
+    names = [c[0] for c in incus.mock_calls]
+    final_acl = max(
+        i
+        for i, c in enumerate(incus.mock_calls)
+        if c[0] == "network_acl_set_yaml" and c.args[0] == ll.EGRESS_ACL
+    )
+    assert final_acl < names.index("config_device_add")
+
+
+def test_up_does_not_touch_an_existing_state_mount():
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    incus.config_device_add.assert_not_called()
+    assert not any(c.args[1:2] == ("boot.autostart",) for c in incus.config_set.call_args_list)
+
+
 def test_version_mismatch_reinstalls():
     incus = _incus(present=True, installed="1.90.0")
     result = ll.litellm_up(incus, _gcfg())

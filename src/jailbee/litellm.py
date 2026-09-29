@@ -153,11 +153,15 @@ def _check_static_ip(incus: Incus, ip: str, containers: list[dict[str, object]])
             )
 
 
-def _detach_state(incus: Incus) -> None:
-    """Do not suppress device-removal errors: a retained auth mount is unsafe."""
+def _has_state(incus: Incus) -> bool:
     parsed = yaml.safe_load(incus.config_show(LITELLM_CONTAINER)) or {}
     devices = parsed.get("devices", {})
-    if isinstance(devices, dict) and "state" in devices:
+    return isinstance(devices, dict) and "state" in devices
+
+
+def _detach_state(incus: Incus) -> None:
+    """Do not suppress device-removal errors: a retained auth mount is unsafe."""
+    if _has_state(incus):
         incus.config_device_remove(LITELLM_CONTAINER, "state")
 
 
@@ -341,7 +345,7 @@ def litellm_up(
     pinned = cfg.version is None
 
     on_step("rendering the proxy configuration")
-    written = litellm_state.write_instance_files(cfg, account)
+    litellm_state.write_instance_files(cfg, account)
     port = litellm_state.port_for(account)
 
     if not incus.network_exists(LOOSE_BRIDGE):
@@ -398,7 +402,11 @@ def litellm_up(
         on_step("writing the proxy's egress allowlist")
         _set_egress(incus, _resolve_egress(egress_hosts(cfg)), port)
         _set_profile(incus, ip, with_acl=True)
-        if needs_install:
+        # A run that failed after the install but before this point leaves the
+        # container installed and locked down without its state mount; the next
+        # run sees the right version, so it must attach the mount here too.
+        attach_state = needs_install or not _has_state(incus)
+        if attach_state:
             incus.config_device_add(
                 LITELLM_CONTAINER,
                 "state",
@@ -410,15 +418,18 @@ def litellm_up(
             _secure_failed_install(incus, ip, error)
         raise
 
-    if needs_install:
+    if attach_state:
         # Never autoboot while package access and auth state can coexist.
         incus.config_set(LITELLM_CONTAINER, "boot.autostart", "true")
 
-    restart = needs_install or written.changed or not _active(incus, account)
+    stale = not litellm_state.config_applied(account)
+    restart = needs_install or stale or not _active(incus, account)
     if restart:
         incus.exec(LITELLM_CONTAINER, ["systemctl", "enable", unit(account)], timeout=30)
         incus.exec(LITELLM_CONTAINER, ["systemctl", "restart", unit(account)], timeout=60)
     _wait_healthy(incus, account, port, on_step)
+    if restart:
+        litellm_state.record_applied(account)
 
     set_services_endpoint(incus, (ip, [port]))
     return UpResult(ip=ip, port=port, restarted=restart, installed=needs_install)
