@@ -617,13 +617,14 @@ repo, grouped by repo. Keys: `↑/↓` or `j/k` move (spans repos; repo headers
 are cursor stops, not skipped), `Enter` action menu (on a repo header, a repo
 menu with New container, `Network → Egress…` and Fold/Unfold (orphan repos
 only offer Fold/Unfold; on a container, its action menu),
-`Space` toggle the selected setting
-in the settings overlay, `F2`/`S` settings overlay (columns + folding), `r`
+`Space` fold/unfold the selected repo (in the settings overlay: toggle the
+selected setting), `F2`/`S` settings overlay (columns + folding), `r`
 force refresh, `h`/`?` keybinding
 help, `q`/`Ctrl-C` quit. The action menu opens *inline below the table* — the
 dashboard stays visible and keeps refreshing behind it; `↑/↓` then move the
-menu cursor, `Enter` runs the entry, `Esc`/`q` closes it (`Ctrl-C` always quits
-the dashboard).
+menu cursor, `Enter` runs the entry, `Esc`/`q` closes it (`Ctrl-C` quits from
+the plain view, menus and panels; at an inline prompt or picker it cancels just
+that question).
 
 Container actions group network mode switches and `Egress…` under `Network →`;
 stopped containers retain the read-only Egress view even though they have no
@@ -637,13 +638,28 @@ ACL updates and repo `jailbee apply` advice. Over SSH, the read panel requires
 `net egress ls`; add/remove require their own permitted command leaves, and
 `restrict_host: true` keeps them unavailable even under a full command policy.
 
-The menu, in order: `job clear`, `job log`, `pr --open`, `pr`, `git push`,
-`git push --pr`, `git pull`, `git diff`, then tmux/shell, then one "Launch
-`<name>`" entry per app the repo's GUI registry declares (browsers, the
-JetBrains IDE, and any `apps:` entries, in that order — empty repos get
-none), then `Network →` with available mode switches and `Egress…`, then restart/stop/destroy for Running
-(start/destroy for Stopped). Each entry appears only when it would do
-something:
+`A` opens the credential-group overlay — every credential group and stored
+login on the host, as `jailbee account ls` lists them. `Enter` on a row offers
+what applies to it: use a stored login in a group, park a group's live login,
+use a parked login in a group, delete a parked login, or remove an unused group
+(deleting and removing ask for confirmation, with "No" first). `n` creates a
+group. The repo and container menus carry `Credential group…` to change which
+group a repo (`account group set`/`unset`) or a single container (`account
+group use`/`reset`) follows. Changes run the real `jailbee account …` commands
+in the selected row's repo; a refusal (for example a running agent) is shown
+as a notice — use `!` with `--force` to override. `Esc` backs out of each
+question to the overlay, and closes the overlay itself.
+
+The menu, in order: pending outbox applies first (`review apply` "Apply N PR
+action(s)", `issue apply` "Apply N issue action(s)"), then tmux/shell, then
+`Launch →` with one "Launch `<name>`" entry per app the repo's GUI registry
+declares (browsers, the JetBrains IDE, and any `apps:` entries, in that order —
+empty repos get none), then `job clear`, `job log`, then `Git →` (`merge`,
+`git pull`, `git push`, `git push --pr`, `git diff`), then `PR →`
+(`pr --open`, `pr`), then `Credential group…`, then `Network →` with available
+mode switches and `Egress…`, then restart/stop/destroy for Running (a Stopped
+container leads with start and ends with destroy). Each entry appears only
+when it would do something:
 
 - `job clear`/`job log` need a background-job row (`job log` follows a live
   worker's log and prints a finished one once);

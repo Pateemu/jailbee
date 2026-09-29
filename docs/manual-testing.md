@@ -3150,7 +3150,9 @@ jailbee shell feat-dashsmoke -- bash -lc 'cd ~/*/ && echo x >> README.md && git 
 #              Pressing h with the action menu open swaps the menu for help.
 #  r -> forces an immediate full refresh (incl. git status)
 #  q -> quits (closes the action menu or help first, if open)
-#  Ctrl-C -> always quits, restoring the terminal, even with an overlay open
+#  Ctrl-C -> quits from the plain view, menus and panels, restoring the
+#            terminal; at an inline prompt or picker it cancels just that
+#            question
 
 # Folding a repo group:
 #  Enter on a repo header -> opens a menu below the table with "New container…"
