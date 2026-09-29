@@ -6,7 +6,7 @@ import os
 import re
 import sys
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -542,23 +542,20 @@ def annotate_activity(containers: Sequence[ContainerInfo], sampler: ActivitySamp
 
 def annotate_agent_status(
     containers: Sequence[ContainerInfo],
-    sessions: Sequence[AgentSession],
+    sessions: Mapping[str, Sequence[AgentSession]],
     sampler: ActivitySampler,
 ) -> None:
     """Fill ``agent_status`` from the sampler's latest reading.
 
-    ``sessions`` must come from the config homes of *these containers'* repo
-    only. A session names its process by namespace pid and start time. That
-    cannot collide within one home, because the file is named after the pid.
-    Across two repos' homes it can: two containers whose agents started in
-    the same clock tick as the same namespace pid would take each other's
-    state.
+    ``sessions`` maps a container name to what that container's own session
+    homes recorded (``agent_homes``), and each container is matched against
+    its own entry only.
 
     Needs no second reading, unlike ``annotate_activity``: a state is a fact,
     not a rate. Rows it did not answer for are cleared. With no sessions at
     all it reads nothing.
     """
-    if not sessions:
+    if not any(sessions.values()):
         for c in containers:
             c.agent_status = ()
         return
@@ -571,16 +568,21 @@ def annotate_agent_status(
         c.agent_status = results.get(c.name, ())
 
 
-def agent_homes(cfg: Config) -> tuple[tuple[str, Path], ...]:
-    """``(agent, config home)`` for every pooled agent: where its sessions are recorded.
+def agent_homes(cfg: Config, containers: Iterable[str]) -> tuple[tuple[str, str, Path], ...]:
+    """``(container, agent, session home)`` for each container and pooled agent.
 
-    A repo's config home, never a credential holder's. A credential group
-    redirects only the credential; the agent's own state, sessions included,
-    stays in the repo's home.
+    Per container: each records its sessions in its own private overlay
+    (``AccountAdapter.session_home``), never in the repo's shared config
+    home, so no container can see or supply another's.
     """
     from jailbee.accounts.adapters import base
 
-    return tuple((a.name, a.config_home(cfg)) for a in base.pooled_adapters(cfg))
+    adapters = base.pooled_adapters(cfg)
+    return tuple(
+        (name, adapter.name, adapter.session_home(cfg, name))
+        for name in containers
+        for adapter in adapters
+    )
 
 
 def sample_ls_columns(
@@ -597,9 +599,9 @@ def sample_ls_columns(
     `PRIME_INTERVAL_SECONDS` sleep. `agent` is a state and costs one reading.
     A listing that asked for none of them reads nothing.
 
-    Only this repo's rows get an AGENT value: its sessions are matched against
-    its own config homes (see `annotate_agent_status`). Resolving every other
-    repo's homes under `--all` would mean loading their configs.
+    Only this repo's rows get an AGENT value: it resolves session homes for its
+    own containers only. Resolving every other repo's under `--all` would mean
+    loading their configs.
     """
     from jailbee import procstat
 
@@ -617,7 +619,8 @@ def sample_ls_columns(
         annotate_activity(containers, sampler)
     if agent:
         own = [c for c in containers if c.repo == cfg.container_prefix]
-        annotate_agent_status(own, agent_status.read_sessions(agent_homes(cfg)), sampler)
+        homes = agent_homes(cfg, [c.name for c in own])
+        annotate_agent_status(own, agent_status.read_sessions(homes), sampler)
 
 
 def container_repo_dir(cfg: Config, incus: Incus, name: str) -> str:

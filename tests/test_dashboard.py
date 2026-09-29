@@ -424,7 +424,7 @@ def test_gather_rows_carries_the_repos_agent_homes(tmp_path, mocker, make_cfg):
 
     by_prefix = {g.prefix: g for g in groups}
     assert by_prefix[cfg.container_prefix].agent_homes == (
-        ("claude", tmp_path / "shared" / "claude"),
+        ("alpha-one", "claude", tmp_path / "shared" / ".private" / "alpha-one" / "claude"),
     )
     assert by_prefix["orphan"].agent_homes == ()
 
@@ -5925,23 +5925,22 @@ def test_sample_activity_matches_agents_per_group_never_across_repos(mocker):
     would let two repos' containers take each other's session."""
     mocker.patch.object(dashboard, "annotate_activity")
     agents = mocker.patch.object(dashboard, "annotate_agent_status")
-    by_homes = {
-        (("claude", Path("/s/p/claude")),): ["p-session"],
-        (("claude", Path("/s/q/claude")),): ["q-session"],
-    }
+    p_home = (("p-a", "claude", Path("/s/p/.private/p-a/claude")),)
+    q_home = (("q-b", "claude", Path("/s/q/.private/q-b/claude")),)
+    by_homes = {p_home: {"p-a": ["p-session"]}, q_home: {"q-b": ["q-session"]}}
     mocker.patch("jailbee.agent_status.read_sessions", side_effect=lambda h: by_homes[tuple(h)])
     a, b = _ci("p-a", "p"), _ci("q-b", "q")
     groups = [
-        dashboard.RepoGroup("p", "/p", None, [a], agent_homes=(("claude", Path("/s/p/claude")),)),
-        dashboard.RepoGroup("q", "/q", None, [b], agent_homes=(("claude", Path("/s/q/claude")),)),
+        dashboard.RepoGroup("p", "/p", None, [a], agent_homes=p_home),
+        dashboard.RepoGroup("q", "/q", None, [b], agent_homes=q_home),
     ]
     sampler = mocker.Mock()
 
     dashboard.sample_activity(groups, sampler)
 
     assert [c.args for c in agents.call_args_list] == [
-        ([a], ["p-session"], sampler),
-        ([b], ["q-session"], sampler),
+        ([a], {"p-a": ["p-session"]}, sampler),
+        ([b], {"q-b": ["q-session"]}, sampler),
     ]
 
 
@@ -5951,7 +5950,7 @@ def test_sample_activity_survives_a_group_whose_agent_reading_fails(mocker):
     agents = mocker.patch.object(
         dashboard, "annotate_agent_status", side_effect=[RuntimeError("boom"), None]
     )
-    mocker.patch("jailbee.agent_status.read_sessions", return_value=[])
+    mocker.patch("jailbee.agent_status.read_sessions", return_value={})
     a, b = _ci("p-a", "p"), _ci("q-b", "q")
     a.agent_status = (mocker.Mock(),)
     groups = [

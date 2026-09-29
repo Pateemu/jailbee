@@ -9173,7 +9173,7 @@ def test_annotate_agent_status_matches_this_containers_processes(mocker):
     sampler.nspid.side_effect = {1010: 10}.get
     session = AgentSession("claude", 10, 500, "waiting", "input needed", _AGENT_NOW, None)
 
-    annotate_agent_status([a, b], [session], sampler)
+    annotate_agent_status([a, b], {"myrepo-a": [session]}, sampler)
 
     assert [(s.agent, s.state, s.count) for s in a.agent_status] == [("claude", "waiting", 1)]
     assert b.agent_status == ()
@@ -9186,7 +9186,7 @@ def test_annotate_agent_status_without_sessions_clears_and_reads_nothing(mocker)
     c = _running(agent_status=(_agent(),))
     sampler = mocker.Mock()
 
-    annotate_agent_status([c], [], sampler)
+    annotate_agent_status([c], {}, sampler)
 
     assert c.agent_status == ()
     sampler.processes.assert_not_called()
@@ -9202,20 +9202,44 @@ def test_annotate_agent_status_clears_a_row_whose_session_ended(mocker):
     sampler.processes.return_value = {}
     session = AgentSession("claude", 10, 500, "waiting", None, None, None)
 
-    annotate_agent_status([c], [session], sampler)
+    annotate_agent_status([c], {c.name: [session]}, sampler)
 
     assert c.agent_status == ()
 
 
-def test_agent_homes_lists_every_pooled_agent(tmp_path):
+def test_annotate_agent_status_never_gives_one_containers_session_to_another(mocker):
+    from jailbee.accounts.models import AgentSession
+    from jailbee.lifecycle import annotate_agent_status
+    from jailbee.procstat import ProcSample
+
+    a, b = _running(name="myrepo-a"), _running(name="myrepo-b")
+    sampler = mocker.Mock()
+    sampler.processes.side_effect = {
+        "myrepo-a": {1010: ProcSample("claude", 0, 500)},
+        "myrepo-b": {2020: ProcSample("claude", 0, 500)},
+    }.__getitem__
+    sampler.nspid.side_effect = {1010: 10, 2020: 10}.get
+    theirs = AgentSession("claude", 10, 500, "busy", None, _AGENT_NOW, None)
+
+    annotate_agent_status([a, b], {"myrepo-b": [theirs]}, sampler)
+
+    assert a.agent_status == ()
+    assert [s.state for s in b.agent_status] == ["busy"]
+
+
+def test_agent_homes_names_each_containers_overlay_for_every_pooled_agent(tmp_path):
     from jailbee.lifecycle import agent_homes
     from tests.conftest import make_cfg, with_agent
 
     cfg = with_agent(
         make_cfg(tmp_path / "repo", shared_dir=tmp_path / "shared"), "claude", enabled=True
     )
+    private = tmp_path / "shared" / ".private"
 
-    assert agent_homes(cfg) == (("claude", tmp_path / "shared" / "claude"),)
+    assert agent_homes(cfg, ["repo-a", "repo-b"]) == (
+        ("repo-a", "claude", private / "repo-a" / "claude"),
+        ("repo-b", "claude", private / "repo-b" / "claude"),
+    )
 
 
 def test_agent_homes_is_empty_when_claude_is_disabled(tmp_path):
@@ -9226,7 +9250,7 @@ def test_agent_homes_is_empty_when_claude_is_disabled(tmp_path):
         make_cfg(tmp_path / "repo", shared_dir=tmp_path / "shared"), "claude", enabled=False
     )
 
-    assert agent_homes(cfg) == ()
+    assert agent_homes(cfg, ["repo-a"]) == ()
 
 
 @pytest.mark.parametrize(
@@ -9476,7 +9500,7 @@ def _ls_rows():
 def _patch_ls_sampling(mocker):
     activity = mocker.patch("jailbee.lifecycle.annotate_activity")
     agents = mocker.patch("jailbee.lifecycle.annotate_agent_status")
-    sessions = mocker.patch("jailbee.agent_status.read_sessions", return_value=["S"])
+    sessions = mocker.patch("jailbee.agent_status.read_sessions", return_value={"myrepo-a": ["S"]})
     return activity, agents, sessions
 
 
@@ -9510,8 +9534,8 @@ def test_sample_ls_columns_matches_only_this_repos_rows(mocker, make_cfg, tmp_pa
 
     sample_ls_columns(cfg, rows, ["agent"], sampler=sampler, sleep=mocker.Mock())
 
-    sessions.assert_called_once_with(agent_homes(cfg))
-    assert agents.call_args.args == ([rows[0]], ["S"], sampler)
+    sessions.assert_called_once_with(agent_homes(cfg, ["myrepo-a"]))
+    assert agents.call_args.args == ([rows[0]], {"myrepo-a": ["S"]}, sampler)
 
 
 def test_sample_ls_columns_shares_one_sampler_between_rates_and_agent(mocker, make_cfg, tmp_path):

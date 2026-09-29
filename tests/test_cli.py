@@ -10437,7 +10437,7 @@ def test_ls_takes_a_single_reading_for_the_agent_column(mocker, tmp_path):
     _one_container(mocker)
     annotate = mocker.patch("jailbee.lifecycle.annotate_activity")
     agents = mocker.patch("jailbee.lifecycle.annotate_agent_status")
-    mocker.patch("jailbee.agent_status.read_sessions", return_value=[])
+    mocker.patch("jailbee.agent_status.read_sessions", return_value={})
 
     result = CliRunner().invoke(app, ["ls", "--fields", "name,agent"], env={"COLUMNS": "200"})
 

@@ -196,9 +196,10 @@ class RepoGroup:
     ``push.default_action``/``default_source``, so a front-end can tell whether
     `jailbee git push` would stop to ask a question its own child process
     cannot answer. Orphan groups keep ``PushConfig``'s defaults.
-    ``agent_homes`` are ``(agent, config home)`` for the repo's pooled agents,
-    where their session files live; `sample_activity` matches this group's
-    containers against them and nothing else. Orphan groups keep ``()``."""
+    ``agent_homes`` are ``(container, agent, session home)`` for this group's
+    containers and the repo's pooled agents (``lifecycle.agent_homes``);
+    `sample_activity` matches each container against its own. Orphan groups
+    keep ``()``."""
 
     prefix: str
     repo_root: str | None
@@ -209,7 +210,7 @@ class RepoGroup:
     push_action_default: str = "ask"
     push_source_default: str = "base"
     column_notice: str | None = None
-    agent_homes: tuple[tuple[str, Path], ...] = ()
+    agent_homes: tuple[tuple[str, str, Path], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -494,7 +495,7 @@ def gather_rows(
                     warning for warning in cfg.column_warnings() if "ahead_diff" in warning
                 )
                 or None,
-                agent_homes=agent_homes(cfg),
+                agent_homes=agent_homes(cfg, [c.name for c in containers]),
             )
         )
 
@@ -588,10 +589,8 @@ def sample_activity(groups: list[RepoGroup], sampler: ActivitySampler) -> None:
     elapsed time itself, so splitting a frame across several calls would
     measure several different windows.
 
-    AGENT is then matched per group, against that group's own config homes,
-    from the same reading. Matching against every group's homes at once
-    would let two repos' containers take each other's session; see
-    `lifecycle.annotate_agent_status`.
+    AGENT is then read per group from its containers' own session homes,
+    from the same reading. One group's failure clears that group only.
 
     Shared with the Qt worker, which owns its own sampler.
     """
