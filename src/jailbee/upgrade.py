@@ -243,6 +243,11 @@ UPGRADE_NOTES: tuple[UpgradeNote, ...] = (
             "through which containers reach `jailbee litellm`"
         ),
     ),
+    UpgradeNote(
+        version=(1, 7, 0),
+        actions=frozenset({"base_build"}),
+        reason="the golden image ships `claude-jb`, Claude Code through `jailbee litellm`",
+    ),
 )
 """What each release requires, ascending by version. Maintained by hand.
 

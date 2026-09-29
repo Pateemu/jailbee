@@ -104,6 +104,17 @@ def test_upcoming_services_acl_upgrade_note_advises_apply():
     assert "strict network profiles" in notes[0].reason
 
 
+def test_claude_jb_upgrade_note_advises_base_build_only() -> None:
+    from jailbee.upgrade import UPGRADE_NOTES, Watermark, pending
+
+    owed = pending("1.7.0", {"base_build": Watermark((1, 6, 0), observed=True)})
+    assert any("claude-jb" in reason for item in owed.actions for reason in item.reasons)
+    notes = [note for note in UPGRADE_NOTES if "claude-jb" in note.reason]
+    assert len(notes) == 1
+    assert notes[0].version == (1, 7, 0)
+    assert notes[0].actions == frozenset({"base_build"})
+
+
 def test_manifest_shape_rejects_descending_versions() -> None:
     """Versions must be in ascending order."""
     notes = (

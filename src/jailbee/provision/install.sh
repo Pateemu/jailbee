@@ -147,6 +147,64 @@ fi
 EOF
 chmod 0644 /etc/profile.d/jailbee-claude.sh
 
+# claude-jb: Claude Code through the jailbee LiteLLM proxy (`jailbee litellm`).
+#
+# `claude` stays native; this is a separate name so Claude's auto-updater and
+# PATH order can never break either. It reads /etc/jailbee/litellm.json
+# (written by `jailbee new` / `jailbee apply`), picks a profile —
+# --profile, then $JAILBEE_LITELLM_PROFILE, then the file's default — sets the
+# variables Claude Code reads for a gateway, and execs `claude`. It writes
+# nothing and never falls back to native: a missing proxy is an error.
+cat > /usr/local/bin/claude-jb <<'EOF'
+#!/bin/bash
+set -euo pipefail
+config="${JAILBEE_LITELLM_CONFIG:-/etc/jailbee/litellm.json}"
+die() { printf 'claude-jb: %s\n' "$1" >&2; exit 2; }
+
+profile="${JAILBEE_LITELLM_PROFILE:-}"
+args=()
+user_effort=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --profile) [ $# -ge 2 ] || die "--profile needs a name"; profile="$2"; shift 2 ;;
+        --profile=*) profile="${1#--profile=}"; shift ;;
+        --effort|--effort=*) user_effort=1; args+=("$1"); shift ;;
+        *) args+=("$1"); shift ;;
+    esac
+done
+
+[ -r "$config" ] || die "no LiteLLM proxy configured for this container ($config missing). On the host: \`jailbee litellm up\`, then \`jailbee apply\` in this repo."
+jq -e . "$config" >/dev/null 2>&1 || die "cannot read $config (not valid JSON); re-run \`jailbee apply\` on the host."
+[ -n "$profile" ] || profile="$(jq -r '.default_profile' "$config")"
+jq -e --arg p "$profile" '.profiles[$p]' "$config" >/dev/null \
+    || die "unknown profile '$profile'. Known: $(jq -r '.profiles | keys | join(", ")' "$config")"
+
+get() { jq -r --arg p "$profile" ".profiles[\$p]$1" "$config"; }
+key_file="$(get .key_file)"
+[ -r "$key_file" ] || die "cannot read the proxy key $key_file; re-run \`jailbee apply\` on the host."
+
+unset ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL \
+       ANTHROPIC_DEFAULT_FABLE_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL \
+       ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL
+export ANTHROPIC_BASE_URL="$(get .base_url)"
+export ANTHROPIC_AUTH_TOKEN="$(tr -d '\n' < "$key_file")"
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$(get .context_window)"
+export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
+for tier in fable opus sonnet haiku; do
+    model="$(get ".tiers.$tier // empty")"
+    if [ -n "$model" ]; then
+        export "ANTHROPIC_DEFAULT_${tier^^}_MODEL=$model"
+    fi
+done
+
+effort="$(get '.effort // empty')"
+if [ -n "$effort" ] && [ "$user_effort" -eq 0 ]; then
+    args=(--effort "$effort" "${args[@]}")
+fi
+exec claude "${args[@]}"
+EOF
+chmod 0755 /usr/local/bin/claude-jb
+
 # Passwordless sudo for the dev user.
 echo "${CONTAINER_USER} ALL=(ALL) NOPASSWD:ALL" \
     > "/etc/sudoers.d/90-${CONTAINER_USER}"
