@@ -3162,6 +3162,47 @@ def run(
                         return None
                     if entry.value == dact.CREATE_NAMED:
                         return dact.snapshot_tag_prompt(container)
+                    tag = dact.snapshot_tag(entry.value)
+                    if tag is None:
+                        return None
+                    # Each verb is gated on its own argv: over SSH an allowlist
+                    # may permit a restore and not a delete, or the reverse.
+                    actions = dact.snapshot_action_picker(
+                        container,
+                        tag,
+                        can_restore=permitted(
+                            dact.snapshot_restore_argv(container, tag),
+                            ssh_policy,
+                            over_ssh=over_ssh,
+                        ),
+                        can_delete=permitted(
+                            dact.snapshot_delete_argv(container, tag),
+                            ssh_policy,
+                            over_ssh=over_ssh,
+                        ),
+                    )
+                    if not actions.entries:
+                        set_notice(f"No change to snapshot {tag} is permitted here")
+                        return None
+                    return actions
+                if picker.purpose == "container-snapshot-action":
+                    if entry.value not in (dact.RESTORE, dact.DELETE):
+                        return None
+                    return dact.snapshot_confirm_picker(container, entry.value, picker.carry[0])
+                if picker.purpose == "container-snapshot-confirm":
+                    if entry.value != "yes":
+                        set_notice("Cancelled")
+                        return None
+                    action, tag = picker.carry
+                    build = (
+                        dact.snapshot_restore_argv
+                        if action == dact.RESTORE
+                        else dact.snapshot_delete_argv
+                    )
+                    # Foreground, like the create: an incus restore can outlast
+                    # the 60 s cutoff of the quiet runner.
+                    run_dashboard_command(container, "container", build(container, tag))
+                    return None
                 return None
 
             def repo_for(
