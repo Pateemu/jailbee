@@ -5895,12 +5895,15 @@ def test_repo_credential_group_flow_sets_the_chosen_group(mocker, tmp_path):
     assert calls[-1].kwargs["notice"] == "Set."
 
 
-def test_credential_group_picker_offers_none_and_host_default_even_with_no_groups(mocker, tmp_path):
+@pytest.mark.parametrize("cancel", [_ESC, b"\x03"], ids=["esc", "ctrl-c"])
+def test_credential_group_picker_offers_none_and_host_default_even_with_no_groups(
+    mocker, tmp_path, cancel
+):
     group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
     run = _fake_account_cli(mocker, listing=_groups_listing("[]"))
     render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
 
-    assert _drive_run(mocker, [*_OPEN_REPO_GROUP_PICKER, _ESC], [group]) == 0
+    assert _drive_run(mocker, [*_OPEN_REPO_GROUP_PICKER, cancel], [group]) == 0
 
     pickers = _rendered(render, dashboard.Picker)
     assert [e.label for e in pickers[0].entries] == [
@@ -5908,8 +5911,75 @@ def test_credential_group_picker_offers_none_and_host_default_even_with_no_group
         "Use the host default",
         "New group…",
     ]
-    assert run.call_count == 1  # the listing; Esc ran nothing
+    assert run.call_count == 1  # the listing; the cancel ran nothing
+    # a frame after the cancel: the picker closed, the dashboard did not
     assert render.call_args_list[-1].kwargs["overlay"] is None
+
+
+def _sigint_or(script):
+    """An ``os.read`` fake: ``"SIGINT"`` raises like a real Ctrl-C under cbreak."""
+
+    def read(_fd, _n):
+        item = next(script, b"\x03")
+        if item == "SIGINT":
+            raise KeyboardInterrupt
+        return item
+
+    return read
+
+
+@pytest.mark.parametrize("ctrl_c", [b"\x03", "SIGINT"], ids=["byte", "keyboard-interrupt"])
+def test_ctrl_c_at_the_group_picker_cancels_it_and_the_dashboard_keeps_running(
+    mocker, tmp_path, ctrl_c
+):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
+    run = _fake_account_cli(mocker, listing=_groups_listing("[]"))
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    # cancel the picker, then Enter on the repo header must open its menu again
+    script = iter([*_OPEN_REPO_GROUP_PICKER, ctrl_c, _ENTER])
+
+    assert _drive_run_with_reader(mocker, _sigint_or(script), [group]) == 0
+
+    calls = render.call_args_list
+    picker_at = max(
+        i for i, c in enumerate(calls) if isinstance(c.kwargs["overlay"], dashboard.Picker)
+    )
+    cancelled = calls[picker_at + 1].kwargs
+    assert cancelled["overlay"] is None
+    assert cancelled["notice"] == "Cancelled"
+    assert isinstance(calls[picker_at + 2].kwargs["overlay"], dashboard.RepoMenuState)
+    assert run.call_count == 1
+
+
+@pytest.mark.parametrize("ctrl_c", [b"\x03", "SIGINT"], ids=["byte", "keyboard-interrupt"])
+def test_ctrl_c_without_an_overlay_still_quits(mocker, tmp_path, ctrl_c):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
+    reads = []
+    script = iter([ctrl_c])
+
+    def read(fd, n):
+        reads.append(n)
+        return _sigint_or(script)(fd, n) if len(reads) == 1 else b"j"
+
+    assert _drive_run_with_reader(mocker, read, [group]) == 0
+    assert len(reads) == 1  # the first Ctrl-C ended the loop
+
+
+def test_eof_at_the_group_picker_still_quits(mocker, tmp_path):
+    """A closed stdin reads b"" forever; cancelling on it would spin the loop."""
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
+    _fake_account_cli(mocker, listing=_groups_listing("[]"))
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    reads = []
+    script = iter(_OPEN_REPO_GROUP_PICKER)
+
+    def read(_fd, _n):
+        reads.append(1)
+        return next(script, b"")
+
+    assert _drive_run_with_reader(mocker, read, [group]) == 0
+    assert len(reads) == len(_OPEN_REPO_GROUP_PICKER) + 1
+    assert isinstance(render.call_args_list[-1].kwargs["overlay"], dashboard.Picker)
 
 
 def test_credential_group_picker_lists_each_group_once_in_order(mocker, tmp_path):
@@ -6232,8 +6302,13 @@ def test_container_new_group_name_prompt_uses_the_typed_group(mocker, tmp_path):
 
 @pytest.mark.parametrize(
     "tail",
-    [[_ESC], [*[b"j"] * 2, _ENTER, *_keys("fresh"), _ESC]],
-    ids=["esc-at-picker", "esc-at-name-prompt"],
+    [
+        [_ESC],
+        [b"\x03"],
+        [*[b"j"] * 2, _ENTER, *_keys("fresh"), _ESC],
+        [*[b"j"] * 2, _ENTER, *_keys("fresh"), b"\x03"],
+    ],
+    ids=["esc-at-picker", "ctrl-c-at-picker", "esc-at-name-prompt", "ctrl-c-at-name-prompt"],
 )
 def test_container_credential_group_esc_runs_nothing(mocker, tmp_path, tail):
     group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])

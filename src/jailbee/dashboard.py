@@ -3350,6 +3350,14 @@ def run(
                     else:
                         overlay = prompt
                     continue
+                if isinstance(overlay, Picker) and data == b"\x03":
+                    # A picker is one step of a question flow, like the prompt
+                    # it can lead to: Ctrl-C cancels the step, not the
+                    # dashboard. EOF (b"") still quits — a closed stdin must
+                    # not spin here.
+                    overlay = overlay.back
+                    set_notice("Cancelled")
+                    continue
                 key = parse_key(data)
                 if key == "interrupt":
                     break
