@@ -820,6 +820,8 @@ class NewContainerOptions:
     autostart: bool = True
     mirror_endpoint: tuple[str, int] | None = None
     mirror_ca_path: Path | None = None
+    # Computed by the CLI like mirror_endpoint; None writes nothing.
+    litellm_payload: dict[str, object] | None = None
     base: str | None = None
     mount: bool = False
     base_branch_label: str | None = None
@@ -1387,7 +1389,7 @@ def new_container(
 
     _phase("creating")
     if generation == "work":
-        from jailbee.network import acl_name
+        from jailbee.network import strict_nic_acls
         from jailbee.network_generation import ensure_work_bridge
         from jailbee.work_acl import ensure_work_repo_acl, grant_work_loose
         from jailbee.work_network import (
@@ -1415,7 +1417,7 @@ def new_container(
                         f"{cfg.container_prefix}-net-work-{opts.network}",
                     ],
                 )
-                acl_names = [acl_name(cfg)] if opts.network == "strict" else []
+                acl_names = strict_nic_acls(cfg) if opts.network == "strict" else []
                 incus.config_device_override(name, "eth0", work_nic(ip, acl_names))
                 verify_work_nic(incus, name, ip)
                 if opts.network == "loose":
@@ -1620,6 +1622,14 @@ def new_container(
             from jailbee.docker_daemon import restart_dockerd
 
             restart_dockerd(incus, name)
+
+    if opts.litellm_payload is not None:
+        from jailbee.litellm import sync_container
+
+        try:
+            sync_container(incus, name, opts.litellm_payload)
+        except (IncusError, OSError) as e:
+            warn(f"Could not write the LiteLLM settings: {e}; run `jailbee apply` to retry.")
 
     if opts.clone:
         assert source_branch is not None

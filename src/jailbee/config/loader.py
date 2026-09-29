@@ -25,7 +25,13 @@ from jailbee.config.common import (
     normalize_credentials_key,
 )
 from jailbee.config.errors import ConfigError, ConfigNotFoundError
-from jailbee.config.local_layer import check_token_perms, local_config_path, split_local_raw
+from jailbee.config.local_layer import (
+    check_token_perms,
+    local_config_path,
+    local_litellm_overlay,
+    repo_litellm_view,
+    split_local_raw,
+)
 from jailbee.config.models_agents import AutostartStage
 from jailbee.config.models_columns import (
     _COLUMN_DEFAULT,
@@ -39,6 +45,7 @@ from jailbee.config.models_host import (
     POOL_PRESETS,
     slugify_prefix,
 )
+from jailbee.config.models_litellm import LiteLLMConfig, input_free_lines
 from jailbee.config.models_net import Credentials
 from jailbee.config.retired import (
     _check_agents_spelling,
@@ -83,6 +90,19 @@ def _credentials_from_host_raw(
         return Credentials.model_validate(block)
     except ValidationError as e:
         raise ConfigError(f"Invalid `credentials` in {origin}:\n{e}") from e
+
+
+def _litellm_from_host_raw(host_raw: dict[str, object], origin: str) -> LiteLLMConfig:
+    """Validate the host `litellm:` block; `GlobalConfig` does too, for its own callers.
+
+    Input-free and unchained, like `global_config.validate_global_raw`.
+    """
+    try:
+        return LiteLLMConfig.model_validate(host_raw.get("litellm") or {})
+    except ValidationError as e:
+        raise ConfigError(
+            f"Invalid `litellm` in {origin}:\n{input_free_lines(e, ('litellm',))}"
+        ) from None
 
 
 def _validate_pooled_caches(cfg: Config) -> None:
@@ -666,6 +686,13 @@ def load_config_from_layers(
                 f"teammate and name a group that exists on one machine only."
             )
 
+    if "litellm" in repo_raw:
+        raise ConfigError(
+            "`litellm` is not allowed in repo .jailbee/config.yaml: it names this host's "
+            "proxy and logins. Set it in ~/.config/jailbee/global.yaml; override routes "
+            f"and profiles for one repo in {local_config_path('<container_prefix>')}."
+        )
+
     global_github = global_for_merge.get("github")
     if isinstance(global_github, dict) and "token" in global_github:
         raise ConfigError(
@@ -689,6 +716,7 @@ def load_config_from_layers(
     local_from = local_origin or str(local_path)
     _check_retired_keys(local_raw)
     local_overlay, local_creds = split_local_raw(local_raw, local_from)
+    local_litellm = local_litellm_overlay(local_raw, local_from)
     if emit_hint:
         _warn_legacy_chrome_layers([(local_from, local_overlay)])
 
@@ -703,6 +731,12 @@ def load_config_from_layers(
 
     creds = _credentials_from_host_raw(host_raw, default_global_config_path())
     object.__setattr__(cfg, "credential_group", creds.group_for(cfg.container_prefix, local_creds))
+    cfg._litellm_view = repo_litellm_view(
+        _litellm_from_host_raw(host_raw, global_from),
+        cfg.container_prefix,
+        local_litellm,
+        local_from,
+    )
 
     _validate_pooled_caches(cfg)
 

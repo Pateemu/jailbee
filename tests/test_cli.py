@@ -2497,6 +2497,58 @@ def _setup_new_cmd_env(tmp_path, mocker, *, cfg_yaml: str = "{}\n"):
     return repo, new_container
 
 
+@pytest.mark.parametrize("flags", [[], ["--mount"]])
+def test_new_cmd_threads_litellm_payload_to_both_modes(tmp_path, mocker, flags):
+    from typer.testing import CliRunner
+
+    from jailbee.cli import app
+
+    _, new_container = _setup_new_cmd_env(tmp_path, mocker)
+    payload = {"json": {"version": 1}, "keys": {"default": "/host/default/master.key"}}
+    lookup = mocker.patch("jailbee.litellm.container_sync_payload", return_value=payload)
+
+    result = CliRunner().invoke(
+        app, ["new", "feat-x", *flags, *([] if flags else ["--no-clone"]), "--no-autostart"]
+    )
+
+    assert result.exit_code == 0, result.output
+    lookup.assert_called_once()
+    assert new_container.call_args.args[2].litellm_payload == payload
+
+
+def test_new_cmd_continues_without_litellm_on_lookup_error(tmp_path, mocker):
+    from jailbee.incus import IncusError
+
+    _, new_container = _setup_new_cmd_env(tmp_path, mocker)
+    mocker.patch("jailbee.litellm.container_sync_payload", side_effect=IncusError("unavailable"))
+
+    result = runner.invoke(app, ["new", "feat-x", "--no-clone", "--no-autostart"])
+
+    assert result.exit_code == 0, result.output
+    assert "jailbee apply" in result.output
+    assert new_container.call_args.args[2].litellm_payload is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"json": {"version": 1}, "keys": {"default": "/k"}, "unserved": ["work"]},
+        {"json": None, "keys": {}, "unserved": ["work"]},  # nothing served at all
+    ],
+    ids=["some-served", "none-served"],
+)
+def test_new_cmd_warns_about_profiles_without_a_proxy_instance(tmp_path, mocker, payload):
+    _, new_container = _setup_new_cmd_env(tmp_path, mocker)
+    mocker.patch("jailbee.litellm.container_sync_payload", return_value=payload)
+
+    result = runner.invoke(app, ["new", "feat-x", "--no-clone", "--no-autostart"])
+
+    assert result.exit_code == 0, result.output
+    assert "LiteLLM profile(s) work have no proxy instance yet" in result.output
+    assert "jailbee litellm up" in result.output
+    assert new_container.call_args.args[2].litellm_payload == payload
+
+
 def test_new_cmd_default_does_not_attach(tmp_path, mocker):
     """`after_new` defaults to 'none' — `gie new` returns to host prompt."""
     from typer.testing import CliRunner

@@ -275,6 +275,30 @@ def test_run_apply_pushes_changed_profile(make_cfg, tmp_path: Path, mocker: Mock
     assert pushed_name == names.binds
 
 
+def test_run_apply_ensures_services_acl_before_profile_write(make_cfg, tmp_path, mocker):
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+
+    cfg = make_cfg(tmp_path)
+    incus = MagicMock(spec=Incus)
+    incus.list_containers.return_value = []
+    incus.network_get.return_value = ""
+    incus.network_acl_exists.side_effect = lambda acl: acl != "jailbee-services"
+    incus.profile_exists.return_value = False
+    mocker.patch("jailbee.apply._acl_differs", return_value=False)
+
+    run_apply(cfg, incus, GlobalConfig(), no_restart=True)
+
+    calls = incus.mock_calls
+    create_idx = next(
+        i
+        for i, call in enumerate(calls)
+        if call[0] == "network_acl_create" and call.args == ("jailbee-services",)
+    )
+    profile_idx = next(i for i, call in enumerate(calls) if call[0] == "profile_set_yaml")
+    assert create_idx < profile_idx
+
+
 def test_run_apply_creates_user_shared_cache_dirs(
     make_cfg, tmp_path: Path, mocker: MockerFixture
 ) -> None:
@@ -797,6 +821,62 @@ def test_run_apply_reapplies_docker_proxy_when_mirror_enabled(
     assert [c.args[1] for c in apply_proxy.call_args_list] == ["a", "b"]
     # Pushing it is not restarting it — that was declined here.
     assert result.docker_restarted == []
+
+
+@pytest.mark.parametrize(
+    "payload,failure",
+    [
+        (None, None),
+        ({"json": {"version": 1}, "keys": {"default": "/host/key"}}, None),
+        (
+            {"json": {"version": 1}, "keys": {"default": "/host/key"}},
+            FileNotFoundError("key removed"),
+        ),
+    ],
+)
+def test_run_apply_syncs_or_removes_litellm_for_running_containers(
+    make_cfg, tmp_path: Path, mocker: MockerFixture, payload, failure
+) -> None:
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+    from jailbee.lifecycle import ContainerInfo
+
+    cfg = make_cfg(tmp_path)
+    incus = MagicMock(spec=Incus)
+    incus.list_containers.return_value = []
+    incus.network_acl_list.return_value = []
+    incus.network_get.return_value = ""
+    mocker.patch("jailbee.apply._profile_differs", return_value=False)
+    mocker.patch("jailbee.apply._acl_differs", return_value=False)
+    mocker.patch("jailbee.apply._litellm_payload_or_warn", return_value=payload)
+    mocker.patch(
+        "jailbee.apply._list_containers",
+        return_value=[
+            ContainerInfo("a", "Running", "strict", "10.0.0.1", "16GiB", repo=tmp_path.name),
+            ContainerInfo("b", "Stopped", "loose", "10.0.0.2", "16GiB", repo=tmp_path.name),
+        ],
+    )
+    mocker.patch("jailbee.hosts.apply_hosts")
+    sync = mocker.patch("jailbee.litellm.sync_container", side_effect=failure)
+    warn = mocker.patch("jailbee.tui.warn")
+
+    run_apply(cfg, incus, GlobalConfig(), no_restart=True)
+
+    sync.assert_called_once_with(incus, "a", payload)
+    if failure is not None:
+        assert "jailbee apply" in warn.call_args.args[0]
+
+
+def test_litellm_payload_lookup_failure_warns_and_removes_stale_settings(mocker):
+    from jailbee.apply import _litellm_payload_or_warn
+    from jailbee.global_config import GlobalConfig
+    from jailbee.incus import IncusError
+
+    incus = MagicMock(spec=Incus)
+    mocker.patch("jailbee.litellm.container_sync_payload", side_effect=IncusError("offline"))
+    warn = mocker.patch("jailbee.tui.warn")
+    assert _litellm_payload_or_warn(incus, GlobalConfig()) is None
+    assert "offline" in warn.call_args.args[0]
 
 
 def _mirror_fleet(make_cfg, tmp_path: Path, mocker: MockerFixture, *, proxy_results):
@@ -2372,7 +2452,10 @@ def test_run_apply_creates_the_repo_acl_before_refreshing_the_pool(
     incus = MagicMock(spec=Incus)
     incus.list_containers.return_value = []
     incus.network_acl_list.return_value = []
-    incus.network_acl_exists.return_value = False
+    incus.network_acl_exists.side_effect = lambda name: (
+        name == "jailbee-services"
+        and any(call.args == (name,) for call in incus.network_acl_create.call_args_list)
+    )
     incus.network_get.return_value = ""
     incus.profile_exists.return_value = True
     mocker.patch("jailbee.apply._profile_differs", return_value=False)
@@ -2387,7 +2470,8 @@ def test_run_apply_creates_the_repo_acl_before_refreshing_the_pool(
 
     run_apply(cfg, incus, GlobalConfig(), confirm_fn=lambda _m: False)
 
-    incus.network_acl_create.assert_called_once_with(acl_name(cfg))
+    incus.network_acl_create.assert_any_call(acl_name(cfg))
+    incus.network_acl_create.assert_any_call("jailbee-services")
     assert created_before_refresh == [True]
 
 
@@ -2507,3 +2591,309 @@ def test_restart_one_runs_every_stage_in_the_foreground(
     _restart_one(cfg, incus, "a")
 
     assert ran == ["schema", "deps"]
+
+
+def _strict_profile_without_services(cfg: Any, *, extra_device_key: bool = False) -> str:
+    """The strict net profile as a pre-services-ACL jailbee stored it."""
+    import yaml
+
+    from jailbee.network import SERVICES_ACL
+    from jailbee.profiles import net_profile_yaml
+
+    profile = yaml.safe_load(net_profile_yaml(cfg, "strict"))
+    eth0 = profile["devices"]["eth0"]
+    eth0["security.acls"] = ",".join(
+        a for a in eth0["security.acls"].split(",") if a != SERVICES_ACL
+    )
+    if extra_device_key:
+        eth0["limits.egress"] = "10Mbit"
+    return yaml.safe_dump(profile)
+
+
+def _apply_with_strict_change(
+    make_cfg: Any, tmp_path: Path, mocker: MockerFixture, old_yaml: str, *, litellm: bool
+) -> list[str]:
+    """Run apply with one running container; return the restart prompts shown."""
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+    from jailbee.lifecycle import ContainerInfo
+    from jailbee.profiles import profile_names
+
+    cfg = make_cfg(tmp_path)
+    names = profile_names(cfg)
+    incus = MagicMock(spec=Incus)
+    incus.list_containers.return_value = []
+    incus.network_acl_list.return_value = []
+    incus.network_acl_exists.return_value = True
+    incus.network_get.return_value = ""
+    incus.profile_exists.return_value = True
+    incus.profile_show.return_value = old_yaml
+    mocker.patch(
+        "jailbee.apply._profile_differs", side_effect=lambda _i, n, _y: n == names.net_strict
+    )
+    mocker.patch("jailbee.apply._acl_differs", return_value=False)
+    mocker.patch("jailbee.apply._restart_one")
+    mocker.patch(
+        "jailbee.apply._list_containers",
+        return_value=[
+            ContainerInfo(
+                name=f"{tmp_path.name}-a",
+                state="Running",
+                network="strict",
+                ip="10.0.0.1",
+                memory_limit="16GiB",
+                repo=tmp_path.name,
+            )
+        ],
+    )
+    prompts: list[str] = []
+    gcfg = GlobalConfig.model_validate({"litellm": {"enabled": litellm}})
+    result = run_apply(cfg, incus, gcfg, confirm_fn=lambda m: prompts.append(m) or False)
+    assert names.net_strict in result.profiles_changed
+    incus.profile_set_yaml.assert_called_once()
+    return prompts
+
+
+def test_services_acl_attach_alone_does_not_offer_a_restart_without_litellm(
+    make_cfg, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """Every upgrader's strict profile gains `jailbee-services`; with LiteLLM off
+    that ACL is empty, so asking them to restart running containers is noise."""
+    old = _strict_profile_without_services(make_cfg(tmp_path))
+    assert _apply_with_strict_change(make_cfg, tmp_path, mocker, old, litellm=False) == []
+
+
+def test_services_acl_attach_still_offers_a_restart_with_litellm_enabled(
+    make_cfg, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    old = _strict_profile_without_services(make_cfg(tmp_path))
+    prompts = _apply_with_strict_change(make_cfg, tmp_path, mocker, old, litellm=True)
+    assert len(prompts) == 1 and "need restart" in prompts[0]
+
+
+def test_other_profile_changes_still_offer_a_restart_without_litellm(
+    make_cfg, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    old = _strict_profile_without_services(make_cfg(tmp_path), extra_device_key=True)
+    prompts = _apply_with_strict_change(make_cfg, tmp_path, mocker, old, litellm=False)
+    assert len(prompts) == 1
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "expected"),
+    [
+        (
+            "devices: {eth0: {security.acls: a}}",
+            "devices: {eth0: {security.acls: 'a,jailbee-services'}}",
+            True,
+        ),
+        (
+            "devices: {eth0: {type: nic}}",
+            "devices: {eth0: {type: nic, security.acls: jailbee-services}}",
+            True,
+        ),
+        (
+            "devices: {eth0: {security.acls: a}}",
+            "devices: {eth0: {security.acls: 'b,jailbee-services'}}",
+            False,
+        ),
+        (
+            "devices: {eth0: {security.acls: a}}",
+            "devices: {eth0: {security.acls: 'jailbee-services,a'}}",
+            False,
+        ),
+        ("devices: {eth0: {security.acls: a}}", "devices: {eth0: {security.acls: a}}", False),
+        ("config: {x: '1'}\ndevices: {}", "config: {x: '2'}\ndevices: {}", False),
+        (
+            "devices: {eth0: {security.acls: a}}",
+            "devices: {eth0: {security.acls: 'a,jailbee-services', mtu: '1400'}}",
+            False,
+        ),
+    ],
+)
+def test_only_attaches_services_acl(old: str, new: str, expected: bool) -> None:
+    from jailbee.apply import _only_attaches_services_acl
+
+    assert _only_attaches_services_acl(old, new) is expected
+
+
+def test_run_apply_removes_a_stale_litellm_service_rule(
+    make_cfg, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+
+    cfg = make_cfg(tmp_path)
+    incus = MagicMock(spec=Incus)
+    incus.list_containers.return_value = []
+    incus.network_acl_list.return_value = []
+    incus.network_acl_exists.return_value = True
+    incus.network_get.return_value = ""
+    mocker.patch("jailbee.apply._profile_differs", return_value=False)
+    mocker.patch("jailbee.apply._acl_differs", return_value=False)
+    reconcile = mocker.patch("jailbee.litellm.reconcile_services_acl", return_value=True)
+
+    run_apply(cfg, incus, GlobalConfig(), confirm_fn=lambda _m: False)
+
+    reconcile.assert_called_once_with(incus)
+
+
+def test_run_apply_survives_a_failed_services_reconcile(
+    make_cfg, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+    from jailbee.incus import IncusError
+
+    cfg = make_cfg(tmp_path)
+    incus = MagicMock(spec=Incus)
+    incus.list_containers.return_value = []
+    incus.network_acl_list.return_value = []
+    incus.network_acl_exists.return_value = True
+    incus.network_get.return_value = ""
+    mocker.patch("jailbee.apply._profile_differs", return_value=False)
+    mocker.patch("jailbee.apply._acl_differs", return_value=False)
+    mocker.patch("jailbee.litellm.reconcile_services_acl", side_effect=IncusError("acl busy"))
+
+    result = run_apply(cfg, incus, GlobalConfig(), confirm_fn=lambda _m: False)
+
+    assert result.profiles_changed == []  # apply carried on past the failure
+
+
+def test_apply_warns_about_profiles_without_a_proxy_instance(mocker):
+    from unittest.mock import MagicMock
+
+    from jailbee import apply
+    from jailbee.global_config import GlobalConfig
+
+    payload = {"json": {"profiles": {}}, "keys": {}, "unserved": ["work"]}
+    mocker.patch("jailbee.litellm.container_sync_payload", return_value=payload)
+    warn = mocker.patch("jailbee.tui.warn")
+    assert apply._litellm_payload_or_warn(MagicMock(), GlobalConfig()) is payload
+    assert "work" in warn.call_args.args[0] and "jailbee litellm up" in warn.call_args.args[0]
+
+
+def test_apply_passes_the_repo_view_to_the_litellm_payload(make_cfg, tmp_path, mocker):
+    from jailbee import apply
+    from jailbee.config.models_litellm import LiteLLMRepoView
+    from jailbee.global_config import GlobalConfig
+
+    cfg = make_cfg(tmp_path)
+    view = LiteLLMRepoView(scope="x")
+    cfg._litellm_view = view
+    payload = mocker.patch("jailbee.litellm.container_sync_payload", return_value=None)
+    apply._litellm_payload_or_warn(MagicMock(), GlobalConfig(), cfg.litellm_view())
+    assert payload.call_args.kwargs["view"] is view
+
+
+def _apply_harness(make_cfg, tmp_path, mocker):
+    from jailbee.lifecycle import ContainerInfo
+
+    cfg = make_cfg(tmp_path)
+    incus = MagicMock(spec=Incus)
+    incus.list_containers.return_value = []
+    incus.network_acl_list.return_value = []
+    incus.network_get.return_value = ""
+    mocker.patch("jailbee.apply._profile_differs", return_value=False)
+    mocker.patch("jailbee.apply._acl_differs", return_value=False)
+    mocker.patch("jailbee.apply._litellm_payload_or_warn", return_value=None)
+    mocker.patch(
+        "jailbee.apply._list_containers",
+        return_value=[
+            ContainerInfo("a", "Running", "strict", "10.0.0.1", "16GiB", repo=tmp_path.name)
+        ],
+    )
+    mocker.patch("jailbee.hosts.apply_hosts")
+    mocker.patch("jailbee.litellm.sync_container")
+    return cfg, incus
+
+
+@pytest.mark.parametrize("no_restart", [False, True])
+def test_apply_reconciles_the_proxy_and_honours_no_restart(make_cfg, tmp_path, mocker, no_restart):
+    from jailbee import litellm as ll
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+
+    cfg, incus = _apply_harness(make_cfg, tmp_path, mocker)
+    outcome = (
+        ll.ReconcileResult(pending=["default"])
+        if no_restart
+        else ll.ReconcileResult(restarted=["default"])
+    )
+    reconcile = mocker.patch("jailbee.litellm.litellm_reconcile", return_value=outcome)
+    info = mocker.patch("jailbee.tui.info")
+    warn_plain = mocker.patch("jailbee.tui.warn_plain")
+
+    result = run_apply(cfg, incus, GlobalConfig(), no_restart=no_restart)
+
+    assert reconcile.call_args.kwargs["restart"] is (not no_restart)
+    if no_restart:
+        assert result.litellm_pending == ["default"] and result.litellm_restarted == []
+        pending = [c.args[0] for c in warn_plain.call_args_list if "previous routes" in c.args[0]]
+        assert pending and "--no-restart" not in pending[0]
+    else:
+        assert result.litellm_restarted == ["default"]
+        assert any("in-flight" in c.args[0] for c in info.call_args_list)
+
+
+def test_apply_says_a_stopped_instance_is_not_running_not_serving_old_routes(
+    make_cfg, tmp_path, mocker
+):
+    from jailbee import litellm as ll
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+
+    cfg, incus = _apply_harness(make_cfg, tmp_path, mocker)
+    mocker.patch(
+        "jailbee.litellm.litellm_reconcile",
+        return_value=ll.ReconcileResult(pending=["a", "b"], stopped=["b"]),
+    )
+    warn_plain = mocker.patch("jailbee.tui.warn_plain")
+    run_apply(cfg, incus, GlobalConfig(), no_restart=True)
+    texts = [c.args[0] for c in warn_plain.call_args_list]
+    old = next(t for t in texts if "previous routes" in t)
+    down = next(t for t in texts if "not running" in t)
+    assert " a " in f" {old} " and " b " not in f" {old} " and "--no-restart" not in old
+    assert " b " in f" {down} " and "previous routes" not in down and "--no-restart" not in down
+
+
+def test_apply_flags_a_litellm_problem_so_the_cli_never_says_up_to_date(make_cfg, tmp_path, mocker):
+    from jailbee import litellm as ll
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+
+    cfg, incus = _apply_harness(make_cfg, tmp_path, mocker)
+    mocker.patch("jailbee.tui.warn_plain")
+    mocker.patch("jailbee.litellm.litellm_reconcile", side_effect=RuntimeError("dns down"))
+    assert run_apply(cfg, incus, GlobalConfig()).litellm_problem is True
+    mocker.patch(
+        "jailbee.litellm.litellm_reconcile",
+        return_value=ll.ReconcileResult(needs_up="account(s) work have no proxy instance yet"),
+    )
+    assert run_apply(cfg, incus, GlobalConfig()).litellm_problem is True
+    mocker.patch("jailbee.litellm.litellm_reconcile", return_value=ll.ReconcileResult())
+    assert run_apply(cfg, incus, GlobalConfig()).litellm_problem is False
+
+
+def test_apply_survives_a_failing_reconcile_and_reports_needs_up(make_cfg, tmp_path, mocker):
+    from jailbee import litellm as ll
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+
+    cfg, incus = _apply_harness(make_cfg, tmp_path, mocker)
+    warn_plain = mocker.patch("jailbee.tui.warn_plain")
+    mocker.patch("jailbee.litellm.litellm_reconcile", side_effect=RuntimeError("dns down"))
+    run_apply(cfg, incus, GlobalConfig(), no_restart=True)
+    assert any("dns down" in c.args[0] for c in warn_plain.call_args_list)
+
+    mocker.patch(
+        "jailbee.litellm.litellm_reconcile",
+        return_value=ll.ReconcileResult(
+            needs_up="account work has no instance", issues=["bad.yaml"]
+        ),
+    )
+    warn_plain.reset_mock()
+    run_apply(cfg, incus, GlobalConfig(), no_restart=True)
+    messages = [c.args[0] for c in warn_plain.call_args_list]
+    assert any("jailbee litellm up" in m and "work" in m for m in messages)
+    assert "bad.yaml" in messages

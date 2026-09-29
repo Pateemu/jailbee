@@ -20,6 +20,7 @@ def test_cli_new_registers_and_refreshes_before_new_container(
     mocker: MockerFixture,
 ) -> None:
     from jailbee.egress_pool import RefreshResult
+    from jailbee.global_config import DockerRegistryMirror, GlobalConfig
 
     fixtures = Path(__file__).parent / "fixtures"
     mocker.patch(
@@ -28,9 +29,7 @@ def test_cli_new_registers_and_refreshes_before_new_container(
     )
     mocker.patch(
         "jailbee.cli._load_global",
-        return_value=mocker.Mock(
-            docker_registry_mirror=mocker.Mock(enabled=False),
-        ),
+        return_value=GlobalConfig(docker_registry_mirror=DockerRegistryMirror(enabled=False)),
     )
     mocker.patch("jailbee.incus.Incus", return_value=mocker.Mock())
 

@@ -1,6 +1,6 @@
 ---
 name: jailbee-usage
-description: Use when running or explaining day-to-day `jailbee` (`jb`) commands against an already-set-up repo — creating/entering/destroying branch containers, the host↔container git bridge (`jailbee git push`/`pull`/`fetch`/`checkout`/`diff`), network modes (`jailbee net strict|loose`), egress overrides (`jailbee net egress ls|add|rm|export`, short alias `jailbee egress`), port forwarding (`jailbee port ls`/`to-container`/`to-host`/`rm`), the optional remote SSH service (`jailbee remote ssh`), `jailbee dashboard`, `jailbee config edit`, snapshots, mounts, `jailbee ide`/`jailbee chrome`/`jailbee firefox`/`jailbee browser`/`jailbee apps ls`/`jailbee apps run`/`jailbee exec --detach`, background ops, reviewing PRs with `jailbee new --pr`, opening/updating PRs with `jailbee pr`/`jailbee submodule pr`, and publishing an in-container agent's staged review comments with `jailbee review apply|ls|show|drop`. Trigger on "how do I use jailbee", "jailbee new/shell/git/net/port/dashboard/config edit", "jailbee remote ssh", "connect to Jailbee over SSH", "how do I use gie", "gie new/shell/git/net/port/dashboard" (`gie` was jailbee's pre-1.0 command name, removed in 1.1.0 — users may still say it out of habit), "edit jailbee config interactively", "jailbee config edit keys", "spin up a container for this branch", "push/pull/merge the container branch", "switch the container to loose/strict", "allow this container to reach X", "add a host to the allowlist", "why can't the container reach X", "forward a port into/out of the container", "expose adb inside the container", "review this PR in a container", "open a PR for a submodule", "publish this submodule's commits as a PR", "post my review comments", "apply the review", "jailbee review ls/show/drop", "what's pending in the PR outbox", "luo kontti tälle branchille", "vie/tuo muutokset kontista", "välitä portti konttiin", "salli kontille pääsy hostiin", "lisää host sallittujen listalle", "avaa PR alimoduulille", "vie alimoduulin muutokset PR:ksi", "postaa katselmointikommentit", "julkaise katselmointi", "jailbee account ls/use/park", "jailbee claude ls/use/park", "switch which account the container uses", "switch the Claude account", "change which Claude login the container uses", "store this login", "store this Claude login", "vaihda tili", "vaihda Claude-tili", "mikä tili kontissa on käytössä", "mikä Claude-tili kontissa on käytössä", "jailbee apps", "jailbee browser", "jailbee firefox", "launch a GUI app in the container", "run a command in the background in the container", "käynnistä selain kontissa", "avaa gui-sovellus kontissa". For first-time repo configuration instead (writing `.jailbee/config.yaml`, `install.d/` snippets, golden-image tailoring) use the jailbee-repo-setup skill.
+description: Use when running or explaining day-to-day `jailbee` (`jb`) commands against an already-set-up repo — creating/entering/destroying branch containers, the host↔container git bridge (`jailbee git push`/`pull`/`fetch`/`checkout`/`diff`), network modes (`jailbee net strict|loose`), egress overrides (`jailbee net egress ls|add|rm|export`, short alias `jailbee egress`), port forwarding (`jailbee port ls`/`to-container`/`to-host`/`rm`), the optional remote SSH service (`jailbee remote ssh`), `jailbee dashboard`, `jailbee config edit`, `jailbee litellm up|down|status|login|logout|logs` and in-container `claude-jb`, snapshots, mounts, `jailbee ide`/`jailbee chrome`/`jailbee firefox`/`jailbee browser`/`jailbee apps ls`/`jailbee apps run`/`jailbee exec --detach`, background ops, reviewing PRs with `jailbee new --pr`, opening/updating PRs with `jailbee pr`/`jailbee submodule pr`, and publishing an in-container agent's staged review comments with `jailbee review apply|ls|show|drop`. Trigger on "how do I use jailbee", "jailbee new/shell/git/net/port/dashboard/config edit", "jailbee litellm", "claude-jb", "jailbee remote ssh", "connect to Jailbee over SSH", "how do I use gie", "gie new/shell/git/net/port/dashboard" (`gie` was jailbee's pre-1.0 command name, removed in 1.1.0 — users may still say it out of habit), "edit jailbee config interactively", "jailbee config edit keys", "spin up a container for this branch", "push/pull/merge the container branch", "switch the container to loose/strict", "allow this container to reach X", "add a host to the allowlist", "why can't the container reach X", "forward a port into/out of the container", "expose adb inside the container", "review this PR in a container", "open a PR for a submodule", "publish this submodule's commits as a PR", "post my review comments", "apply the review", "jailbee review ls/show/drop", "what's pending in the PR outbox", "luo kontti tälle branchille", "vie/tuo muutokset kontista", "välitä portti konttiin", "salli kontille pääsy hostiin", "lisää host sallittujen listalle", "avaa PR alimoduulille", "vie alimoduulin muutokset PR:ksi", "postaa katselmointikommentit", "julkaise katselmointi", "jailbee account ls/use/park", "jailbee claude ls/use/park", "switch which account the container uses", "switch the Claude account", "change which Claude login the container uses", "store this login", "store this Claude login", "vaihda tili", "vaihda Claude-tili", "mikä tili kontissa on käytössä", "mikä Claude-tili kontissa on käytössä", "jailbee apps", "jailbee browser", "jailbee firefox", "launch a GUI app in the container", "run a command in the background in the container", "käynnistä selain kontissa", "avaa gui-sovellus kontissa". For first-time repo configuration instead (writing `.jailbee/config.yaml`, `install.d/` snippets, golden-image tailoring) use the jailbee-repo-setup skill.
 ---
 
 # Using JailBee day-to-day
@@ -682,6 +682,38 @@ can revoke the grant, and JailBee never contacts the token endpoint, so it
 cannot tell in advance. The symptom is a `/login` prompt in the container right
 after a switch that reported success. Logging in there fixes it, and the new
 credential lands in the holder as usual.
+
+## Claude Code through LiteLLM — `claude-jb`
+
+On the host, enable `litellm.enabled: true` in `global.yaml`, then run
+`jailbee litellm up`, `jailbee litellm login [ACCOUNT]` (interactive ChatGPT
+device code), `jailbee base build` per repo and `jailbee apply` per repo. Inside a
+container, `claude-jb` runs Claude Code through the proxy while plain `claude`
+remains native. Choose a gateway profile with `claude-jb --profile NAME`, then
+`JAILBEE_LITELLM_PROFILE`, then `litellm.default_profile` (`codex`), which a
+repo's host-local override may change for its own containers. The host also
+supports `jailbee litellm ls` (profiles and routes as `claude-jb` uses them,
+globally and per repo override; read-only; allowed over remote SSH in the default commands mode, but refused when
+`remote.ssh.excluded_repos` is set),
+`jailbee litellm status`, `logs [ACCOUNT] [-f]`,
+`logout [ACCOUNT]` and `down [--purge]`. After `down`, run `jailbee apply` to
+remove stale proxy settings from running dev containers. Several ChatGPT
+accounts (`litellm.accounts`, one per profile via `profiles.<p>.account`) and
+API-key providers (keys in the host's `~/.config/jailbee/litellm/secrets.env`)
+are supported. A repo can override routes, profiles, `default_profile` and
+`autostart` in its host-local `~/.config/jailbee/repos/<prefix>.yaml` under
+`litellm:` (never in the committed repo config); edit it on the host with
+`jailbee config edit --local`, then run `jailbee apply` (`jailbee new` alone
+does not update the proxy; `apply --no-restart` defers the restart of changed
+proxy instances; an edit that only changes egress, such as a route's `egress`
+list or `litellm.egress`, needs `jailbee litellm up` because `apply` does not
+notice it). With `litellm.autostart`, the Claude autostart window runs
+`claude-jb`. Inside the container there is no key and no login: `claude-jb` only
+reads `/etc/jailbee/litellm.json` and the proxy key for the profile's account.
+ChatGPT subscription use through this gateway is
+unofficial and may break or risk account sanctions. Full setup and limits:
+[LiteLLM](../../litellm.md); exact CLI flags:
+[commands](references/commands.md#litellm-proxy).
 
 ## Port forwarding — `jailbee port`
 

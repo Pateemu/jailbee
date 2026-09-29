@@ -98,6 +98,12 @@ describe the file/repo identity, apply to the whole host, or are legacy
 per-repo maps; put host-wide settings in `global.yaml` and per-repo secrets in
 this local file.
 
+A `litellm:` block is accepted in the local file with only the keys `routes`,
+`profiles`, `default_profile` and `autostart`; it overrides the host's block for
+this repo's `claude-jb` (merged per route field and profile tier, not appended).
+`enabled`, `version`, `accounts`, `egress` and `extra` are refused. See
+[Per-repo overrides](litellm.md#per-repo-overrides).
+
 ### Migrating older per-repo settings
 
 `jailbee config migrate` previews migrations without writing anything. Review
@@ -174,11 +180,11 @@ If you need per-user defaults for `extra_registries`, set them per-repo. There i
 
 ### Keys that bypass the deep-merge pipeline
 
-Nine top-level keys are read from `~/.config/jailbee/global.yaml` into
+Ten top-level keys are read from `~/.config/jailbee/global.yaml` into
 `GlobalConfig` and are **not** merged into the Config layer:
 `docker_registry_mirror` (see above), `ls`, `dashboard`,
 `credentials`, `scratch`, `config_edit`, `update_check`,
-`install_host_skills` and `remote`. `ls`'s column block is
+`install_host_skills`, `remote` and `litellm`. `ls`'s column block is
 merged field-by-field instead
 (repo block over global block) — the generic pipeline would *append* its
 `fields`/`hide` lists and concatenate the two layers' column lists rather
@@ -191,12 +197,14 @@ merged this way — see
 `config_edit` describe this host rather than any one repo — what a directory
 with no config file gets, and how jailbee writes your files — so there is no
 repo-layer counterpart to merge them with; see [`scratch`](#scratch) and
-[`config_edit`](#config_edit). `update_check` and `remote` are likewise
+[`config_edit`](#config_edit). `update_check`, `remote` and `litellm` are likewise
 properties of this host, not a repo: they are validated directly against
 `GlobalConfig`; explicitly configured values override their schema defaults,
 omitted fields retain their defaults, and no repo layer can augment or
-override them. See [`update_check`](#update_check) and
-[`remote.ssh`](#remotessh).
+override them (`litellm` alone has a narrow per-repo override in the host-local
+file, resolved separately from `Config`; see [Per-repo overrides](litellm.md#per-repo-overrides)).
+See [`update_check`](#update_check),
+[`remote.ssh`](#remotessh) and [`litellm`](#litellm).
 
 One consequence: `jailbee config show` prints the *Config* layer, so the `ls:` /
 `dashboard:` values it shows come from the repo file only. Use `jailbee config
@@ -2372,6 +2380,44 @@ by it — start it and run `jailbee apply` again.
 
 Lifecycle commands: `jailbee registry up`, `jailbee registry down`,
 `jailbee registry status` (`running` / `stopped` / `degraded` / `missing`).
+
+### `litellm`
+
+Host-only proxy settings for `claude-jb`; see [Claude Code through LiteLLM](litellm.md)
+for setup, route examples, security and limitations. The full block is accepted
+in `~/.config/jailbee/global.yaml` only, not in a committed repo config. A
+host-local per-repo file may carry a narrower override (`routes`, `profiles`,
+`default_profile`, `autostart`); see
+[Per-repo overrides](litellm.md#per-repo-overrides). It is disabled by default.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Permit `jailbee litellm up` and dev-container proxy settings. |
+| `version` | pinned `1.103.0` | LiteLLM version. An explicit version bypasses the bundled hash lock and warns. |
+| `default_profile` | `codex` | Profile used by `claude-jb` unless overridden by its `--profile` or `JAILBEE_LITELLM_PROFILE`. |
+| `autostart` | `false` | Start the Claude autostart window with `claude-jb` instead of `claude`. A repo's host-local file can override it. See [Autostart](litellm.md#autostart). |
+| `accounts` | `[default]` | ChatGPT logins, one proxy instance each. The built-in `codex` profile uses `default`. |
+| `egress` | `[]` | Extra `host[:port]` the proxy may reach, for `extra` deployments. Changing it needs `jailbee litellm up`; `jailbee apply` does not apply an egress-only edit. |
+| `extra` | none | Path to a raw LiteLLM config fragment merged into every instance last. |
+| `routes` | four built-in routes | Named models; same-name entries overlay the built-in route field by field. |
+| `profiles` | built-in `codex` | Named maps of `fable`, `opus`, `sonnet`, `haiku` tiers to routes; same-name entries overlay individual tiers. |
+
+Routes accept `model` (required for new routes), `effort` (fixed),
+`min_effort` (floor; mutually exclusive with `effort`), `context_window`
+(required for unknown models, default `922000` for built-in GPT-6 models),
+`api_key` (name of a variable in `~/.config/jailbee/litellm/secrets.env`, never
+the key; not allowed on `chatgpt/` routes), `api_base` (endpoint URL; its host
+joins the egress allowlist; not allowed on `chatgpt/` routes), `egress` (extra
+`host[:port]` for this route; needed for a provider jailbee has no host table
+for, unless `api_base` is set) and `params` (raw LiteLLM deployment parameters;
+keys that change the provider, endpoint or credential, such as `model`,
+`api_base`, `api_key` or `extra_headers`, are rejected there: use the route's own
+fields). A route's `egress`, like `litellm.egress`, reaches the proxy's allowlist only
+through `jailbee litellm up`. Profiles also accept `account` (from `accounts`; required when the
+profile maps a `chatgpt/` route) and `effort` as the default session effort. `jailbee litellm up` renders changes
+and restarts the instance if needed; `jailbee apply` also re-renders the proxy
+and restarts the instances whose routes changed (`--no-restart` defers it), and
+synchronizes the gateway file/key into each running dev container.
 
 ### `remote.ssh`
 

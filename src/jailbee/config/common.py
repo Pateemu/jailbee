@@ -93,6 +93,7 @@ _HOST_LEVEL_KEYS: frozenset[str] = frozenset(
         "config_edit",
         "update_check",
         "remote",
+        "litellm",
         "install_host_skills",
     }
 )

@@ -1503,7 +1503,10 @@ def apply(
         bool,
         typer.Option(
             "--no-restart",
-            help="Update profiles/ACL/hosts/proxy but never restart a container or its dockerd",
+            help=(
+                "Update profiles/ACL/hosts/proxy but never restart a container, "
+                "its dockerd or a LiteLLM instance"
+            ),
         ),
     ] = False,
 ) -> None:
@@ -1544,10 +1547,13 @@ def apply(
             result.docker_restart_pending,
             result.offline_migrated,
             result.ports_changed,
+            result.litellm_restarted,
+            result.litellm_pending,
+            result.litellm_problem,
         ]
     ):
         info("Configuration already up to date.")
-    elif not result.restart_failures and not result.restarted:
+    elif not result.restart_failures and not result.restarted and not result.litellm_problem:
         success("Apply complete.")
 
     for name, err in result.restart_failures:
@@ -1980,7 +1986,7 @@ def new_cmd(
     from jailbee.autostart import AutostartStepError
     from jailbee.docker_daemon import mirror_wanted
     from jailbee.git import get_current_branch
-    from jailbee.incus import Incus
+    from jailbee.incus import Incus, IncusError
     from jailbee.lifecycle import (
         NewContainerOptions,
         derive_container_name,
@@ -2310,6 +2316,17 @@ def new_cmd(
                 f"'jailbee registry up && jailbee apply'."
             )
 
+    from jailbee import litellm
+
+    try:
+        litellm_payload = litellm.container_sync_payload(incus, gcfg, view=cfg.litellm_view())
+    except IncusError as e:
+        warn(f"Could not resolve LiteLLM settings: {e}; run `jailbee apply` to retry.")
+        litellm_payload = None
+    unserved = litellm.unserved_warning(litellm_payload)
+    if unserved is not None:
+        warn(unserved)
+
     if credential_group is not None and claude_group is not None:
         error(
             "--credential-group and --claude-group are the same option, "
@@ -2358,6 +2375,7 @@ def new_cmd(
             autostart=not no_autostart,
             mirror_endpoint=mirror_endpoint,
             mirror_ca_path=mirror_ca_path,
+            litellm_payload=litellm_payload,
             base=None,
             mount=True,
             assume_yes=yes,
@@ -2376,6 +2394,7 @@ def new_cmd(
             autostart=not no_autostart,
             mirror_endpoint=mirror_endpoint,
             mirror_ca_path=mirror_ca_path,
+            litellm_payload=litellm_payload,
             base=base,
             base_branch_label=pr_info.base_ref if pr is not None else None,
             pr=pr,
@@ -10583,6 +10602,228 @@ def registry_status_cmd(config: ConfigOption = None) -> None:
     _load_or_exit(config)
     status = registry_status(Incus())
     info(f"Registry mirror: {status.value}")
+
+
+litellm_app = typer.Typer(
+    name="litellm",
+    help="LiteLLM proxy for coding agents on other providers' models.",
+    no_args_is_help=True,
+)
+app.add_typer(litellm_app)
+
+
+def _litellm_context() -> tuple["IncusType", GlobalConfig]:
+    """LiteLLM is host infrastructure; no repository config is needed."""
+    from jailbee.incus import Incus
+
+    return Incus(), _load_global()
+
+
+def _account_arg(gcfg: GlobalConfig, account: str | None) -> str:
+    """The named account, or the only one; exit 2 before any side effect otherwise."""
+    accounts = gcfg.litellm.accounts
+    if account is None:
+        if len(accounts) == 1:
+            return accounts[0]
+        error(f"Several LiteLLM accounts are configured ({', '.join(accounts)}); name one.")
+        raise typer.Exit(2)
+    if account not in accounts:
+        error(f"Unknown LiteLLM account '{account}'. Configured: {', '.join(accounts)}.")
+        raise typer.Exit(2)
+    return account
+
+
+@litellm_app.command("up")
+def litellm_up_cmd(
+    reinstall: Annotated[
+        bool, typer.Option("--reinstall", help="Reinstall LiteLLM in the container.")
+    ] = False,
+) -> None:
+    """Create or repair the LiteLLM container and start the proxy."""
+    from jailbee import litellm as ll
+    from jailbee.incus import IncusError
+    from jailbee.tui import status_with_elapsed
+
+    incus, gcfg = _litellm_context()
+    if gcfg.litellm.version is not None:
+        warn(f"litellm.version={gcfg.litellm.version} bypasses jailbee's hash-locked install.")
+    try:
+        with status_with_elapsed("starting the LiteLLM proxy") as status:
+            result = ll.litellm_up(incus, gcfg, reinstall=reinstall, on_step=status.update)
+    except (ValueError, RuntimeError, IncusError) as exc:
+        error(str(exc))
+        raise typer.Exit(1) from exc
+    ports = ", ".join(f"{account} on :{port}" for account, port in result.ports.items())
+    success(f"LiteLLM proxy running on {result.ip} ({ports})")
+    if result.restarted:
+        info(
+            f"Restarted {', '.join(result.restarted)}; their in-flight `claude-jb` "
+            "requests were interrupted."
+        )
+    if result.retired:
+        info(
+            f"Stopped {', '.join(result.retired)}: no longer in `litellm.accounts`; "
+            "their logins are kept."
+        )
+    for issue in result.issues:
+        warn_plain(issue)
+    info(
+        "Next: `jailbee litellm login <account>` for each new account, then "
+        "`jailbee apply` in each repo that uses `claude-jb`."
+    )
+
+
+@litellm_app.command("down")
+def litellm_down_cmd(
+    purge: Annotated[
+        bool,
+        typer.Option(
+            "--purge",
+            help=(
+                "Also delete the state volume: every login, the rendered configs and their secrets."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Remove the proxy container; its state volume (logins, settings) is kept."""
+    from jailbee import litellm as ll
+    from jailbee.incus import IncusError
+
+    incus, _gcfg = _litellm_context()
+    try:
+        ll.litellm_down(incus, purge=purge)
+    except (RuntimeError, IncusError) as exc:
+        error(str(exc))
+        raise typer.Exit(1) from exc
+    if purge:
+        success("LiteLLM proxy and its state volume removed; logins are gone.")
+    else:
+        success("LiteLLM proxy removed; logins and settings are kept.")
+
+
+@litellm_app.command("status")
+def litellm_status_cmd() -> None:
+    """Show proxy container, endpoint, version, health and login state."""
+    from jailbee import litellm as ll
+    from jailbee.incus import IncusError
+
+    incus, gcfg = _litellm_context()
+    try:
+        status = ll.litellm_status(incus, gcfg)
+    except (RuntimeError, IncusError) as exc:
+        error(str(exc))
+        raise typer.Exit(1) from exc
+    typer.echo(f"container: {status.container.value}")
+    typer.echo(f"ip: {status.ip or 'unavailable'}")
+    typer.echo(f"version: {status.version or 'unknown'}")
+    for instance in status.instances:
+        typer.echo(f"account: {instance.account}")
+        if instance.port is None:
+            typer.echo("port: not set up — run jailbee litellm up")
+        else:
+            typer.echo(f"port: {instance.port}")
+        typer.echo(f"service: {'active' if instance.active else 'inactive'}")
+        typer.echo(f"health: {'healthy' if instance.healthy else 'unhealthy'}")
+        if instance.login == "present":
+            typer.echo("login: logged in")
+        elif instance.login == "unknown":
+            typer.echo("login: unknown (could not read it; see jailbee litellm logs)")
+        else:
+            typer.echo("login: not logged in — run jailbee litellm login")
+    if (
+        status.container != ll.ContainerState.RUNNING
+        or not status.instances
+        or any(not instance.active or not instance.healthy for instance in status.instances)
+    ):
+        raise typer.Exit(1)
+
+
+@litellm_app.command("ls")
+def litellm_ls_cmd() -> None:
+    """List profiles and routes as `claude-jb` uses them, globally and per repo."""
+    from jailbee.config.local_layer import all_local_litellm_views
+    from jailbee.global_config import default_global_config_path
+    from jailbee.litellm_listing import listing_lines
+    from jailbee.tui import warn, warn_plain
+
+    gcfg = _load_global()
+    cfg = gcfg.litellm
+    if not cfg.enabled:
+        warn(
+            "LiteLLM is disabled (`litellm.enabled: false`); this is what enabling it would serve."
+        )
+    views, issues = all_local_litellm_views(cfg)
+    for line in listing_lines(cfg, views, global_origin=str(default_global_config_path())):
+        typer.echo(line)
+    for issue in issues:
+        warn_plain(issue)
+
+
+@litellm_app.command("login")
+def litellm_login_cmd(
+    account: Annotated[
+        str | None,
+        typer.Argument(help="Account from `litellm.accounts`; optional when there is only one."),
+    ] = None,
+) -> None:
+    """Log an account in to ChatGPT with LiteLLM's interactive device-code flow."""
+    from jailbee import litellm as ll
+    from jailbee.incus import IncusError
+
+    incus, gcfg = _litellm_context()
+    resolved = _account_arg(gcfg, account)
+    try:
+        exit_code = ll.litellm_login(incus, resolved)
+    except (RuntimeError, IncusError) as exc:
+        error(str(exc))
+        raise typer.Exit(1) from exc
+    raise typer.Exit(exit_code)
+
+
+@litellm_app.command("logout")
+def litellm_logout_cmd(
+    account: Annotated[
+        str | None,
+        typer.Argument(help="Account from `litellm.accounts`; optional when there is only one."),
+    ] = None,
+) -> None:
+    """Delete the ChatGPT token in the proxy's state volume, keeping its settings."""
+    from jailbee import litellm as ll
+    from jailbee.incus import IncusError
+
+    incus, gcfg = _litellm_context()
+    resolved = _account_arg(gcfg, account)
+    try:
+        removed = ll.litellm_logout(incus, resolved)
+    except (RuntimeError, IncusError) as exc:
+        error(str(exc))
+        raise typer.Exit(1) from exc
+    if removed:
+        success("Logged out.")
+    else:
+        info("Not logged in.")
+
+
+@litellm_app.command("logs")
+def litellm_logs_cmd(
+    account: Annotated[
+        str | None,
+        typer.Argument(help="Account from `litellm.accounts`; optional when there is only one."),
+    ] = None,
+    follow: Annotated[bool, typer.Option("-f", "--follow", help="Follow new log entries.")] = False,
+) -> None:
+    """Show the proxy's journal for an account."""
+    from jailbee import litellm as ll
+    from jailbee.incus import IncusError
+
+    incus, gcfg = _litellm_context()
+    resolved = _account_arg(gcfg, account)
+    try:
+        exit_code = ll.litellm_logs(incus, resolved, follow=follow)
+    except (RuntimeError, IncusError) as exc:
+        error(str(exc))
+        raise typer.Exit(1) from exc
+    raise typer.Exit(exit_code)
 
 
 def _entry_noun(n: int) -> str:

@@ -25,6 +25,11 @@ from jailbee.config import Config
 from jailbee.egress import EgressEntry
 
 ALLOWLIST_DESC_PREFIX = "allowlisted: "
+SERVICES_ACL = "jailbee-services"
+"""Host-global ACL carrying allow rules to jailbee's own service containers
+(today: the LiteLLM proxy). Appended to every strict NIC's ACL list and
+attached to `incusbr0` and `jailbee-work`, so one rule written by
+`jailbee litellm up` passes both filter chains for every repo."""
 
 
 def work_loose_rule(ip: str) -> dict[str, str]:
@@ -62,6 +67,120 @@ def acl_name(cfg: Config) -> str:
     return f"{cfg.container_prefix}-allowlist"
 
 
+def strict_nic_acls(cfg: Config, *extra: str) -> list[str]:
+    """The ACL list of a strict NIC: repo allowlist, container extras, services."""
+    return [acl_name(cfg), *extra, SERVICES_ACL]
+
+
+def _base_egress_rules() -> list[dict[str, str]]:
+    """DHCP and DNS allowances shared by repo and service-container ACLs."""
+
+    # DHCP — required for the container to acquire an IPv4/IPv6 lease
+    # from incusbr0's own dnsmasq. The NIC's implicit default-reject
+    # would otherwise drop DHCP frames.
+    return [
+        {
+            "action": "allow",
+            "destination_port": "67",
+            "protocol": "udp",
+            "description": "DHCPv4 client → server",
+            "state": "enabled",
+        },
+        {
+            "action": "allow",
+            "destination_port": "547",
+            "protocol": "udp",
+            "description": "DHCPv6 client → server",
+            "state": "enabled",
+        },
+        # DNS — always allowed (resolver itself needs port 53).
+        {
+            "action": "allow",
+            "destination_port": "53",
+            "protocol": "udp",
+            "description": "DNS",
+            "state": "enabled",
+        },
+        {
+            "action": "allow",
+            "destination_port": "53",
+            "protocol": "tcp",
+            "description": "DNS over TCP",
+            "state": "enabled",
+        },
+    ]
+
+
+def _gateway_cidr(address: str) -> str:
+    return f"{address}/{128 if ':' in address else 32}"
+
+
+def _scoped_egress_rules(gateways: list[str]) -> list[dict[str, str]]:
+    """DHCP and DNS allowances pinned to the bridge, for token-holding containers.
+
+    The unscoped `_base_egress_rules` allow tcp/udp 53 and udp 67/547 to any
+    host, which is an open covert channel for a container whose whole point is
+    to be limited to its provider hosts. Here DNS may only reach the bridge's
+    own addresses (`gateways`, where dnsmasq listens), and DHCP only the
+    broadcast/multicast group and the on-link server. Without `gateways` no DNS
+    rule is emitted: the container fails closed rather than open.
+    """
+    dhcp4 = ["255.255.255.255/32", *(_gateway_cidr(g) for g in gateways if ":" not in g)]
+    rules = [
+        {
+            "action": "allow",
+            "destination": ",".join(dhcp4),
+            "destination_port": "67",
+            "protocol": "udp",
+            "description": "DHCPv4 client → server",
+            "state": "enabled",
+        },
+        # Link-local covers the server's unicast renewals; it never leaves the link.
+        {
+            "action": "allow",
+            "destination": "ff02::1:2/128,fe80::/10",
+            "destination_port": "547",
+            "protocol": "udp",
+            "description": "DHCPv6 client → server",
+            "state": "enabled",
+        },
+    ]
+    if gateways:
+        dns = ",".join(_gateway_cidr(g) for g in gateways)
+        for protocol, description in (("udp", "DNS"), ("tcp", "DNS over TCP")):
+            rules.append(
+                {
+                    "action": "allow",
+                    "destination": dns,
+                    "destination_port": "53",
+                    "protocol": protocol,
+                    "description": f"{description} (bridge resolver only)",
+                    "state": "enabled",
+                }
+            )
+    return rules
+
+
+def _base_ingress_rules() -> list[dict[str, str]]:
+    """DHCP replies shared by repo and service-container ACLs."""
+    return [
+        {
+            "action": "allow",
+            "destination_port": "68",
+            "protocol": "udp",
+            "description": "DHCPv4 server → client",
+            "state": "enabled",
+        },
+        {
+            "action": "allow",
+            "destination_port": "546",
+            "protocol": "udp",
+            "description": "DHCPv6 server → client",
+            "state": "enabled",
+        },
+    ]
+
+
 def allowlist_acl_yaml(
     cfg: Config,
     entries: list[EgressEntry],
@@ -83,49 +202,7 @@ def allowlist_acl_yaml(
     it is invisible to `entries_from_acl_yaml` and the /etc/hosts
     pinning path.
     """
-    egress: list[dict[str, str]] = []
-
-    # DHCP — required for the container to acquire an IPv4/IPv6 lease
-    # from incusbr0's own dnsmasq. The NIC's implicit default-reject
-    # would otherwise drop DHCP frames.
-    egress.append(
-        {
-            "action": "allow",
-            "destination_port": "67",
-            "protocol": "udp",
-            "description": "DHCPv4 client → server",
-            "state": "enabled",
-        }
-    )
-    egress.append(
-        {
-            "action": "allow",
-            "destination_port": "547",
-            "protocol": "udp",
-            "description": "DHCPv6 client → server",
-            "state": "enabled",
-        }
-    )
-
-    # DNS — always allowed (resolver itself needs port 53).
-    egress.append(
-        {
-            "action": "allow",
-            "destination_port": "53",
-            "protocol": "udp",
-            "description": "DNS",
-            "state": "enabled",
-        }
-    )
-    egress.append(
-        {
-            "action": "allow",
-            "destination_port": "53",
-            "protocol": "tcp",
-            "description": "DNS over TCP",
-            "state": "enabled",
-        }
-    )
+    egress = _base_egress_rules()
 
     # Docker registry mirror on the host's incusbr0 gateway.
     if mirror_endpoint is not None:
@@ -152,22 +229,62 @@ def allowlist_acl_yaml(
         "name": acl_name(cfg),
         "description": "jailbee container egress allowlist (default-deny)",
         "egress": egress,
-        "ingress": [
+        "ingress": _base_ingress_rules(),
+    }
+    return yaml.safe_dump(acl, sort_keys=False)
+
+
+def services_acl_yaml(endpoint: tuple[str, list[int]] | None) -> str:
+    egress: list[dict[str, str]] = []
+    if endpoint is not None:
+        ip, ports = endpoint
+        for port in ports:
+            egress.append(
+                {
+                    "action": "allow",
+                    "destination": f"{ip}/32",
+                    "destination_port": str(port),
+                    "protocol": "tcp",
+                    "description": "jailbee LiteLLM proxy",
+                    "state": "enabled",
+                }
+            )
+    acl = {
+        "name": SERVICES_ACL,
+        "description": "jailbee service containers reachable from strict containers",
+        "egress": egress,
+        "ingress": [],
+    }
+    return yaml.safe_dump(acl, sort_keys=False)
+
+
+def service_container_acl_yaml(
+    name: str,
+    entries: list[EgressEntry],
+    *,
+    listen_ports: list[int],
+    gateways: list[str],
+) -> str:
+    """NIC ACL of a jailbee service container: DHCP/DNS, `entries` out, `listen_ports` in.
+
+    `gateways` are the bridge's own addresses; DNS is allowed to them only.
+    """
+    ingress = _base_ingress_rules()
+    for port in listen_ports:
+        ingress.append(
             {
                 "action": "allow",
-                "destination_port": "68",
-                "protocol": "udp",
-                "description": "DHCPv4 server → client",
+                "destination_port": str(port),
+                "protocol": "tcp",
+                "description": "jailbee service port",
                 "state": "enabled",
-            },
-            {
-                "action": "allow",
-                "destination_port": "546",
-                "protocol": "udp",
-                "description": "DHCPv6 server → client",
-                "state": "enabled",
-            },
-        ],
+            }
+        )
+    acl = {
+        "name": name,
+        "description": "jailbee service container egress allowlist (default-deny)",
+        "egress": [*_scoped_egress_rules(gateways), *_allow_rules(entries)],
+        "ingress": ingress,
     }
     return yaml.safe_dump(acl, sort_keys=False)
 

@@ -41,8 +41,36 @@ def test_reconcile_work_nic_preserves_verified_bridge_and_reservation(make_cfg, 
     reconcile_work_nic(cfg, incus, raw)
 
     incus.config_device_set.assert_called_once_with(
-        name, "eth0", {**original, "security.acls": f"{cfg.container_prefix}-allowlist"}
+        name,
+        "eth0",
+        {**original, "security.acls": f"{cfg.container_prefix}-allowlist,jailbee-services"},
     )
+
+
+def test_reconcile_work_nic_ensures_services_acl_before_device_write(make_cfg, tmp_path):
+    cfg = make_cfg(tmp_path / "repo")
+    name = f"{cfg.container_prefix}-work"
+    raw = container(name, mode="strict")
+    raw["devices"]["eth0"]["security.acls"] = "stale"
+    incus = MagicMock()
+    incus.list_containers.return_value = [raw]
+    incus.config_get.return_value = None
+    incus.network_acl_exists.side_effect = lambda acl: acl != "jailbee-services"
+
+    reconcile_work_nic(cfg, incus, raw)
+
+    assert incus.config_device_set.call_args.args[2]["security.acls"] == (
+        f"{cfg.container_prefix}-allowlist,jailbee-services"
+    )
+    create_idx = next(
+        i
+        for i, call in enumerate(incus.mock_calls)
+        if call[0] == "network_acl_create" and call.args == ("jailbee-services",)
+    )
+    device_idx = next(
+        i for i, call in enumerate(incus.mock_calls) if call[0] == "config_device_set"
+    )
+    assert create_idx < device_idx
 
 
 def test_reconcile_work_nic_adds_only_that_strict_containers_extra_acl(make_cfg, tmp_path):
@@ -70,7 +98,9 @@ def test_reconcile_work_nic_adds_only_that_strict_containers_extra_acl(make_cfg,
         "eth0",
         {
             **original,
-            "security.acls": f"{cfg.container_prefix}-allowlist,{extra_acl_name(name)}",
+            "security.acls": (
+                f"{cfg.container_prefix}-allowlist,{extra_acl_name(name)},jailbee-services"
+            ),
         },
     )
 
@@ -113,8 +143,51 @@ def test_work_extra_materialization_keeps_nic_and_applies_repo_union(make_cfg, t
     assert desired["network"] == "jailbee-work"
     assert desired["ipv4.address"] == "10.42.0.2"
     assert desired["security.ipv4_filtering"] == "true"
-    assert desired["security.acls"] == f"{cfg.container_prefix}-allowlist,{extra_acl_name(name)}"
+    assert desired["security.acls"] == (
+        f"{cfg.container_prefix}-allowlist,{extra_acl_name(name)},jailbee-services"
+    )
     assert f"{cfg.container_prefix}-allowlist" in attached
+
+
+def test_work_strict_nic_creates_services_acl_before_device_write(make_cfg, tmp_path, mocker):
+    cfg = make_cfg(tmp_path / "repo")
+    name = f"{cfg.container_prefix}-work"
+    raw = container(name, mode="strict")
+    raw["devices"]["eth0"]["security.acls"] = "stale"
+    incus = MagicMock()
+    incus.list_containers.return_value = [raw]
+    incus.network_get.return_value = "jailbee-work-baseline"
+    incus.network_acl_exists.side_effect = lambda acl: acl != "jailbee-services"
+    mocker.patch("jailbee.egress_scope.container_extras", return_value=[])
+
+    apply_work_container_acl(cfg, incus, name, mode="strict")
+
+    assert incus.config_device_set.call_args.args[2]["security.acls"] == (
+        f"{cfg.container_prefix}-allowlist,jailbee-services"
+    )
+    create_idx = next(
+        i for i, call in enumerate(incus.mock_calls) if call[0] == "network_acl_create"
+    )
+    device_idx = next(
+        i for i, call in enumerate(incus.mock_calls) if call[0] == "config_device_set"
+    )
+    assert incus.mock_calls[create_idx].args == ("jailbee-services",)
+    assert create_idx < device_idx
+
+
+def test_work_loose_nic_does_not_gain_services_acl(make_cfg, tmp_path, mocker):
+    cfg = make_cfg(tmp_path / "repo")
+    name = f"{cfg.container_prefix}-work"
+    raw = container(name)
+    incus = MagicMock()
+    incus.list_containers.return_value = [raw]
+    incus.network_get.return_value = "jailbee-work-baseline"
+    incus.network_acl_exists.return_value = True
+    mocker.patch("jailbee.egress_scope.container_extras", return_value=[])
+
+    apply_work_container_acl(cfg, incus, name, mode="loose")
+
+    assert incus.config_device_set.call_args.args[2]["security.acls"] == ""
 
 
 def test_removing_last_work_extra_drops_nic_reference_before_acl_delete(make_cfg, tmp_path, mocker):
@@ -145,7 +218,7 @@ def test_removing_last_work_extra_drops_nic_reference_before_acl_delete(make_cfg
     apply_work_container_acl(cfg, incus, name)
 
     assert incus.config_device_set.call_args.args[2]["security.acls"] == (
-        f"{cfg.container_prefix}-allowlist"
+        f"{cfg.container_prefix}-allowlist,jailbee-services"
     )
     incus.network_acl_delete.assert_any_call(extra_acl_name(name))
 
@@ -207,7 +280,7 @@ def test_ensure_repo_acl_attaches_allowlist_extras_and_preserves_other_repos(mak
     incus.network_set.assert_called_once_with(
         "jailbee-work",
         "security.acls",
-        f"jailbee-work-baseline,{cfg.container_prefix}-allowlist,{union_name},other-repo-allowlist",
+        f"jailbee-work-baseline,{cfg.container_prefix}-allowlist,jailbee-services,{union_name},other-repo-allowlist",
     )
     incus.network_acl_set_yaml.assert_called_once()
     union = yaml.safe_load(incus.network_acl_set_yaml.call_args.args[1])
@@ -216,6 +289,24 @@ def test_ensure_repo_acl_attaches_allowlist_extras_and_preserves_other_repos(mak
         "203.0.113.8",
         "203.0.113.9",
     ]
+
+
+def test_work_bridge_ensures_services_acl_before_attachment(make_cfg, tmp_path):
+    cfg = make_cfg(tmp_path / "repo")
+    incus = MagicMock()
+    incus.list_containers.return_value = []
+    incus.network_get.return_value = "jailbee-work-baseline"
+    incus.network_acl_exists.side_effect = lambda acl: acl != "jailbee-services"
+
+    ensure_work_repo_acl(cfg, incus)
+
+    assert "jailbee-services" in incus.network_set.call_args.args[2].split(",")
+    create_idx = next(
+        i for i, call in enumerate(incus.mock_calls) if call[0] == "network_acl_create"
+    )
+    attach_idx = next(i for i, call in enumerate(incus.mock_calls) if call[0] == "network_set")
+    assert incus.mock_calls[create_idx].args == ("jailbee-services",)
+    assert create_idx < attach_idx
 
 
 def test_work_occupants_merge_effective_nic_with_unrelated_local_disk(make_cfg, tmp_path):

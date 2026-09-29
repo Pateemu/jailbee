@@ -1315,6 +1315,60 @@ def test_new_container_calls_init_assign_set_start(tmp_path, mocker):
     incus.start.assert_called_once_with("repo-feat-x")
 
 
+@pytest.mark.parametrize("with_payload", [True, False])
+def test_new_container_syncs_litellm_only_when_payload_supplied(tmp_path, mocker, with_payload):
+    cfg = _cfg_for_new(tmp_path)
+    incus = MagicMock()
+    incus.exists.return_value = False
+    mocker.patch("jailbee.lifecycle.branch_exists_locally", return_value=True)
+    key = tmp_path / "master.key"
+    key.write_text("sk-jb-demo\n")
+    opts = NewContainerOptions(
+        "feat/x",
+        None,
+        "strict",
+        "8GiB",
+        4,
+        "base",
+        True,
+        autostart=False,
+        litellm_payload={"json": {"version": 1}, "keys": {"default": str(key)}}
+        if with_payload
+        else None,
+    )
+
+    new_container(cfg, incus, opts)
+
+    scripts = [str(c.args[2]) for c in incus.exec_with_input.call_args_list]
+    assert any("/etc/jailbee/litellm.json" in s for s in scripts) is with_payload
+
+
+@pytest.mark.parametrize("failure", [IncusError("write failed"), FileNotFoundError("key removed")])
+def test_new_container_litellm_write_failure_warns_without_aborting(tmp_path, mocker, failure):
+    cfg = _cfg_for_new(tmp_path)
+    incus = MagicMock()
+    incus.exists.return_value = False
+    mocker.patch("jailbee.lifecycle.branch_exists_locally", return_value=True)
+    mocker.patch("jailbee.litellm.sync_container", side_effect=failure)
+    warn = mocker.patch("jailbee.lifecycle.warn")
+    opts = NewContainerOptions(
+        "feat/x",
+        None,
+        "strict",
+        "8GiB",
+        4,
+        "base",
+        True,
+        autostart=False,
+        litellm_payload={"json": {}, "keys": {"default": "/host/key"}},
+    )
+
+    new_container(cfg, incus, opts)
+
+    assert "jailbee apply" in warn.call_args.args[0]
+    incus.start.assert_called_once_with("repo-feat-x")
+
+
 def _select_work_generation(mocker, db_session):
     from jailbee.db.models import HostNetworkDefault
 
@@ -1364,7 +1418,7 @@ def test_new_work_generation_assigns_stable_filtered_nic(tmp_path, mocker, db_se
             "network": "jailbee-work",
             "ipv4.address": "10.10.0.2",
             "security.ipv4_filtering": "true",
-            "security.acls": f"{cfg.container_prefix}-allowlist",
+            "security.acls": f"{cfg.container_prefix}-allowlist,jailbee-services",
         },
     )
 
@@ -5284,7 +5338,7 @@ def test_work_switch_restores_strict_acl_when_marker_update_fails(make_cfg, tmp_
 
     assert incus.config_device_set.call_args_list == [
         mocker.call(name, "eth0", {"security.acls": ""}),
-        mocker.call(name, "eth0", {"security.acls": "myrepo-allowlist"}),
+        mocker.call(name, "eth0", {"security.acls": "myrepo-allowlist,jailbee-services"}),
     ]
 
 

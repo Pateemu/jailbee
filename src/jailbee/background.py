@@ -355,6 +355,7 @@ def op_to_job(
             "mirror_ca_path": (
                 str(opts.mirror_ca_path) if opts.mirror_ca_path is not None else None
             ),
+            "litellm_payload": opts.litellm_payload,
             "base": opts.base,
             "mount": opts.mount,
             "base_branch_label": opts.base_branch_label,
@@ -389,6 +390,7 @@ def job_to_opts(job: dict[str, Any]) -> tuple[NewContainerOptions, str, str]:
         autostart=o["autostart"],
         mirror_endpoint=(tuple(endpoint) if endpoint is not None else None),
         mirror_ca_path=(Path(o["mirror_ca_path"]) if o["mirror_ca_path"] is not None else None),
+        litellm_payload=o.get("litellm_payload"),
         base=o["base"],
         mount=o["mount"],
         base_branch_label=o["base_branch_label"],

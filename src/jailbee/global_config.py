@@ -3,7 +3,7 @@
 Stored at $XDG_CONFIG_HOME/jailbee/global.yaml (default
 ~/.config/jailbee/global.yaml). Optional file — if absent, defaults are used.
 Carries `docker_registry_mirror`, `loose_auto_revert`, `credentials`,
-and the `ls` / `dashboard` column preferences.
+`litellm`, and the `ls` / `dashboard` column preferences.
 
 Per-repo configuration lives in <repo>/.jailbee/config.yaml — see config.py.
 """
@@ -27,6 +27,7 @@ from jailbee.config import (
     _split_host_keys,
     normalize_credentials_key,
 )
+from jailbee.config.models_litellm import LiteLLMConfig
 from jailbee.config.models_remote import RemoteConfig
 from jailbee.paths import expand_path, xdg_data_home
 
@@ -272,6 +273,14 @@ class GlobalConfig(BaseModel):
             "a repo's `.jailbee/config.yaml` cannot enable or broaden remote access."
         ),
     )
+    litellm: LiteLLMConfig = Field(
+        default_factory=LiteLLMConfig,
+        description=(
+            "Claude Code on non-Anthropic models through a jailbee-managed LiteLLM "
+            "proxy: routes, profiles and `claude-jb`'s default. Host-level only: "
+            "routes name this host's proxy and subscription login."
+        ),
+    )
 
 
 _LS_DEFAULT = ColumnConfig()
@@ -347,8 +356,29 @@ def validate_global_raw(
                 joined = ", ".join(unknown)
                 raise ValueError(f"unknown remote Jailbee command path(s): {joined}")
         return config
-    except (ValidationError, ValueError) as e:
+    except ValidationError as e:
+        # Unchained: the ValidationError carries `input_value`, a pasted key
+        # included, into any traceback that prints the cause.
+        raise ConfigError(
+            f"Global config validation failed in {path}:\n{_validation_text(e)}"
+        ) from None
+    except ValueError as e:
         raise ConfigError(f"Global config validation failed in {path}:\n{e}") from e
+
+
+def _validation_text(error: ValidationError) -> str:
+    """Pydantic's own text, or input-free lines when a `litellm` value is at fault.
+
+    `litellm.routes.<r>.api_key` takes a secrets.env *name*; someone who pastes
+    the key itself would otherwise get it echoed back as `input_value`.
+    `hide_input_in_errors` on the nested model does not help: pydantic honours
+    it only on the model being validated, which here is `GlobalConfig`.
+    """
+    from jailbee.config.models_litellm import input_free_lines
+
+    if not any(err["loc"][:1] == ("litellm",) for err in error.errors(include_url=False)):
+        return str(error)
+    return input_free_lines(error)
 
 
 def _load_unsanitized(path: Path) -> GlobalConfig:

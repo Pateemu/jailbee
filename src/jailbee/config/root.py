@@ -56,6 +56,7 @@ from jailbee.config.models_host import (
     _default_shared_caches,
     _jetbrains_shared_caches,
 )
+from jailbee.config.models_litellm import LiteLLMRepoView
 from jailbee.config.models_net import (
     GITHUB_API_HOSTS,
     JETBRAINS_AI_HOSTS,
@@ -439,6 +440,13 @@ class Config(BaseModel):
     # `jailbee config show`'s dump as if it were configuration.
     _synthetic: bool = PrivateAttr(default=False)
 
+    # Set by `load_config_from_layers`: the host-level `litellm:` block with
+    # this repo's host-local override on top. Private for the reason
+    # `_synthetic` is one: no YAML key, no `config show` entry, no editor
+    # field. A `Config` built any other way sees the disabled built-in
+    # config. `model_copy` carries it, which the autostart supervisor needs.
+    _litellm_view: LiteLLMRepoView = PrivateAttr(default_factory=LiteLLMRepoView)
+
     def column_warnings(self) -> list[str]:
         """Column-block fixes `load_config()` made, for the caller to surface.
 
@@ -459,6 +467,10 @@ class Config(BaseModel):
         for every `Config` built any other way, including a hand-built one.
         """
         return self._synthetic
+
+    def litellm_view(self) -> LiteLLMRepoView:
+        """This repo's LiteLLM settings: what `claude-jb` uses in its containers."""
+        return self._litellm_view
 
     @field_validator("egress_allow")
     @classmethod

@@ -18,7 +18,7 @@ from jailbee.config import Config
 from jailbee.db import get_engine
 from jailbee.egress_pool import refresh_pool, register_repo
 from jailbee.global_config import GlobalConfig
-from jailbee.incus import Incus
+from jailbee.incus import Incus, IncusError
 from jailbee.profiles import (
     base_profile_yaml,
     binds_profile_yaml,
@@ -28,7 +28,9 @@ from jailbee.profiles import (
 from jailbee.tui import ConfirmFn, default_confirm
 
 if TYPE_CHECKING:
+    from jailbee.config.models_litellm import LiteLLMRepoView
     from jailbee.lifecycle import ContainerInfo
+    from jailbee.litellm import ReconcileResult
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,13 @@ class ApplyResult:
     # `preflight_pools` had its chance to ask. No container using one of
     # these can boot, so `run_apply` skips the restart offer entirely.
     unresolved_pools: list[str] = field(default_factory=list)
+    # LiteLLM instances this run restarted on new routes, and the ones it
+    # left on the old ones because of `--no-restart`.
+    litellm_restarted: list[str] = field(default_factory=list)
+    litellm_pending: list[str] = field(default_factory=list)
+    # The proxy step failed or needs `jailbee litellm up`: a warning was
+    # printed, so the CLI must not follow it with "already up to date".
+    litellm_problem: bool = False
 
     @property
     def fully_successful(self) -> bool:
@@ -74,6 +83,39 @@ def _profile_differs(incus: Incus, name: str, new_yaml: str) -> bool:
     other keys Incus surfaces in `profile show` (e.g. project, used_by).
     """
     return _yaml_subset_differs(incus.profile_show(name), new_yaml, keys=("config", "devices"))
+
+
+def _only_attaches_services_acl(existing: str, candidate: str) -> bool:
+    """True if `candidate` differs from `existing` only by appending `jailbee-services`.
+
+    That is the one change every strict net profile gets on the upgrade that
+    introduces the shared services ACL. While no service container is up the
+    ACL has no rules, so the attach changes nothing for a running container
+    and a restart to pick it up would be pure disruption.
+    """
+    from jailbee.network import SERVICES_ACL
+
+    if not isinstance(existing, str):
+        return False
+    old, new = yaml.safe_load(existing) or {}, yaml.safe_load(candidate) or {}
+    if old.get("config") != new.get("config"):
+        return False
+    old_devices, new_devices = old.get("devices") or {}, new.get("devices") or {}
+    if old_devices.keys() != new_devices.keys():
+        return False
+    attached = False
+    for name, old_device in old_devices.items():
+        new_device = new_devices[name]
+        if old_device == new_device:
+            continue
+        old_acls = str(old_device.get("security.acls", "")).split(",")
+        new_acls = str(new_device.get("security.acls", "")).split(",")
+        rest_old = {k: v for k, v in old_device.items() if k != "security.acls"}
+        rest_new = {k: v for k, v in new_device.items() if k != "security.acls"}
+        if rest_old != rest_new or new_acls != [*[a for a in old_acls if a], SERVICES_ACL]:
+            return False
+        attached = True
+    return attached
 
 
 def _acl_differs(incus: Incus, name: str, new_yaml: str) -> bool:
@@ -170,6 +212,10 @@ def run_apply(
     info("Refreshing egress pool + ACL + /etc/hosts...")
     mirror_endpoint = _mirror_endpoint_or_warn(cfg, incus, gcfg)
     mirror_ca_pem = _read_mirror_ca_or_warn(gcfg) if mirror_endpoint else None
+    litellm_result, litellm_problem = _reconcile_litellm_or_warn(
+        incus, gcfg, restart=not no_restart
+    )
+    litellm_payload = _litellm_payload_or_warn(incus, gcfg, cfg.litellm_view())
 
     # Before `refresh_pool`, which writes the ACL with `incus network acl
     # edit` and fails against a name nobody created. `jailbee init` is where a
@@ -205,8 +251,6 @@ def run_apply(
             Exception(refresh_result.error or "DNS failure"),
         )
     if refresh_result.status == "acl_error":
-        from jailbee.incus import IncusError
-
         raise IncusError(refresh_result.error or "ACL write failed")
     if refresh_result.status == "partial":
         warn(f"Some hostnames failed to resolve: {refresh_result.error}")
@@ -282,8 +326,22 @@ def run_apply(
         profile_yamls.update(work_profile_yamls(cfg))
     offline_migrated = _drop_offline_net_profile(cfg, incus)
 
+    from jailbee.services_acl import ensure_services_acl
+
+    ensure_services_acl(incus)
+    from jailbee.litellm import reconcile_services_acl
+
+    try:
+        if reconcile_services_acl(incus):
+            info("Removed a stale LiteLLM service rule (its container no longer exists).")
+    except IncusError as e:
+        warn_plain(f"Could not reconcile the LiteLLM service rule: {e}")
     info("Checking profiles...")
     profiles_changed: list[str] = []
+    # Profiles whose change a running container only picks up on restart. The
+    # services-ACL attach is left out while LiteLLM is off: the ACL is empty
+    # then, so users who never enable it are not asked to restart for nothing.
+    restart_profiles: list[str] = []
     profiles_unchanged: list[str] = []
     for name, new_yaml in profile_yamls.items():
         if not incus.profile_exists(name):
@@ -295,10 +353,14 @@ def run_apply(
             incus.profile_create(name)
             incus.profile_set_yaml(name, new_yaml)
             profiles_changed.append(name)
+            restart_profiles.append(name)
         elif _profile_differs(incus, name, new_yaml):
             info(f"  Updating profile {name}...")
+            existing = incus.profile_show(name)
             incus.profile_set_yaml(name, new_yaml)
             profiles_changed.append(name)
+            if gcfg.litellm.enabled or not _only_attaches_services_acl(existing, new_yaml):
+                restart_profiles.append(name)
         else:
             profiles_unchanged.append(name)
 
@@ -421,6 +483,15 @@ def run_apply(
             if apply_docker_proxy(incus, ci.name, mirror_ca_pem, mirror_port):
                 docker_stale.append(ci.name)
 
+        from jailbee.litellm import sync_container
+
+        try:
+            sync_container(incus, ci.name, litellm_payload)
+        except (IncusError, OSError) as e:
+            warn(
+                f"Could not update LiteLLM settings on {short}: {e}; run `jailbee apply` to retry."
+            )
+
     orphans = _sweep_orphan_extra_acls(cfg, incus)
     if orphans:
         info(f"Removed {len(orphans)} orphan egress ACL(s): {', '.join(orphans)}")
@@ -434,7 +505,7 @@ def run_apply(
 
     restarted: list[str] = []
     restart_failures: list[tuple[str, str]] = []
-    should_restart = bool(profiles_changed) and bool(running_names) and not no_restart
+    should_restart = bool(restart_profiles) and bool(running_names) and not no_restart
     if should_restart and unresolved_pools:
         # Every boot runs `pool.allocate_startup` -> `ensure_pool_dirs`, so
         # with a root still polluted each restart raises the very PoolError
@@ -510,6 +581,9 @@ def run_apply(
         ports_changed=ports_changed,
         port_failures=port_failures,
         unresolved_pools=unresolved_pools,
+        litellm_restarted=litellm_result.restarted if litellm_result else [],
+        litellm_pending=litellm_result.pending if litellm_result else [],
+        litellm_problem=litellm_problem,
     )
 
 
@@ -590,6 +664,65 @@ def _ensure_acl_attached_to_bridge(cfg: Config, incus: Incus) -> None:
     from jailbee.init_command import ensure_acl_attached_to_bridge
 
     ensure_acl_attached_to_bridge(cfg, incus)
+
+
+def _reconcile_litellm_or_warn(
+    incus: Incus, gcfg: GlobalConfig, *, restart: bool
+) -> tuple[ReconcileResult | None, bool]:
+    """Non-fatal: the proxy is shared host infrastructure, and a user may be
+    running `apply` to repair something unrelated to it.
+
+    The flag is True when a warning said the proxy was not brought in line.
+    """
+    from jailbee.litellm import litellm_reconcile
+    from jailbee.tui import info, warn_plain
+
+    try:
+        result = litellm_reconcile(incus, gcfg, restart=restart)
+    except Exception as e:  # non-fatal, see docstring
+        warn_plain(f"Could not update the LiteLLM proxy: {e}; run `jailbee litellm up` to retry.")
+        return None, True
+    if result is None:
+        return None, False
+    for issue in result.issues:
+        warn_plain(issue)
+    if result.needs_up is not None:
+        warn_plain(f"LiteLLM proxy not updated: {result.needs_up}. Run `jailbee litellm up`.")
+    if result.restarted:
+        info(
+            f"Restarted LiteLLM instance(s) {', '.join(result.restarted)} on the new routes; "
+            "their in-flight `claude-jb` requests were interrupted."
+        )
+    # No flag is named: `jailbee new` skips restarts for a scratch bootstrap too.
+    waiting = [a for a in result.pending if a not in result.stopped]
+    if waiting:
+        warn_plain(
+            f"LiteLLM instance(s) {', '.join(waiting)} still serve the previous routes; "
+            "run `jailbee apply` again to restart them."
+        )
+    if result.stopped:
+        warn_plain(
+            f"LiteLLM instance(s) {', '.join(result.stopped)} not running; "
+            "run `jailbee apply` again to start them."
+        )
+    return result, result.needs_up is not None
+
+
+def _litellm_payload_or_warn(
+    incus: Incus, gcfg: GlobalConfig, view: LiteLLMRepoView | None = None
+) -> dict[str, object] | None:
+    from jailbee.litellm import container_sync_payload, unserved_warning
+    from jailbee.tui import warn
+
+    try:
+        payload = container_sync_payload(incus, gcfg, view=view)
+    except IncusError as e:
+        warn(f"Could not resolve LiteLLM settings: {e}; removing stale settings from containers.")
+        return None
+    message = unserved_warning(payload)
+    if message is not None:
+        warn(message)
+    return payload
 
 
 def _mirror_endpoint_or_warn(

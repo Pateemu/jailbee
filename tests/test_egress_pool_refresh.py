@@ -1463,6 +1463,6 @@ def test_refresh_pool_reconciles_shared_acl_on_both_bridges_after_db_default_los
         "eth0",
         {
             **work_raw["devices"]["eth0"],
-            "security.acls": f"{acl_name(cfg)},{work_extra_acl}",
+            "security.acls": f"{acl_name(cfg)},{work_extra_acl},jailbee-services",
         },
     )

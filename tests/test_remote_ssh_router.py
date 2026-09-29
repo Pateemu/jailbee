@@ -593,6 +593,18 @@ def test_every_public_command_is_classified() -> None:
     assert not _CONTAINER_COMMANDS - known_command_paths(), "stale entries"
 
 
+@pytest.mark.parametrize("command", ["up", "down", "login", "logout", "logs"])
+def test_litellm_host_actions_are_denied_remotely(command: str) -> None:
+    with pytest.raises(RouteError, match="manages the host"):
+        policy_allows(("litellm", command), RemoteCommandPolicy(mode="full"))
+
+
+def test_litellm_status_is_allowed_remotely() -> None:
+    assert (
+        policy_allows(("litellm", "status"), RemoteCommandPolicy(mode="full")) == "litellm status"
+    )
+
+
 def test_policy_refuses_unclassified_commands_unless_host_unrestricted(monkeypatch) -> None:
     from jailbee.remote_ssh import router
 

@@ -749,3 +749,23 @@ def test_a_repo_layer_refusal_names_the_key_the_user_wrote(tmp_path):
 
     assert message is not None
     assert "claude_credentials" in message
+
+
+def test_local_specs_offer_the_litellm_override_but_no_host_keys():
+    paths = {spec.path for spec in local_specs()}
+    for leaf in ("routes", "profiles", "default_profile", "autostart"):
+        assert ("litellm", leaf) in paths
+    for host_only in ("enabled", "version", "accounts", "egress", "extra"):
+        assert ("litellm", host_only) not in paths
+
+
+def test_validate_accepts_a_fitting_local_litellm_change(opened):
+    got = opened()
+    change = YamlChange(("litellm", "autostart"), True)
+    assert layers.validate(got, "local", [change]) is None
+
+
+def test_validate_rejects_a_local_default_profile_that_does_not_exist(opened):
+    got = opened()
+    error = layers.validate(got, "local", [YamlChange(("litellm", "default_profile"), "nope")])
+    assert error is not None and "default_profile 'nope'" in error

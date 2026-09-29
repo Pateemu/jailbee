@@ -130,11 +130,12 @@ def test_every_config_field_classifies():
     assert unclassifiable == []
 
 
-def test_opaque_is_only_ever_the_scratch_overlay():
+def test_opaque_is_only_ever_the_intentionally_untyped_overlays():
     """OPAQUE means "no form can be generated" — a new one needs a decision.
 
-    `scratch.config` is a free-form config overlay, so it has no schema to
-    render. If a second field lands here, either it needs a real
+    `scratch.config` is a free-form config overlay; `litellm.routes.*.params`
+    passes raw LiteLLM parameters through. Neither has a schema to render.
+    If another field lands here, either it needs a real
     `FieldKind` or the editor is about to hide it.
     """
     opaque = [
@@ -143,7 +144,7 @@ def test_opaque_is_only_ever_the_scratch_overlay():
         for name, info in model.model_fields.items()
         if classify(info.annotation).kind is FieldKind.OPAQUE
     ]
-    assert opaque == ["ScratchConfig.config"]
+    assert sorted(opaque) == ["LiteLLMRoute.params", "ScratchConfig.config"]
 
 
 def test_container_prefix_is_editable_and_documented():
@@ -232,7 +233,7 @@ def test_collections_of_models_stay_leaves():
 
 
 def test_build_specs_covers_every_config_leaf():
-    """95 leaves under Config, 28 under GlobalConfig, as measured.
+    """95 leaves under Config, 36 under GlobalConfig, as measured.
 
     A count, not a list: it fails loudly when a field is added or a
     recursion rule changes, and the reviewer then decides which.
@@ -257,20 +258,24 @@ def test_build_specs_covers_every_config_leaf():
     increment is the whole `config edit` story for it, since nothing was added
     to `schema.py` or the curated `BASIC_FIELDS` list. `gui.dbus` and
     `gui.audio` (the opt-in host desktop sockets) then added two: 92 + 2 = 94.
-    `GlobalConfig`'s 27 includes the `config_edit.write_policy` added in
+    `GlobalConfig`'s pre-LiteLLM 28 includes the `config_edit.write_policy` added in
     Task 1, the `update_check` bool, and the `install_host_skills` bool:
     plain scalar fields on `GlobalConfig`, so `jailbee config edit` offers
-    them without anything being added to `schema.py` for them. The other
-    9 come from `remote.ssh`, a `RemoteSSHConfig` recursed into `listen`,
+    them without anything being added to `schema.py` for them. The remote
+    fields come from `remote.ssh`, a `RemoteSSHConfig` recursed into `listen`,
     `port`, `dashboard`, `shell`, `exec`, `default_entrypoint`,
     `restrict_host`, `excluded_repos`, and its nested `commands` policy's
     `mode` and `allow`.
     `dashboard.auto_hide.hide_first` adds one editable global leaf.
+    The five `litellm` leaves (`enabled`, `version`, `default_profile`,
+    `routes`, `profiles`) add 5 to GlobalConfig: 28 + 5 = 33.
+    Phase 2 of LiteLLM adds `accounts`, `egress` and `extra`: 33 + 3 = 36.
+    Phase 3 of LiteLLM adds `autostart`: 36 + 1 = 37.
     """
     from jailbee.config_edit.schema import build_specs
 
     assert len(build_specs(Config)) == 95
-    assert len(build_specs(GlobalConfig)) == 28
+    assert len(build_specs(GlobalConfig)) == 37
 
 
 def test_a_default_factory_field_reports_its_real_default():
@@ -547,6 +552,19 @@ def test_remote_is_editable_in_the_global_tree_only():
     assert not any(path[:1] == ("remote",) for path in repo_paths)
 
 
+def test_litellm_is_editable_in_the_global_tree_only():
+    """Host proxy configuration must not appear in a committed repo config."""
+    from jailbee.config_edit.schema import global_specs, repo_specs
+
+    global_paths = {s.path for s in global_specs()}
+    repo_paths = {s.path for s in repo_specs()}
+
+    assert ("litellm", "enabled") in global_paths
+    assert ("litellm", "routes") in global_paths
+    assert ("litellm", "profiles") in global_paths
+    assert not any(path[:1] == ("litellm",) for path in repo_paths)
+
+
 def test_rebase_prefixes_every_path_and_clears_the_advanced_filter():
     """Entry specs are addressed by their full path, and are never 'advanced'.
 
@@ -761,3 +779,9 @@ def test_an_optional_union_of_model_lists_keeps_every_arm():
     assert result.optional is True
     assert result.item_model is _A
     assert result.item_models == (_A, _B)
+
+
+def test_litellm_autostart_is_a_global_leaf():
+    from jailbee.config_edit.schema import global_specs
+
+    assert ("litellm", "autostart") in {s.path for s in global_specs()}

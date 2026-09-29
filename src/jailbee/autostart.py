@@ -20,6 +20,7 @@ import shlex
 import signal
 import time
 from contextlib import contextmanager
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from jailbee import tmux
@@ -254,6 +255,25 @@ def inject_github_token(
     _apply_step(cfg, incus, container, step, repo_dir)
 
 
+def _agent_command(cfg: Config, name: str, command: str) -> str:
+    """`claude-jb` in place of `claude` when this repo's `litellm.autostart` is on.
+
+    Only the Claude agent, only with LiteLLM enabled, and only when the first
+    word is `claude` or a path to it: flags are kept, and a command that
+    starts with anything else (`env X=1 claude`, a wrapper script) is left
+    exactly as configured rather than guessed at. The profile comes from
+    `claude-jb`'s own selection (spec §6.1). `install_check` keeps probing
+    `claude`: `claude-jb` is in the golden image, not installed per agent.
+    """
+    litellm = cfg.litellm_view().config
+    if name != "claude" or not (litellm.enabled and litellm.autostart):
+        return command
+    first, _, rest = command.strip().partition(" ")
+    if PurePosixPath(first).name != "claude":
+        return command
+    return f"claude-jb {rest}".rstrip()
+
+
 def agent_autostart_steps(cfg: Config) -> list[AutostartStep]:
     """One backgrounded tmux window per agent with `autostart`.
 
@@ -285,13 +305,16 @@ def agent_autostart_steps(cfg: Config) -> list[AutostartStep]:
     `autostart.env`, so a per-agent key wins over the global one. It is the
     same mapping the install/update step gets (see `agents._ensure_one`), which
     is why Claude's `JAILBEE_CLAUDE_AUTO_UPDATE` flag needs no separate wiring.
+
+    With `litellm.autostart` on, the Claude step runs `claude-jb` — see
+    `_agent_command`.
     """
     from jailbee.agents import enabled_agent_specs
 
     return [
         AutostartStep(
             name=spec.name,
-            run=f"exec {spec.command}",
+            run=f"exec {_agent_command(cfg, spec.name, spec.command)}",
             background=True,
             continue_on_error=True,
             env=dict(spec.env),

@@ -238,7 +238,8 @@ def command_path(argv: Sequence[str]) -> str:
 #     (a config decides host mounts and this very policy), `remote ...`;
 #   - host installation and host-level infrastructure: `setup`, `init`,
 #     `apply`, `base build`/`prune`, `net install`/`refresh`/`unregister`,
-#     `net migrate`, `registry up`/`down`;
+#     `net migrate`, `registry up`/`down`, `litellm up`/`down`/`login`/
+#     `logout`/`logs`;
 #   - persistent network policy: `net egress add`/`rm` accept any address,
 #     the host's own and its LAN's included;
 #   - host credentials shared by every container: `account` writes;
@@ -267,6 +268,11 @@ _HOST_COMMANDS: frozenset[str] = frozenset(
         "net egress rm",
         "registry up",
         "registry down",
+        "litellm up",
+        "litellm down",
+        "litellm login",
+        "litellm logout",
+        "litellm logs",
         "account use",
         "account park",
         "account rm",
@@ -321,6 +327,8 @@ _CONTAINER_COMMANDS = frozenset(
         "job log",
         "job ls",
         "ls",
+        "litellm ls",
+        "litellm status",
         "net egress export",
         "net egress ls",
         "net loose",

@@ -235,6 +235,27 @@ UPGRADE_NOTES: tuple[UpgradeNote, ...] = (
             "legacy containers remain on legacy networking"
         ),
     ),
+    UpgradeNote(
+        version=(1, 7, 0),
+        actions=frozenset({"apply"}),
+        reason=(
+            "strict network profiles list the new host-wide `jailbee-services` ACL, "
+            "through which containers reach `jailbee litellm`"
+        ),
+    ),
+    UpgradeNote(
+        version=(1, 7, 0),
+        actions=frozenset({"base_build"}),
+        reason="the golden image ships `claude-jb`, Claude Code through `jailbee litellm`",
+    ),
+    UpgradeNote(
+        version=(1, 7, 0),
+        actions=frozenset({"apply"}),
+        reason=(
+            "`jailbee apply` installs or removes the per-container LiteLLM settings "
+            "and key when the proxy is enabled or disabled"
+        ),
+    ),
 )
 """What each release requires, ascending by version. Maintained by hand.
 

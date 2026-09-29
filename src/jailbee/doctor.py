@@ -90,6 +90,123 @@ def _version_detail(incus: Incus) -> str:
     return "client " + ".".join(str(part) for part in version)
 
 
+def _check_litellm(incus: Incus, gcfg: GlobalConfig) -> list[CheckResult]:
+    """Inputs, proxy health, pinned version, logins and provider reachability."""
+    from jailbee import litellm, litellm_inputs
+    from jailbee.litellm_render import upstream_targets
+
+    cfg = gcfg.litellm
+    if not cfg.enabled:
+        return [CheckResult("litellm", True, "not enabled")]
+    from jailbee.config.local_layer import local_litellm_scopes, scope_files
+
+    scopes, issues = local_litellm_scopes(cfg)
+    rows: list[CheckResult] = [
+        CheckResult("litellm repo override", False, issue) for issue in issues
+    ]
+    try:
+        litellm_inputs.load_host_inputs(cfg, scopes.values(), scope_files(scopes))
+    except litellm_inputs.LiteLLMInputError as e:
+        rows.append(CheckResult("litellm inputs", False, f"{e} — then run 'jailbee litellm up'"))
+    try:
+        status = litellm.litellm_status(incus, gcfg)
+    except IncusError as e:
+        return [
+            *rows,
+            CheckResult("litellm", False, f"error querying: {e} — run 'jailbee litellm up'"),
+        ]
+    if status.container != litellm.ContainerState.RUNNING:
+        return [
+            *rows,
+            CheckResult("litellm", False, f"status: {status.container} — run 'jailbee litellm up'"),
+        ]
+
+    if status.version != cfg.effective_version():
+        rows.append(
+            CheckResult(
+                "litellm version",
+                False,
+                f"installed {status.version}, configured {cfg.effective_version()} "
+                "— run 'jailbee litellm up'",
+            )
+        )
+    routes = cfg.effective_routes()
+    profiles = cfg.effective_profiles()
+    needing: dict[str, list[str]] = {}
+    for profile_name, profile in profiles.items():
+        if any(routes[r].subscription for r in profile.tiers.values()):
+            needing.setdefault(cfg.instance_account(profile), []).append(profile_name)
+    default = profiles[cfg.default_profile]
+    default_account = cfg.instance_account(default)
+    blocking = default_account if cfg.default_profile in needing.get(default_account, []) else None
+
+    for instance in status.instances:
+        name = f"litellm {instance.account}"
+        if instance.port is None:
+            rows.append(CheckResult(name, False, "not set up — run 'jailbee litellm up'"))
+            continue
+        address = f"{status.ip}:{instance.port}"
+        if instance.active and instance.healthy:
+            rows.append(CheckResult(name, True, f"running on {address}, LiteLLM {status.version}"))
+        else:
+            rows.append(
+                CheckResult(
+                    name,
+                    False,
+                    f"running on {address}, unhealthy — see "
+                    f"'jailbee litellm logs {instance.account}'",
+                )
+            )
+        login_row = f"{name} login"
+        fix = f"run 'jailbee litellm login {instance.account}'"
+        if instance.login == "unknown":
+            rows.append(
+                CheckResult(
+                    login_row,
+                    False,
+                    "could not read the login state — see "
+                    f"'jailbee litellm logs {instance.account}'",
+                )
+            )
+        elif instance.login == "missing" and instance.account in needing:
+            names = ", ".join(needing[instance.account])
+            if instance.account == blocking:
+                rows.append(
+                    CheckResult(login_row, False, f"not logged in (profiles: {names}) — {fix}")
+                )
+            else:
+                rows.append(
+                    CheckResult(
+                        login_row, True, f"not logged in; only profiles {names} need it — {fix}"
+                    )
+                )
+    missing = litellm.bridges_missing_services_acl(incus)
+    if missing:
+        rows.append(
+            CheckResult(
+                "litellm reachability",
+                False,
+                f"the services ACL is not attached to {', '.join(missing)}, so strict "
+                "containers cannot reach the proxy — run 'jailbee apply'",
+            )
+        )
+    unreachable = [
+        f"{host}:{port}"
+        for host, port in upstream_targets(cfg, scopes=scopes)
+        if not litellm.upstream_reachable(incus, host, port)
+    ]
+    if unreachable:
+        rows.append(
+            CheckResult(
+                "litellm upstream",
+                False,
+                f"cannot reach {', '.join(unreachable)} from the proxy (addresses may have "
+                "changed) — run 'jailbee litellm up' to re-resolve the egress allowlist",
+            )
+        )
+    return rows
+
+
 def _upstream_remote_check(cfg: Config) -> CheckResult:
     """Report which remote jailbee resolved as the upstream, and which branch.
 
@@ -1020,6 +1137,9 @@ def run_checks(cfg: Config, incus: Incus, *, gcfg: GlobalConfig | None = None) -
                         "status: missing — run 'jailbee registry up'",
                     )
                 )
+
+    if incus_available:
+        results.extend(_check_litellm(incus, gcfg))
 
     # 7b. Legacy host-Docker mirror left over from installs that predate
     # the Incus-hosted registry mirror.

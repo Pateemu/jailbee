@@ -8,6 +8,7 @@ import pytest
 from jailbee.config import load_config
 from jailbee.doctor import _check_pool_roots, run_checks
 from jailbee.global_config import DockerRegistryMirror, GlobalConfig
+from jailbee.litellm_inputs import load_host_inputs as _real_load_host_inputs
 from jailbee.registry import MirrorStatus
 from tests.conftest import with_agent
 
@@ -33,6 +34,12 @@ def incus_on_path():
         yield
 
 
+@pytest.fixture(autouse=True)
+def litellm_inputs_ok(mocker):
+    """Keep the host's own LiteLLM secrets and config out of every doctor test."""
+    return mocker.patch("jailbee.litellm_inputs.load_host_inputs")
+
+
 def _cfg(tmp_path):
     cfg = load_config(FIXTURES / "full_config.yaml")
     return cfg.model_copy(update={"shared_dir": tmp_path / "shared"})
@@ -49,6 +56,268 @@ def _baseline_incus():
     incus.network_acl_exists.return_value = True
     incus.client_version.return_value = (7, 3)
     return incus
+
+
+@pytest.mark.parametrize(
+    "state,expected",
+    [("missing", "status: missing"), ("stopped", "status: stopped")],
+)
+def test_litellm_doctor_reports_absent_proxy(mocker, state, expected):
+    from jailbee import litellm
+    from jailbee.doctor import _check_litellm
+
+    gcfg = GlobalConfig.model_validate({"litellm": {"enabled": True}})
+    status = litellm.LiteLLMStatus(litellm.ContainerState(state), None, None, [])
+    mocker.patch("jailbee.litellm.litellm_status", return_value=status)
+    rows = _check_litellm(_baseline_incus(), gcfg)
+    assert len(rows) == 1 and not rows[0].ok
+    assert expected in rows[0].detail and "jailbee litellm up" in rows[0].detail
+
+
+def test_litellm_doctor_disabled_does_not_probe(mocker):
+    from jailbee.doctor import _check_litellm
+
+    status = mocker.patch("jailbee.litellm.litellm_status")
+    assert _check_litellm(_baseline_incus(), GlobalConfig())[0].detail == "not enabled"
+    status.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "healthy,version,login,reachable,expected",
+    [
+        (True, "1.103.0", "present", True, "running on 10.79.115.3:4100"),
+        (False, "1.103.0", "present", True, "unhealthy"),
+        (True, "0.1.0", "present", True, "installed 0.1.0"),
+        (True, "1.103.0", "missing", True, "not logged in"),
+        (True, "1.103.0", "present", False, "cannot reach auth.openai.com:443"),
+    ],
+)
+def test_litellm_doctor_running_branches(mocker, healthy, version, login, reachable, expected):
+    from jailbee import litellm
+    from jailbee.doctor import _check_litellm
+
+    gcfg = GlobalConfig.model_validate({"litellm": {"enabled": True}})
+    status = litellm.LiteLLMStatus(
+        litellm.ContainerState.RUNNING,
+        "10.79.115.3",
+        version,
+        [litellm.InstanceStatus("default", 4100, True, healthy, login)],
+    )
+    mocker.patch("jailbee.litellm.litellm_status", return_value=status)
+    probe = mocker.patch("jailbee.litellm.upstream_reachable", return_value=reachable)
+    rows = _check_litellm(_baseline_incus(), gcfg)
+    assert any(expected in r.detail for r in rows)
+    if expected == "running on 10.79.115.3:4100":
+        assert all(r.ok for r in rows)
+    else:
+        assert any(not r.ok and expected in r.detail for r in rows)
+    assert probe.call_args_list[0].args[1:] == ("auth.openai.com", 443)
+
+
+def test_litellm_doctor_flags_an_account_without_an_instance(mocker):
+    from jailbee import litellm
+    from jailbee.doctor import _check_litellm
+
+    gcfg = GlobalConfig.model_validate({"litellm": {"enabled": True}})
+    status = litellm.LiteLLMStatus(
+        litellm.ContainerState.RUNNING,
+        "10.79.115.3",
+        "1.103.0",
+        [litellm.InstanceStatus("default", None, False, False, "unknown")],
+    )
+    mocker.patch("jailbee.litellm.litellm_status", return_value=status)
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    rows = _check_litellm(_baseline_incus(), gcfg)
+    assert any(not r.ok and "not set up" in r.detail for r in rows)
+    assert not any("None" in r.detail for r in rows)
+
+
+def test_litellm_doctor_flags_a_bridge_without_the_services_acl(mocker):
+    from jailbee import litellm
+    from jailbee.doctor import _check_litellm
+
+    gcfg = GlobalConfig.model_validate({"litellm": {"enabled": True}})
+    status = litellm.LiteLLMStatus(
+        litellm.ContainerState.RUNNING,
+        "10.79.115.3",
+        "1.103.0",
+        [litellm.InstanceStatus("default", 4100, True, True, "present")],
+    )
+    mocker.patch("jailbee.litellm.litellm_status", return_value=status)
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    mocker.patch("jailbee.litellm.bridges_missing_services_acl", return_value=["jailbee-work"])
+    rows = _check_litellm(_baseline_incus(), gcfg)
+    bad = [r for r in rows if not r.ok]
+    assert len(bad) == 1
+    assert "jailbee-work" in bad[0].detail and "jailbee apply" in bad[0].detail
+
+
+def _litellm_up(mocker, instances, **litellm):
+    from jailbee import litellm as ll
+
+    gcfg = GlobalConfig.model_validate({"litellm": {"enabled": True, **litellm}})
+    status = ll.LiteLLMStatus(ll.ContainerState.RUNNING, "10.79.115.3", "1.103.0", instances)
+    mocker.patch("jailbee.litellm.litellm_status", return_value=status)
+    mocker.patch("jailbee.litellm.bridges_missing_services_acl", return_value=[])
+    mocker.patch("jailbee.litellm_inputs.load_host_inputs")
+    return gcfg
+
+
+def _rows(gcfg):
+    from jailbee.doctor import _check_litellm
+
+    return {r.name: r for r in _check_litellm(_baseline_incus(), gcfg)}
+
+
+def test_litellm_doctor_reports_an_input_problem(mocker):
+    from jailbee import litellm as ll
+    from jailbee.litellm_inputs import LiteLLMInputError
+
+    gcfg = _litellm_up(mocker, [ll.InstanceStatus("default", 4100, True, True, "present")])
+    mocker.patch(
+        "jailbee.litellm_inputs.load_host_inputs",
+        side_effect=LiteLLMInputError("secrets.env does not define OPENROUTER_API_KEY"),
+    )
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    row = _rows(gcfg)["litellm inputs"]
+    assert not row.ok and "OPENROUTER_API_KEY" in row.detail and "jailbee litellm up" in row.detail
+
+
+@pytest.mark.parametrize("which", ["secrets", "extra"])
+def test_litellm_doctor_reports_an_unreadable_input_instead_of_raising(
+    mocker, monkeypatch, tmp_path, which
+):
+    """A real non-UTF-8 file, read by the real loader: a row, not a traceback."""
+    from jailbee import litellm as ll
+    from jailbee.litellm_inputs import secrets_path
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    kimi = {
+        "model": "openrouter/moonshotai/kimi-k3",
+        "context_window": 262144,
+        "api_key": "OPENROUTER_API_KEY",
+    }
+    extra = tmp_path / "extra.yaml"
+    extra.write_text("router_settings: {num_retries: 2}\n")
+    target = secrets_path() if which == "secrets" else extra
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"OPENROUTER_API_KEY=sk-or-\xff-tail\n")
+    target.chmod(0o600)
+    gcfg = _litellm_up(
+        mocker,
+        [ll.InstanceStatus("default", 4100, True, True, "present")],
+        routes={"kimi": kimi},
+        extra=str(extra),
+    )
+    # Over the autouse stub and `_litellm_up`'s: the real loader, reading the file.
+    mocker.patch("jailbee.litellm_inputs.load_host_inputs", _real_load_host_inputs)
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    row = _rows(gcfg)["litellm inputs"]
+    assert not row.ok and "not UTF-8" in row.detail and str(target) in row.detail
+    assert "sk-or" not in row.detail and "0xff" not in row.detail
+
+
+def test_missing_login_blocks_only_the_default_profiles_account(mocker):
+    from jailbee import litellm as ll
+
+    gcfg = _litellm_up(
+        mocker,
+        [
+            ll.InstanceStatus("personal", 4100, True, True, "missing"),
+            ll.InstanceStatus("work", 4101, True, True, "missing"),
+        ],
+        accounts=["personal", "work"],
+        routes={"sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "low"}},
+        profiles={"codex": {"account": "personal"}, "w": {"account": "work", "opus": "sol-low"}},
+    )
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    rows = _rows(gcfg)
+    assert not rows["litellm personal login"].ok
+    assert "jailbee litellm login personal" in rows["litellm personal login"].detail
+    assert rows["litellm work login"].ok and "w" in rows["litellm work login"].detail
+
+
+def test_an_api_key_only_user_is_not_asked_to_log_in(mocker):
+    from jailbee import litellm as ll
+
+    gcfg = _litellm_up(
+        mocker,
+        [ll.InstanceStatus("default", 4100, True, True, "missing")],
+        default_profile="kimi",
+        routes={"kimi": {"model": "openrouter/k", "context_window": 1000, "api_key": "OR_KEY"}},
+        profiles={"kimi": {"opus": "kimi"}},
+    )
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    assert "litellm default login" not in _rows(gcfg) or _rows(gcfg)["litellm default login"].ok
+
+
+def test_an_unreadable_login_fails(mocker):
+    from jailbee import litellm as ll
+
+    gcfg = _litellm_up(mocker, [ll.InstanceStatus("default", 4100, True, True, "unknown")])
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    assert not _rows(gcfg)["litellm default login"].ok
+
+
+def test_the_version_row_appears_once_for_several_instances(mocker):
+    from jailbee import litellm as ll
+    from jailbee.doctor import _check_litellm
+
+    gcfg = _litellm_up(
+        mocker,
+        [
+            ll.InstanceStatus("personal", 4100, True, True, "present"),
+            ll.InstanceStatus("work", 4101, True, True, "present"),
+        ],
+        accounts=["personal", "work"],
+        profiles={"codex": {"account": "personal"}},
+        version="1.104.0",
+    )
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    names = [r.name for r in _check_litellm(_baseline_incus(), gcfg)]
+    assert names.count("litellm version") == 1
+
+
+def test_every_unreachable_upstream_is_named(mocker):
+    from jailbee import litellm as ll
+
+    gcfg = _litellm_up(
+        mocker,
+        [ll.InstanceStatus("default", 4100, True, True, "present")],
+        egress=["10.0.0.5:11434"],
+    )
+    mocker.patch(
+        "jailbee.litellm.upstream_reachable",
+        side_effect=lambda _incus, host, port: host != "10.0.0.5",
+    )
+    row = _rows(gcfg)["litellm upstream"]
+    assert not row.ok and "10.0.0.5:11434" in row.detail and "chatgpt.com" not in row.detail
+
+
+def test_an_instance_never_brought_up_says_so(mocker):
+    from jailbee import litellm as ll
+
+    gcfg = _litellm_up(
+        mocker,
+        [
+            ll.InstanceStatus("default", 4100, True, True, "present"),
+            ll.InstanceStatus("spare", None, False, False, "unknown"),
+        ],
+        accounts=["default", "spare"],
+    )
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    row = _rows(gcfg)["litellm spare"]
+    assert not row.ok and "jailbee litellm up" in row.detail
+
+
+def test_run_checks_includes_litellm_diagnostics(tmp_path, mocker):
+    from jailbee.doctor import CheckResult
+
+    check = mocker.patch(
+        "jailbee.doctor._check_litellm", return_value=[CheckResult("litellm", True, "ok")]
+    )
+    run_checks(_cfg(tmp_path), _baseline_incus())
+    check.assert_called_once()
 
 
 def test_doctor_reports_loose_bridge_present_when_exists(tmp_path):
@@ -3478,3 +3747,16 @@ def test_doctor_reports_a_socket_at_the_root_of_a_shared_mount(tmp_path):
 
     assert len(rows) == 1
     assert "app-server-control.sock" in rows[0].detail
+
+
+def test_litellm_doctor_names_a_broken_repo_override(mocker):
+    from jailbee import litellm as ll
+
+    gcfg = _litellm_up(mocker, [ll.InstanceStatus("default", 4100, True, True, "present")])
+    mocker.patch(
+        "jailbee.config.local_layer.local_litellm_scopes",
+        return_value=({}, ["/h/repos/app.yaml is not valid YAML (line 2); skipped"]),
+    )
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    row = _rows(gcfg)["litellm repo override"]
+    assert not row.ok and "/h/repos/app.yaml" in row.detail

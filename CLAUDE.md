@@ -59,7 +59,8 @@ isolated per-branch development environments using Incus system containers. See
   `gui.launch_detached`, deliberately not adding a second exception to the
   "one module runs `incus` outside `incus.py`" rule above.
   `registry.py` runs the mirror through the `Incus` wrapper and calls no
-  `subprocess` of its own.
+  `subprocess` of its own. `litellm.py` likewise runs the proxy through the
+  `Incus` wrapper and calls no `subprocess` of its own.
 - **`accounts/` is the agent account pool: the engine knows no agent, an
   adapter knows one.** `accounts/engine.py` is the generic store —
   park/switch/remove, slot naming, member resolution — driven only through

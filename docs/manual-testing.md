@@ -29,6 +29,138 @@ exit
 jailbee destroy feat-smoke --force
 ```
 
+## LiteLLM proxy end to end
+
+**Maintainer recipe; not a CI test.** Use a disposable, configured repository
+and a real Incus daemon, a ChatGPT subscription you are willing to use through
+the [unofficial integration](litellm.md), and network access to the image
+server, Ubuntu packages, PyPI and ChatGPT. The dogfood dev container has the
+Incus binary but its daemon is normally **stopped**: a nested rig can be
+started with `sudo systemctl start incus` and `incus admin init --minimal`.
+Image pulls and package installation may first require switching the **outer**
+dogfood container to loose networking from its host (`jailbee net loose
+<dogfood-container>`); an inner shell cannot switch its own outer network.
+
+Keep the rig's host credentials separate with temporary `XDG_CONFIG_HOME` and
+`XDG_DATA_HOME` values, then create `$XDG_CONFIG_HOME/jailbee/global.yaml`
+with `litellm: {enabled: true}`. Use a disposable repo
+config without unwanted host devices. On a nested daemon, do **not** follow
+doctor's `root:1000000:1000000000` uid-delegation recommendation: it exceeds
+the outer container's namespace. Preserve the existing `root:1000000:65536`
+range and add only `root:53023:1` if delegation needs repair. Remove
+`dri-renderD128`/`dri-renderD129` from the generated `<prefix>-base` profile
+after `init` or `apply` if they block nested container starts (`mode: 0666`
+on nested GPU devices is rejected). `base build` can appear idle while it
+publishes/compresses an image; allow it to complete.
+
+```bash
+# Host in the disposable rig; pick a configured repo and keep this shell's XDG env.
+mkdir -p /tmp/opencode
+export XDG_CONFIG_HOME="$(mktemp -d /tmp/opencode/jailbee-litellm-config.XXXXXX)"
+export XDG_DATA_HOME="$(mktemp -d /tmp/opencode/jailbee-litellm-data.XXXXXX)"
+mkdir -p "$XDG_CONFIG_HOME/jailbee"
+printf 'litellm:\n  enabled: true\n' > "$XDG_CONFIG_HOME/jailbee/global.yaml"
+jailbee init                     # if this disposable repo has not been initialized
+jailbee litellm up
+jailbee litellm login            # interactive device code; the sole (`default`) account
+jailbee litellm status           # running, healthy, logged in
+jailbee base build               # installs claude-jb in this repo's golden image
+jailbee new feat/litellm-smoke --no-autostart
+jailbee shell feat-litellm-smoke
+# Inside that dev container:
+claude-jb -p "What is 17*23? Use Bash with python3, answer with only the number." --allowedTools Bash --model haiku
+# Expect only 391; exit the shell to return to the rig host.
+exit
+jailbee litellm down
+jailbee apply                    # removes the stale proxy JSON/key from running containers
+jailbee shell feat-litellm-smoke
+# Inside the same dev container:
+claude-jb -p 'hello'
+# Expect exit 2: "no LiteLLM proxy configured for this container" (not native fallback).
+exit
+jailbee destroy feat-litellm-smoke --force
+```
+
+`jailbee litellm logs` and `jailbee doctor` on the rig host help diagnose a
+failed health check, login or provider reachability. Restore the outer
+container's original networking when finished; clean up the disposable rig's
+state separately, without deleting any pre-existing Incus resources or real
+credentials. Do not count this recipe as executed merely because the mocked
+unit suite passes.
+
+Checks that only a real daemon can settle, and that the mocked suite cannot:
+
+- The proxy container's ACL pins DNS to the `jailbee-loose` gateway and DHCP
+  to broadcast/multicast/link-local. Incus must accept the comma-separated,
+  mixed IPv4/IPv6 `destination` values, and the container must still get a
+  lease and resolve `chatgpt.com`. From inside it, `dig @1.1.1.1 example.com`
+  must time out.
+- From a strict dev container the proxy's `ip:port` is reachable, `ip:22` and
+  another dev container are not, and after `jailbee litellm down` the proxy is
+  not reachable either. Repeat on the `jailbee-work` bridge.
+- Editing a strict NIC's `security.acls` on a profile reaches a *running*
+  container without a restart (`jailbee apply` no longer offers one when
+  LiteLLM is off). If a running container cannot reach the proxy after
+  `litellm up`, it needs a restart and this assumption is wrong.
+- Interrupt `jailbee litellm up` after the install (block DNS for the provider
+  hosts), then run it again: it must attach the state volume and come up
+  without `--reinstall`.
+
+### Several accounts, an API-key route, the state volume
+
+Use a throwaway `XDG_CONFIG_HOME`/`XDG_DATA_HOME` exactly as above.
+
+1. Set `accounts: [a, b]` and `profiles: {codex: {account: a}, cb: {account: b,
+   opus: sol-xhigh, haiku: luna-high}}` in the rig's `global.yaml`, then run
+   `jailbee litellm up`. Expect two ports in `jailbee litellm status`, and
+   `incus storage volume list default` showing `jailbee-litellm-state`.
+2. `incus config show jailbee-litellm --expanded | grep -c raw.idmap` prints
+   `0`. `ls ~/.local/share/jailbee/litellm/*/` (with the rig's
+   `XDG_DATA_HOME`) shows only `master.key` and `applied.sha256`.
+3. Run `jailbee litellm login a` in tmux. Then `incus exec jailbee-litellm --
+   ls -l /var/lib/jailbee-litellm/a/auth/`: `auth.json` is mode `0600`, owned by
+   container root.
+4. Add a route with `api_key: OPENROUTER_API_KEY` and a `0644` `secrets.env`:
+   `up` refuses and names `chmod 600`. Fix the mode: `up` restarts both
+   instances. `incus exec jailbee-litellm -- grep -c OPENROUTER
+   /var/lib/jailbee-litellm/a/instance.env` prints `1`.
+5. Remove `b` from `accounts` (and rebind or drop the `cb` profile): `up`
+   prints `Stopped b`. `incus exec jailbee-litellm -- systemctl is-enabled
+   jailbee-litellm@b` prints `disabled`.
+6. Run `jailbee litellm up --reinstall`; during the install step,
+   `incus config show jailbee-litellm | grep -A3 state:` finds nothing.
+7. `jailbee litellm down --purge`: the volume is gone from
+   `incus storage volume list default`.
+
+### Per-repo overrides and autostart
+
+Same throwaway rig, `litellm.enabled: true`, proxy up and logged in, one dev
+container running in a repo whose `container_prefix` is `<prefix>`. Use Luna,
+never Astra.
+
+1. Write `$XDG_CONFIG_HOME/jailbee/repos/<prefix>.yaml` with
+   `litellm: {routes: {luna-high: {effort: low}}}` and run `jailbee apply`.
+   Expect `Restarted LiteLLM instance(s) default on the new routes`. In the
+   container `claude-jb -p 'say hi' --model haiku` answers, and
+   `jailbee litellm logs` shows requests for `jb-<prefix>.luna-high`.
+   `jailbee litellm ls` lists a `repo <prefix>` block with `luna-high  chatgpt/gpt-6-luna  low (fixed)`.
+2. Run `jailbee apply` again: no restart message.
+3. Change the effort to `medium` and run `jailbee apply --no-restart`: it warns
+   that instance `default` still serves the previous routes. A plain
+   `jailbee apply` then restarts it.
+4. Break the file (`litellm: {enabled: true}`): `jailbee litellm ls`, and
+   `jailbee apply` run from a different repo, warn and skip it naming the file.
+   Any command in this repo itself, `jailbee apply` included, fails at config
+   load naming the file. Restore the file.
+   A YAML syntax error in the file is reported as `is not valid YAML (line N)`
+   without quoting the line.
+5. Add `egress: [example.org]` to a route in the file and run `jailbee apply`:
+   it reports nothing to restart (egress is not part of the rendered instance
+   files). `jailbee litellm up` then rewrites the allowlist.
+6. Set `litellm: {autostart: true}` in the same file, run `jailbee apply`, then
+   `jailbee restart <container>` and `jailbee tmux`: the Claude window runs
+   `claude-jb`.
+
 ## Optional SSH service loopback smoke test
 
 This recipe exercises the real SSH listener, PTY relay and systemd user unit.

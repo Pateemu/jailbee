@@ -31,8 +31,8 @@ from jailbee.global_config import GlobalConfig
 class FieldKind(StrEnum):
     """How the editor renders and edits one field.
 
-    Twelve kinds cover every leaf `build_specs` produces — 77 of them under
-    `repo_specs()`, 85 under `global_specs()`. `OPAQUE` is the honest
+    Twelve kinds cover every leaf `build_specs` produces — 95 of them under
+    `repo_specs()`, 121 under `global_specs()`. `OPAQUE` is the honest
     thirteenth: a field whose schema cannot generate a form.
     """
 
@@ -589,7 +589,17 @@ def global_specs() -> tuple[FieldSpec, ...]:
 
 
 def local_specs() -> tuple[FieldSpec, ...]:
-    """Editable leaves of a repo's host-local `repos/<prefix>.yaml` file."""
+    """Editable leaves of a repo's host-local `repos/<prefix>.yaml` file.
+
+    `Config`'s tree, plus the two blocks the local layer peels off before the
+    overlay: `credentials` and the repo's `litellm:` override (only the four
+    keys a repo may set — `LiteLLMRepoOverlay`).
+    """
+    from jailbee.config.models_litellm import LiteLLMRepoOverlay
     from jailbee.config.models_net import LocalCredentials
 
-    return (*build_specs(Config), *rebase(build_specs(LocalCredentials), ("credentials",)))
+    return (
+        *build_specs(Config),
+        *rebase(build_specs(LiteLLMRepoOverlay), ("litellm",)),
+        *rebase(build_specs(LocalCredentials), ("credentials",)),
+    )

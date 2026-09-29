@@ -19,7 +19,6 @@ at its ``jailbee-loose`` IP (see docker_daemon.py).
 
 from __future__ import annotations
 
-import ipaddress
 import os
 import time
 from collections.abc import Iterable
@@ -31,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from jailbee.incus import Incus, IncusError
+from jailbee.loose_bridge import loose_bridge_host_ip
 from jailbee.stopping import stop_container
 
 if TYPE_CHECKING:
@@ -223,22 +223,7 @@ def _compute_mirror_static_ip(incus: Incus) -> str | None:
     strict-mode containers still get the correct live IP via the
     /etc/hosts pin jailbee writes from ``incus list`` state.
     """
-    raw = incus.network_get(MIRROR_BRIDGE, "ipv4.address")
-    if not isinstance(raw, str):
-        return None
-    cidr = raw.strip()
-    if not cidr or cidr in ("none", "auto"):
-        return None
-    try:
-        iface = ipaddress.IPv4Interface(cidr)
-    except ValueError:
-        return None
-    network = iface.network
-    bridge_ip = iface.ip
-    for candidate in network.hosts():
-        if candidate != bridge_ip:
-            return str(candidate)
-    return None
+    return loose_bridge_host_ip(incus, 0)
 
 
 def _ensure_profile(incus: Incus) -> None:
