@@ -389,8 +389,11 @@ def litellm_login(incus: Incus, account: str) -> int:
     """Start LiteLLM's own ChatGPT device-code flow on an interactive PTY."""
     _require_running(incus)
     env_file = shlex.quote(f"{CONTAINER_STATE_DIR}/{account}/instance.env")
+    auth_dir = shlex.quote(f"{CONTAINER_STATE_DIR}/{account}/auth")
     script = (
-        f"umask 0077; set -a; . {env_file}; set +a; "
+        f"set -e; umask 0077; test -r {env_file}; unset CHATGPT_TOKEN_DIR; "
+        f"set -a; . {env_file}; set +a; "
+        f'test "${{CHATGPT_TOKEN_DIR:-}}" = {auth_dir}; '
         f"exec {_PY} -c 'from litellm.llms.chatgpt.authenticator import Authenticator; "
         f"Authenticator().get_access_token(); print(\"Logged in.\")'"
     )

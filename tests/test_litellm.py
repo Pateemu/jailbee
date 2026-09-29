@@ -423,7 +423,7 @@ def test_login_runs_litellm_device_flow_with_private_umask(tmp_path: Path):
     # Run the login shell prefix with a harmless stand-in for Authenticator.
     # A newly created auth.json in the bind-mounted host directory must be 0600.
     env_file = tmp_path / "instance.env"
-    env_file.write_text("CHATGPT_TOKEN_DIR=/unused\n")
+    env_file.write_text("CHATGPT_TOKEN_DIR=/var/lib/jailbee-litellm/default/auth\n")
     prefix = script.split("exec ", 1)[0].replace(
         "/var/lib/jailbee-litellm/default/instance.env", str(env_file)
     )
@@ -433,6 +433,38 @@ def test_login_runs_litellm_device_flow_with_private_umask(tmp_path: Path):
         check=True,
     )
     assert auth_file.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [None, "", "CHATGPT_TOKEN_DIR=/tmp/unmounted/auth\n", "false\n"],
+    ids=["missing", "empty-despite-inherited-env", "wrong-token-directory", "invalid-script"],
+)
+def test_login_does_not_invoke_authenticator_if_env_file_is_invalid(
+    tmp_path: Path, contents: str | None
+):
+    incus = _incus(present=True)
+    ll.litellm_login(incus, "default")
+    command = incus.exec_interactive.call_args.args[1][-1]
+    env_file = tmp_path / "instance.env"
+    if contents is not None:
+        env_file.write_text(contents)
+    marker = tmp_path / "authenticator-invoked"
+    # Execute the emitted shell command with Authenticator replaced by a
+    # harmless marker. No real Incus or authentication subprocess is started.
+    script = command.replace("/var/lib/jailbee-litellm/default/instance.env", str(env_file))
+    script = script.split("exec ", 1)[0] + f"exec touch {marker}"
+    result = subprocess.run(
+        ["bash", "-c", script],
+        check=False,
+        capture_output=True,
+        env={
+            "PATH": os.environ["PATH"],
+            "CHATGPT_TOKEN_DIR": "/var/lib/jailbee-litellm/default/auth",
+        },
+    )
+    assert result.returncode != 0
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize("present,running", [(False, True), (True, False)])
