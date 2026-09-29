@@ -1015,9 +1015,7 @@ def test_claude_auto_update_env_reaches_the_autostart_step(tmp_path):
 def _with_litellm(cfg, *, enabled=True, autostart=True):
     from jailbee.config.models_litellm import LiteLLMConfig, LiteLLMRepoView
 
-    cfg._litellm_view = LiteLLMRepoView(
-        config=LiteLLMConfig(enabled=enabled, autostart=autostart)
-    )
+    cfg._litellm_view = LiteLLMRepoView(config=LiteLLMConfig(enabled=enabled, autostart=autostart))
     return cfg
 
 
