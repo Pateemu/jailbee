@@ -534,6 +534,35 @@ def test_live_session_prefixes_reports_members_with_session_files(
     assert claude_adapter.live_session_prefixes(found) == ["busy"]
 
 
+def test_live_session_prefixes_finds_a_session_in_a_containers_overlay(tmp_path: Path) -> None:
+    """A restarted container writes its sessions to its private overlay."""
+    busy_shared = tmp_path / "busy-shared"
+    (busy_shared / "claude").mkdir(parents=True)
+    overlay = busy_shared / ".private" / "busy-a" / "claude" / "sessions"
+    overlay.mkdir(parents=True)
+    (overlay / "4242.json").write_text("{}", encoding="utf-8")
+    idle_shared = tmp_path / "idle-shared"
+    (idle_shared / "claude").mkdir(parents=True)
+    (idle_shared / ".private" / "idle-a" / "claude" / "sessions").mkdir(parents=True)
+
+    found = [
+        models.Member("busy", busy_shared / "claude"),
+        models.Member("idle", idle_shared / "claude"),
+    ]
+
+    assert claude_adapter.live_session_prefixes(found) == ["busy"]
+
+
+def test_live_session_prefixes_ignores_another_agents_private_dirs(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    (shared / "claude").mkdir(parents=True)
+    codex = shared / ".private" / "repo-a" / "codex" / "sessions"
+    codex.mkdir(parents=True)
+    (codex / "1.json").write_text("{}", encoding="utf-8")
+
+    assert claude_adapter.live_session_prefixes([models.Member("repo", shared / "claude")]) == []
+
+
 def _holder_with(cfg, raw: str) -> Path:
     path = engine.live_credential_path(CLAUDE, cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2221,6 +2250,39 @@ def _write_session(home: Path, name: str, body: object) -> Path:
 def test_the_claude_adapter_satisfies_the_protocol() -> None:
     """`AccountAdapter` is runtime-checkable, so a missing method is a False here."""
     assert isinstance(CLAUDE, base.AccountAdapter)
+
+
+def test_session_home_is_the_containers_private_overlay(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+
+    assert CLAUDE.session_home(cfg, "repo-a") == (
+        tmp_path / "shared" / ".private" / "repo-a" / "claude"
+    )
+
+
+def test_session_home_is_where_the_preset_mounts_sessions(tmp_path: Path) -> None:
+    """The seam between the mount (`agent_private.attach`) and the reader: the
+    reader must look exactly where the container's `~/.claude/sessions` lands."""
+    from jailbee.agent_private import private_root
+    from jailbee.agents import enabled_agent_specs
+
+    cfg = make_cfg(tmp_path / "repo", shared_dir=tmp_path / "shared", claude={"enabled": True})
+    spec = next(s for s in enabled_agent_specs(cfg) if s.name == "claude")
+    [sessions] = [p for p in spec.private if p.container_path == "~/.claude/sessions"]
+
+    assert private_root(cfg, "repo-a") / sessions.host_subpath == (
+        CLAUDE.session_home(cfg, "repo-a") / claude_adapter.SESSIONS_DIRNAME
+    )
+
+
+def test_a_container_without_an_overlay_yet_has_no_sessions(tmp_path: Path) -> None:
+    """Not restarted since the upgrade: no overlay directory exists."""
+    cfg = _cfg(tmp_path)
+    shared = CLAUDE.config_home(cfg)
+    (shared / "sessions").mkdir(parents=True)
+    _write_session(shared, "3679", _REAL_SESSION)
+
+    assert CLAUDE.read_sessions(CLAUDE.session_home(cfg, "repo-a")) == []
 
 
 def test_read_sessions_parses_a_real_shaped_session_file(tmp_path: Path) -> None:

@@ -30,6 +30,19 @@ if TYPE_CHECKING:
     from jailbee.incus import Incus
 
 
+PRIVATE_DIRNAME = ".private"
+"""Directory under `shared_dir` that holds every container's private subpaths."""
+
+
+def private_tree(shared_dir: Path) -> Path:
+    """`<shared_dir>/.private`: one directory per container below it.
+
+    Also how a reader that knows only a repo's shared directory — not its
+    containers — finds every container's private state.
+    """
+    return shared_dir / PRIVATE_DIRNAME
+
+
 def private_root(cfg: Config, container: str) -> Path:
     """Host directory holding every private subpath of one container.
 
@@ -38,7 +51,7 @@ def private_root(cfg: Config, container: str) -> Path:
     agent can list a sibling container's runtime state.
     """
     assert cfg.shared_dir is not None  # set by load_config
-    return cfg.shared_dir / ".private" / container
+    return private_tree(cfg.shared_dir) / container
 
 
 def _subpaths(cfg: Config) -> list[PrivateSubpath]:

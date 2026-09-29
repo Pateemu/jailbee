@@ -115,3 +115,12 @@ def test_release_only_touches_the_named_container(tmp_path, mocker):
 
     assert not agent_private.private_root(cfg, "jb-repo-main").exists()
     assert agent_private.private_root(cfg, "jb-repo-other").is_dir()
+
+
+def test_private_root_sits_in_the_private_tree(tmp_path):
+    from jailbee.agent_private import private_root, private_tree
+
+    cfg = make_cfg(tmp_path / "repo", shared_dir=tmp_path / "shared")
+
+    assert private_tree(tmp_path / "shared") == tmp_path / "shared" / ".private"
+    assert private_root(cfg, "repo-a") == tmp_path / "shared" / ".private" / "repo-a"
