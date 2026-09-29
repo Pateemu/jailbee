@@ -8135,7 +8135,7 @@ def test_cancel_autostart_yes_runs_the_cancel(mocker, tmp_path, over_ssh):
 
 
 def _drive_with_vanish(mocker, keys, groups, vanish, *, when: str) -> int:
-    """Run the loop; ``vanish()`` fires after ``keys``, in the frame before Enter or the Enter read."""
+    """Run the loop; ``vanish()`` fires after ``keys``: a frame before Enter, or on its read."""
     script = iter([*keys, "vanish", *([_ENTER] if when == "frame-before-enter" else [])])
 
     def read(_fd, _n):
