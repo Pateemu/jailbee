@@ -14,6 +14,16 @@ before editing `## Unreleased`.
   in a repo's TUI menu or the Qt dashboard's Container menu / repo header;
   enter a PR number to run `jailbee new --pr N` in that repo.
 
+- **Manage credential groups and stored logins from the terminal dashboard.**
+  `A` opens an Accounts panel below the table with every credential group and
+  stored login on the host. `Enter` on a row offers what applies to it — use a
+  stored login in a group, park a group's live login, delete a parked login,
+  remove an unused group (the last two ask first, "No" preselected) — and `n`
+  creates a group. The repo and container menus gain **Credential group…** to
+  choose which group a repo, or a single container, follows. Every change runs
+  the real `jailbee account …` command; a refusal such as a still-running
+  agent is shown whole below the table, and `!` with `--force` overrides it.
+
 - **Pick a PR container for `jb push --pr`.** On a TTY, omitting the name
   offers a single-select list of running clone-mode PR containers (or uses
   the only eligible one). Scripts still pass an explicit name.
@@ -157,6 +167,14 @@ before editing `## Unreleased`.
   socket is unchanged. GUI apps keep working without them, minus desktop
   notifications, portals and sound. Takes effect on each container's next
   start; set the keys to keep the old behaviour.
+
+- **Terminal dashboard: inline questions, a reordered menu, a quieter
+  title.** `n` asks for the branch and base in a prompt below the table
+  instead of handing the terminal over, and Esc or Ctrl-C cancels just that
+  question (elsewhere Ctrl-C still quits). Pending outbox applies ("Apply N PR
+  action(s)", "Apply N issue action(s)") lead a container's menu, and the
+  git-bridge entries (`Git →`) come before the PR ones (`PR →`). The
+  refresh-age counter (`↻ Ns/Ms`) is gone from the title.
 
 ### Deprecated
 
