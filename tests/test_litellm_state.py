@@ -2,6 +2,8 @@
 
 import json
 import stat
+import time
+from concurrent.futures import ThreadPoolExecutor
 from importlib import resources
 from pathlib import Path
 
@@ -43,6 +45,29 @@ def test_master_key_created_once_with_0600() -> None:
     path = st.state_dir() / "default" / "master.key"
     assert path.read_text() == first + "\n"
     assert _mode(path) == 0o600
+
+
+def test_concurrent_account_allocation_keeps_one_port_and_key(monkeypatch) -> None:
+    original = st.secrets.token_urlsafe
+    generated: list[str] = []
+
+    def delayed_token(length: int) -> str:
+        token = original(length)
+        generated.append(token)
+        time.sleep(0.01)
+        return token
+
+    monkeypatch.setattr(st.secrets, "token_urlsafe", delayed_token)
+
+    def allocate(_: int) -> tuple[int, str]:
+        return st.port_for("default"), st.master_key("default")
+
+    with ThreadPoolExecutor(max_workers=24) as executor:
+        results = list(executor.map(allocate, range(80)))
+    assert len(set(results)) == 1
+    assert len(generated) == 1
+    assert json.loads((st.state_dir() / "ports.json").read_text()) == {"default": 4100}
+    assert _mode(st.state_dir() / "default" / "master.key") == 0o600
 
 
 def test_write_instance_files_layout_and_modes() -> None:

@@ -102,8 +102,10 @@ input capacity on the ChatGPT subscription backend.
   containers. They contain only a proxy key in `/etc/jailbee/litellm-default.key`
   (`0640`, readable by the dev group); its host copy is mode `0600`.
 - The proxy has default-deny egress restricted to `chatgpt.com` and
-  `auth.openai.com` after installation (package endpoints are needed during
-  installation). Dev containers can reach its static address through the
+  `auth.openai.com` after installation. During installation and reinstall,
+  only PyPI and Ubuntu package hosts are permitted; the proxy is stopped and
+  the host token directory is unmounted until package access is removed.
+  Dev containers can reach its static address through the
   `jailbee-services` ACL; a proxy key is not a provider token.
 - The default LiteLLM installation is pinned to version `1.103.0` and a
   hash-locked requirements file. Setting `litellm.version` bypasses the hash
@@ -130,6 +132,8 @@ input capacity on the ChatGPT subscription backend.
 | `cannot read ... (not valid JSON)` or `cannot read the proxy key` | Run `jailbee apply` in the repo on the host. |
 | `unknown profile` | Check the names in global `litellm.profiles`; select a valid `--profile` or fix `JAILBEE_LITELLM_PROFILE`. |
 | `--profile needs a name` | Pass `--profile NAME` or remove the flag. |
+| `proxy key ... is empty` | Run `jailbee apply` on the host to resync the key. |
+| `proxy ... is unreachable` | Run `jailbee litellm up` on the host, then `jailbee apply` in this repo. |
 
 On the host, use `jailbee litellm status`, `jailbee litellm logs [-f]`, and
 `jailbee doctor`. Doctor reports missing login, unhealthy service, mismatched

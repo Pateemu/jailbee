@@ -166,8 +166,8 @@ args=()
 user_effort=0
 while [ $# -gt 0 ]; do
     case "$1" in
-        --profile) [ $# -ge 2 ] || die "--profile needs a name"; profile="$2"; shift 2 ;;
-        --profile=*) profile="${1#--profile=}"; shift ;;
+        --profile) [ $# -ge 2 ] && [ -n "$2" ] || die "--profile needs a name"; profile="$2"; shift 2 ;;
+        --profile=*) profile="${1#--profile=}"; [ -n "$profile" ] || die "--profile needs a name"; shift ;;
         --effort|--effort=*) user_effort=1; args+=("$1"); shift ;;
         *) args+=("$1"); shift ;;
     esac
@@ -182,12 +182,14 @@ jq -e --arg p "$profile" '.profiles[$p]' "$config" >/dev/null \
 get() { jq -r --arg p "$profile" ".profiles[\$p]$1" "$config"; }
 key_file="$(get .key_file)"
 [ -r "$key_file" ] || die "cannot read the proxy key $key_file; re-run \`jailbee apply\` on the host."
+key="$(tr -d '\n' < "$key_file")"
+[ -n "$key" ] || die "proxy key $key_file is empty; re-run \`jailbee apply\` on the host."
 
 unset ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL \
        ANTHROPIC_DEFAULT_FABLE_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL \
        ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL
 export ANTHROPIC_BASE_URL="$(get .base_url)"
-export ANTHROPIC_AUTH_TOKEN="$(tr -d '\n' < "$key_file")"
+export ANTHROPIC_AUTH_TOKEN="$key"
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$(get .context_window)"
 export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 for tier in fable opus sonnet haiku; do
@@ -200,6 +202,15 @@ done
 effort="$(get '.effort // empty')"
 if [ -n "$effort" ] && [ "$user_effort" -eq 0 ]; then
     args=(--effort "$effort" "${args[@]}")
+fi
+# Check only the TCP listener, not authentication. Bound the probe so a
+# stopped proxy fails with guidance rather than hanging or opening Claude.
+if [ "${JAILBEE_LITELLM_SKIP_REACHABILITY:-}" != "1" ]; then
+    [[ "$ANTHROPIC_BASE_URL" =~ ^http://([0-9.]+):([0-9]+)$ ]] \
+        || die "invalid proxy address; on the host run \`jailbee litellm up\` and \`jailbee apply\`."
+    host="${BASH_REMATCH[1]}"; port="${BASH_REMATCH[2]}"
+    timeout 3 bash -c 'exec 3<>/dev/tcp/$1/$2' _ "$host" "$port" 2>/dev/null \
+        || die "proxy $host:$port is unreachable; on the host run \`jailbee litellm up\` and \`jailbee apply\`."
 fi
 exec claude "${args[@]}"
 EOF

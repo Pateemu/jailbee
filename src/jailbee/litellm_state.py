@@ -19,7 +19,11 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import tempfile
+from contextlib import contextmanager
+from collections.abc import Iterator
 from dataclasses import dataclass
+from fcntl import LOCK_EX, LOCK_UN, flock
 from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -63,23 +67,49 @@ def _write_private(path: Path, text: str) -> bool:
     return True
 
 
+@contextmanager
+def _state_lock() -> Iterator[None]:
+    """Serialize account creation across CLI processes (and threads)."""
+    base = state_dir()
+    base.mkdir(parents=True, exist_ok=True)
+    fd = os.open(base / ".allocation.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        flock(fd, LOCK_EX)
+        yield
+    finally:
+        flock(fd, LOCK_UN)
+        os.close(fd)
+
+
 def port_for(account: str) -> int:
     path = state_dir() / "ports.json"
-    state_dir().mkdir(parents=True, exist_ok=True)
-    ports: dict[str, int] = json.loads(path.read_text()) if path.exists() else {}
-    if account not in ports:
-        ports[account] = max(ports.values(), default=BASE_PORT - 1) + 1
-        path.write_text(json.dumps(ports, indent=2, sort_keys=True) + "\n")
-    return ports[account]
+    with _state_lock():
+        ports: dict[str, int] = json.loads(path.read_text()) if path.exists() else {}
+        if account not in ports:
+            ports[account] = max(ports.values(), default=BASE_PORT - 1) + 1
+            with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as file:
+                temporary = Path(file.name)
+                file.write(json.dumps(ports, indent=2, sort_keys=True) + "\n")
+            try:
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        return ports[account]
 
 
 def master_key(account: str) -> str:
     path = _account_dir(account) / "master.key"
-    if not path.exists():
-        _write_private(path, f"sk-jb-{secrets.token_urlsafe(32)}\n")
-    else:
+    with _state_lock():
+        if not path.exists():
+            with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as file:
+                temporary = Path(file.name)
+                file.write(f"sk-jb-{secrets.token_urlsafe(32)}\n")
+            try:
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
         path.chmod(0o600)
-    return path.read_text().strip()
+        return path.read_text().strip()
 
 
 @dataclass(frozen=True)

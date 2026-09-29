@@ -1,7 +1,7 @@
 """Manage the dedicated LiteLLM Incus container and its per-account proxy.
 
-Provision on the ACL-free `jailbee-loose` bridge, then attach default-deny
-provider egress and publish the static endpoint through `jailbee-services`.
+Provision with a temporary package-host-only ACL and no auth state mount,
+then restrict egress to providers before mounting state and starting the proxy.
 Host-side authentication and configuration survive container deletion.
 """
 
@@ -41,6 +41,12 @@ _IMAGE = "images:ubuntu/26.04/cloud"
 _IP_INDEX = 1
 _WAIT_SECONDS = 60
 _PY = "/opt/litellm/bin/python"
+_PACKAGE_ENDPOINTS = (
+    "pypi.org:443", "files.pythonhosted.org:443",
+    "archive.ubuntu.com:80", "archive.ubuntu.com:443",
+    "security.ubuntu.com:80", "security.ubuntu.com:443",
+    "ports.ubuntu.com:80", "ports.ubuntu.com:443",
+)
 CONTAINER_FILE = "/etc/jailbee/litellm.json"
 CONTAINER_KEY_FILE = "/etc/jailbee/litellm-default.key"
 
@@ -87,7 +93,57 @@ class UpResult:
 def _resolve_egress(hosts: list[str]) -> list[EgressEntry]:
     from jailbee.egress import build_egress_entries
 
-    return build_egress_entries([f"{h}:443" for h in hosts])
+    return build_egress_entries([h if ":" in h else f"{h}:443" for h in hosts])
+
+
+def _set_egress(incus: Incus, entries: list[EgressEntry], port: int) -> None:
+    if not incus.network_acl_exists(EGRESS_ACL):
+        incus.network_acl_create(EGRESS_ACL)
+    incus.network_acl_set_yaml(
+        EGRESS_ACL, service_container_acl_yaml(EGRESS_ACL, entries, listen_ports=[port])
+    )
+
+
+def _check_static_ip(incus: Incus, ip: str, containers: list[dict[str, object]]) -> None:
+    """Fail before changing the instance when another NIC/lease owns our fixed IP."""
+    own = next((c for c in containers if c.get("name") == LITELLM_CONTAINER), {})
+    config = own.get("config")
+    own_mac = config.get("volatile.eth0.hwaddr") if isinstance(config, dict) else None
+    for lease in incus.network_leases(LOOSE_BRIDGE):
+        if lease.get("address") == ip and not (
+            lease.get("hostname") == LITELLM_CONTAINER
+            or (own_mac and lease.get("hwaddr") == own_mac)
+        ):
+            owner = lease.get("hostname") or "an unknown DHCP client"
+            raise RuntimeError(
+                f"LiteLLM address {ip} is leased to {owner} on {LOOSE_BRIDGE}; "
+                "release that lease or move the conflicting container, then run `jb litellm up`."
+            )
+    for container in containers:
+        name = container.get("name")
+        if not isinstance(name, str) or name == LITELLM_CONTAINER:
+            continue
+        parsed = yaml.safe_load(incus.config_show(name, expanded=True)) or {}
+        devices = parsed.get("devices", {})
+        if isinstance(devices, dict) and any(
+            isinstance(device, dict)
+            and device.get("type") == "nic"
+            and device.get("network") == LOOSE_BRIDGE
+            and device.get("ipv4.address") == ip
+            for device in devices.values()
+        ):
+            raise RuntimeError(
+                f"LiteLLM address {ip} is assigned to {name} on {LOOSE_BRIDGE}; "
+                "change that NIC's static address, then run `jb litellm up`."
+            )
+
+
+def _detach_state(incus: Incus) -> None:
+    """Do not suppress device-removal errors: a retained auth mount is unsafe."""
+    parsed = yaml.safe_load(incus.config_show(LITELLM_CONTAINER)) or {}
+    devices = parsed.get("devices", {})
+    if isinstance(devices, dict) and "state" in devices:
+        incus.config_device_remove(LITELLM_CONTAINER, "state")
 
 
 def _profile_yaml(ip: str | None, *, with_acl: bool) -> str:
@@ -153,7 +209,7 @@ JB_LOCK_EOF
 chmod +x /root/install.sh
 JAILBEE_LITELLM_UNLOCKED_VERSION={unlocked} /root/install.sh
 """
-    incus.exec(LITELLM_CONTAINER, ["bash", "-c", script], timeout=900)
+    incus.exec_with_input(LITELLM_CONTAINER, ["bash", "-s"], script, timeout=900)
 
 
 def _annotate_recovery(error: BaseException, details: list[str]) -> None:
@@ -285,25 +341,22 @@ def litellm_up(
             f"{LOOSE_BRIDGE} has no concrete IPv4 subnet; the LiteLLM proxy needs a static address."
         )
 
-    info = _container(incus)
+    containers = incus.list_containers()
+    _check_static_ip(incus, ip, containers)
+    info = next((c for c in containers if c.get("name") == LITELLM_CONTAINER), None)
     needs_install = reinstall or info is None
     if info is None:
-        _set_profile(incus, ip, with_acl=False)
+        _set_egress(incus, _resolve_egress(list(_PACKAGE_ENDPOINTS)), port)
+        _set_profile(incus, ip, with_acl=True)
         on_step(f"creating {LITELLM_CONTAINER} from {_IMAGE}")
         try:
             incus.init(_IMAGE, LITELLM_CONTAINER)
             incus.profile_assign(LITELLM_CONTAINER, ["default", LITELLM_PROFILE])
-            incus.config_device_add(
-                LITELLM_CONTAINER,
-                "state",
-                "disk",
-                {"source": str(litellm_state.state_dir()), "path": CONTAINER_STATE_DIR},
-            )
             incus.start(LITELLM_CONTAINER)
         except BaseException as error:
             _secure_failed_create(incus, error)
             raise
-    elif info.get("status") != "Running":
+    elif info.get("status") != "Running" and not reinstall:
         # A stopped container can retain an ACL-free profile from an interrupted
         # install. Restrict it before start: Incus may report a failed start
         # after the instance has already reached Running.
@@ -323,7 +376,15 @@ def litellm_up(
 
     try:
         if needs_install:
-            _set_profile(incus, ip, with_acl=False)  # install needs apt + PyPI
+            if info is not None:
+                # No live service or mounted token directory may see package egress.
+                incus.config_set(LITELLM_CONTAINER, "boot.autostart", "false")
+                if info.get("status") == "Running" or not reinstall:
+                    incus.stop(LITELLM_CONTAINER, force=True)
+                _detach_state(incus)
+                _set_egress(incus, _resolve_egress(list(_PACKAGE_ENDPOINTS)), port)
+                _set_profile(incus, ip, with_acl=True)
+                incus.start(LITELLM_CONTAINER)
             on_step(f"installing LiteLLM {version} (up to 15 min)")
             _provision(incus, version, pinned)
 
@@ -335,13 +396,18 @@ def litellm_up(
             incus.network_acl_create(EGRESS_ACL)
         incus.network_acl_set_yaml(EGRESS_ACL, acl_yaml)
         _set_profile(incus, ip, with_acl=True)
+        if needs_install:
+            incus.config_device_add(
+                LITELLM_CONTAINER, "state", "disk",
+                {"source": str(litellm_state.state_dir()), "path": CONTAINER_STATE_DIR},
+            )
     except BaseException as error:
         if needs_install:
             _secure_failed_install(incus, ip, error)
         raise
 
-    if info is None:
-        # An unfinished or interrupted install must not autoboot ACL-free.
+    if needs_install:
+        # Never autoboot while package access and auth state can coexist.
         incus.config_set(LITELLM_CONTAINER, "boot.autostart", "true")
 
     restart = needs_install or written.changed or not _active(incus, account)
@@ -402,13 +468,13 @@ def sync_container(incus: Incus, name: str, payload: dict[str, object] | None) -
 set -euo pipefail
 mkdir -p /etc/jailbee
 tmp=$(mktemp)
+printf '%s\\n' '{key}' > "$tmp"
+chmod 0640 "$tmp"; chown root:{CONTAINER_USERNAME} "$tmp"; mv "$tmp" {CONTAINER_KEY_FILE}
+tmp=$(mktemp)
 cat > "$tmp" <<'JB_EOF'
 {body}
 JB_EOF
 chmod 0644 "$tmp"; mv "$tmp" {CONTAINER_FILE}
-tmp=$(mktemp)
-printf '%s\\n' '{key}' > "$tmp"
-chmod 0640 "$tmp"; chown root:{CONTAINER_USERNAME} "$tmp"; mv "$tmp" {CONTAINER_KEY_FILE}
 """
     incus.exec_with_input(name, ["bash", "-s"], script, timeout=30)
 

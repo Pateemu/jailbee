@@ -66,6 +66,8 @@ def env(tmp_path: Path) -> dict[str, str]:
         "PATH": f"{bin_dir}:/usr/bin:/bin",
         "HOME": str(tmp_path),
         "JAILBEE_LITELLM_CONFIG": str(cfg),
+        # Fake claude prints its environment; no proxy runs in these tests.
+        "JAILBEE_LITELLM_SKIP_REACHABILITY": "1",
     }
 
 
@@ -106,6 +108,12 @@ def test_profile_flag_is_stripped_and_selects(script, env):
 def test_profile_equals_form(script, env):
     r = _run(script, env, "--profile=deep")
     assert "ANTHROPIC_DEFAULT_OPUS_MODEL=jb-default-astra" in _lines(r.stdout)
+
+
+def test_explicit_empty_profile_is_rejected(script, env):
+    r = _run(script, env, "--profile=")
+    assert r.returncode != 0 and "--profile needs a name" in r.stderr
+    assert "ANTHROPIC_AUTH_TOKEN" not in r.stdout
 
 
 def test_env_var_selects_profile(script, env):
@@ -156,6 +164,20 @@ def test_unreadable_key_errors(script, env, tmp_path):
     Path(env["JAILBEE_LITELLM_CONFIG"]).write_text(json.dumps(cfg))
     r = _run(script, env)
     assert r.returncode != 0 and "key" in r.stderr
+
+
+def test_empty_readable_key_errors_before_claude(script, env):
+    cfg = json.loads(Path(env["JAILBEE_LITELLM_CONFIG"]).read_text())
+    Path(cfg["profiles"]["codex"]["key_file"]).write_text("\n")
+    r = _run(script, env)
+    assert r.returncode != 0 and "empty" in r.stderr and "jailbee apply" in r.stderr
+    assert "ARGV:" not in r.stdout
+
+
+def test_unreachable_gateway_errors_before_claude(script, env):
+    r = _run(script, {**env, "JAILBEE_LITELLM_SKIP_REACHABILITY": ""})
+    assert r.returncode != 0 and "jailbee litellm up" in r.stderr
+    assert "jailbee apply" in r.stderr and "ARGV:" not in r.stdout
 
 
 def test_inherited_anthropic_vars_are_replaced(script, env):
