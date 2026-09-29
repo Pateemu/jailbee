@@ -1,0 +1,289 @@
+"""Manage the dedicated LiteLLM Incus container and its per-account proxy.
+
+Provision on the ACL-free `jailbee-loose` bridge, then attach default-deny
+provider egress and publish the static endpoint through `jailbee-services`.
+Host-side authentication and configuration survive container deletion.
+"""
+
+from __future__ import annotations
+
+import os
+import shlex
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from enum import StrEnum
+from importlib import resources
+from typing import TYPE_CHECKING, Literal
+
+import yaml
+
+from jailbee import litellm_state
+from jailbee.incus import IncusError
+from jailbee.litellm_render import ACCOUNT_DEFAULT, CONTAINER_STATE_DIR, egress_hosts
+from jailbee.loose_bridge import LOOSE_BRIDGE, loose_bridge_host_ip
+from jailbee.network import service_container_acl_yaml
+from jailbee.services_acl import set_services_endpoint
+
+if TYPE_CHECKING:
+    from jailbee.egress import EgressEntry
+    from jailbee.global_config import GlobalConfig
+    from jailbee.incus import Incus
+
+LITELLM_CONTAINER = "jailbee-litellm"
+LITELLM_PROFILE = "jailbee-litellm-profile"
+EGRESS_ACL = "jailbee-litellm-egress"
+UNIT = "jailbee-litellm@{account}.service"
+_IMAGE = "images:ubuntu/26.04/cloud"
+_IP_INDEX = 1
+_WAIT_SECONDS = 60
+_PY = "/opt/litellm/bin/python"
+
+
+def unit(account: str) -> str:
+    return UNIT.format(account=account)
+
+
+def _no_steps(_message: str) -> None:
+    """Default callback for progress updates."""
+
+
+class ContainerState(StrEnum):
+    RUNNING = "running"
+    STOPPED = "stopped"
+    MISSING = "missing"
+
+
+@dataclass(frozen=True)
+class InstanceStatus:
+    account: str
+    port: int
+    active: bool
+    healthy: bool
+    login: Literal["missing", "present"]
+
+
+@dataclass(frozen=True)
+class LiteLLMStatus:
+    container: ContainerState
+    ip: str | None
+    version: str | None
+    instances: list[InstanceStatus]
+
+
+@dataclass(frozen=True)
+class UpResult:
+    ip: str
+    port: int
+    restarted: bool
+    installed: bool
+
+
+def _resolve_egress(hosts: list[str]) -> list[EgressEntry]:
+    from jailbee.egress import build_egress_entries
+
+    return build_egress_entries([f"{h}:443" for h in hosts])
+
+
+def _profile_yaml(ip: str | None, *, with_acl: bool) -> str:
+    eth0: dict[str, str] = {"type": "nic", "name": "eth0", "network": LOOSE_BRIDGE}
+    if ip is not None:
+        eth0["ipv4.address"] = ip
+    if with_acl:
+        eth0["security.acls"] = EGRESS_ACL
+        eth0["security.acls.default.egress.action"] = "reject"
+        eth0["security.acls.default.ingress.action"] = "reject"
+    profile = {
+        "name": LITELLM_PROFILE,
+        "description": "security + network for the jailbee-litellm container",
+        "config": {
+            "security.nesting": "true",
+            "raw.idmap": f"uid {os.getuid()} 0\ngid {os.getgid()} 0",
+        },
+        "devices": {"eth0": eth0},
+    }
+    return yaml.safe_dump(profile, sort_keys=False)
+
+
+def _set_profile(incus: Incus, ip: str | None, *, with_acl: bool) -> None:
+    if not incus.profile_exists(LITELLM_PROFILE):
+        incus.profile_create(LITELLM_PROFILE)
+    incus.profile_set_yaml(LITELLM_PROFILE, _profile_yaml(ip, with_acl=with_acl))
+
+
+def _container(incus: Incus) -> dict[str, object] | None:
+    for container in incus.list_containers():
+        if container.get("name") == LITELLM_CONTAINER:
+            return container
+    return None
+
+
+def _installed_version(incus: Incus) -> str | None:
+    probe = "import importlib.metadata as m; print(m.version('litellm'))"
+    try:
+        return incus.exec(LITELLM_CONTAINER, [_PY, "-c", probe], timeout=30).strip() or None
+    except IncusError:
+        return None
+
+
+def _read(name: str) -> str:
+    return resources.files("jailbee.provision").joinpath("litellm").joinpath(name).read_text()
+
+
+def _provision(incus: Incus, version: str, pinned: bool) -> None:
+    # Shell-quote the user-configurable version; do not interpolate raw YAML
+    # into a command run as root inside the service container.
+    unlocked = shlex.quote("" if pinned else version)
+    script = f"""\
+set -euo pipefail
+cat > /root/install.sh <<'JB_INSTALL_EOF'
+{_read("install.sh").rstrip()}
+JB_INSTALL_EOF
+cat > /root/jailbee-litellm@.service <<'JB_SERVICE_EOF'
+{_read("jailbee-litellm@.service").rstrip()}
+JB_SERVICE_EOF
+cat > /root/litellm-requirements.lock <<'JB_LOCK_EOF'
+{_read("requirements.lock").rstrip()}
+JB_LOCK_EOF
+chmod +x /root/install.sh
+JAILBEE_LITELLM_UNLOCKED_VERSION={unlocked} /root/install.sh
+"""
+    incus.exec(LITELLM_CONTAINER, ["bash", "-c", script], timeout=900)
+
+
+def _active(incus: Incus, account: str) -> bool:
+    try:
+        return incus.exec(
+            LITELLM_CONTAINER, ["systemctl", "is-active", unit(account)], timeout=10
+        ).strip() == "active"
+    except IncusError:
+        return False
+
+
+def _healthy(incus: Incus, port: int) -> bool:
+    probe = (
+        "import urllib.request; "
+        f"urllib.request.urlopen('http://127.0.0.1:{port}/health/liveliness', timeout=5); "
+        "print('ok')"
+    )
+    try:
+        return incus.exec(LITELLM_CONTAINER, [_PY, "-c", probe], timeout=15).strip() == "ok"
+    except IncusError:
+        return False
+
+
+def _wait_healthy(incus: Incus, account: str, port: int, on_step: Callable[[str], None]) -> None:
+    deadline = time.monotonic() + _WAIT_SECONDS
+    while True:
+        if _active(incus, account) and _healthy(incus, port):
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"{unit(account)} did not become healthy within {_WAIT_SECONDS}s. "
+                "See `jailbee litellm logs`."
+            )
+        on_step(f"waiting for {unit(account)}")
+        time.sleep(2)
+
+
+def litellm_up(
+    incus: Incus,
+    gcfg: GlobalConfig,
+    *,
+    reinstall: bool = False,
+    on_step: Callable[[str], None] = _no_steps,
+) -> UpResult:
+    cfg = gcfg.litellm
+    if not cfg.enabled:
+        raise ValueError("LiteLLM is disabled: set `litellm.enabled: true` in global.yaml first.")
+    account = ACCOUNT_DEFAULT
+    version = cfg.effective_version()
+    pinned = cfg.version is None
+
+    on_step("rendering the proxy configuration")
+    written = litellm_state.write_instance_files(cfg, account)
+    port = litellm_state.port_for(account)
+
+    if not incus.network_exists(LOOSE_BRIDGE):
+        incus.network_create(LOOSE_BRIDGE)
+    ip = loose_bridge_host_ip(incus, _IP_INDEX)
+    if ip is None:
+        raise RuntimeError(
+            f"{LOOSE_BRIDGE} has no concrete IPv4 subnet; the LiteLLM proxy needs a static address."
+        )
+
+    info = _container(incus)
+    needs_install = reinstall or info is None
+    if info is None:
+        _set_profile(incus, ip, with_acl=False)
+        on_step(f"creating {LITELLM_CONTAINER} from {_IMAGE}")
+        incus.init(_IMAGE, LITELLM_CONTAINER)
+        incus.profile_assign(LITELLM_CONTAINER, ["default", LITELLM_PROFILE])
+        incus.config_set(LITELLM_CONTAINER, "boot.autostart", "true")
+        incus.config_device_add(
+            LITELLM_CONTAINER,
+            "state",
+            "disk",
+            {"source": str(litellm_state.state_dir()), "path": CONTAINER_STATE_DIR},
+        )
+        incus.start(LITELLM_CONTAINER)
+    elif info.get("status") != "Running":
+        incus.start(LITELLM_CONTAINER)
+    if not needs_install and _installed_version(incus) != version:
+        needs_install = True
+
+    if needs_install:
+        _set_profile(incus, ip, with_acl=False)  # install needs apt + PyPI
+        on_step(f"installing LiteLLM {version} (up to 15 min)")
+        _provision(incus, version, pinned)
+
+    on_step("writing the proxy's egress allowlist")
+    acl_yaml = service_container_acl_yaml(
+        EGRESS_ACL, _resolve_egress(egress_hosts(cfg)), listen_ports=[port]
+    )
+    if not incus.network_acl_exists(EGRESS_ACL):
+        incus.network_acl_create(EGRESS_ACL)
+    incus.network_acl_set_yaml(EGRESS_ACL, acl_yaml)
+    _set_profile(incus, ip, with_acl=True)
+
+    restart = needs_install or written.changed or not _active(incus, account)
+    if restart:
+        incus.exec(LITELLM_CONTAINER, ["systemctl", "enable", unit(account)], timeout=30)
+        incus.exec(LITELLM_CONTAINER, ["systemctl", "restart", unit(account)], timeout=60)
+    _wait_healthy(incus, account, port, on_step)
+
+    set_services_endpoint(incus, (ip, [port]))
+    return UpResult(ip=ip, port=port, restarted=restart, installed=needs_install)
+
+
+def litellm_down(incus: Incus) -> None:
+    set_services_endpoint(incus, None)
+    if _container(incus) is not None:
+        incus.delete(LITELLM_CONTAINER, force=True)
+
+
+def endpoint(incus: Incus) -> tuple[str, int] | None:
+    if _container(incus) is None:
+        return None
+    ip = loose_bridge_host_ip(incus, _IP_INDEX)
+    if ip is None:
+        return None
+    return ip, litellm_state.port_for(ACCOUNT_DEFAULT)
+
+
+def litellm_status(incus: Incus) -> LiteLLMStatus:
+    info = _container(incus)
+    if info is None:
+        return LiteLLMStatus(ContainerState.MISSING, None, None, [])
+    ip = loose_bridge_host_ip(incus, _IP_INDEX)
+    if info.get("status") != "Running":
+        return LiteLLMStatus(ContainerState.STOPPED, ip, None, [])
+    port = litellm_state.port_for(ACCOUNT_DEFAULT)
+    instance = InstanceStatus(
+        account=ACCOUNT_DEFAULT,
+        port=port,
+        active=_active(incus, ACCOUNT_DEFAULT),
+        healthy=_healthy(incus, port),
+        login=litellm_state.auth_state(ACCOUNT_DEFAULT),
+    )
+    return LiteLLMStatus(ContainerState.RUNNING, ip, _installed_version(incus), [instance])
