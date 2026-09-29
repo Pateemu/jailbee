@@ -2079,7 +2079,7 @@ Allowed names (also the `jailbee ls --fields` vocabulary): `name`, `full_name`,
 `repo`, `mode`, `base`, `state`, `created`, `job`, `network`, `ttl`,
 `loose_until`, `ip`, `memory_limit`, `mem`, `wt`, `target_diff`,
 `ahead_count`, `behind_count`, `conflict`, `local_diff`, `local_count`, `git_status`, `pr`,
-`issues`, `group`, `cpu`, `doing`. `claude` and `claude_group` are accepted
+`issues`, `group`, `cpu`, `doing`, `agent`. `claude` and `claude_group` are accepted
 aliases for `group`.
 
 `ahead_diff` was retired: configured uses produce a migration warning and

@@ -12,7 +12,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from jailbee import table_format
+from rich.markup import escape
+
+from jailbee import agent_status, table_format
 from jailbee.config import CONTAINER_USERNAME, Config, HostMount, SharedCache
 from jailbee.git import (
     GitFetchError,
@@ -45,6 +47,8 @@ from jailbee.stopping import stop_container
 from jailbee.tui import ConfirmFn, default_confirm, info, warn, warn_plain
 
 if TYPE_CHECKING:
+    from jailbee.accounts.models import AgentSession
+    from jailbee.agent_status import AgentSummary
     from jailbee.branch_config import EscalationVerdict
     from jailbee.config import Autostart
     from jailbee.db.models import BackgroundJob
@@ -83,6 +87,9 @@ class ContainerInfo:
     # way `git_status` is written by the git tier — never by `list_containers`.
     cpu_percent: float | None = None
     activity: tuple[ProcessActivity, ...] = ()
+    # From the same sampler reading as `activity`, written in place by
+    # `annotate_agent_status`; never by `list_containers`.
+    agent_status: tuple[AgentSummary, ...] = ()
     git_status: GitStatus | None = None
     job_phase: str | None = None
     job_pid: int | None = None
@@ -531,6 +538,49 @@ def annotate_activity(containers: Sequence[ContainerInfo], sampler: ActivitySamp
         result = results.get(c.name)
         c.cpu_percent = result.cpu_percent if result else None
         c.activity = result.processes if result else ()
+
+
+def annotate_agent_status(
+    containers: Sequence[ContainerInfo],
+    sessions: Sequence[AgentSession],
+    sampler: ActivitySampler,
+) -> None:
+    """Fill ``agent_status`` from the sampler's latest reading.
+
+    ``sessions`` must come from the config homes of *these containers'* repo
+    only. A session names its process by namespace pid and start time. That
+    cannot collide within one home, because the file is named after the pid.
+    Across two repos' homes it can: two containers whose agents started in
+    the same clock tick as the same namespace pid would take each other's
+    state.
+
+    Needs no second reading, unlike ``annotate_activity``: a state is a fact,
+    not a rate. Rows it did not answer for are cleared. With no sessions at
+    all it reads nothing.
+    """
+    if not sessions:
+        for c in containers:
+            c.agent_status = ()
+        return
+    processes = {
+        c.name: {pid: sample.starttime for pid, sample in sampler.processes(c.name).items()}
+        for c in containers
+    }
+    results = agent_status.match_sessions(sessions, processes, sampler.nspid)
+    for c in containers:
+        c.agent_status = results.get(c.name, ())
+
+
+def agent_homes(cfg: Config) -> tuple[tuple[str, Path], ...]:
+    """``(agent, config home)`` for every pooled agent: where its sessions are recorded.
+
+    A repo's config home, never a credential holder's. A credential group
+    redirects only the credential; the agent's own state, sessions included,
+    stays in the repo's home.
+    """
+    from jailbee.accounts.adapters import base
+
+    return tuple((a.name, a.config_home(cfg)) for a in base.pooled_adapters(cfg))
 
 
 def container_repo_dir(cfg: Config, incus: Incus, name: str) -> str:
@@ -2666,6 +2716,33 @@ def ls_field_specs(
             names.append(f"[dim]+{hidden}[/dim]")
         return ", ".join(names)
 
+    def _agent_text(s: AgentSummary) -> str:
+        text = f"{s.agent}: {s.state}"
+        if s.since is not None and s.since <= now:
+            text += f" {format_duration_short(now - s.since)}"
+        if s.count > 1:
+            text += f"·{s.count}"
+        # The state is raw text from a file the container wrote.
+        text = escape(text)
+        return f"[yellow]{text}[/yellow]" if s.state == "waiting" else text
+
+    def _agent_cell(c: ContainerInfo) -> str:
+        if not c.agent_status:
+            return "[dim]—[/dim]"
+        return ", ".join(_agent_text(s) for s in c.agent_status)
+
+    def _agent_json(c: ContainerInfo) -> list[dict[str, object]]:
+        return [
+            {
+                "agent": s.agent,
+                "state": s.state,
+                "since": s.since.isoformat() if s.since else None,
+                "waiting_for": s.waiting_for,
+                "count": s.count,
+            }
+            for s in c.agent_status
+        ]
+
     def _pending_pr_actions(c: ContainerInfo) -> int:
         return (c.git_status.pending_pr_actions or 0) if c.git_status else 0
 
@@ -2848,6 +2925,18 @@ def ls_field_specs(
             json=lambda c: [
                 {"comm": p.comm, "percent": p.percent, "count": p.count} for p in c.activity
             ],
+            default_table=False,
+            default_dashboard=True,
+            default_json=False,
+        ),
+        table_format.FieldSpec(
+            name="agent",
+            header="AGENT",
+            cell=_agent_cell,
+            json=_agent_json,
+            # Live like CPU/DOING, and the reason to keep a dashboard open:
+            # which container is waiting for you. `--fields agent` reaches it
+            # from `ls`, at the cost of one /proc reading.
             default_table=False,
             default_dashboard=True,
             default_json=False,

@@ -1,6 +1,6 @@
 """Tests for lifecycle (new/start/stop/destroy/ls/shell)."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -9133,6 +9133,186 @@ def test_doing_json_is_a_list_of_objects():
     assert _cpu_spec("doing").json(_running(activity=(ProcessActivity("claude", 98.5, 2),))) == [
         {"comm": "claude", "percent": 98.5, "count": 2}
     ]
+
+
+# ---- AGENT column ----
+
+
+def _agent(state="waiting", *, agent="claude", since=None, waiting_for=None, count=1):
+    from jailbee.agent_status import AgentSummary
+
+    return AgentSummary(agent=agent, state=state, since=since, waiting_for=waiting_for, count=count)
+
+
+_AGENT_NOW = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
+
+
+def _agent_spec():
+    from jailbee.lifecycle import ls_field_specs
+
+    return next(f for f in ls_field_specs(now=_AGENT_NOW) if f.name == "agent")
+
+
+def _plain(cell: str) -> str:
+    from rich.text import Text
+
+    return Text.from_markup(cell).plain
+
+
+def test_annotate_agent_status_matches_this_containers_processes(mocker):
+    from jailbee.accounts.models import AgentSession
+    from jailbee.lifecycle import annotate_agent_status
+    from jailbee.procstat import ProcSample
+
+    a, b = _running(name="myrepo-a"), _running(name="myrepo-b")
+    sampler = mocker.Mock()
+    sampler.processes.side_effect = {
+        "myrepo-a": {1010: ProcSample("claude", 0, 500)},
+        "myrepo-b": {2020: ProcSample("bash", 0, 777)},
+    }.__getitem__
+    sampler.nspid.side_effect = {1010: 10}.get
+    session = AgentSession("claude", 10, 500, "waiting", "input needed", _AGENT_NOW, None)
+
+    annotate_agent_status([a, b], [session], sampler)
+
+    assert [(s.agent, s.state, s.count) for s in a.agent_status] == [("claude", "waiting", 1)]
+    assert b.agent_status == ()
+
+
+def test_annotate_agent_status_without_sessions_clears_and_reads_nothing(mocker):
+    """An orphan group, or a repo with no pooled agent: no /proc read at all."""
+    from jailbee.lifecycle import annotate_agent_status
+
+    c = _running(agent_status=(_agent(),))
+    sampler = mocker.Mock()
+
+    annotate_agent_status([c], [], sampler)
+
+    assert c.agent_status == ()
+    sampler.processes.assert_not_called()
+    sampler.nspid.assert_not_called()
+
+
+def test_annotate_agent_status_clears_a_row_whose_session_ended(mocker):
+    from jailbee.accounts.models import AgentSession
+    from jailbee.lifecycle import annotate_agent_status
+
+    c = _running(agent_status=(_agent(),))
+    sampler = mocker.Mock()
+    sampler.processes.return_value = {}
+    session = AgentSession("claude", 10, 500, "waiting", None, None, None)
+
+    annotate_agent_status([c], [session], sampler)
+
+    assert c.agent_status == ()
+
+
+def test_agent_homes_lists_every_pooled_agent(tmp_path):
+    from jailbee.lifecycle import agent_homes
+    from tests.conftest import make_cfg, with_agent
+
+    cfg = with_agent(
+        make_cfg(tmp_path / "repo", shared_dir=tmp_path / "shared"), "claude", enabled=True
+    )
+
+    assert agent_homes(cfg) == (("claude", tmp_path / "shared" / "claude"),)
+
+
+def test_agent_homes_is_empty_when_claude_is_disabled(tmp_path):
+    from jailbee.lifecycle import agent_homes
+    from tests.conftest import make_cfg, with_agent
+
+    cfg = with_agent(
+        make_cfg(tmp_path / "repo", shared_dir=tmp_path / "shared"), "claude", enabled=False
+    )
+
+    assert agent_homes(cfg) == ()
+
+
+@pytest.mark.parametrize(
+    ("state", "ago", "expected"),
+    [
+        ("waiting", timedelta(minutes=4, seconds=30), "claude: waiting 4m"),
+        ("busy", timedelta(seconds=12), "claude: busy 12s"),
+        ("idle", timedelta(hours=2), "claude: idle 2h"),
+    ],
+)
+def test_agent_cell_names_the_state_and_how_long(state, ago, expected):
+    c = _running(agent_status=(_agent(state, since=_AGENT_NOW - ago),))
+
+    assert _plain(_agent_spec().cell(c)) == expected
+
+
+def test_agent_cell_is_yellow_only_while_waiting():
+    waiting = _agent_spec().cell(_running(agent_status=(_agent("waiting", since=_AGENT_NOW),)))
+    busy = _agent_spec().cell(_running(agent_status=(_agent("busy", since=_AGENT_NOW),)))
+
+    assert "[yellow]" in waiting
+    assert "[yellow]" not in busy
+
+
+def test_agent_cell_counts_several_sessions():
+    c = _running(agent_status=(_agent(since=_AGENT_NOW - timedelta(minutes=4), count=2),))
+
+    assert _plain(_agent_spec().cell(c)) == "claude: waiting 4m·2"
+
+
+@pytest.mark.parametrize("since", [None, _AGENT_NOW + timedelta(minutes=3)])
+def test_agent_cell_omits_an_unknown_or_future_duration(since):
+    """A future stamp is clock skew or garbage, not "0s"."""
+    c = _running(agent_status=(_agent("busy", since=since),))
+
+    assert _plain(_agent_spec().cell(c)) == "claude: busy"
+
+
+def test_agent_cell_joins_several_agents_in_the_given_order():
+    c = _running(
+        agent_status=(
+            _agent("waiting", since=_AGENT_NOW - timedelta(minutes=1)),
+            _agent("busy", agent="codex", since=_AGENT_NOW - timedelta(seconds=5)),
+        )
+    )
+
+    assert _plain(_agent_spec().cell(c)) == "claude: waiting 1m, codex: busy 5s"
+
+
+def test_agent_cell_is_a_dash_without_a_live_session():
+    assert _agent_spec().cell(_running()) == "[dim]—[/dim]"
+
+
+def test_agent_cell_shows_a_markup_looking_state_literally():
+    """The state is raw text from a file the container wrote."""
+    c = _running(agent_status=(_agent("[red]x", since=None),))
+
+    assert _plain(_agent_spec().cell(c)) == "claude: [red]x"
+
+
+def test_agent_json_is_a_list_of_objects():
+    c = _running(agent_status=(_agent(since=_AGENT_NOW, waiting_for="input needed", count=2),))
+
+    assert _agent_spec().json(c) == [
+        {
+            "agent": "claude",
+            "state": "waiting",
+            "since": _AGENT_NOW.isoformat(),
+            "waiting_for": "input needed",
+            "count": 2,
+        }
+    ]
+
+
+def test_agent_json_without_a_timestamp_has_a_null_since():
+    assert _agent_spec().json(_running(agent_status=(_agent(since=None),)))[0]["since"] is None
+
+
+def test_agent_is_a_dashboard_only_column():
+    from jailbee.table_format import shows_by_default_in_dashboard
+
+    spec = _agent_spec()
+    assert spec.header == "AGENT"
+    assert spec.default_table is False
+    assert spec.default_json is False
+    assert shows_by_default_in_dashboard(spec) is True
 
 
 # ---- private agent subpaths ----
