@@ -56,7 +56,7 @@ REPO_REFUSED_KEYS: tuple[str, ...] = ("enabled", "version", "accounts", "egress"
 """`litellm:` keys a repo's `repos/<prefix>.yaml` may not set: they describe the
 proxy container and its logins, which every repo on the host shares."""
 
-SUBSCRIPTION_PROVIDERS: frozenset[str] =frozenset({"chatgpt"})
+SUBSCRIPTION_PROVIDERS: frozenset[str] = frozenset({"chatgpt"})
 """Providers that log in with `jailbee litellm login` instead of taking an API key."""
 
 PROVIDER_HOSTS: dict[str, tuple[str, ...]] = {

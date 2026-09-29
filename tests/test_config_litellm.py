@@ -418,7 +418,7 @@ def test_overlay_is_validated_in_the_merged_view():
         LiteLLMConfig().with_overlay(_overlay(profiles={"codex": {"opus": "nope"}}))
     with pytest.raises(ValidationError, match="default_profile 'nope'"):
         LiteLLMConfig().with_overlay(_overlay(default_profile="nope"))
-    with pytest.raises(ValidationError, match="not in `litellm.accounts`"):
+    with pytest.raises(ValidationError, match=r"not in `litellm\.accounts`"):
         LiteLLMConfig().with_overlay(_overlay(profiles={"codex": {"account": "work"}}))
 
 
