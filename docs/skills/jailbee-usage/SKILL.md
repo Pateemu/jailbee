@@ -706,7 +706,7 @@ are supported. A repo can override routes, profiles, `default_profile` and
 `jailbee config edit --local`, then run `jailbee apply` (`jailbee new` alone
 does not update the proxy; `apply --no-restart` defers the restart of changed
 proxy instances; an edit that only changes egress, such as a route's `egress`
-list or `litellm.egress`, needs `jailbee litellm up` because `apply` does not
+list on an existing route or `litellm.egress`, needs `jailbee litellm up` because `apply` does not
 notice it). With `litellm.autostart`, the Claude autostart window runs
 `claude-jb`. Inside the container there is no key and no login: `claude-jb` only
 reads `/etc/jailbee/litellm.json` and the proxy key for the profile's account.

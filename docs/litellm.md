@@ -147,9 +147,11 @@ serve the previous routes; a later plain `jailbee apply` restarts them.
 
 `apply` sees an edit through the rendered instance files, and the proxy's egress
 allowlist is not part of them. An edit that changes **only** egress (a route's
-`egress` list, `litellm.egress` in `global.yaml`, or an override that adds a route
-with a new egress host) is therefore not applied by `jailbee apply`; run
-`jailbee litellm up`, which rewrites the allowlist. If the proxy needs more than a
+`egress` list on an existing route, or `litellm.egress` in `global.yaml`) is
+therefore not applied by `jailbee apply`; run `jailbee litellm up`, which rewrites
+the allowlist. An edit that also changes the rendered files, such as an override
+that adds a route (with or without a new egress host), makes `apply` restart the
+instance and rewrite the allowlist along with it. If the proxy needs more than a
 restart (a different LiteLLM version, a new account, an unattached state
 volume), `apply` says so and points at `jailbee litellm up`.
 

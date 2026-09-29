@@ -2411,8 +2411,9 @@ joins the egress allowlist; not allowed on `chatgpt/` routes), `egress` (extra
 for, unless `api_base` is set) and `params` (raw LiteLLM deployment parameters;
 keys that change the provider, endpoint or credential, such as `model`,
 `api_base`, `api_key` or `extra_headers`, are rejected there: use the route's own
-fields). A route's `egress`, like `litellm.egress`, reaches the proxy's allowlist only
-through `jailbee litellm up`. Profiles also accept `account` (from `accounts`; required when the
+fields). A route's `egress`, like `litellm.egress`, reaches the proxy's allowlist
+whenever `jailbee apply` restarts an instance for another reason; an edit that
+changes nothing else needs `jailbee litellm up`. Profiles also accept `account` (from `accounts`; required when the
 profile maps a `chatgpt/` route) and `effort` as the default session effort. `jailbee litellm up` renders changes
 and restarts the instance if needed; `jailbee apply` also re-renders the proxy
 and restarts the instances whose routes changed (`--no-restart` defers it), and
