@@ -648,6 +648,13 @@ def litellm_reconcile(
             needs_up=f"it runs LiteLLM {installed or 'unknown'}, the config asks for {version}",
             issues=issues,
         )
+    if not _has_state(incus):
+        # An interrupted `up` (or a concurrent reinstall): pushing now would
+        # leave keys on the rootfs and rewrite the package-egress ACL.
+        return ReconcileResult(
+            needs_up="its state volume is not attached (an interrupted `jailbee litellm up`)",
+            issues=issues,
+        )
     ports = {account: litellm_state.known_port(account) for account in cfg.accounts}
     missing = sorted(
         account

@@ -1487,3 +1487,20 @@ def test_reconcile_reports_a_broken_override_and_still_applies_the_rest(xdg):
     result = ll.litellm_reconcile(incus, _gcfg(routes={"sol-xhigh": {"effort": "max"}}))
     assert result.restarted == ["default"]
     assert len(result.issues) == 1 and str(broken) in result.issues[0]
+
+
+def test_reconcile_leaves_a_detached_state_volume_to_up(xdg):
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    incus.reset_mock(return_value=False, side_effect=False)
+    incus.config_show.return_value = yaml.safe_dump({"devices": {}})
+    changed = _gcfg(routes={"sol-xhigh": {"effort": "max"}})
+    result = ll.litellm_reconcile(incus, changed)
+    assert result.needs_up is not None and "state volume" in result.needs_up
+    assert result.restarted == [] and result.pending == []
+    incus.exec_with_input.assert_not_called()
+    incus.network_acl_set_yaml.assert_not_called()
+    assert _restarts(incus) == []
+    # No digest was recorded: once the volume is back, the change is still seen.
+    incus.config_show.return_value = yaml.safe_dump({"devices": {"state": {"type": "disk"}}})
+    assert ll.litellm_reconcile(incus, changed).restarted == ["default"]
