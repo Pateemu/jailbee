@@ -5725,6 +5725,8 @@ def test_repo_header_enter_opens_menu_without_folding(mocker, tmp_path):
         "Credential group…",
         "Network →",
         "Apply config…",
+        "Diagnostics →",
+        "Prune stale containers…",
         "Fold",
     ]
     save.assert_not_called()
@@ -7821,3 +7823,128 @@ def test_run_cli_foreground_either_remote_flag_alone_forbids_the_pager(
     paged.assert_not_called()
     run.assert_called_once()
     wait.assert_called_once()
+
+
+def test_repo_menu_diagnostics_submenu_then_prune_before_fold(tmp_path):
+    menu = dashboard.open_repo_menu([_cfg_group(tmp_path)], "alpha", frozenset())
+    assert menu is not None
+    labels = [i.label if isinstance(i, dashboard.MenuGroup) else i[0] for i in menu.actions]
+    at = labels.index("Diagnostics →")
+    assert labels[at - 1] == "Apply config…"
+    assert labels[at + 1 : at + 3] == ["Prune stale containers…", "Fold"]
+    diagnostics = menu.actions[at]
+    assert isinstance(diagnostics, dashboard.MenuGroup)
+    assert diagnostics.actions == (("Doctor", "doctor"), ("Disk usage", "disk-usage"))
+
+
+@pytest.mark.parametrize(
+    ("over_ssh", "policy_kwargs", "expected"),
+    [
+        (False, None, {"doctor", "disk-usage", "prune"}),
+        (False, {"commands": {"mode": "disabled"}}, {"doctor", "disk-usage", "prune"}),
+        (True, {}, {"doctor", "disk-usage", "prune"}),
+        (True, {"commands": {"mode": "allowlist", "allow": ["doctor"]}}, {"doctor"}),
+        (True, {"commands": {"mode": "allowlist", "allow": ["prune"]}}, {"prune"}),
+        (True, {"commands": {"mode": "allowlist", "allow": ["shell"]}}, set()),
+        (True, {"excluded_repos": ["other"]}, {"prune"}),
+    ],
+    ids=[
+        "local",
+        "local-ignores-policy",
+        "ssh-default",
+        "ssh-allowlist-doctor",
+        "ssh-allowlist-prune",
+        "ssh-allowlist-without",
+        "ssh-excluded-repos",
+    ],
+)
+def test_repo_menu_diagnostics_and_prune_follow_the_ssh_policy(
+    tmp_path, over_ssh, policy_kwargs, expected
+):
+    menu = dashboard.open_repo_menu(
+        [_cfg_group(tmp_path)],
+        "alpha",
+        frozenset(),
+        ssh_policy=_ssh_policy(policy_kwargs),
+        over_ssh=over_ssh,
+    )
+    assert _repo_menu_verbs(menu) & {"doctor", "disk-usage", "prune"} == expected
+    assert menu is not None
+    labels = [i.label for i in menu.actions if isinstance(i, dashboard.MenuGroup)]
+    # the submenu is dropped, not left empty, when both leaves are refused
+    assert ("Diagnostics →" in labels) is bool(expected & {"doctor", "disk-usage"})
+
+
+def test_repo_doctor_is_paged_locally(mocker, tmp_path):
+    group = _cfg_group(tmp_path)
+    mocker.patch.object(dashboard, "pager_argv", return_value=["less", "-R"])
+    paged = mocker.patch.object(dashboard, "_run_paged", return_value=0)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+
+    assert _drive_run(mocker, _repo_menu_keys(group, "doctor"), [group]) == 0
+
+    paged.assert_called_once_with(
+        ["jailbee", "doctor", "--config", str(group.config_path)], ["less", "-R"], tmp_path
+    )
+    child.assert_not_called()
+
+
+def test_repo_doctor_over_ssh_pauses_instead_of_paging_and_sends_no_config(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path)
+    policy = RemoteSSHConfig()
+    mocker.patch.object(dashboard, "pager_argv", return_value=["less", "-R"])
+    paged = mocker.patch.object(dashboard, "_run_paged")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+
+    keys = _repo_menu_keys(group, "doctor", ssh_policy=policy, over_ssh=True)
+    assert _drive_run(mocker, keys, [group], remote=True, over_ssh=True, ssh_policy=policy) == 0
+
+    paged.assert_not_called()
+    child.assert_called_once_with(["jailbee", "doctor"], check=False, cwd=tmp_path)
+    wait.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("verb", "argv"),
+    [("disk-usage", ["disk-usage"]), ("prune", ["prune"])],
+    ids=["disk-usage", "prune"],
+)
+@pytest.mark.parametrize("over_ssh", [False, True], ids=["local", "ssh-default"])
+def test_repo_disk_usage_and_prune_run_in_the_terminal_with_a_pause(
+    mocker, tmp_path, verb, argv, over_ssh
+):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path)
+    policy = RemoteSSHConfig() if over_ssh else None
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+
+    keys = _repo_menu_keys(group, verb, ssh_policy=policy, over_ssh=over_ssh)
+    assert (
+        _drive_run(mocker, keys, [group], remote=over_ssh, over_ssh=over_ssh, ssh_policy=policy)
+        == 0
+    )
+
+    flags = [] if over_ssh else ["--config", str(group.config_path)]
+    child.assert_called_once_with(["jailbee", *argv, *flags], check=False, cwd=tmp_path)
+    assert "--yes-to-all" not in child.call_args.args[0]
+    wait.assert_called_once()
+
+
+def test_repo_doctor_failure_is_a_notice(mocker, tmp_path):
+    group = _cfg_group(tmp_path)
+    mocker.patch.object(dashboard, "pager_argv", return_value=None)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 1
+    mocker.patch.object(dashboard, "_wait_for_return")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    _drive_run(mocker, _repo_menu_keys(group, "doctor"), [group])
+
+    assert "'jailbee doctor' exited 1" in _notices(render)

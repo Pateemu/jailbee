@@ -1377,6 +1377,10 @@ def open_repo_menu(
         extras = dact.repo_extras(ssh_policy, over_ssh=over_ssh)
         if extras.apply is not None:
             actions.append(extras.apply)
+        if extras.diagnostics:
+            actions.append(MenuGroup(dact.DIAGNOSTICS_LABEL, extras.diagnostics))
+        if extras.prune is not None:
+            actions.append(extras.prune)
     actions.append(("Unfold" if prefix in folded else "Fold", "fold"))
     return RepoMenuState(prefix, actions)
 
@@ -3768,6 +3772,14 @@ def run(
                                     overlay = open_group_picker("repo-group", target)
                                 elif verb == dact.REPO_APPLY:
                                     overlay = dact.apply_picker(target)
+                                elif verb == dact.REPO_DOCTOR:
+                                    run_dashboard_command(
+                                        target, "repo", dact.doctor_argv(), style="paged"
+                                    )
+                                elif verb == dact.REPO_DISK_USAGE:
+                                    run_dashboard_command(target, "repo", dact.disk_usage_argv())
+                                elif verb == dact.REPO_PRUNE:
+                                    run_dashboard_command(target, "repo", dact.prune_argv())
                                 elif verb == "fold":
                                     folded = toggle_folded(folded, target)
                                     persist_view_state(
