@@ -192,3 +192,33 @@ def test_read_sessions_survives_an_adapter_that_raises(monkeypatch, tmp_path):
     got = agent_status.read_sessions([("broken", tmp_path), ("fine", tmp_path)])
 
     assert got == [_s(1, 11)]
+
+
+def test_the_same_namespace_pid_in_two_containers_keeps_both_sessions():
+    """Inner pids are namespace-local, so two containers routinely share one.
+    Only the start time tells the sessions apart."""
+    sessions = [_s(10, 500, "waiting"), _s(10, 600, "busy")]
+    out = _match(sessions, {"a": {1010: 500}, "b": {2020: 600}}, {1010: 10, 2020: 10})
+
+    assert [(s.state, s.count) for s in out["a"]] == [("waiting", 1)]
+    assert [(s.state, s.count) for s in out["b"]] == [("busy", 1)]
+
+
+def test_two_sessions_with_one_start_time_are_told_apart_by_pid():
+    sessions = [_s(10, 500, "waiting"), _s(11, 500, "busy")]
+    out = _match(sessions, {"a": {1010: 500}}, {1010: 11})
+
+    assert [(s.state, s.count) for s in out["a"]] == [("busy", 1)]
+
+
+def test_no_containers_is_an_empty_result():
+    assert _match([_s(10, 500)], {}, {}) == {}
+
+
+def test_live_sessions_are_keyed_by_pid_and_start_together():
+    """Within one container a pid is unique in practice, but the key must not
+    rely on it: distinct (pid, start) pairs are distinct sessions."""
+    sessions = [_s(10, 500, "waiting"), _s(10, 600, "busy")]
+    out = _match(sessions, {"a": {1: 500, 2: 600}}, {1: 10, 2: 10})
+
+    assert [s.count for s in out["a"]] == [2]
