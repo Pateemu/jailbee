@@ -1309,8 +1309,11 @@ def test_sync_container_writes_every_key_and_retires_stale_ones():
     script = incus.exec_with_input.call_args.args[2]
     assert "/etc/jailbee/litellm-personal.key" in script
     assert "/etc/jailbee/litellm-work.key" in script
-    assert f"for f in {ll.CONTAINER_KEY_GLOB}" in script
-    assert script.index("litellm-work.key") < script.index(f'mv "$tmp" {ll.CONTAINER_FILE}')
+    publish = script.index(f'mv "$tmp" {ll.CONTAINER_FILE}')
+    for account in ("personal", "work"):
+        assert script.index(f'mv "$tmp" /etc/jailbee/litellm-{account}.key') < publish
+    # The old JSON may still name a stale key until the new one replaces it.
+    assert publish < script.index(f"for f in {ll.CONTAINER_KEY_GLOB}")
 
 
 def test_the_stale_key_loop_removes_only_unlisted_keys(tmp_path: Path):

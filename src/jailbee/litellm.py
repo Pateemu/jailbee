@@ -646,13 +646,15 @@ def sync_container(incus: Incus, name: str, payload: dict[str, object] | None) -
             f"printf '%s\\n' '{key}' > \"$tmp\"",
             f'chmod 0640 "$tmp"; chown root:{CONTAINER_USERNAME} "$tmp"; mv "$tmp" {target}',
         ]
+    # Keys first, then the JSON naming them, then the stale keys: the JSON
+    # on disk never points at a key file that is not there.
     lines += [
-        _stale_key_loop(targets, CONTAINER_KEY_GLOB),
         "tmp=$(mktemp)",
         "cat > \"$tmp\" <<'JB_EOF'",
         body,
         "JB_EOF",
         f'chmod 0644 "$tmp"; mv "$tmp" {CONTAINER_FILE}',
+        _stale_key_loop(targets, CONTAINER_KEY_GLOB),
     ]
     incus.exec_with_input(name, ["bash", "-s"], "\n".join(lines) + "\n", timeout=30)
 
