@@ -10,7 +10,8 @@ from jailbee.config import Config, ConfigError
 from jailbee.constants import SHARED_SUBDIRS
 from jailbee.egress import EgressEntry, build_egress_entries
 from jailbee.incus import Incus, IncusError
-from jailbee.network import acl_name, allowlist_acl_yaml
+from jailbee.network import SERVICES_ACL, acl_name, allowlist_acl_yaml
+from jailbee.services_acl import ensure_services_acl
 from jailbee.profiles import (
     CLAUDE_CREDS_DEVICE,
     base_profile_yaml,
@@ -97,9 +98,10 @@ def run_init(
     _apply_profile_strict(incus, names.binds, binds_profile_yaml(cfg))
 
     # ACL must exist before the strict net profile, which references it via
-    # `security.acls: <repo>-allowlist`. Otherwise Incus rejects the eth0
-    # device with "Network ACL ... does not exist".
+    # `security.acls: <repo>-allowlist,jailbee-services`. Otherwise Incus
+    # rejects eth0 with "Network ACL ... does not exist".
     apply_allowlist_acl(cfg, incus, mirror_endpoint=mirror_endpoint)
+    ensure_services_acl(incus)
 
     # Attach the ACL also at the bridge network level.
     ensure_acl_attached_to_bridge(cfg, incus)
@@ -546,11 +548,13 @@ def ensure_acl_attached_to_bridge(cfg: Config, incus: Incus) -> None:
     Idempotent. Preserves entries from other jailbee-managed repos that
     share `incusbr0`.
     """
+    ensure_services_acl(incus)
     name = acl_name(cfg)
     if attach_acl_to_bridge(incus, name):
         success(f"ACL {name} attached to {BRIDGE_NETWORK}")
     else:
         info(f"ACL {name} already attached to {BRIDGE_NETWORK}")
+    attach_acl_to_bridge(incus, SERVICES_ACL)
 
 
 def ensure_loose_bridge(incus: Incus) -> None:

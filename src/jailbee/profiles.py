@@ -16,7 +16,7 @@ from jailbee.accounts.adapters.claude import (
 )
 from jailbee.config import CONTAINER_USERNAME, NET_DESCRIPTIONS, Config
 from jailbee.gui import host_wayland_socket
-from jailbee.network import acl_name
+from jailbee.network import strict_nic_acls
 
 LOOSE_PROFILE_SUFFIX = "-net-loose"
 """Suffix of the per-repo loose network profile (``<prefix>-net-loose``).
@@ -484,7 +484,7 @@ def net_profile_yaml(cfg: Config, mode: str) -> str:
     eth0: dict[str, str] = {
         "type": "nic",
         "network": "incusbr0",
-        "security.acls": acl_name(cfg),
+        "security.acls": ",".join(strict_nic_acls(cfg)),
     }
     names = profile_names(cfg)
     profile = {

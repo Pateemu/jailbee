@@ -77,9 +77,10 @@ def switch_work_network(
     verify_work_nic(incus, name, ip)
 
     from jailbee import work_acl
-    from jailbee.network import acl_name
+    from jailbee.network import strict_nic_acls
+    from jailbee.services_acl import ensure_services_acl
 
-    strict_acl = acl_name(cfg)
+    strict_acl = ",".join(strict_nic_acls(cfg))
     target = f"{cfg.container_prefix}-net-work-{mode}"
     marker_profiles = {
         f"{cfg.container_prefix}-net-work-strict",
@@ -96,6 +97,7 @@ def switch_work_network(
             except Exception:
                 # The strict marker remains authoritative until profile assign
                 # succeeds; restore its enforcement before surfacing failure.
+                ensure_services_acl(incus)
                 incus.config_device_set(name, "eth0", {"security.acls": strict_acl})
                 raise
             work_acl.revoke_work_loose(cfg, incus, name)

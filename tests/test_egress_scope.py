@@ -392,7 +392,7 @@ def test_apply_container_acl_writes_acl_and_overrides_the_nic(make_cfg, tmp_path
         {
             "type": "nic",
             "network": "incusbr0",
-            "security.acls": "myrepo-allowlist,myrepo-feat-extra",
+            "security.acls": "myrepo-allowlist,myrepo-feat-extra,jailbee-services",
         },
     )
 
@@ -413,7 +413,14 @@ def test_apply_container_acl_creates_the_acl_when_it_does_not_exist(make_cfg, tm
 
     egress_scope.apply_container_acl(cfg, incus, "myrepo-feat", mode="strict")
 
-    incus.network_acl_create.assert_called_once_with("myrepo-feat-extra")
+    incus.network_acl_create.assert_any_call("myrepo-feat-extra")
+    incus.network_acl_create.assert_any_call("jailbee-services")
+    create_idx = next(
+        i for i, call in enumerate(incus.mock_calls)
+        if call[0] == "network_acl_create" and call.args == ("jailbee-services",)
+    )
+    device_idx = next(i for i, call in enumerate(incus.mock_calls) if call[0] == "config_device_override")
+    assert create_idx < device_idx
 
 
 def test_apply_container_acl_does_not_recreate_an_existing_acl(make_cfg, tmp_path, mocker):
@@ -564,8 +571,9 @@ def test_apply_container_acl_skips_nic_work_when_nothing_has_ever_resolved(
 
     egress_scope.apply_container_acl(cfg, incus, "myrepo-feat", mode="strict")
 
-    incus.network_acl_set_yaml.assert_not_called()
-    incus.network_acl_create.assert_not_called()
+    incus.network_acl_set_yaml.assert_called_once()
+    assert incus.network_acl_set_yaml.call_args.args[0] == "jailbee-services"
+    incus.network_acl_create.assert_called_once_with("jailbee-services")
     incus.config_device_override.assert_not_called()
     incus.config_device_set.assert_not_called()
 
@@ -594,9 +602,37 @@ def test_apply_container_acl_updates_an_existing_override_in_place(make_cfg, tmp
         {
             "type": "nic",
             "network": "incusbr0",
-            "security.acls": "myrepo-allowlist,myrepo-feat-extra",
+            "security.acls": "myrepo-allowlist,myrepo-feat-extra,jailbee-services",
         },
     )
+
+
+def test_existing_strict_override_creates_services_acl_before_device_set(make_cfg, tmp_path, mocker):
+    mocker.patch(
+        "jailbee.egress_scope._resolve_entries_tolerant",
+        return_value=[
+            EgressEntry(destinations=["10.0.5.7"], port=443, description="nexus.corp:443")
+        ],
+    )
+    cfg = make_cfg(tmp_path / "myrepo")
+    incus = _incus_with(
+        mocker,
+        extras=["nexus.corp:443"],
+        local_eth0={"type": "nic", "network": "incusbr0", "security.acls": "stale"},
+    )
+    incus.network_acl_exists.side_effect = lambda acl: acl != "jailbee-services"
+
+    egress_scope.apply_container_acl(cfg, incus, "myrepo-feat", mode="strict")
+
+    assert incus.config_device_set.call_args.args[2]["security.acls"] == (
+        "myrepo-allowlist,myrepo-feat-extra,jailbee-services"
+    )
+    create_idx = next(
+        i for i, call in enumerate(incus.mock_calls)
+        if call[0] == "network_acl_create" and call.args == ("jailbee-services",)
+    )
+    set_idx = next(i for i, call in enumerate(incus.mock_calls) if call[0] == "config_device_set")
+    assert create_idx < set_idx
 
 
 def test_drop_container_acl_deletes_only_an_existing_acl(mocker):

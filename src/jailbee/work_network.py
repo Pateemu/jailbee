@@ -156,8 +156,9 @@ def verify_work_nic(incus: Incus, name: str, ip: str) -> None:
 def reconcile_work_nic(cfg: Config, incus: Incus, raw: dict[str, object]) -> None:
     """Rebuild a work instance's local NIC ACLs, retaining its bridge and IP."""
     from jailbee.egress_scope import container_extras, extra_acl_name
-    from jailbee.network import acl_name
+    from jailbee.network import strict_nic_acls
     from jailbee.network_generation import generation_of
+    from jailbee.services_acl import ensure_services_acl
 
     if generation_of(cfg, raw) != "work":
         return
@@ -175,11 +176,13 @@ def reconcile_work_nic(cfg: Config, incus: Incus, raw: dict[str, object]) -> Non
     profile_value = raw.get("profiles")
     profiles = profile_value if isinstance(profile_value, list) else []
     loose = any(isinstance(p, str) and p.endswith("-net-work-loose") for p in profiles)
-    acls = [] if loose else [acl_name(cfg)]
+    acls = [] if loose else strict_nic_acls(cfg)
     if not loose and container_extras(incus, name):
         extra = extra_acl_name(name)
         if incus.network_acl_exists(extra):
-            acls.append(extra)
+            acls.insert(-1, extra)
     desired = work_nic(ip, acls)
     if device != desired:
+        if not loose:
+            ensure_services_acl(incus)
         incus.config_device_set(name, "eth0", desired)

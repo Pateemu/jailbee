@@ -282,6 +282,9 @@ def run_apply(
         profile_yamls.update(work_profile_yamls(cfg))
     offline_migrated = _drop_offline_net_profile(cfg, incus)
 
+    from jailbee.services_acl import ensure_services_acl
+
+    ensure_services_acl(incus)
     info("Checking profiles...")
     profiles_changed: list[str] = []
     profiles_unchanged: list[str] = []

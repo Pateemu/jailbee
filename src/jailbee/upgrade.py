@@ -235,6 +235,14 @@ UPGRADE_NOTES: tuple[UpgradeNote, ...] = (
             "legacy containers remain on legacy networking"
         ),
     ),
+    UpgradeNote(
+        version=(1, 7, 0),
+        actions=frozenset({"apply"}),
+        reason=(
+            "strict network profiles list the new host-wide `jailbee-services` ACL, "
+            "through which containers reach `jailbee litellm`"
+        ),
+    ),
 )
 """What each release requires, ascending by version. Maintained by hand.
 

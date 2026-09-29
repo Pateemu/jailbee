@@ -596,7 +596,7 @@ def test_net_strict_profile_attaches_acl():
     assert eth0["type"] == "nic"
     assert eth0["network"] == "incusbr0"
     # _cfg() loads fixtures from tests/fixtures/, so repo_root.name == "tests"
-    assert eth0["security.acls"] == f"{cfg.container_prefix}-allowlist"
+    assert eth0["security.acls"] == f"{cfg.container_prefix}-allowlist,jailbee-services"
 
 
 # ---------- ProfileNames factory + per-repo names

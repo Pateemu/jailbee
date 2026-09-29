@@ -275,6 +275,26 @@ def test_run_apply_pushes_changed_profile(make_cfg, tmp_path: Path, mocker: Mock
     assert pushed_name == names.binds
 
 
+def test_run_apply_ensures_services_acl_before_profile_write(make_cfg, tmp_path, mocker):
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+
+    cfg = make_cfg(tmp_path)
+    incus = MagicMock(spec=Incus)
+    incus.list_containers.return_value = []
+    incus.network_get.return_value = ""
+    incus.network_acl_exists.side_effect = lambda acl: acl != "jailbee-services"
+    incus.profile_exists.return_value = False
+    mocker.patch("jailbee.apply._acl_differs", return_value=False)
+
+    run_apply(cfg, incus, GlobalConfig(), no_restart=True)
+
+    calls = incus.mock_calls
+    create_idx = next(i for i, call in enumerate(calls) if call[0] == "network_acl_create" and call.args == ("jailbee-services",))
+    profile_idx = next(i for i, call in enumerate(calls) if call[0] == "profile_set_yaml")
+    assert create_idx < profile_idx
+
+
 def test_run_apply_creates_user_shared_cache_dirs(
     make_cfg, tmp_path: Path, mocker: MockerFixture
 ) -> None:
@@ -2372,7 +2392,10 @@ def test_run_apply_creates_the_repo_acl_before_refreshing_the_pool(
     incus = MagicMock(spec=Incus)
     incus.list_containers.return_value = []
     incus.network_acl_list.return_value = []
-    incus.network_acl_exists.return_value = False
+    incus.network_acl_exists.side_effect = lambda name: (
+        name == "jailbee-services"
+        and any(call.args == (name,) for call in incus.network_acl_create.call_args_list)
+    )
     incus.network_get.return_value = ""
     incus.profile_exists.return_value = True
     mocker.patch("jailbee.apply._profile_differs", return_value=False)
@@ -2387,7 +2410,8 @@ def test_run_apply_creates_the_repo_acl_before_refreshing_the_pool(
 
     run_apply(cfg, incus, GlobalConfig(), confirm_fn=lambda _m: False)
 
-    incus.network_acl_create.assert_called_once_with(acl_name(cfg))
+    incus.network_acl_create.assert_any_call(acl_name(cfg))
+    incus.network_acl_create.assert_any_call("jailbee-services")
     assert created_before_refresh == [True]
 
 

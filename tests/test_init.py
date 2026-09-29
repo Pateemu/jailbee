@@ -277,14 +277,21 @@ def test_init_creates_acl(tmp_path):
     cfg = cfg.model_copy(update={"shared_dir": tmp_path / "shared"})
     incus = MagicMock()
     incus.profile_exists.return_value = False
-    incus.network_acl_exists.return_value = False
+    incus.network_acl_exists.side_effect = lambda name: (
+        name == "jailbee-services"
+        and any(call.args == (name,) for call in incus.network_acl_create.call_args_list)
+    )
     incus.network_get.return_value = ""
     incus.network_exists.return_value = True
 
     run_init(cfg, incus)
 
-    incus.network_acl_create.assert_called_with(f"{cfg.container_prefix}-allowlist")
-    incus.network_acl_set_yaml.assert_called_once()
+    assert [call.args[0] for call in incus.network_acl_create.call_args_list] == [
+        f"{cfg.container_prefix}-allowlist", "jailbee-services"
+    ]
+    assert [call.args[0] for call in incus.network_acl_set_yaml.call_args_list] == [
+        f"{cfg.container_prefix}-allowlist", "jailbee-services"
+    ]
 
 
 def test_init_applies_acl_before_strict_net_profile(tmp_path):
@@ -312,6 +319,39 @@ def test_init_applies_acl_before_strict_net_profile(tmp_path):
         f"ACL set_yaml (idx {acl_idx}) must come before "
         f"{strict_name} profile set_yaml (idx {strict_idx})"
     )
+
+
+def test_init_creates_services_acl_before_strict_profile_and_bridge(tmp_path):
+    cfg = load_config(FIXTURES / "full_config.yaml")
+    cfg = cfg.model_copy(update={"shared_dir": tmp_path / "shared"})
+    incus = MagicMock()
+    incus.profile_exists.return_value = False
+    incus.network_acl_exists.return_value = False
+    attached = []
+    incus.network_get.side_effect = lambda *_: ",".join(attached)
+    incus.network_set.side_effect = lambda _bridge, _key, value: attached.__setitem__(
+        slice(None), value.split(",")
+    )
+    incus.network_exists.return_value = True
+
+    run_init(cfg, incus)
+
+    calls = incus.mock_calls
+    acl_idx = next(
+        i for i, call in enumerate(calls)
+        if call[0] == "network_acl_create" and call.args == ("jailbee-services",)
+    )
+    strict_idx = next(
+        i for i, call in enumerate(calls)
+        if call[0] == "profile_set_yaml"
+        and call.args[0] == f"{cfg.container_prefix}-net-strict"
+    )
+    bridge_idx = next(
+        i for i, call in enumerate(calls)
+        if call[0] == "network_set" and "jailbee-services" in call.args[2].split(",")
+    )
+    assert acl_idx < bridge_idx < strict_idx
+    assert attached == [f"{cfg.container_prefix}-allowlist", "jailbee-services"]
 
 
 def test_init_raises_when_profile_already_exists(tmp_path):
@@ -352,10 +392,13 @@ def test_init_acl_edit_nft_flush_chain_missing_swallowed_on_first_run(tmp_path):
     cfg = cfg.model_copy(update={"shared_dir": tmp_path / "shared"})
     incus = MagicMock()
     incus.profile_exists.return_value = False
-    incus.network_acl_exists.return_value = False
+    incus.network_acl_exists.side_effect = lambda name: (
+        name == "jailbee-services"
+        and any(call.args == (name,) for call in incus.network_acl_create.call_args_list)
+    )
     incus.network_get.return_value = ""
     incus.network_exists.return_value = True
-    incus.network_acl_set_yaml.side_effect = IncusError(NFT_FLUSH_MISSING_STDERR)
+    incus.network_acl_set_yaml.side_effect = [IncusError(NFT_FLUSH_MISSING_STDERR), None]
 
     # Should NOT raise.
     run_init(cfg, incus)
@@ -439,7 +482,10 @@ def test_run_init_creates_per_repo_profiles(make_cfg, tmp_path):
     cfg = make_cfg(repo, shared_dir=tmp_path / "shared")
     incus = MagicMock()
     incus.profile_exists.return_value = False
-    incus.network_acl_exists.return_value = False
+    incus.network_acl_exists.side_effect = lambda name: (
+        name == "jailbee-services"
+        and any(call.args == (name,) for call in incus.network_acl_create.call_args_list)
+    )
     incus.network_get.return_value = ""
     incus.network_exists.return_value = True
 
@@ -452,7 +498,7 @@ def test_run_init_creates_per_repo_profiles(make_cfg, tmp_path):
     assert "myrepo-net-loose" in created
 
     acl_created = [call.args[0] for call in incus.network_acl_create.call_args_list]
-    assert acl_created == ["myrepo-allowlist"]
+    assert acl_created == ["myrepo-allowlist", "jailbee-services"]
 
 
 # ---- ensure_acl_attached_to_bridge ----
@@ -470,11 +516,9 @@ def test_init_attaches_acl_to_bridge_when_missing(tmp_path):
     run_init(cfg, incus)
 
     name = f"{cfg.container_prefix}-allowlist"
-    incus.network_set.assert_called_once_with(
-        "incusbr0",
-        "security.acls",
-        name,
-    )
+    assert [call.args[2] for call in incus.network_set.call_args_list] == [
+        name, "jailbee-services"
+    ]
 
 
 def test_init_skips_attach_when_already_present(tmp_path):
@@ -488,7 +532,9 @@ def test_init_skips_attach_when_already_present(tmp_path):
 
     run_init(cfg, incus)
 
-    incus.network_set.assert_not_called()
+    incus.network_set.assert_called_once_with(
+        "incusbr0", "security.acls", f"{cfg.container_prefix}-allowlist,jailbee-services"
+    )
 
 
 def test_attach_acl_to_bridge_appends_and_reports_the_change():
@@ -557,11 +603,9 @@ def test_init_preserves_other_repo_acls(tmp_path):
     run_init(cfg, incus)
 
     name = f"{cfg.container_prefix}-allowlist"
-    incus.network_set.assert_called_once_with(
-        "incusbr0",
-        "security.acls",
-        f"otherrepo-allowlist,{name}",
-    )
+    assert [call.args[2] for call in incus.network_set.call_args_list] == [
+        f"otherrepo-allowlist,{name}", "otherrepo-allowlist,jailbee-services"
+    ]
 
 
 def test_init_attaches_after_acl_created(tmp_path):

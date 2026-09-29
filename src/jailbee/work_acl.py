@@ -12,8 +12,9 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from jailbee.egress_scope import extra_acl_name
-from jailbee.network import acl_name, extra_acl_yaml, work_loose_rule
+from jailbee.network import SERVICES_ACL, acl_name, extra_acl_yaml, strict_nic_acls, work_loose_rule
 from jailbee.network_generation import WORK_BRIDGE
+from jailbee.services_acl import ensure_services_acl
 
 if TYPE_CHECKING:
     from jailbee.config import Config
@@ -136,11 +137,12 @@ def _set_loose_acl(
 
 def ensure_work_repo_acl(cfg: Config, incus: Incus) -> None:
     """Attach the repo's ordinary allowlist and live extras union to work bridge."""
+    ensure_services_acl(incus)
     occupants = _work_occupants(incus)
     if not incus.network_acl_exists(acl_name(cfg)):
         raise ValueError(f"Missing repo allowlist ACL {acl_name(cfg)}")
     attached = _attached(incus)
-    additions = [acl_name(cfg)]
+    additions = [acl_name(cfg), SERVICES_ACL]
     extra_names = sorted(
         {
             extra_acl_name(item["name"])
@@ -202,7 +204,7 @@ def apply_work_container_acl(
         container_extras,
         extra_acl_name,
     )
-    from jailbee.network import acl_name, extra_acl_yaml
+    from jailbee.network import extra_acl_yaml
 
     raw = next((c for c in incus.list_containers() if c.get("name") == name), None)
     if raw is None:
@@ -236,7 +238,7 @@ def apply_work_container_acl(
             incus.network_acl_create(extras_name)
         incus.network_acl_set_yaml(extras_name, extra_acl_yaml(extras_name, entries))
     keep_extra_acl = bool(raw_extras) and (bool(entries) or incus.network_acl_exists(extras_name))
-    acls = [] if loose else [acl_name(cfg), *([extras_name] if keep_extra_acl else [])]
+    acls = [] if loose else strict_nic_acls(cfg, *([extras_name] if keep_extra_acl else []))
     local_devices = raw.get("devices") or {}
     local_nic = local_devices.get("eth0")
     if not isinstance(local_nic, dict) or local_nic.get("network") != WORK_BRIDGE:
@@ -244,6 +246,8 @@ def apply_work_container_acl(
     desired = dict(local_nic)
     desired["security.acls"] = ",".join(acls)
     if local_nic != desired:
+        if not loose:
+            ensure_services_acl(incus)
         incus.config_device_set(name, "eth0", desired)
     if not raw_extras and incus.network_acl_exists(extras_name):
         incus.network_acl_delete(extras_name)

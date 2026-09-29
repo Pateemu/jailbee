@@ -1364,7 +1364,7 @@ def test_new_work_generation_assigns_stable_filtered_nic(tmp_path, mocker, db_se
             "network": "jailbee-work",
             "ipv4.address": "10.10.0.2",
             "security.ipv4_filtering": "true",
-            "security.acls": f"{cfg.container_prefix}-allowlist",
+            "security.acls": f"{cfg.container_prefix}-allowlist,jailbee-services",
         },
     )
 
@@ -5284,7 +5284,7 @@ def test_work_switch_restores_strict_acl_when_marker_update_fails(make_cfg, tmp_
 
     assert incus.config_device_set.call_args_list == [
         mocker.call(name, "eth0", {"security.acls": ""}),
-        mocker.call(name, "eth0", {"security.acls": "myrepo-allowlist"}),
+        mocker.call(name, "eth0", {"security.acls": "myrepo-allowlist,jailbee-services"}),
     ]
 
 

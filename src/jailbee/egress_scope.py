@@ -501,7 +501,11 @@ def _materialise_container_acl(
     runs against whatever ACL already exists, so `security.acls` stays
     correct for `mode` either way.
     """
-    from jailbee.network import acl_name, extra_acl_yaml
+    from jailbee.network import extra_acl_yaml, strict_nic_acls
+    from jailbee.services_acl import ensure_services_acl
+
+    if mode != "loose":
+        ensure_services_acl(incus)
 
     extras = container_extras(incus, name)
     extra_name = extra_acl_name(name)
@@ -530,7 +534,7 @@ def _materialise_container_acl(
     # through to the NIC/device sync, which only depends on the ACL NAME,
     # not its content.
 
-    desired = _desired_eth0(cfg, [acl_name(cfg), extra_name])
+    desired = _desired_eth0(cfg, strict_nic_acls(cfg, extra_name))
     existing = _local_eth0(incus, name)
     if existing == desired:
         return

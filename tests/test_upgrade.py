@@ -82,12 +82,26 @@ def test_manifest_is_ascending_and_well_formed() -> None:
 def test_upcoming_network_generation_upgrade_note_advises_apply():
     from jailbee.upgrade import UPGRADE_NOTES
 
-    notes = [note for note in UPGRADE_NOTES if note.version == (1, 7, 0)]
+    notes = [
+        note
+        for note in UPGRADE_NOTES
+        if note.version == (1, 7, 0) and "work-network" in note.reason
+    ]
     assert len(notes) == 1
     assert notes[0].actions == frozenset({"apply"})
     assert "work-network" in notes[0].reason
     assert "profiles" in notes[0].reason and "ACL" in notes[0].reason
     assert "remain on legacy networking" in notes[0].reason
+
+
+def test_upcoming_services_acl_upgrade_note_advises_apply():
+    from jailbee.upgrade import UPGRADE_NOTES
+
+    notes = [note for note in UPGRADE_NOTES if "jailbee-services" in note.reason]
+    assert len(notes) == 1
+    assert notes[0].version == (1, 7, 0)
+    assert notes[0].actions == frozenset({"apply"})
+    assert "strict network profiles" in notes[0].reason
 
 
 def test_manifest_shape_rejects_descending_versions() -> None:
