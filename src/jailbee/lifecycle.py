@@ -90,6 +90,10 @@ class ContainerInfo:
     # Recorded failure message of the job row, so UIs can explain *why* a job
     # failed. Not a `jailbee ls` column — `jailbee job ls` is where errors are listed.
     job_error: str | None = None
+    # The `optional_mounts` kinds attached right now, read from the instance's
+    # own `optional-<kind>` disk devices (`mounts.DEVICE_NAME_PREFIX`). The
+    # dashboard's Mount…/Unmount… pickers offer from this.
+    optional_mounts: tuple[str, ...] = ()
 
     @property
     def display_name(self) -> str:
@@ -294,6 +298,7 @@ def list_containers(
     completion) use it.
     """
     from jailbee.accounts import groups
+    from jailbee.mounts import DEVICE_NAME_PREFIX
 
     own_names = profile_names(cfg)
     own_net_to_mode = {v: k for k, v in own_names.net_by_mode.items()}
@@ -395,6 +400,15 @@ def list_containers(
                 # clean the corrupt label on its next pass.
                 loose_until = None
 
+        devices = raw.get("devices") or {}
+        attached = tuple(
+            sorted(
+                device.removeprefix(DEVICE_NAME_PREFIX)
+                for device in devices
+                if device.startswith(DEVICE_NAME_PREFIX)
+            )
+        )
+
         out.append(
             ContainerInfo(
                 name=raw["name"],
@@ -415,6 +429,7 @@ def list_containers(
                 init_pid=init_pid,
                 cpu_usage_ns=cpu_usage_ns,
                 cpu_limit=cpu_limit,
+                optional_mounts=attached,
             )
         )
 

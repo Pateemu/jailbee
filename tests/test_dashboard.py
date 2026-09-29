@@ -400,6 +400,31 @@ def test_gather_rows_carries_the_repos_loose_ttl_default(tmp_path, mocker, make_
     assert groups[0].loose_ttl_default == "45m"
 
 
+def test_gather_rows_carries_the_repos_optional_mount_kinds(tmp_path, mocker, make_cfg):
+    cfg = make_cfg(
+        tmp_path / "alpha",
+        optional_mounts={
+            "aws": {"host": str(tmp_path), "container": "/home/dev/.aws"},
+            "gcloud": {"host": str(tmp_path), "container": "/home/dev/.config/gcloud"},
+        },
+    )
+    root = tmp_path / "alpha"
+    mocker.patch.object(dashboard, "load_repo_config", return_value=cfg)
+
+    def fake_list(c, incus, *, all_repos, with_git_status, with_background):
+        return [] if all_repos else [_ci("alpha-one", "alpha")]
+
+    mocker.patch.object(dashboard, "list_containers", side_effect=fake_list)
+
+    groups = dashboard.gather_rows(mocker.MagicMock(), [root], cwd_root=root, with_git=False)
+
+    assert groups[0].optional_mounts == ("aws", "gcloud")
+
+
+def test_orphan_groups_have_no_optional_mounts():
+    assert dashboard.RepoGroup("orphan", None, None, []).optional_mounts == ()
+
+
 def test_gather_rows_loose_ttl_default_is_none_when_policy_disabled(tmp_path, mocker, make_cfg):
     """None tells the GUI not to ask: a disabled policy schedules no TTL."""
     cfg = make_cfg(tmp_path / "alpha", loose_auto_revert={"enabled": False})

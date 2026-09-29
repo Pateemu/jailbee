@@ -211,7 +211,10 @@ class RepoGroup:
     ``push_action_default``/``push_source_default`` mirror the repo's effective
     ``push.default_action``/``default_source``, so a front-end can tell whether
     `jailbee git push` would stop to ask a question its own child process
-    cannot answer. Orphan groups keep ``PushConfig``'s defaults."""
+    cannot answer. Orphan groups keep ``PushConfig``'s defaults.
+    ``optional_mounts`` lists the repo config's `optional_mounts:` kinds, which
+    the terminal menu's Mount…/Unmount… pickers choose from. Orphan groups keep
+    it empty."""
 
     prefix: str
     repo_root: str | None
@@ -222,6 +225,7 @@ class RepoGroup:
     push_action_default: str = "ask"
     push_source_default: str = "base"
     column_notice: str | None = None
+    optional_mounts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -506,6 +510,7 @@ def gather_rows(
                     warning for warning in cfg.column_warnings() if "ahead_diff" in warning
                 )
                 or None,
+                optional_mounts=tuple(cfg.optional_mounts),
             )
         )
 
