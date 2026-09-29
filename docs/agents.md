@@ -470,7 +470,7 @@ Claude carries every generic field from the table in
 `autostart`, `command`, `install`/`update`, `auto_update`, `install_network`,
 `shared`, `egress_allow`, `env`, `skills_dir`, `install_jailbee_skills` —
 plus Claude-only fields for its deeper integration (AI-generated PR
-descriptions, plugin marketplace egress, onboarding seeding):
+descriptions, plugin marketplace egress, agent view, onboarding seeding):
 
 - `plugins_enabled`
 - `agent_view`
@@ -508,11 +508,18 @@ containers of the repo will still contend for the lock, and `claude
 --continue` in one container may pick a session running in the background in
 another.
 
-The per-container mounts land when a container starts, so restart running
-containers after upgrading. The old shared `sessions/`, `daemon/`, `jobs/`
-and `daemon.*` files under `<shared_dir>/claude/` are left in place — a
-container not yet restarted still uses them — and can be deleted once every
-container of the repo has been restarted.
+The per-container mounts land when a container starts, so after upgrading run
+`jailbee apply` and then restart each running container through jailbee
+(`jailbee restart`, or `jailbee stop` then `jailbee start`). A plain
+`incus restart` never runs the mount attach. Until a container is restarted
+the dashboard's AGENT column shows `—` for it.
+
+The old shared `sessions/`, `daemon/` and `jobs/` directories under
+`<shared_dir>/claude/` are left in place — a container not yet restarted
+still uses them — and can be deleted once every container of the repo has
+been restarted. The top-level `daemon.lock`, `daemon.status.json` and
+`daemon.log` can be deleted only when `agent_view` is `false` (or no daemon is
+running): with `agent_view: true` they are still live and shared.
 
 ### Shared credential groups (`credentials`)
 

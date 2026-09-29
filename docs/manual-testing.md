@@ -4839,3 +4839,6 @@ shows three mounts sourced from `<shared_dir>/.private/<container>/claude/`;
 Claude Code does not open agent view; `/resume` in the second container lists
 a session made in the first. Start a session in each at the same
 in-container pid if you can arrange it: both rows show their own state.
+Then, with `agents.claude.agent_view: true` (apply, restart), a `claude --bg`
+job runs to completion — this guards against a rename across the new
+`daemon/` and `jobs/` mount boundaries.

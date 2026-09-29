@@ -168,7 +168,7 @@ before editing `## Unreleased`.
 ### Fixed
 
 - **Claude Code's session registry and background daemon no longer mix
-  between containers.** Every container of a repo shares `~/.claude`, and
+  between containers; agent view is off by default.** Every container of a repo shares `~/.claude`, and
   Claude Code keeps per-process state there: its live-session registry
   (`sessions/`) and the agent-view daemon's roster, dispatch queue and job
   state (`daemon/`, `jobs/`, `daemon.lock`). Daemons in two containers took
