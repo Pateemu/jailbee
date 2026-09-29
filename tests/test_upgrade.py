@@ -651,7 +651,7 @@ def test_upgrade_note_for_multi_agent_skill_sync_advises_apply() -> None:
 def test_the_skill_sync_note_survives_the_reason_cap() -> None:
     """Existence in the tuple is not a user surface. `format_advice` shows
     `MAX_REASONS` reasons per action and collapses the rest into "... and N
-    more", so a note added behind three others at the same version would
+    more", so a note added behind four others at the same version would
     never be read. Render the real manifest for the upgrade this note is
     written for — 1.5.0 to 1.6.0 — and require the reason itself."""
     from jailbee.upgrade import Watermark, format_advice, pending
@@ -667,6 +667,25 @@ def test_the_skill_sync_note_survives_the_reason_cap() -> None:
 
     assert any("skill-capable" in line for line in lines)
     assert not any("and 1 more" in line for line in lines)
+
+
+def test_the_restart_advice_survives_the_reason_cap_from_a_150_upgrade() -> None:
+    """From a 1.5.0 watermark there are four `apply` reasons by 1.7.0, and the
+    Claude runtime-isolation note is the only one that needs a container
+    restart. Render at the default cap: it must not fall into "... and N
+    more"."""
+    from jailbee.upgrade import Watermark, format_advice, pending
+
+    owed = pending(
+        "1.7.0",
+        {
+            "base_build": Watermark((1, 5, 0), observed=True),
+            "apply": Watermark((1, 5, 0), observed=True),
+        },
+    )
+    lines = format_advice(owed)
+
+    assert any("restart" in line for line in lines)
 
 
 def test_the_rendered_hint_names_only_the_apply_action() -> None:
@@ -709,7 +728,7 @@ def test_upgrade_note_for_the_issue_management_skill_advises_apply() -> None:
 
 def test_the_160_apply_notes_all_render_at_the_default_reason_cap() -> None:
     """1.6.0 carries two `apply` reasons (the multi-agent skill sync, the
-    issue-management skill) against a `MAX_REASONS` of three. Render through
+    issue-management skill) against a `MAX_REASONS` of four. Render through
     `pending`/`format_advice` at the *default* cap (no `max_reasons` override)
     to prove the new reason isn't collapsed into "... and N more": a note that
     exists but never renders is invisible to users."""

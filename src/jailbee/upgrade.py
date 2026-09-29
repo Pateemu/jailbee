@@ -369,7 +369,7 @@ def pending(
     return Pending(tuple(owed))
 
 
-MAX_REASONS = 3
+MAX_REASONS = 4
 """Reasons shown per action before collapsing into "... and N more".
 
 A user who skipped several releases should get a readable hint, not a wall.
