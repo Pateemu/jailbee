@@ -554,6 +554,7 @@ def test_live_session_prefixes_finds_a_session_in_a_containers_overlay(tmp_path:
 
 
 def test_live_session_prefixes_ignores_another_agents_private_dirs(tmp_path: Path) -> None:
+    """Guards against loosening the overlay glob to `*/*/sessions`."""
     shared = tmp_path / "shared"
     (shared / "claude").mkdir(parents=True)
     codex = shared / ".private" / "repo-a" / "codex" / "sessions"

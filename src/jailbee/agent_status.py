@@ -1,4 +1,4 @@
-"""Which agent sessions are live, and whose: the input to the AGENT column.
+"""Which agent sessions are live: the input to the AGENT column.
 
 An agent's session files say what state a session is in. They do not say
 whether it is still running. Each container records its sessions in its own

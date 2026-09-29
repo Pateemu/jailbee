@@ -212,6 +212,21 @@ def test_patch_keeps_comments_and_touches_one_key(tmp_path):
     assert plan.must_confirm is False
 
 
+def test_saving_an_unrelated_key_keeps_the_claude_agent_view_setting(tmp_path):
+    """`agents` is a leaf in the editor (its entries are not editable fields),
+    so a save must carry `agents.claude.agent_view: true` through untouched
+    under both policies, and the result must still load as `agent_view` on."""
+    text = "agents:\n  claude:\n    agent_view: true\ngpg:\n  enabled: false\n"
+    for policy in ("patch", "regenerate"):
+        layers = _layers(tmp_path, repo_text=text)
+        plan = build_plan(
+            layers, "repo", (YamlChange(("gpg", "enabled"), True),), repo_specs(), policy
+        )
+        saved = yaml.safe_load(plan.new_text)
+        assert saved["agents"]["claude"]["agent_view"] is True, policy
+        assert saved["gpg"]["enabled"] is True, policy
+
+
 def test_regenerate_over_a_hand_commented_file_demands_confirmation(tmp_path):
     text = "# my own note\ngpg:\n  enabled: false\n"
     layers = _layers(tmp_path, global_text=text)

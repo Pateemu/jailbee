@@ -9524,7 +9524,7 @@ def test_sample_ls_columns_takes_one_reading_and_no_sleep_for_agent_alone(
 
 def test_sample_ls_columns_matches_only_this_repos_rows(mocker, make_cfg, tmp_path):
     """Under `--all`, another repo's rows are never matched against this
-    repo's sessions (see `annotate_agent_status`). They stay `—`."""
+    repo's sessions (see `sample_ls_columns`). They stay `—`."""
     from jailbee.lifecycle import agent_homes, sample_ls_columns
 
     _, agents, sessions = _patch_ls_sampling(mocker)

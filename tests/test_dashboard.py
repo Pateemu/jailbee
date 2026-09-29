@@ -5921,8 +5921,7 @@ def test_sample_activity_flattens_every_group(mocker):
 
 
 def test_sample_activity_matches_agents_per_group_never_across_repos(mocker):
-    """Each group is matched against its own config homes only. The union
-    would let two repos' containers take each other's session."""
+    """Each group reads its own containers' session homes, from one sampler reading."""
     mocker.patch.object(dashboard, "annotate_activity")
     agents = mocker.patch.object(dashboard, "annotate_agent_status")
     p_home = (("p-a", "claude", Path("/s/p/.private/p-a/claude")),)

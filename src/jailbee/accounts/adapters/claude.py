@@ -354,7 +354,7 @@ def _session_dirs(member: Member) -> list[Path]:
     overlays = agent_private.private_tree(member.config_home.parent).glob(
         f"*/{CONFIG_HOME_SUBPATH}/{SESSIONS_DIRNAME}"
     )
-    return [member.config_home / SESSIONS_DIRNAME, *sorted(overlays)]
+    return [member.config_home / SESSIONS_DIRNAME, *overlays]
 
 
 def live_session_prefixes(found: Sequence[Member]) -> list[str]:
