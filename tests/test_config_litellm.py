@@ -97,6 +97,13 @@ def test_profile_tier_can_be_unset_with_null():
     assert "fable" not in cfg.effective_profiles()["codex"].tiers
 
 
+def test_profile_with_no_tiers_is_rejected():
+    with pytest.raises(ValidationError, match="profile 'empty' maps no tier"):
+        LiteLLMConfig.model_validate(
+            {"profiles": {"empty": {"fable": None, "opus": None, "sonnet": None, "haiku": None}}}
+        )
+
+
 def test_default_profile_must_exist():
     with pytest.raises(ValidationError, match="default_profile 'x' is not a profile"):
         LiteLLMConfig.model_validate({"default_profile": "x"})

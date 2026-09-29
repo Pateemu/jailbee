@@ -216,6 +216,8 @@ class LiteLLMConfig(BaseModel):
         routes = self.effective_routes()
         profiles = self.effective_profiles()
         for profile in profiles.values():
+            if not profile.tiers:
+                raise ValueError(f"profile '{profile.name}' maps no tier")
             for tier, route in profile.tiers.items():
                 if route not in routes:
                     raise ValueError(
