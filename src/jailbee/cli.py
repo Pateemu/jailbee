@@ -10746,6 +10746,25 @@ def litellm_status_cmd() -> None:
         raise typer.Exit(1)
 
 
+@litellm_app.command("ls")
+def litellm_ls_cmd() -> None:
+    """List profiles and routes as `claude-jb` uses them, globally and per repo."""
+    from jailbee.config.local_layer import all_local_litellm_views
+    from jailbee.global_config import default_global_config_path
+    from jailbee.litellm_listing import listing_lines
+    from jailbee.tui import warn, warn_plain
+
+    gcfg = _load_global()
+    cfg = gcfg.litellm
+    if not cfg.enabled:
+        warn("LiteLLM is disabled (`litellm.enabled: false`); this is what enabling it would serve.")
+    views, issues = all_local_litellm_views(cfg)
+    for line in listing_lines(cfg, views, global_origin=str(default_global_config_path())):
+        typer.echo(line)
+    for issue in issues:
+        warn_plain(issue)
+
+
 @litellm_app.command("login")
 def litellm_login_cmd(
     account: Annotated[

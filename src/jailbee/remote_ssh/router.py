@@ -327,6 +327,7 @@ _CONTAINER_COMMANDS = frozenset(
         "job log",
         "job ls",
         "ls",
+        "litellm ls",
         "litellm status",
         "net egress export",
         "net egress ls",

@@ -221,3 +221,33 @@ def test_logout_needs_a_running_proxy(mocker, context):
     result = runner.invoke(app, ["litellm", "logout"])
     assert result.exit_code == 1
     assert "jailbee litellm up" in result.output
+
+
+def test_ls_lists_host_and_repo_blocks(mocker, tmp_path, monkeypatch):
+    import yaml
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    repos = tmp_path / "jailbee" / "repos"
+    repos.mkdir(parents=True)
+    (repos / "myrepo.yaml").write_text(
+        yaml.safe_dump({"litellm": {"routes": {"sol-xhigh": {"effort": "max"}}}})
+    )
+    (repos / "broken.yaml").write_text(yaml.safe_dump({"litellm": {"default_profile": "nope"}}))
+    mocker.patch(
+        "jailbee.cli._load_global",
+        return_value=GlobalConfig.model_validate({"litellm": {"enabled": True}}),
+    )
+    result = runner.invoke(app, ["litellm", "ls"])
+    assert result.exit_code == 0, result.output
+    assert "codex*" in result.output
+    assert "repo myrepo" in result.output and "jb-myrepo.<route>" in result.output
+    # Rich folds long paths at the terminal width; compare without whitespace.
+    assert "repos/broken.yaml" in "".join(result.output.split())
+
+
+def test_ls_says_when_litellm_is_disabled(mocker, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    mocker.patch("jailbee.cli._load_global", return_value=GlobalConfig())
+    result = runner.invoke(app, ["litellm", "ls"])
+    assert result.exit_code == 0, result.output
+    assert "disabled" in result.output and "codex*" in result.output
