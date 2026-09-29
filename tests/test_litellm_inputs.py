@@ -292,11 +292,11 @@ def test_a_secret_only_a_repo_scope_references_is_reported_when_missing(config_h
 def test_a_missing_secret_names_the_repo_file_that_references_it(config_home: Path):
     from jailbee.config.models_litellm import LiteLLMConfig
 
-    _write_secrets("OTHER=x\n")
+    _write_secrets("OTHER=x\nSTORED=sk-live-abc123\n")
     scope = _repo_scope_with_key("OPENROUTER_API_KEY")
     with pytest.raises(LiteLLMInputError, match=r"named by /r/app\.yaml") as caught:
         load_host_inputs(LiteLLMConfig(), [scope], ["/r/app.yaml"])
-    assert "sk-" not in str(caught.value)
+    assert "sk-live-abc123" not in str(caught.value)
     with pytest.raises(LiteLLMInputError, match=r"named by /r/app\.yaml"):
         load_secrets(LiteLLMConfig(), None, scopes=[scope], scope_labels=["/r/app.yaml"])
 
@@ -308,4 +308,45 @@ def test_a_file_free_of_the_missing_secret_is_not_blamed(config_home: Path):
     scopes = [_repo_scope_with_key("OPENROUTER_API_KEY"), LiteLLMConfig()]
     with pytest.raises(LiteLLMInputError) as caught:
         load_host_inputs(LiteLLMConfig(), scopes, ["/r/a.yaml", "/r/b.yaml"])
+    assert "/r/a.yaml" in str(caught.value) and "/r/b.yaml" not in str(caught.value)
+
+
+def _overlay_scope(host: LiteLLMConfig, routes: dict[str, object]) -> LiteLLMConfig:
+    from jailbee.config.models_litellm import LiteLLMRepoOverlay
+
+    return host.with_overlay(LiteLLMRepoOverlay.model_validate({"routes": routes}))
+
+
+def test_a_secret_named_only_by_the_host_is_not_blamed_on_a_repo_file(config_home: Path):
+    """A scope is host + overlay, so the host's own route shows up in every scope."""
+    _write_secrets("OTHER=x\n")
+    host = _kimi_cfg()
+    scope = _overlay_scope(host, {"sol-xhigh": {"effort": "max"}})
+    with pytest.raises(LiteLLMInputError, match="does not define OPENROUTER_API_KEY") as caught:
+        load_host_inputs(host, [scope], ["/r/app.yaml"])
+    assert "/r/app.yaml" not in str(caught.value)
+    assert "named by" not in str(caught.value)
+
+
+def test_an_override_that_repoints_a_host_route_key_is_blamed(config_home: Path):
+    _write_secrets("OPENROUTER_API_KEY=sk-or-1\n")
+    host = _kimi_cfg()
+    scope = _overlay_scope(host, {"kimi": {"api_key": "OTHER_KEY"}})
+    with pytest.raises(
+        LiteLLMInputError, match=r"does not define OTHER_KEY.*named by /r/app\.yaml"
+    ):
+        load_host_inputs(host, [scope], ["/r/app.yaml"])
+
+
+def test_an_override_that_adds_a_keyed_route_is_blamed_but_an_untouching_one_is_not(
+    config_home: Path,
+):
+    _write_secrets("OTHER=x\n")
+    host = LiteLLMConfig()
+    adds = _overlay_scope(
+        host, {"mine": {"model": "openrouter/x/y", "context_window": 1000, "api_key": "MINE_KEY"}}
+    )
+    with pytest.raises(LiteLLMInputError) as caught:
+        load_host_inputs(host, [adds, _overlay_scope(host, {})], ["/r/a.yaml", "/r/b.yaml"])
+    assert "MINE_KEY" in str(caught.value)
     assert "/r/a.yaml" in str(caught.value) and "/r/b.yaml" not in str(caught.value)

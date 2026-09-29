@@ -183,6 +183,35 @@ def test_litellm_doctor_reports_an_input_problem(mocker):
     assert not row.ok and "OPENROUTER_API_KEY" in row.detail and "jailbee litellm up" in row.detail
 
 
+def test_litellm_doctor_names_the_repo_file_behind_a_missing_secret(mocker, monkeypatch, tmp_path):
+    from jailbee import litellm as ll
+    from jailbee.config.models_litellm import LiteLLMRepoOverlay
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    gcfg = _litellm_up(mocker, [ll.InstanceStatus("default", 4100, True, True, "present")])
+    scope = gcfg.litellm.with_overlay(
+        LiteLLMRepoOverlay.model_validate(
+            {
+                "routes": {
+                    "mine": {
+                        "model": "openrouter/x/y",
+                        "context_window": 1000,
+                        "api_key": "MINE_KEY",
+                    }
+                }
+            }
+        )
+    )
+    mocker.patch(
+        "jailbee.config.local_layer.local_litellm_scopes", return_value=({"app": scope}, [])
+    )
+    mocker.patch("jailbee.config.local_layer.scope_files", return_value=["/h/repos/app.yaml"])
+    mocker.patch("jailbee.litellm_inputs.load_host_inputs", _real_load_host_inputs)
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    row = _rows(gcfg)["litellm inputs"]
+    assert not row.ok and "MINE_KEY" in row.detail and "named by /h/repos/app.yaml" in row.detail
+
+
 @pytest.mark.parametrize("which", ["secrets", "extra"])
 def test_litellm_doctor_reports_an_unreadable_input_instead_of_raising(
     mocker, monkeypatch, tmp_path, which

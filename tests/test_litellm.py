@@ -1440,6 +1440,44 @@ def test_reconcile_restarts_only_the_account_whose_routes_changed(xdg):
     assert f"{ll.CONTAINER_STATE_DIR}/personal/config.yaml" not in _pushed(incus)
 
 
+def _keyed_scope(host):
+    """A repo scope whose override adds a route naming a secret nobody defines."""
+    scope = host.with_overlay(
+        LiteLLMRepoOverlay.model_validate(
+            {
+                "routes": {
+                    "mine": {
+                        "model": "openrouter/x/y",
+                        "context_window": 1000,
+                        "api_key": "MINE_KEY",
+                    }
+                }
+            }
+        )
+    )
+    return {"app": scope}, "/h/repos/app.yaml"
+
+
+def test_up_names_the_repo_file_behind_a_missing_secret(xdg, monkeypatch):
+    gcfg = _gcfg()
+    scopes, label = _keyed_scope(gcfg.litellm)
+    monkeypatch.setattr(ll, "local_litellm_scopes", lambda cfg: (scopes, []))
+    monkeypatch.setattr(ll, "scope_files", lambda s: [label])
+    with pytest.raises(LiteLLMInputError, match=r"MINE_KEY.*named by /h/repos/app\.yaml"):
+        ll.litellm_up(_incus(present=False), gcfg)
+
+
+def test_reconcile_names_the_repo_file_behind_a_missing_secret(xdg, monkeypatch):
+    gcfg = _gcfg()
+    incus = _incus(present=True)
+    ll.litellm_up(incus, gcfg)
+    scopes, label = _keyed_scope(gcfg.litellm)
+    monkeypatch.setattr(ll, "local_litellm_scopes", lambda cfg: (scopes, []))
+    monkeypatch.setattr(ll, "scope_files", lambda s: [label])
+    with pytest.raises(LiteLLMInputError, match=r"MINE_KEY.*named by /h/repos/app\.yaml"):
+        ll.litellm_reconcile(incus, gcfg)
+
+
 def test_reconcile_picks_up_a_new_repo_scope(xdg):
     incus = _incus(present=True)
     ll.litellm_up(incus, _gcfg())

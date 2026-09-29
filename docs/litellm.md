@@ -147,9 +147,11 @@ serve the previous routes; a later plain `jailbee apply` restarts them.
 
 `apply` sees an edit through the rendered instance files, and the proxy's egress
 allowlist is not part of them. An edit that changes **only** egress (a route's
-`egress` list, `litellm.egress` in `global.yaml`, or an override that adds a route
-with a new egress host) is therefore not applied by `jailbee apply`; run
-`jailbee litellm up`, which rewrites the allowlist. If the proxy needs more than a
+`egress` list on an existing route, or `litellm.egress` in `global.yaml`) is
+therefore not applied by `jailbee apply`; run `jailbee litellm up`, which rewrites
+the allowlist. An edit that also changes the rendered files, such as an override
+that adds a route (with or without a new egress host), makes `apply` restart the
+instance and rewrite the allowlist along with it. If the proxy needs more than a
 restart (a different LiteLLM version, a new account, an unattached state
 volume), `apply` says so and points at `jailbee litellm up`.
 
@@ -295,7 +297,7 @@ On the host, `jailbee litellm up`, `login` and `jailbee apply` can report:
 
 | Error | Remedy |
 |---|---|
-| `... does not define NAME`, `... does not exist` or `... has insecure permissions` (about `secrets.env`) | Add `NAME=value` to `~/.config/jailbee/litellm/secrets.env`, `chmod 600` it, run `jailbee litellm up`. When a repo override's route names the secret, the message adds `(named by .../repos/<prefix>.yaml)`; a missing secret there still blocks `up` and the proxy update in `apply` for every repo, since the proxy is shared. |
+| `... does not define NAME`, `... does not exist` or `... has insecure permissions` (about `secrets.env`) | Add `NAME=value` to `~/.config/jailbee/litellm/secrets.env`, `chmod 600` it, run `jailbee litellm up`. When a repo override adds a route or changes a route's `api_key` to the missing secret, the message adds `(named by .../repos/<prefix>.yaml)`; a secret named only in `global.yaml` is not attributed to any repo file. A missing secret there still blocks `up` and the proxy update in `apply` for every repo, since the proxy is shared. |
 | `cannot read ...` (about `secrets.env` or the `extra` file) | Make the file readable by your user and plain UTF-8 text, then run `jailbee litellm up`. |
 | `Several LiteLLM accounts are configured` | Name the account: `jailbee litellm login work`. |
 | `profile(s) ... have no proxy instance yet` (from `jailbee apply` or `jailbee new`) | Run `jailbee litellm up`, then `jailbee apply`. |

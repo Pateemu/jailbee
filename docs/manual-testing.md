@@ -154,7 +154,7 @@ never Astra.
    load naming the file. Restore the file.
    A YAML syntax error in the file is reported as `is not valid YAML (line N)`
    without quoting the line.
-5. Add `egress: [example.org]` to a route in the file and run `jailbee apply`:
+5. Add `egress: [example.org]` to an existing route in the file and run `jailbee apply`:
    it reports nothing to restart (egress is not part of the rendered instance
    files). `jailbee litellm up` then rewrites the allowlist.
 6. Set `litellm: {autostart: true}` in the same file, run `jailbee apply`, then
