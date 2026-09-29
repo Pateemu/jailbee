@@ -1145,53 +1145,66 @@ def test_repo_network_submenu_remains_gated_by_ssh_read_permission():
     assert all(not isinstance(item, dashboard.MenuGroup) for item in menu.actions)
 
 
-def test_run_opens_egress_panel_and_dispatches_scoped_add(mocker, tmp_path):
-    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
-    menu = dashboard.open_menu([group], "alpha-x")
+def _container_egress_keys(group: dashboard.RepoGroup, **menu_kwargs) -> list[bytes]:
+    """Keys that open the first container's Egress panel from the dashboard.
+
+    ``menu_kwargs`` (``remote``/``over_ssh``/``ssh_policy``) must match the
+    ``run()`` call: the menu an SSH session sees has other entries.
+    """
+    menu = dashboard.open_menu([group], group.containers[0].name, **menu_kwargs)
     assert menu is not None
-    network = next(
-        item
-        for item in dashboard.group_menu_actions(menu.actions, include_network=True)
-        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
-    )
+    root = dashboard.group_menu_actions(menu.actions, include_network=True)
     network_index = next(
         i
-        for i, item in enumerate(dashboard.group_menu_actions(menu.actions, include_network=True))
+        for i, item in enumerate(root)
         if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
     )
+    network = root[network_index]
+    assert isinstance(network, dashboard.MenuGroup)
     egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
-    rows = mocker.patch.object(dashboard, "load_egress_rows", return_value=())
-    prompt = mocker.patch("typer.prompt", return_value="example.com:8443")
-    child = mocker.patch.object(dashboard.subprocess, "run")
-    child.return_value.returncode = 0
-    mocker.patch.object(dashboard, "_wait_for_return")
-    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
-
-    keys = [
+    return [
         b"j",
         b"\r",
         *([b"j"] * network_index),
         b"\r",
         *([b"j"] * egress_index),
         b"\r",
-        b"a",
-        b"\x1b",
-        b"\x03",
     ]
+
+
+def test_egress_add_prompts_inline_then_runs_the_scoped_cli(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    rows = mocker.patch.object(dashboard, "load_egress_rows", return_value=())
+    prompt = mocker.patch("typer.prompt")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_egress_keys(group), b"a", *_keys("example.com:8443"), _ENTER, b"\x03"]
     assert _drive_run(mocker, keys, groups=[group]) == 0
 
     assert rows.call_count == 2  # initial load and post-mutation reload
     assert rows.call_args_list[0].args[0::2] == (tmp_path, "alpha-x")
-    prompt.assert_called_once()
+    prompt.assert_not_called()
     child.assert_called_once_with(
         ["jailbee", "net", "egress", "add", "example.com:8443", "alpha-x"],
         check=False,
         cwd=tmp_path,
     )
-    assert any(
-        isinstance(call.kwargs.get("overlay"), dashboard.EgressState)
-        for call in render.call_args_list
-    )
+    calls = render.call_args_list
+    asked = [
+        i
+        for i, call in enumerate(calls)
+        if isinstance(call.kwargs.get("overlay"), dashboard.TextPrompt)
+        and call.kwargs["overlay"].purpose == "egress-add"
+    ]
+    assert asked, "the destination question was never drawn in the frame"
+    # While the question is open the cursor stays on the container the panel
+    # is about, not the repo header.
+    assert calls[asked[0]].args[1] == dashboard.Row("container", "alpha-x")
+    # After the submit the panel is back, with the reloaded rows.
+    assert isinstance(calls[-1].kwargs.get("overlay"), dashboard.EgressState)
 
 
 def test_ssh_egress_read_view_is_read_only_even_with_full_policy(mocker, tmp_path):
@@ -1246,6 +1259,12 @@ def test_ssh_egress_read_view_is_read_only_even_with_full_policy(mocker, tmp_pat
     egress = next(panel for panel in panels if isinstance(panel, dashboard.EgressState))
     assert egress.can_add is False
     assert egress.can_rm is False
+    # A refused add never opens the destination question.
+    assert not any(isinstance(panel, dashboard.TextPrompt) for panel in panels)
+    assert any(
+        "net egress add is not permitted" in str(call.kwargs.get("notice"))
+        for call in render.call_args_list
+    )
 
 
 def test_run_removes_only_selected_container_override(mocker, tmp_path):
@@ -1297,18 +1316,15 @@ def test_repo_egress_dispatch_uses_repo_scope_and_explicit_config(mocker, tmp_pa
     config_path = tmp_path / ".jailbee" / "config.yaml"
     group = dashboard.RepoGroup("alpha", str(tmp_path), config_path, [_ci("alpha-x", "alpha")])
     mocker.patch.object(dashboard, "load_egress_rows", return_value=())
-    mocker.patch("typer.prompt", return_value="repo.example:443")
+    prompt = mocker.patch("typer.prompt")
     mocker.patch.object(dashboard, "_wait_for_return")
     child = mocker.patch.object(dashboard.subprocess, "run")
     child.return_value.returncode = 0
 
-    assert (
-        _drive_run(
-            mocker, [b"\r", b"j", b"j", b"\r", b"\r", b"a", b"\x1b", b"\x03"], groups=[group]
-        )
-        == 0
-    )
+    keys = [b"\r", b"j", b"j", b"\r", b"\r", b"a", *_keys("repo.example:443"), _ENTER, b"\x03"]
+    assert _drive_run(mocker, keys, groups=[group]) == 0
 
+    prompt.assert_not_called()
     child.assert_called_once_with(
         [
             "jailbee",
@@ -1325,90 +1341,134 @@ def test_repo_egress_dispatch_uses_repo_scope_and_explicit_config(mocker, tmp_pa
     )
 
 
-def test_egress_add_prompt_cancellation_is_visible_and_does_not_dispatch(mocker, tmp_path):
+@pytest.mark.parametrize("cancel", [b"\x1b", b"\x03"], ids=["escape", "ctrl-c"])
+def test_egress_add_escape_returns_to_the_panel_with_a_notice(mocker, tmp_path, cancel):
     group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
-    menu = dashboard.open_menu([group], "alpha-x")
-    assert menu is not None
-    root = dashboard.group_menu_actions(menu.actions, include_network=True)
-    network_index = next(
-        i
-        for i, item in enumerate(root)
-        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
-    )
-    network = root[network_index]
-    assert isinstance(network, dashboard.MenuGroup)
-    egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
     mocker.patch.object(dashboard, "load_egress_rows", return_value=())
-    import typer
-
-    mocker.patch("typer.prompt", side_effect=typer.Abort())
+    prompt = mocker.patch("typer.prompt")
     child = mocker.patch.object(dashboard.subprocess, "run")
     render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
 
-    assert (
-        _drive_run(
-            mocker,
-            [
-                b"j",
-                b"\r",
-                *([b"j"] * network_index),
-                b"\r",
-                *([b"j"] * egress_index),
-                b"\r",
-                b"a",
-                b"\x03",
-            ],
-            groups=[group],
-        )
-        == 0
+    keys = [*_container_egress_keys(group), b"a", *_keys("x"), cancel, b"\x03"]
+    assert _drive_run(mocker, keys, groups=[group]) == 0
+
+    prompt.assert_not_called()
+    child.assert_not_called()
+    calls = render.call_args_list
+    assert any(
+        isinstance(call.kwargs.get("overlay"), dashboard.TextPrompt)
+        and call.kwargs["overlay"].text == "x"
+        for call in calls
+    ), "the typed text never reached the inline prompt"
+    # Cancelling answers the question, not the dashboard: the panel is back.
+    last = calls[-1].kwargs.get("overlay")
+    assert isinstance(last, dashboard.EgressState)
+    assert last.container == "alpha-x"
+    assert calls[-1].kwargs.get("notice") == "Egress change cancelled"
+
+
+def test_egress_add_rechecks_the_ssh_policy_at_submit(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
+
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    # `net egress add` is a host command: only reachable with restrict_host off.
+    policy = RemoteSSHConfig(
+        commands=RemoteCommandPolicy(mode="allowlist", allow=["net egress ls", "net egress add"]),
+        restrict_host=False,
+    )
+    mocker.patch.object(dashboard, "load_egress_rows", return_value=())
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    _mock_terminal(mocker)
+    mocker.patch.object(dashboard, "gather_live", return_value=[group])
+    mocker.patch.object(dashboard.select, "select", return_value=([True], [], []))
+
+    def revoke_add() -> bytes:
+        # The operator narrows the policy while the question is open.
+        policy.commands.allow[:] = ["net egress ls"]
+        return b"m"
+
+    script = iter(
+        [
+            *_container_egress_keys(group, remote=True, over_ssh=True, ssh_policy=policy),
+            b"a",
+            *_keys("example.co"),
+            revoke_add,
+            _ENTER,
+        ]
     )
 
+    def read(_fd, _n):
+        step = next(script, b"\x03")
+        return step() if callable(step) else step
+
+    mocker.patch.object(dashboard.os, "read", side_effect=read)
+    dashboard.run(
+        mocker.Mock(),
+        None,
+        interval=0.5,
+        git_interval=1.0,
+        no_git=True,
+        remote=True,
+        over_ssh=True,
+        ssh_policy=policy,
+    )
+
+    calls = render.call_args_list
+    assert any(
+        isinstance(call.kwargs.get("overlay"), dashboard.TextPrompt)
+        and call.kwargs["overlay"].text == "example.com"
+        for call in calls
+    ), "the add question never opened under the permissive policy"
     child.assert_not_called()
     assert any(
-        "cancel" in str(call.kwargs.get("notice", "")).lower() for call in render.call_args_list
+        call.kwargs.get("notice") == "net egress add is not permitted by the SSH policy"
+        for call in calls
     )
+    assert isinstance(calls[-1].kwargs.get("overlay"), dashboard.EgressState)
+
+
+def test_egress_add_blank_destination_is_rejected_inline(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    mocker.patch.object(dashboard, "load_egress_rows", return_value=())
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_egress_keys(group), b"a", *_keys("  "), _ENTER, b"\x03"]
+    assert _drive_run(mocker, keys, groups=[group]) == 0
+
+    child.assert_not_called()
+    # Enter keeps the question open with the reason (the trailing Ctrl-C
+    # then cancels it, so this is not the last frame).
+    rejected = [
+        call.kwargs["overlay"]
+        for call in render.call_args_list
+        if isinstance(call.kwargs.get("overlay"), dashboard.TextPrompt)
+        and call.kwargs["overlay"].error is not None
+    ]
+    assert [(p.purpose, p.error) for p in rejected] == [
+        ("egress-add", "Destination (host, host:port, IPv4 or CIDR) cannot be empty")
+    ]
 
 
 @pytest.mark.parametrize("returncode", [1, 2], ids=["mutation-failure", "invalid-destination"])
 def test_egress_mutation_failure_is_visible(mocker, tmp_path, returncode):
     group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
-    menu = dashboard.open_menu([group], "alpha-x")
-    assert menu is not None
-    root = dashboard.group_menu_actions(menu.actions, include_network=True)
-    network_index = next(
-        i
-        for i, item in enumerate(root)
-        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
-    )
-    network = root[network_index]
-    assert isinstance(network, dashboard.MenuGroup)
-    egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
     mocker.patch.object(dashboard, "load_egress_rows", return_value=())
-    mocker.patch("typer.prompt", return_value="invalid..example")
     mocker.patch.object(dashboard, "_wait_for_return")
     child = mocker.patch.object(dashboard.subprocess, "run")
     child.return_value.returncode = returncode
     render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
 
-    assert (
-        _drive_run(
-            mocker,
-            [
-                b"j",
-                b"\r",
-                *([b"j"] * network_index),
-                b"\r",
-                *([b"j"] * egress_index),
-                b"\r",
-                b"a",
-                b"\x03",
-            ],
-            groups=[group],
-        )
-        == 0
-    )
+    keys = [*_container_egress_keys(group), b"a", *_keys("invalid..example"), _ENTER, b"\x03"]
+    assert _drive_run(mocker, keys, groups=[group]) == 0
 
-    child.assert_called_once()
+    # Destination validation stays the CLI's: the dashboard passes it through.
+    child.assert_called_once_with(
+        ["jailbee", "net", "egress", "add", "invalid..example", "alpha-x"],
+        check=False,
+        cwd=tmp_path,
+    )
     assert any(
         f"exited {returncode}" in str(call.kwargs.get("notice", ""))
         for call in render.call_args_list
@@ -1418,91 +1478,58 @@ def test_egress_mutation_failure_is_visible(mocker, tmp_path, returncode):
 def test_egress_panel_closes_when_container_disappears(mocker, tmp_path):
     container = _ci("alpha-x", "alpha")
     group = dashboard.RepoGroup("alpha", str(tmp_path), None, [container])
-    menu = dashboard.open_menu([group], "alpha-x")
-    assert menu is not None
-    root = dashboard.group_menu_actions(menu.actions, include_network=True)
-    network_index = next(
-        i
-        for i, item in enumerate(root)
-        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
-    )
-    network = root[network_index]
-    assert isinstance(network, dashboard.MenuGroup)
-    egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
 
-    def remove_container_during_prompt(*_args, **_kwargs):
+    def remove_container_while_typing() -> bytes:
+        # The container goes away after the question opened, before Enter;
+        # the key loop draws at least one frame in between.
         group.containers.clear()
-        return "example.com"
+        return b"x"
+
+    script = iter(
+        [
+            *_container_egress_keys(group),
+            b"a",
+            *_keys("example.com"),
+            remove_container_while_typing,
+            _ENTER,
+        ]
+    )
+
+    def read(_fd, _n):
+        step = next(script, b"\x03")
+        return step() if callable(step) else step
 
     mocker.patch.object(dashboard, "load_egress_rows", return_value=())
-    mocker.patch("typer.prompt", side_effect=remove_container_during_prompt)
     child = mocker.patch.object(dashboard.subprocess, "run")
     render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
 
-    assert (
-        _drive_run(
-            mocker,
-            [
-                b"j",
-                b"\r",
-                *([b"j"] * network_index),
-                b"\r",
-                *([b"j"] * egress_index),
-                b"\r",
-                b"a",
-                b"\x03",
-            ],
-            groups=[group],
-        )
-        == 0
-    )
+    assert _drive_run_with_reader(mocker, read, [group]) == 0
 
     child.assert_not_called()
-    overlays = [call.kwargs.get("overlay") for call in render.call_args_list]
-    assert not isinstance(overlays[-1], dashboard.EgressState)
+    calls = render.call_args_list
     assert any(
-        "no longer available" in str(call.kwargs.get("notice", ""))
-        for call in render.call_args_list
+        isinstance(call.kwargs.get("overlay"), dashboard.TextPrompt)
+        and call.kwargs["overlay"].text == "example.comx"
+        for call in calls
+    ), "the prompt must still be open, with the text typed after the removal"
+    overlays = [call.kwargs.get("overlay") for call in calls]
+    assert not isinstance(overlays[-1], (dashboard.EgressState, dashboard.TextPrompt))
+    assert any(
+        call.kwargs.get("notice") == "Egress target is no longer available" for call in calls
     )
 
 
 def test_egress_panel_closes_when_repo_disappears_during_dispatch(mocker, tmp_path):
     group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
-    menu = dashboard.open_menu([group], "alpha-x")
-    assert menu is not None
-    root = dashboard.group_menu_actions(menu.actions, include_network=True)
-    network_index = next(
-        i
-        for i, item in enumerate(root)
-        if isinstance(item, dashboard.MenuGroup) and item.label == "Network →"
-    )
-    network = root[network_index]
-    assert isinstance(network, dashboard.MenuGroup)
-    egress_index = next(i for i, (_, verb) in enumerate(network.actions) if verb == "net egress ls")
     mocker.patch.object(dashboard, "load_egress_rows", return_value=())
-    mocker.patch("typer.prompt", return_value="example.com")
     child = mocker.patch.object(dashboard.subprocess, "run", side_effect=FileNotFoundError())
     render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
 
-    assert (
-        _drive_run(
-            mocker,
-            [
-                b"j",
-                b"\r",
-                *([b"j"] * network_index),
-                b"\r",
-                *([b"j"] * egress_index),
-                b"\r",
-                b"a",
-                b"\x03",
-            ],
-            groups=[group],
-        )
-        == 0
-    )
+    keys = [*_container_egress_keys(group), b"a", *_keys("example.com"), _ENTER, b"\x03"]
+    assert _drive_run(mocker, keys, groups=[group]) == 0
 
     child.assert_called_once()
+    assert child.call_args.args[0] == ["jailbee", "net", "egress", "add", "example.com", "alpha-x"]
     overlays = [call.kwargs.get("overlay") for call in render.call_args_list]
     assert not isinstance(overlays[-1], dashboard.EgressState)
     assert any(

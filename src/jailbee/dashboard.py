@@ -2719,10 +2719,8 @@ def run(
                     return False
                 return True
 
-            def mutate_egress(
-                state: EgressState, action: Literal["add", "rm"]
-            ) -> EgressState | None:
-                """Prompt, reauthorize and run one scoped mutation; reload rows."""
+            def egress_target(state: EgressState) -> RepoTarget | None:
+                """The panel's repo, or None once it or its container is gone."""
                 group = next((item for item in groups if item.prefix == state.prefix), None)
                 target = RepoTarget.of(group) if group is not None else None
                 if (
@@ -2733,77 +2731,71 @@ def run(
                         and not any(c.name == state.container for c in group.containers)
                     )
                 ):
+                    return None
+                return target
+
+            def begin_egress_add(state: EgressState) -> TextPrompt | EgressState | None:
+                """Open the destination question, or explain why not."""
+                if egress_target(state) is None:
                     set_notice("Egress target is no longer available")
                     return None
-                entry = ""
+                if not egress_permitted(state, "add"):
+                    set_notice("net egress add is not permitted by the SSH policy")
+                    return state
+                return TextPrompt(
+                    "egress-add",
+                    "Add egress override",
+                    "Destination (host, host:port, IPv4 or CIDR)",
+                    target=state.prefix,
+                    carry=(state.container or "",),
+                    back=state,
+                )
+
+            def mutate_egress(
+                state: EgressState, action: Literal["add", "rm"], entry: str | None = None
+            ) -> EgressState | None:
+                """Reauthorize and run one scoped mutation; reload rows.
+
+                ``add`` takes its destination from the inline prompt
+                (:func:`begin_egress_add`); ``rm`` acts on the selected row.
+                """
+                target = egress_target(state)
+                if target is None:
+                    set_notice("Egress target is no longer available")
+                    return None
                 if action == "rm":
-                    entry = removable_entry(state) or ""
+                    entry = removable_entry(state)
                     if not entry:
                         set_notice("Select a removable override first")
                         return state
+                assert entry, "add needs the destination from the inline prompt"
+                # Rechecked at submit: the policy may have changed while the
+                # destination question was open.
                 if not egress_permitted(state, action):
                     set_notice(f"net egress {action} is not permitted by the SSH policy")
                     return state
+                argv = [
+                    *egress_argv(state, action, entry),
+                    *(target.flags() if not over_ssh else []),
+                ]
+                try:
+                    check_dashboard_command(argv, ssh_policy, over_ssh=over_ssh)
+                except RouteError as exc:
+                    set_notice(str(exc))
+                    return state
 
-                outcome = "cancelled"
-
-                def prompt_and_run() -> int:
-                    import typer
-
-                    nonlocal entry, outcome
-                    try:
-                        if action == "add":
-                            entry = typer.prompt(
-                                "Destination (host, host:port, IPv4 or CIDR)"
-                            ).strip()
-                    except (typer.Abort, EOFError, KeyboardInterrupt):
-                        return 0
-                    if not entry:
-                        return 0
-                    current_group = next(
-                        (item for item in groups if item.prefix == state.prefix), None
-                    )
-                    current_target = (
-                        RepoTarget.of(current_group) if current_group is not None else None
-                    )
-                    if (
-                        current_group is None
-                        or current_target is None
-                        or (
-                            state.container is not None
-                            and not any(c.name == state.container for c in current_group.containers)
-                        )
-                    ):
-                        outcome = "target-missing"
-                        set_notice("Egress target is no longer available")
-                        return 0
-                    args = egress_argv(state, action, entry)
-                    argv = [*args, *(current_target.flags() if not over_ssh else [])]
-                    try:
-                        check_dashboard_command(argv, ssh_policy, over_ssh=over_ssh)
-                    except RouteError as exc:
-                        outcome = "blocked"
-                        set_notice(str(exc))
-                        return 0
-                    outcome = "dispatched"
+                def run_scoped() -> int:
                     rc = subprocess.run(
-                        ["jailbee", *argv], check=False, cwd=current_target.cwd()
+                        ["jailbee", *argv], check=False, cwd=target.cwd()
                     ).returncode
                     _wait_for_return()
                     return rc
 
                 try:
-                    rc = foreground(prompt_and_run)
+                    rc = foreground(run_scoped)
                 except OSError:
                     _report_vanished_repo(target)
                     return None
-                if outcome == "cancelled":
-                    set_notice("Egress change cancelled")
-                    return state
-                if outcome == "target-missing":
-                    return None
-                if outcome == "blocked":
-                    return state
                 if rc != 0:
                     set_notice(f"'jailbee net egress {action}' exited {rc}")
                 else:
@@ -2920,6 +2912,9 @@ def run(
 
                     run_new_container(prompt.target, branch_argv)
                     return None
+                if prompt.purpose == "egress-add":
+                    assert prompt.back is not None  # begin_egress_add always sets it
+                    return mutate_egress(prompt.back, "add", answer)
                 return None
 
             def submit_picker(picker: Picker, entry: PickerEntry) -> Overlay | None:
@@ -3059,11 +3054,17 @@ def run(
                     selected = Row("container", overlay.container)  # pinned while the menu is open
                 elif isinstance(overlay, RepoMenuState):
                     selected = Row("repo", overlay.repo)
-                elif isinstance(overlay, EgressState):
+                elif isinstance(overlay, EgressState) or (
+                    isinstance(overlay, (TextPrompt, Picker)) and overlay.back is not None
+                ):
+                    # A question asked from the Egress panel keeps the panel's
+                    # row, so the cursor does not jump to the repo header.
+                    panel = overlay if isinstance(overlay, EgressState) else overlay.back
+                    assert panel is not None
                     selected = (
-                        Row("container", overlay.container)
-                        if overlay.container is not None
-                        else Row("repo", overlay.prefix)
+                        Row("container", panel.container)
+                        if panel.container is not None
+                        else Row("repo", panel.prefix)
                     )
                 elif isinstance(overlay, (TextPrompt, Picker)) and overlay.target in {
                     g.prefix for g in groups
@@ -3161,7 +3162,11 @@ def run(
                     if outcome == "cancel":
                         # Esc/Ctrl-C answer the prompt, never the dashboard.
                         overlay = prompt.back
-                        set_notice("Cancelled")
+                        set_notice(
+                            "Egress change cancelled"
+                            if prompt.purpose == "egress-add"
+                            else "Cancelled"
+                        )
                     elif outcome == "submit":
                         overlay = submit_prompt(prompt)
                     else:
@@ -3214,7 +3219,7 @@ def run(
                         if key in ("up", "down"):
                             overlay = move_egress(overlay, -1 if key == "up" else 1)
                         elif data == b"a":
-                            overlay = mutate_egress(overlay, "add")
+                            overlay = begin_egress_add(overlay)
                         elif data == b"r":
                             overlay = mutate_egress(overlay, "rm")
                     elif isinstance(overlay, Picker):
