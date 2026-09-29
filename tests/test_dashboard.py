@@ -1961,21 +1961,22 @@ def test_menu_enters_groups_and_returns_to_saved_root_cursor():
     assert dashboard.menu_verb(dashboard.move_menu(root, 1)) is None
     assert dashboard.move_menu(root, -1).index == 0
 
-    pr, verb = dashboard.enter_menu(dashboard.move_menu(root, 1))
+    # Terminal order: Attach tmux, Git →, PR →.
+    pr, verb = dashboard.enter_menu(dashboard.move_menu(dashboard.move_menu(root, 1), 1))
     assert verb is None
-    assert pr.active_group == "PR →" and pr.index == 0 and pr.parent_index == 1
+    assert pr.active_group == "PR →" and pr.index == 0 and pr.parent_index == 2
     assert dashboard.menu_verb(pr) == "pr"
     assert dashboard.enter_menu(pr) == (pr, "pr")
     assert dashboard.move_menu(pr, 1).index == 0
 
     parent = dashboard.back_menu(pr)
     assert parent is not None
-    assert parent.active_group is None and parent.index == 1
-    git, verb = dashboard.enter_menu(dashboard.move_menu(parent, 1))
+    assert parent.active_group is None and parent.index == 2
+    git, verb = dashboard.enter_menu(dashboard.move_menu(parent, -1))
     assert verb is None
     assert git.active_group == "Git →" and git.index == 0
     assert dashboard.enter_menu(git) == (git, "git diff")
-    assert dashboard.back_menu(git).index == 2
+    assert dashboard.back_menu(git).index == 1
     assert root.index == 0 and root.active_group is None
 
 
@@ -4081,7 +4082,7 @@ def test_render_swaps_the_hint_line_while_the_menu_is_open(tmp_path):
 def test_render_menu_submenu_title_and_contextual_back_hint(tmp_path):
     g = dashboard.RepoGroup("alpha", "/repos/alpha", tmp_path / "a.yaml", [_ci("alpha-x", "alpha")])
     root = _grouped_menu()
-    submenu, _ = dashboard.enter_menu(dashboard.move_menu(root, 1))
+    submenu, _ = dashboard.enter_menu(dashboard.move_menu(dashboard.move_menu(root, 1), 1))
 
     def frame(menu):
         return _render_text(
@@ -4937,7 +4938,7 @@ def test_run_enters_pr_submenu_and_dispatches_leaf(mocker, tmp_path):
 
     rc = _drive_run(
         mocker,
-        [b"j", b"\r", b"\x1b[B", b"\x1b[B", b"\r", b"\x1b[B", b"\r"],
+        [b"j", b"\r", b"\x1b[B", b"\x1b[B", b"\x1b[B", b"\r", b"\x1b[B", b"\r"],
         groups=[group],
     )
 
@@ -4959,14 +4960,14 @@ def test_run_escape_backs_out_but_q_closes_submenu(mocker, tmp_path):
 
     _drive_run(
         mocker,
-        [b"j", b"\r", b"\x1b[B", b"\x1b[B", b"\r", b"\x1b", b"\r", b"q"],
+        [b"j", b"\r", b"\x1b[B", b"\x1b[B", b"\x1b[B", b"\r", b"\x1b", b"\r", b"q"],
         groups=[group],
     )
 
     overlays = [call.kwargs.get("overlay") for call in render.call_args_list]
     menus = [item for item in overlays if isinstance(item, dashboard.MenuState)]
-    assert [menu.active_group for menu in menus] == [None, None, None, "PR →", None, "PR →"]
-    assert menus[4].index == 2
+    assert [menu.active_group for menu in menus] == [None, None, None, None, "PR →", None, "PR →"]
+    assert menus[5].index == 3
     assert overlays[-1] is None
     child.assert_not_called()
 
@@ -4983,13 +4984,13 @@ def test_run_vanished_container_closes_submenu(mocker, tmp_path):
     def ready(*args, **kwargs):
         nonlocal turns
         turns += 1
-        if turns == 6:
+        if turns == 7:
             group.containers.clear()
         return ([True], [], [])
 
     mocker.patch.object(dashboard.select, "select", side_effect=ready)
     keys = itertools.chain(
-        [b"j", b"\r", b"\x1b[B", b"\x1b[B", b"\r", b"\x1b[B", b"\x03"],
+        [b"j", b"\r", b"\x1b[B", b"\x1b[B", b"\x1b[B", b"\r", b"\x1b[B", b"\x03"],
         itertools.repeat(b"\x03"),
     )
     mocker.patch.object(dashboard.os, "read", side_effect=lambda fd, n: next(keys))
@@ -5879,3 +5880,51 @@ def test_unrestricted_ssh_dashboard_is_registered_only_but_not_restricted(mocker
     assert run.call_args.kwargs["cwd_root"] is None
     assert run.call_args.kwargs["remote"] is False
     assert CliRunner().invoke(app, ["gui"]).exit_code == 2
+
+
+def test_group_menu_actions_terminal_order_hoists_pending_and_puts_git_first():
+    leaves = [
+        ("Attach tmux", "tmux"),
+        ("Open shell", "shell"),
+        ("Open PR", "pr --open"),
+        ("Create/update PR", "pr"),
+        ("Apply 2 PR action(s) (review apply)", "review apply"),
+        ("Merge into…", "merge"),
+        ("Update from base (git push)", "git push"),
+        ("Apply 1 issue action(s) (issue apply)", "issue apply"),
+        ("Network: loose", "net loose"),
+    ]
+    assert dashboard.group_menu_actions(leaves, include_network=True, terminal_order=True) == [
+        leaves[4],
+        leaves[7],
+        leaves[0],
+        leaves[1],
+        dashboard.MenuGroup("Git →", (leaves[5], leaves[6])),
+        dashboard.MenuGroup("PR →", (leaves[2], leaves[3])),
+        dashboard.MenuGroup("Network →", (leaves[8],)),
+    ]
+
+
+def test_group_menu_actions_default_order_is_unchanged_for_qt():
+    leaves = [
+        ("Create/update PR", "pr"),
+        ("Apply 2 PR action(s) (review apply)", "review apply"),
+        ("Merge into…", "merge"),
+    ]
+    assert dashboard.group_menu_actions(leaves) == [
+        dashboard.MenuGroup("PR →", (leaves[0], leaves[1])),
+        dashboard.MenuGroup("Git →", (leaves[2],)),
+    ]
+
+
+def test_terminal_menu_drops_an_empty_pr_group_when_only_apply_remains():
+    # Mount mode: no Create/update PR, only the pending apply — the apply is
+    # hoisted and the PR → group must not survive as an empty shell.
+    actions = dashboard.menu_actions(_ctx(mode="mount", git_status=_dirty(pending_pr_actions=2)))
+    menu = dashboard.MenuState("alpha-x", actions)
+    labels = [
+        item.label if isinstance(item, dashboard.MenuGroup) else item[0]
+        for item in dashboard._menu_entries(menu)
+    ]
+    assert labels[0].startswith("Apply 2 PR action(s)")
+    assert "PR →" not in labels

@@ -722,18 +722,30 @@ MenuItem = tuple[str, str] | MenuGroup
 
 _PR_MENU_VERBS = frozenset({"pr --open", "pr", "review apply"})
 _GIT_MENU_VERBS = frozenset({"merge", "git pull", "git push", "git push --pr", "git diff"})
+# The two "act on what the container left for you" verbs. The terminal menu
+# hoists them to the top, where the most time-sensitive thing belongs; Qt keeps
+# `review apply` inside its PR submenu.
+_PENDING_APPLY_VERBS = frozenset({"review apply", "issue apply"})
 
 
 def group_menu_actions(
-    actions: Sequence[tuple[str, str]], *, include_network: bool = False
+    actions: Sequence[tuple[str, str]],
+    *,
+    include_network: bool = False,
+    terminal_order: bool = False,
 ) -> list[MenuItem]:
     """Group filtered Launch, PR and Git leaves; optionally group Network for the TUI.
 
     Relative order within each submenu and among ungrouped leaves is retained;
     this function never changes eligibility or adds executable verbs.
+
+    ``terminal_order`` is the terminal dashboard's presentation: pending
+    outbox applies lead the menu and ``Git →`` sits above ``PR →``. It is
+    opt-in because the Qt dashboard shares this function and keeps its order.
     """
+    pr_verbs = _PR_MENU_VERBS - _PENDING_APPLY_VERBS if terminal_order else _PR_MENU_VERBS
     launch_actions = tuple(action for action in actions if action[0].startswith("Launch "))
-    pr_actions = tuple(action for action in actions if action[1] in _PR_MENU_VERBS)
+    pr_actions = tuple(action for action in actions if action[1] in pr_verbs)
     git_actions = tuple(action for action in actions if action[1] in _GIT_MENU_VERBS)
     network_actions = tuple(action for action in actions if action[1].startswith("net "))
     result: list[MenuItem] = []
@@ -744,7 +756,7 @@ def group_menu_actions(
             if "launch" not in seen:
                 result.append(MenuGroup("Launch →", launch_actions))
                 seen.add("launch")
-        elif verb in _PR_MENU_VERBS:
+        elif verb in pr_verbs:
             if "pr" not in seen:
                 result.append(MenuGroup("PR →", pr_actions))
                 seen.add("pr")
@@ -758,7 +770,16 @@ def group_menu_actions(
                 seen.add("network")
         else:
             result.append(action)
-    return result
+    if not terminal_order:
+        return result
+    pending = [i for i in result if isinstance(i, tuple) and i[1] in _PENDING_APPLY_VERBS]
+    rest = [i for i in result if not (isinstance(i, tuple) and i[1] in _PENDING_APPLY_VERBS)]
+    labels = [i.label if isinstance(i, MenuGroup) else None for i in rest]
+    if "Git →" in labels and "PR →" in labels:
+        git_at, pr_at = labels.index("Git →"), labels.index("PR →")
+        if git_at > pr_at:
+            rest[git_at], rest[pr_at] = rest[pr_at], rest[git_at]
+    return [*pending, *rest]
 
 
 # The GitStatus cell values that mean "there is provably nothing to do". Every
@@ -1295,7 +1316,7 @@ def _menu_entries(menu: MenuState | RepoMenuState) -> Sequence[MenuItem]:
     items = (
         menu.actions
         if isinstance(menu, RepoMenuState)
-        else group_menu_actions(menu.actions, include_network=True)
+        else group_menu_actions(menu.actions, include_network=True, terminal_order=True)
     )
     if menu.active_group is None:
         return items
