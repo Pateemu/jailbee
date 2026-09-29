@@ -2773,7 +2773,7 @@ def ls_field_specs(
             {
                 "agent": s.agent,
                 "state": s.state,
-                "since": s.since.isoformat() if s.since else None,
+                "since": s.since.isoformat() if s.since is not None else None,
                 "waiting_for": s.waiting_for,
                 "count": s.count,
             }

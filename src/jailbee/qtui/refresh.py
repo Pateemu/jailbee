@@ -99,7 +99,7 @@ class RefreshWorker(QObject):
         self._seeded_at = at
 
     def sample_activity(self, groups: list[RepoGroup]) -> None:
-        """Fill ``groups``' CPU/DOING fields from one reading.
+        """Fill ``groups``' CPU/DOING/AGENT fields from one reading.
 
         Public because ``app.run`` primes the sampler with two calls before
         the window appears. Like :meth:`seed`, those calls must happen
