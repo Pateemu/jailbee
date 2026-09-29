@@ -124,8 +124,9 @@ it.
 ## Other providers and API keys
 
 Any LiteLLM model string works as a route. API keys live in
-`~/.config/jailbee/litellm/secrets.env` (mode `0600`, `NAME=value` lines);
-the config names the variable, never the key:
+`~/.config/jailbee/litellm/secrets.env` (mode `0600`, `NAME=value` lines; `export NAME=value` and quoted values are
+accepted, but a value may not contain a quote, backslash or NUL); the config
+names the variable, never the key:
 
 ```yaml
 litellm:
@@ -145,18 +146,24 @@ egress allowlist follows the routes: jailbee knows the hosts of `chatgpt/`,
 needs `api_base` (whose host replaces the provider's default hosts) or
 `egress: [host[:port]]`. Only the secrets that routes (or `extra`) reference are
 handed to the proxy, and `jailbee litellm up` refuses to start while one is
-missing or the file is readable by others. Changing a secret restarts the
+missing or the file has any group or other permission bit set. Changing a secret restarts the
 instances on the next `up`.
 
 ## Raw LiteLLM configuration
 
 `litellm.extra: ~/.config/jailbee/litellm/extra.yaml` names a LiteLLM-native
 fragment. `jailbee litellm up` deep-merges it into every instance's config
-last: mappings merge, lists append (`model_list`, `callbacks`), and other values
-replace jailbee's. It cannot define `jb-*` or `claude-*` models, set
-`general_settings.master_key`, or replace jailbee's settings blocks with a
-non-mapping. Secrets it needs are referenced as `os.environ/NAME` and read from
-`secrets.env`. Hosts its deployments reach go in `litellm.egress`. Setting
+last: mappings merge, every list appends to jailbee's list of the same key (for
+example `model_list`, `litellm_settings.callbacks` or
+`router_settings.fallbacks`), and other values replace jailbee's. `up` refuses a
+fragment that defines `jb-*` or `claude-*` models, sets
+`general_settings.master_key`, makes `general_settings`, `litellm_settings`,
+`router_settings` or `environment_variables` a non-mapping, or makes
+`model_list` or `litellm_settings.callbacks` a non-list. Secrets it needs are
+referenced as `os.environ/NAME` and read from `secrets.env`; the names used as
+`environment_variables` keys or `os.environ/NAME` values must not be `PORT`,
+`PATH` or `HOME`, nor start with `LITELLM_`, `JAILBEE_`, `CHATGPT_`, `PYTHON` or
+`LD_`, or `up` refuses. Hosts its deployments reach go in `litellm.egress`. Setting
 `litellm_settings.turn_off_message_logging: false` there turns prompt logging
 back on; that is your choice.
 
@@ -169,8 +176,8 @@ back on; that is your choice.
   Jailbee writes the rendered files into the volume through `incus exec`'s
   standard input. `jailbee litellm down` keeps the volume, so logins survive a
   rebuild; `jailbee litellm down --purge` deletes it. On the host, only
-  `~/.local/share/jailbee/litellm/` remains, holding the port map and each
-  account's proxy key (`0600`). Dev containers get only the proxy keys, one
+  `~/.local/share/jailbee/litellm/` remains, holding the port map, each
+  account's proxy key (`0600`) and its `applied.sha256` stamp. Dev containers get only the proxy keys, one
   `/etc/jailbee/litellm-<account>.key` (`0640`, readable by the dev group) per
   account. `jailbee litellm logout [ACCOUNT]` deletes that account's token.
 - The proxy has default-deny egress restricted to the hosts the routes need
@@ -218,7 +225,12 @@ On the host, `jailbee litellm up`, `login` and `jailbee apply` can report:
 
 On the host, use `jailbee litellm status`, `jailbee litellm logs [ACCOUNT] [-f]`,
 and `jailbee doctor`. Doctor reports unreadable LiteLLM inputs (`secrets.env`,
-`extra`), and per account a missing login, unhealthy service, mismatched
-version and upstream reachability; `jailbee litellm up` re-resolves the proxy's
-provider allowlist when upstream addresses change. `jailbee litellm login
-[ACCOUNT]` refreshes a missing login.
+`extra`), one `litellm version` row for the installed-versus-configured
+version, and per account an instance row (not set up, or unhealthy) and a login
+row. A missing login fails doctor only for the account that serves the default
+profile, and only when that profile maps a `chatgpt/` route; for another account
+whose profiles need a login the row passes and names those profiles. A login
+state that cannot be read always fails. Doctor also checks the services ACL and
+upstream reachability; `jailbee litellm up` re-resolves the proxy's provider
+allowlist when upstream addresses change. `jailbee litellm login [ACCOUNT]`
+refreshes a missing login.
