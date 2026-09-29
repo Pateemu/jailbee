@@ -900,6 +900,18 @@ class Incus:
         pools: list[dict[str, Any]] = json.loads(result.stdout) if result.stdout else []
         return pools
 
+    def storage_volume_exists(self, pool: str, name: str) -> bool:
+        """Whether custom volume `name` exists in `pool`."""
+        result = self._run(["storage", "volume", "list", pool, "--format", "json"])
+        volumes: list[dict[str, Any]] = json.loads(result.stdout) if result.stdout else []
+        return any(v.get("type") == "custom" and v.get("name") == name for v in volumes)
+
+    def storage_volume_create(self, pool: str, name: str) -> None:
+        self._run(["storage", "volume", "create", pool, name])
+
+    def storage_volume_delete(self, pool: str, name: str) -> None:
+        self._run(["storage", "volume", "delete", pool, name])
+
     def image_delete(self, ref: str) -> None:
         """Delete an image by alias or fingerprint (removes the image and its
         aliases). Raises IncusError if the image is still in use by a container."""

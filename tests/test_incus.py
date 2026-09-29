@@ -1158,3 +1158,26 @@ def test_exec_lines_reports_a_missing_binary_as_incus_error(tmp_path):
 
 def test_exec_lines_runs_nothing_in_dry_run():
     assert list(Incus(dry_run=True).exec_lines("c", ["true"])) == []
+
+
+def test_storage_volume_exists_matches_custom_volumes_only(incus, mocker):
+    run = _mock_run(
+        mocker,
+        stdout=json.dumps(
+            [
+                {"name": "jailbee-litellm-state", "type": "custom"},
+                {"name": "other", "type": "container"},
+            ]
+        ),
+    )
+    assert incus.storage_volume_exists("default", "jailbee-litellm-state")
+    assert not incus.storage_volume_exists("default", "other")
+    assert run.call_args.args[0] == ["incus", "storage", "volume", "list", "default", "--format", "json"]
+
+
+def test_storage_volume_create_and_delete(incus, mocker):
+    run = _mock_run(mocker)
+    incus.storage_volume_create("default", "jailbee-litellm-state")
+    assert run.call_args.args[0] == ["incus", "storage", "volume", "create", "default", "jailbee-litellm-state"]
+    incus.storage_volume_delete("default", "jailbee-litellm-state")
+    assert run.call_args.args[0] == ["incus", "storage", "volume", "delete", "default", "jailbee-litellm-state"]
