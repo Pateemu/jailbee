@@ -17,13 +17,14 @@ Must not import `jailbee.dashboard`, which imports this module.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import takewhile
 from typing import TYPE_CHECKING
 
 from jailbee.dashboard_commands import insert_options_before_separator, permitted
-from jailbee.dashboard_overlays import Picker, PickerEntry
+from jailbee.dashboard_overlays import Picker, PickerEntry, TextPrompt
 
 if TYPE_CHECKING:
     from jailbee.config.models_remote import RemoteSSHConfig
@@ -267,4 +268,124 @@ def autostart_cancel_picker(container: str) -> Picker:
         f"Cancel the autostart run of {container}?",
         (PickerEntry("No", "no"), PickerEntry("Yes, cancel it", "yes")),
         target=container,
+    )
+
+
+@dataclass(frozen=True)
+class SnapshotRow:
+    """One row of `jailbee snapshot ls -o json`: the tag, and its creation time as printed."""
+
+    name: str
+    created: str | None
+
+
+class SnapshotLoadError(Exception):
+    """`jailbee snapshot ls` failed, or printed something that is not a snapshot list."""
+
+
+def _bad_snapshots() -> SnapshotLoadError:
+    return SnapshotLoadError("unexpected output from 'jailbee snapshot ls'")
+
+
+def parse_snapshot_rows(stdout: str) -> tuple[SnapshotRow, ...]:
+    try:
+        data = json.loads(stdout)
+    except ValueError as exc:
+        raise _bad_snapshots() from exc
+    if not isinstance(data, list):
+        raise _bad_snapshots()
+    rows: list[SnapshotRow] = []
+    for item in data:
+        if not isinstance(item, dict):
+            raise _bad_snapshots()
+        name, created = item.get("name"), item.get("created")
+        if not isinstance(name, str) or not name:
+            raise _bad_snapshots()
+        rows.append(SnapshotRow(name, created if isinstance(created, str) and created else None))
+    return tuple(rows)
+
+
+CREATE_TIMESTAMP = "create:timestamp"
+CREATE_NAMED = "create:named"
+RESTORE = "restore"
+DELETE = "delete"
+
+# Listed snapshots carry this prefix in their picker value, so a snapshot that
+# happens to be named `create:named` can never be read as the create entry.
+_SNAPSHOT_VALUE = "snapshot:"
+
+
+def snapshot_value(tag: str) -> str:
+    return _SNAPSHOT_VALUE + tag
+
+
+def snapshot_tag(value: str) -> str | None:
+    """The tag a picker value names, or None for a create entry."""
+    return value.removeprefix(_SNAPSHOT_VALUE) if value.startswith(_SNAPSHOT_VALUE) else None
+
+
+def _created_label(created: str) -> str:
+    """``2026-09-30T08:15:00.123Z`` as ``2026-09-30 08:15``; anything shorter as printed."""
+    return created[:16].replace("T", " ") if len(created) >= 16 else created
+
+
+def snapshot_picker(container: str, rows: Sequence[SnapshotRow], *, can_create: bool) -> Picker:
+    """The two create entries (when permitted), then the snapshots in listing order."""
+    create = (
+        (
+            PickerEntry("Create a snapshot (timestamp tag)", CREATE_TIMESTAMP),
+            PickerEntry("Create a snapshot named…", CREATE_NAMED),
+        )
+        if can_create
+        else ()
+    )
+    listed = tuple(
+        PickerEntry(
+            f"{row.name}  ({_created_label(row.created)})" if row.created else row.name,
+            snapshot_value(row.name),
+        )
+        for row in rows
+    )
+    return Picker(
+        "container-snapshots", f"Snapshots — {container}", (*create, *listed), target=container
+    )
+
+
+def snapshot_action_picker(
+    container: str, tag: str, *, can_restore: bool, can_delete: bool
+) -> Picker:
+    entries: list[PickerEntry] = []
+    if can_restore:
+        entries.append(PickerEntry("Restore this snapshot…", RESTORE))
+    if can_delete:
+        entries.append(PickerEntry("Delete this snapshot…", DELETE))
+    return Picker(
+        "container-snapshot-action",
+        f"Snapshot {tag} — {container}",
+        tuple(entries),
+        target=container,
+        carry=(tag,),
+    )
+
+
+def snapshot_confirm_picker(container: str, action: str, tag: str) -> Picker:
+    """Confirm a restore or a delete. "No" comes first, so a stray Enter changes nothing."""
+    if action == RESTORE:
+        question = f"Restore {container} to {tag}? Changes made since then are lost"
+        yes = "Yes, restore"
+    else:
+        question = f"Delete snapshot {tag} of {container}?"
+        yes = "Yes, delete"
+    return Picker(
+        "container-snapshot-confirm",
+        question,
+        (PickerEntry("No", "no"), PickerEntry(yes, "yes")),
+        target=container,
+        carry=(action, tag),
+    )
+
+
+def snapshot_tag_prompt(container: str) -> TextPrompt:
+    return TextPrompt(
+        "container-snapshot-tag", f"New snapshot — {container}", "Snapshot tag", target=container
     )

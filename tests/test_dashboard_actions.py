@@ -10,6 +10,7 @@ import pytest
 from jailbee import dashboard_actions as dact
 from jailbee.config.models_remote import RemoteSSHConfig
 from jailbee.dashboard import prompt_target_kind
+from jailbee.dashboard_overlays import validate_answer
 from jailbee.lifecycle import ContainerInfo
 
 PolicyCase = tuple[bool, dict[str, object] | None]
@@ -315,3 +316,88 @@ def test_mount_and_autostart_pickers_are_container_questions():
     assert [e.value for e in add.entries] == ["aws"]
     # "No" first: a stray Enter must not cancel the run
     assert [e.value for e in cancel.entries] == ["no", "yes"]
+
+
+_SNAPS = (
+    '[{"name": "before-upgrade", "created": "2026-09-29T10:00:00.5Z"}, '
+    '{"name": "b", "created": null}]'
+)
+
+
+def test_parse_snapshot_rows_reads_the_json_listing():
+    assert dact.parse_snapshot_rows(_SNAPS) == (
+        dact.SnapshotRow("before-upgrade", "2026-09-29T10:00:00.5Z"),
+        dact.SnapshotRow("b", None),
+    )
+    assert dact.parse_snapshot_rows("[]") == ()
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "",
+        "No snapshots for x",
+        "{}",
+        "[1]",
+        '[{"created": "x"}]',
+        '[{"name": 3}]',
+        '[{"name": ""}]',
+    ],
+    ids=["empty", "table-text", "object", "not-a-row", "no-name", "name-not-str", "blank-name"],
+)
+def test_parse_snapshot_rows_refuses_anything_else(stdout):
+    with pytest.raises(dact.SnapshotLoadError, match="unexpected output"):
+        dact.parse_snapshot_rows(stdout)
+
+
+def test_snapshot_picker_puts_the_create_entries_above_the_listing():
+    picker = dact.snapshot_picker("alpha-x", dact.parse_snapshot_rows(_SNAPS), can_create=True)
+    assert [(e.label, e.value) for e in picker.entries] == [
+        ("Create a snapshot (timestamp tag)", dact.CREATE_TIMESTAMP),
+        ("Create a snapshot named…", dact.CREATE_NAMED),
+        ("before-upgrade  (2026-09-29 10:00)", "snapshot:before-upgrade"),
+        ("b", "snapshot:b"),
+    ]
+    assert dact.snapshot_picker("alpha-x", (), can_create=False).entries == ()
+
+
+def test_a_snapshot_named_like_a_sentinel_is_still_a_snapshot():
+    picker = dact.snapshot_picker(
+        "alpha-x", (dact.SnapshotRow("create:named", None),), can_create=True
+    )
+    listed = picker.entries[-1].value
+    assert listed != dact.CREATE_NAMED
+    assert dact.snapshot_tag(listed) == "create:named"
+    assert dact.snapshot_tag(dact.CREATE_NAMED) is None
+
+
+def test_snapshot_action_picker_offers_only_permitted_changes():
+    both = dact.snapshot_action_picker("alpha-x", "t", can_restore=True, can_delete=True)
+    assert [e.value for e in both.entries] == [dact.RESTORE, dact.DELETE]
+    assert both.carry == ("t",)
+    only_delete = dact.snapshot_action_picker("alpha-x", "t", can_restore=False, can_delete=True)
+    assert [e.value for e in only_delete.entries] == [dact.DELETE]
+
+
+@pytest.mark.parametrize("action", [dact.RESTORE, dact.DELETE])
+def test_snapshot_confirm_puts_no_first(action):
+    picker = dact.snapshot_confirm_picker("alpha-x", action, "t")
+    assert [e.value for e in picker.entries] == ["no", "yes"]
+    assert picker.carry == (action, "t")
+
+
+def test_every_snapshot_question_is_about_the_container():
+    rows = dact.parse_snapshot_rows(_SNAPS)
+    questions = (
+        dact.snapshot_picker("alpha-x", rows, can_create=True),
+        dact.snapshot_action_picker("alpha-x", "t", can_restore=True, can_delete=True),
+        dact.snapshot_confirm_picker("alpha-x", dact.RESTORE, "t"),
+        dact.snapshot_tag_prompt("alpha-x"),
+    )
+    for question in questions:
+        assert prompt_target_kind(question.purpose) == "container"
+        assert question.target == "alpha-x"
+
+
+def test_the_tag_prompt_refuses_an_empty_answer():
+    assert validate_answer(dact.snapshot_tag_prompt("alpha-x")) == "Snapshot tag cannot be empty"
