@@ -27,6 +27,7 @@ from jailbee.dashboard_overlays import Picker, PickerEntry
 
 if TYPE_CHECKING:
     from jailbee.config.models_remote import RemoteSSHConfig
+    from jailbee.lifecycle import ContainerInfo
 
 Leaf = tuple[str, str]
 """A menu entry, ``(label, verb)``. The verbs below are handled by `run()` itself."""
@@ -121,3 +122,149 @@ def addressed(argv: Sequence[str], flags: Sequence[str], *, over_ssh: bool) -> l
 def command_label(argv: Sequence[str]) -> str:
     """The words of ``argv`` up to its first option or ``--``, for an exit notice."""
     return " ".join(takewhile(lambda word: not word.startswith("-"), argv))
+
+
+AUTOSTART_STATUS = "autostart-status"
+AUTOSTART_CANCEL = "autostart-cancel"
+SNAPSHOTS = "snapshots"
+MOUNT_ADD = "mount-add"
+MOUNT_REMOVE = "mount-remove"
+CONTAINER_VERBS = frozenset(
+    {AUTOSTART_STATUS, AUTOSTART_CANCEL, SNAPSHOTS, MOUNT_ADD, MOUNT_REMOVE}
+)
+
+SNAPSHOT_FIELDS = "name,created"
+
+# States in which a container exists to snapshot or to give a disk device; a
+# mid-creation background row ("—") has no instance yet.
+_EXISTING_STATES = frozenset({"Running", "Stopped"})
+
+
+def autostart_status_argv(name: str) -> list[str]:
+    return ["autostart", "status", name]
+
+
+def autostart_cancel_argv(name: str) -> list[str]:
+    return ["autostart", "cancel", name]
+
+
+def snapshot_ls_argv(name: str) -> list[str]:
+    return ["snapshot", "ls", name, "-o", "json", "--fields", SNAPSHOT_FIELDS]
+
+
+def snapshot_create_argv(name: str, tag: str | None) -> list[str]:
+    """Create a snapshot. A typed tag follows ``--``, so ``--yes`` is a tag, never an option.
+
+    No tag lets the CLI pick its sortable timestamp tag.
+    """
+    return ["snapshot", "create", "--", name, *([tag] if tag else [])]
+
+
+def snapshot_restore_argv(name: str, tag: str) -> list[str]:
+    return ["snapshot", "restore", "--", name, tag]
+
+
+def snapshot_delete_argv(name: str, tag: str) -> list[str]:
+    return ["snapshot", "delete", "--", name, tag]
+
+
+def mount_argv(kind: str, name: str) -> list[str]:
+    """`jailbee mount KIND NAME`: kind first, as the CLI declares it."""
+    return ["mount", "--", kind, name]
+
+
+def unmount_argv(kind: str, name: str) -> list[str]:
+    return ["unmount", "--", kind, name]
+
+
+def mount_choices(
+    container: ContainerInfo, kinds: Sequence[str], *, remove: bool
+) -> tuple[str, ...]:
+    """The configured kinds Mount… (or, with ``remove``, Unmount…) can act on.
+
+    Only kinds the repo's config still defines. The CLI refuses any other kind
+    (`mounts.remove_optional_mount`), so a device left over from a removed
+    config entry is not offered.
+    """
+    attached = set(container.optional_mounts)
+    return tuple(kind for kind in kinds if (kind in attached) is remove)
+
+
+def autostart_worker_live(container: ContainerInfo) -> bool:
+    """Whether the container's job row has a worker still running."""
+    from jailbee import background
+
+    return (
+        container.job_phase is not None
+        and container.job_pid is not None
+        and not background.clearable(container.job_phase, container.job_pid)
+    )
+
+
+@dataclass(frozen=True)
+class ContainerExtras:
+    """Terminal-only container entries, already filtered by row state and SSH policy.
+
+    ``after_job`` goes right after the job entries. ``before_network`` goes just
+    before ``Credential group…`` and the ``Network →`` group.
+    """
+
+    after_job: tuple[Leaf, ...]
+    before_network: tuple[Leaf, ...]
+
+
+def container_extras(
+    container: ContainerInfo,
+    mount_kinds: Sequence[str],
+    ssh_policy: RemoteSSHConfig | None,
+    *,
+    over_ssh: bool,
+) -> ContainerExtras:
+    """What one container's menu adds; each entry hidden when its command would be refused.
+
+    ``Snapshots…`` needs `snapshot ls` (the listing *is* its picker). The
+    create/restore/delete entries inside are gated one by one when it opens.
+    """
+    from jailbee import background
+
+    name = container.name
+
+    def allowed(argv: list[str]) -> bool:
+        return permitted(argv, ssh_policy, over_ssh=over_ssh)
+
+    after_job: list[Leaf] = []
+    if container.job_kind == background.JOB_AUTOSTART and container.job_phase is not None:
+        if allowed(autostart_status_argv(name)):
+            after_job.append(("Autostart status", AUTOSTART_STATUS))
+        if autostart_worker_live(container) and allowed(autostart_cancel_argv(name)):
+            after_job.append(("Cancel autostart…", AUTOSTART_CANCEL))
+    before: list[Leaf] = []
+    if container.state in _EXISTING_STATES:
+        if allowed(snapshot_ls_argv(name)):
+            before.append(("Snapshots…", SNAPSHOTS))
+        addable = mount_choices(container, mount_kinds, remove=False)
+        if addable and allowed(mount_argv(addable[0], name)):
+            before.append(("Mount…", MOUNT_ADD))
+        removable = mount_choices(container, mount_kinds, remove=True)
+        if removable and allowed(unmount_argv(removable[0], name)):
+            before.append(("Unmount…", MOUNT_REMOVE))
+    return ContainerExtras(tuple(after_job), tuple(before))
+
+
+def mount_picker(container: str, kinds: Sequence[str], *, remove: bool) -> Picker:
+    return Picker(
+        "container-mount-remove" if remove else "container-mount-add",
+        f"Unmount from {container}" if remove else f"Mount into {container}",
+        tuple(PickerEntry(kind, kind) for kind in kinds),
+        target=container,
+    )
+
+
+def autostart_cancel_picker(container: str) -> Picker:
+    """Confirm the cancel. "No" comes first, so a stray Enter stops nothing."""
+    return Picker(
+        "container-autostart-cancel",
+        f"Cancel the autostart run of {container}?",
+        (PickerEntry("No", "no"), PickerEntry("Yes, cancel it", "yes")),
+        target=container,
+    )

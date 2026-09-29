@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import os
+from typing import Any
+
 import pytest
 
 from jailbee import dashboard_actions as dact
 from jailbee.config.models_remote import RemoteSSHConfig
 from jailbee.dashboard import prompt_target_kind
+from jailbee.lifecycle import ContainerInfo
 
 PolicyCase = tuple[bool, dict[str, object] | None]
 
@@ -128,3 +132,186 @@ def test_command_label_stops_at_the_first_option():
     assert dact.command_label(["snapshot", "create", "--", "a", "b"]) == "snapshot create"
     assert dact.command_label(["apply", "--no-restart"]) == "apply"
     assert dact.command_label(["autostart", "status", "alpha-x"]) == "autostart status alpha-x"
+
+
+def _container(state: str = "Running", **fields: Any) -> ContainerInfo:
+    return ContainerInfo(
+        name="alpha-x",
+        state=state,
+        network="strict",
+        ip=None,
+        memory_limit=None,
+        repo="alpha",
+        **fields,
+    )
+
+
+# os.getpid() is alive, so `background.clearable` sees a live worker.
+_AUTOSTART_LIVE = {"job_phase": "autostart", "job_pid": os.getpid(), "job_kind": "autostart"}
+_AUTOSTART_DONE = {"job_phase": "failed", "job_pid": os.getpid(), "job_kind": "autostart"}
+
+_ALL_CONTAINER = {"autostart-status", "autostart-cancel", "snapshots", "mount-add", "mount-remove"}
+
+
+def _container_verbs(case: PolicyCase, container: ContainerInfo | None = None) -> set[str]:
+    over_ssh, kwargs = case
+    info = container or _container(**_AUTOSTART_LIVE, optional_mounts=("gcloud",))
+    extras = dact.container_extras(info, ("aws", "gcloud"), _policy(kwargs), over_ssh=over_ssh)
+    return {verb for _label, verb in (*extras.after_job, *extras.before_network)}
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        (_LOCAL, _ALL_CONTAINER),
+        (_LOCAL_DISABLED, _ALL_CONTAINER),
+        # `mount` brings a host path into a container: a host command
+        (_SSH_DEFAULT, _ALL_CONTAINER - {"mount-add"}),
+        (_allow("mount", "unmount"), {"mount-remove"}),
+        (_allow("mount", restrict_host=False), {"mount-add"}),
+        (_allow("unmount"), {"mount-remove"}),
+        (_allow("autostart status"), {"autostart-status"}),
+        (_allow("autostart cancel"), {"autostart-cancel"}),
+        (_allow("snapshot ls"), {"snapshots"}),
+        (_SSH_ALLOW_OTHER, set()),
+        (_SSH_EXCLUDED, {"snapshots"}),
+        (_SSH_NO_POLICY, set()),
+    ],
+    ids=[
+        "local",
+        "local-ignores-policy",
+        "ssh-default",
+        "ssh-allowlist-mount-restricted",
+        "ssh-allowlist-mount-unrestricted",
+        "ssh-allowlist-unmount",
+        "ssh-allowlist-autostart-status",
+        "ssh-allowlist-autostart-cancel",
+        "ssh-allowlist-snapshot-ls",
+        "ssh-allowlist-without",
+        "ssh-excluded-repos",
+        "ssh-no-policy",
+    ],
+)
+def test_container_extras_follow_the_ssh_policy(case, expected):
+    assert _container_verbs(case) == expected
+
+
+def test_container_extras_order_and_labels():
+    extras = dact.container_extras(
+        _container(**_AUTOSTART_LIVE, optional_mounts=("gcloud",)),
+        ("aws", "gcloud"),
+        None,
+        over_ssh=False,
+    )
+    assert extras.after_job == (
+        ("Autostart status", "autostart-status"),
+        ("Cancel autostart…", "autostart-cancel"),
+    )
+    assert extras.before_network == (
+        ("Snapshots…", "snapshots"),
+        ("Mount…", "mount-add"),
+        ("Unmount…", "mount-remove"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("fields", "expected"),
+    [
+        ({}, set()),
+        ({"job_phase": "creating", "job_pid": os.getpid(), "job_kind": "create"}, set()),
+        (_AUTOSTART_DONE, {"autostart-status"}),
+        (_AUTOSTART_LIVE, {"autostart-status", "autostart-cancel"}),
+    ],
+    ids=["no-job", "create-job", "finished-autostart", "live-autostart"],
+)
+def test_autostart_entries_need_an_autostart_row_and_cancel_a_live_worker(fields, expected):
+    verbs = _container_verbs(_LOCAL, _container(**fields))
+    assert verbs & {"autostart-status", "autostart-cancel"} == expected
+
+
+@pytest.mark.parametrize(
+    ("state", "offered"),
+    [("Running", True), ("Stopped", True), ("—", False), ("Frozen", False)],
+)
+def test_snapshots_and_mounts_need_an_existing_container(state, offered):
+    verbs = _container_verbs(_LOCAL, _container(state=state, optional_mounts=("gcloud",)))
+    assert bool(verbs & {"snapshots", "mount-add", "mount-remove"}) is offered
+
+
+def test_mount_choices_offer_only_configured_kinds_in_the_right_direction():
+    info = _container(optional_mounts=("gcloud", "stale"))
+    assert dact.mount_choices(info, ("aws", "gcloud"), remove=False) == ("aws",)
+    # `stale` is attached but no longer configured: the CLI would refuse it
+    assert dact.mount_choices(info, ("aws", "gcloud"), remove=True) == ("gcloud",)
+
+
+@pytest.mark.parametrize(
+    ("attached", "kinds", "expected"),
+    [
+        ((), (), set()),
+        ((), ("aws",), {"mount-add"}),
+        (("aws",), ("aws",), {"mount-remove"}),
+        (("stale",), ("aws",), {"mount-add"}),
+    ],
+    ids=["no-kinds", "none-attached", "all-attached", "only-a-stale-device"],
+)
+def test_mount_entries_appear_only_when_there_is_something_to_do(attached, kinds, expected):
+    extras = dact.container_extras(
+        _container(optional_mounts=attached), kinds, None, over_ssh=False
+    )
+    verbs = {verb for _label, verb in extras.before_network}
+    assert verbs & {"mount-add", "mount-remove"} == expected
+
+
+def _parsed(argv: list[str]) -> dict[str, object]:
+    """``argv`` parsed by its real Click command, as the child will parse it."""
+    from jailbee.remote_ssh import router
+
+    typed, command = router.command_leaf(argv)
+    words = typed.split()
+    with command.make_context(words[-1], argv[len(words) :], resilient_parsing=True) as ctx:
+        return dict(ctx.params)
+
+
+def test_a_tag_or_kind_spelled_like_an_option_stays_a_positional():
+    from jailbee.remote_ssh import router
+
+    create = dact.snapshot_create_argv("alpha-x", "--config")
+    assert _parsed(create)["tag"] == "--config"
+    assert _parsed(create)["config"] is None
+    router.check_arguments(create)  # not a host path: the remote policy accepts it
+    assert _parsed(dact.snapshot_restore_argv("alpha-x", "-y"))["tag"] == "-y"
+    assert _parsed(dact.snapshot_delete_argv("alpha-x", "-c"))["tag"] == "-c"
+    mount = _parsed(dact.mount_argv("--yes", "alpha-x"))
+    assert (mount["kind"], mount["name"]) == ("--yes", "alpha-x")
+    unmount = _parsed(dact.unmount_argv("aws", "alpha-x"))
+    assert (unmount["kind"], unmount["name"]) == ("aws", "alpha-x")
+
+
+def test_container_argv_shapes():
+    assert dact.autostart_status_argv("alpha-x") == ["autostart", "status", "alpha-x"]
+    assert dact.autostart_cancel_argv("alpha-x") == ["autostart", "cancel", "alpha-x"]
+    assert dact.snapshot_ls_argv("alpha-x") == [
+        "snapshot",
+        "ls",
+        "alpha-x",
+        "-o",
+        "json",
+        "--fields",
+        "name,created",
+    ]
+    assert dact.snapshot_create_argv("alpha-x", None) == ["snapshot", "create", "--", "alpha-x"]
+    assert dact.snapshot_create_argv("alpha-x", "") == ["snapshot", "create", "--", "alpha-x"]
+
+
+def test_mount_and_autostart_pickers_are_container_questions():
+    add = dact.mount_picker("alpha-x", ("aws",), remove=False)
+    remove = dact.mount_picker("alpha-x", ("gcloud",), remove=True)
+    cancel = dact.autostart_cancel_picker("alpha-x")
+    for picker in (add, remove, cancel):
+        assert prompt_target_kind(picker.purpose) == "container"
+        assert picker.target == "alpha-x"
+    assert (add.purpose, remove.purpose) == ("container-mount-add", "container-mount-remove")
+    assert [e.value for e in add.entries] == ["aws"]
+    # "No" first: a stray Enter must not cancel the run
+    assert [e.value for e in cancel.entries] == ["no", "yes"]
