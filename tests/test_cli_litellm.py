@@ -7,13 +7,20 @@ from typer.testing import CliRunner
 
 from jailbee import litellm as ll
 from jailbee.cli import app
+from jailbee.global_config import GlobalConfig
 
 runner = CliRunner()
 
 
 @pytest.fixture
 def context(mocker):
-    return mocker.patch("jailbee.cli._litellm_context", return_value=(MagicMock(), MagicMock()))
+    gcfg = GlobalConfig.model_validate({"litellm": {"enabled": True}})
+    return mocker.patch("jailbee.cli._litellm_context", return_value=(MagicMock(), gcfg))
+
+
+def _accounts(context, **litellm):
+    gcfg = GlobalConfig.model_validate({"litellm": {"enabled": True, **litellm}})
+    context.return_value = (context.return_value[0], gcfg)
 
 
 def test_up_prints_endpoint_and_next_steps(mocker, context):
@@ -143,17 +150,32 @@ def test_status_exits_nonzero_when_proxy_is_unavailable(mocker, context, status)
         assert "jailbee litellm login" in result.output
 
 
+_TWO = {"accounts": ["personal", "work"], "profiles": {"codex": {"account": "personal"}}}
+
+
 @pytest.mark.parametrize("command", ["login", "logout", "logs"])
-def test_non_default_account_rejected_before_side_effects(mocker, context, command):
-    login = mocker.patch("jailbee.litellm.litellm_login")
-    logout = mocker.patch("jailbee.litellm.litellm_logout")
-    logs = mocker.patch("jailbee.litellm.litellm_logs")
-    result = runner.invoke(app, ["litellm", command, "work"])
+def test_an_unknown_account_is_rejected_before_side_effects(mocker, context, command):
+    target = {"login": "litellm_login", "logout": "litellm_logout", "logs": "litellm_logs"}[command]
+    called = mocker.patch(f"jailbee.litellm.{target}")
+    result = runner.invoke(app, ["litellm", command, "nope"])
     assert result.exit_code == 2
-    assert "only the `default` account" in result.output
-    login.assert_not_called()
-    logout.assert_not_called()
-    logs.assert_not_called()
+    assert "Unknown LiteLLM account 'nope'" in " ".join(result.output.split())
+    called.assert_not_called()
+
+
+@pytest.mark.parametrize("command", ["login", "logout", "logs"])
+def test_several_accounts_need_a_name(mocker, context, command):
+    _accounts(context, **_TWO)
+    result = runner.invoke(app, ["litellm", command])
+    assert result.exit_code == 2
+    assert "personal, work" in " ".join(result.output.split())
+
+
+def test_a_named_account_is_passed_through(mocker, context):
+    _accounts(context, **_TWO)
+    logs = mocker.patch("jailbee.litellm.litellm_logs", return_value=0)
+    runner.invoke(app, ["litellm", "logs", "work", "-f"])
+    logs.assert_called_once_with(context.return_value[0], "work", follow=True)
 
 
 def test_login_returns_device_flow_exit_code(mocker, context):

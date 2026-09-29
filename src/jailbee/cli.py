@@ -10625,9 +10625,16 @@ def _litellm_context() -> tuple["IncusType", GlobalConfig]:
     return Incus(), _load_global()
 
 
-def _single_account(account: str) -> str:
-    if account != "default":
-        error("This release supports only the `default` account.")
+def _account_arg(gcfg: GlobalConfig, account: str | None) -> str:
+    """The named account, or the only one; exit 2 before any side effect otherwise."""
+    accounts = gcfg.litellm.accounts
+    if account is None:
+        if len(accounts) == 1:
+            return accounts[0]
+        error(f"Several LiteLLM accounts are configured ({', '.join(accounts)}); name one.")
+        raise typer.Exit(2)
+    if account not in accounts:
+        error(f"Unknown LiteLLM account '{account}'. Configured: {', '.join(accounts)}.")
         raise typer.Exit(2)
     return account
 
@@ -10738,17 +10745,18 @@ def litellm_status_cmd() -> None:
 @litellm_app.command("login")
 def litellm_login_cmd(
     account: Annotated[
-        str, typer.Argument(help="Account to log in (only default is supported).")
-    ] = "default",
+        str | None,
+        typer.Argument(help="Account from `litellm.accounts`; optional when there is only one."),
+    ] = None,
 ) -> None:
-    """Log in to ChatGPT with LiteLLM's interactive device-code flow."""
+    """Log an account in to ChatGPT with LiteLLM's interactive device-code flow."""
     from jailbee import litellm as ll
     from jailbee.incus import IncusError
 
-    account = _single_account(account)
-    incus, _gcfg = _litellm_context()
+    incus, gcfg = _litellm_context()
+    resolved = _account_arg(gcfg, account)
     try:
-        exit_code = ll.litellm_login(incus, account)
+        exit_code = ll.litellm_login(incus, resolved)
     except (RuntimeError, IncusError) as exc:
         error(str(exc))
         raise typer.Exit(1) from exc
@@ -10758,17 +10766,18 @@ def litellm_login_cmd(
 @litellm_app.command("logout")
 def litellm_logout_cmd(
     account: Annotated[
-        str, typer.Argument(help="Account to log out (only default is supported).")
-    ] = "default",
+        str | None,
+        typer.Argument(help="Account from `litellm.accounts`; optional when there is only one."),
+    ] = None,
 ) -> None:
     """Delete the ChatGPT token in the proxy's state volume, keeping its settings."""
     from jailbee import litellm as ll
     from jailbee.incus import IncusError
 
-    account = _single_account(account)
-    incus, _gcfg = _litellm_context()
+    incus, gcfg = _litellm_context()
+    resolved = _account_arg(gcfg, account)
     try:
-        removed = ll.litellm_logout(incus, account)
+        removed = ll.litellm_logout(incus, resolved)
     except (RuntimeError, IncusError) as exc:
         error(str(exc))
         raise typer.Exit(1) from exc
@@ -10781,18 +10790,19 @@ def litellm_logout_cmd(
 @litellm_app.command("logs")
 def litellm_logs_cmd(
     account: Annotated[
-        str, typer.Argument(help="Account to inspect (only default is supported).")
-    ] = "default",
+        str | None,
+        typer.Argument(help="Account from `litellm.accounts`; optional when there is only one."),
+    ] = None,
     follow: Annotated[bool, typer.Option("-f", "--follow", help="Follow new log entries.")] = False,
 ) -> None:
     """Show the proxy's journal for an account."""
     from jailbee import litellm as ll
     from jailbee.incus import IncusError
 
-    account = _single_account(account)
-    incus, _gcfg = _litellm_context()
+    incus, gcfg = _litellm_context()
+    resolved = _account_arg(gcfg, account)
     try:
-        exit_code = ll.litellm_logs(incus, account, follow=follow)
+        exit_code = ll.litellm_logs(incus, resolved, follow=follow)
     except (RuntimeError, IncusError) as exc:
         error(str(exc))
         raise typer.Exit(1) from exc
