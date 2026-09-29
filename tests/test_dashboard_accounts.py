@@ -196,3 +196,19 @@ def test_render_accounts_empty_and_markup_safe() -> None:
     console.print(da.render_accounts(da.AccountsState((weird,))))
     text = console.export_text()
     assert "[bold]a@x.io" in text and "g[/x]" in text
+
+
+def test_run_cli_quiet_decodes_leniently(mocker: MockerFixture) -> None:
+    run = mocker.patch.object(da.subprocess, "run")
+    run.return_value.returncode = 0
+    run.return_value.stdout = "ok\n"
+    run.return_value.stderr = ""
+    da.run_cli_quiet(["account", "park"], cwd=Path("/r"))
+    assert run.call_args.kwargs["errors"] == "replace"
+
+
+def test_run_cli_quiet_turns_a_decode_error_into_a_failed_result(mocker: MockerFixture) -> None:
+    run = mocker.patch.object(da.subprocess, "run")
+    run.side_effect = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+    result = da.run_cli_quiet(["account", "park"], cwd=Path("/r"))
+    assert result.ok is False and result.message

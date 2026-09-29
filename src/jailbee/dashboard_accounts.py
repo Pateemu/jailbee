@@ -134,13 +134,14 @@ def run_cli_quiet(argv: Sequence[str], *, cwd: Path, timeout: float = 60.0) -> C
             ["jailbee", *argv],
             capture_output=True,
             text=True,
+            errors="replace",
             check=False,
             cwd=cwd,
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
         return CliResult(False, "timed out")
-    except OSError as exc:
+    except (OSError, ValueError) as exc:  # ValueError: undecodable output
         return CliResult(False, str(exc))
     if proc.returncode == 0:
         return CliResult(True, _last_line(proc.stdout) or "done", proc.stdout)
