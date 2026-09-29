@@ -142,10 +142,11 @@ restart (a different LiteLLM version, a new account, an unattached state
 volume), `apply` says so and points at `jailbee litellm up`.
 
 A broken override does not stop the proxy: `jailbee litellm up`, `jailbee
-apply` and `jailbee litellm ls` skip it with a warning naming the file, and
-`claude-jb` in that repo's containers cannot use the override until it is
-fixed. Only that repo's own commands fail to load its config, with the same
-file named.
+litellm ls` and `jailbee apply` run from another repo skip it with a warning
+naming the file, and `claude-jb` in the broken repo's containers cannot use the
+override until it is fixed. Every command run in the broken repo itself,
+`jailbee apply` included, fails to load its config and names the same file, so
+fix the file first.
 
 `jailbee config edit --local` offers the four keys in the repo's local layer.
 

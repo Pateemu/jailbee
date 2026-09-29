@@ -693,7 +693,7 @@ remains native. Choose a gateway profile with `claude-jb --profile NAME`, then
 `JAILBEE_LITELLM_PROFILE`, then `litellm.default_profile` (`codex`), which a
 repo's host-local override may change for its own containers. The host also
 supports `jailbee litellm ls` (profiles and routes as `claude-jb` uses them,
-globally and per repo override; read-only, also over remote SSH),
+globally and per repo override; read-only; allowed over remote SSH in the default commands mode),
 `jailbee litellm status`, `logs [ACCOUNT] [-f]`,
 `logout [ACCOUNT]` and `down [--purge]`. After `down`, run `jailbee apply` to
 remove stale proxy settings from running dev containers. Several ChatGPT

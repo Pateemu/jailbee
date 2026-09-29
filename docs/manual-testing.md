@@ -148,9 +148,10 @@ never Astra.
 3. Change the effort to `medium` and run `jailbee apply --no-restart`: it warns
    that instance `default` still serves the previous routes. A plain
    `jailbee apply` then restarts it.
-4. Break the file (`litellm: {enabled: true}`): `jailbee litellm ls` and
-   `jailbee apply` warn and skip it, while a command run in that repo fails
-   naming the file. Restore the file.
+4. Break the file (`litellm: {enabled: true}`): `jailbee litellm ls`, and
+   `jailbee apply` run from a different repo, warn and skip it naming the file.
+   Any command in this repo itself, `jailbee apply` included, fails at config
+   load naming the file. Restore the file.
 5. Set `litellm: {autostart: true}` in the same file, run `jailbee apply`, then
    `jailbee restart <container>` and `jailbee tmux`: the Claude window runs
    `claude-jb`.
