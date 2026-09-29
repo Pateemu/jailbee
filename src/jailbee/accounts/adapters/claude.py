@@ -390,7 +390,10 @@ def _as_int(value: object) -> int | None:
     if isinstance(value, int):
         return value
     if isinstance(value, str) and value.isascii() and value.isdigit():
-        return int(value)
+        try:
+            return int(value)
+        except ValueError:  # more digits than the interpreter converts
+            return None
     return None
 
 
@@ -422,7 +425,8 @@ def _parse_session(raw: bytes) -> AgentSession | None:
     """
     try:
         data = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (ValueError, RecursionError):
+        # ValueError covers bad UTF-8, JSONDecodeError and a >4300-digit integer.
         return None
     if not isinstance(data, dict):
         return None

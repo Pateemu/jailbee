@@ -2364,3 +2364,27 @@ def test_read_sessions_strips_control_characters_and_bounds_the_text(tmp_path: P
     assert first.state == "busy[2J"
     assert first.waiting_for == "y" * claude_adapter.MAX_WAITING_FOR_CHARS
     assert second.state == "z" * claude_adapter.MAX_STATE_CHARS
+
+
+_HUGE = "9" * 5000
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"pid": 1, "procStart": 5, "status": "busy", "updatedAt": ' + _HUGE + "}",
+        json.dumps({**_REAL_SESSION, "pid": _HUGE}),
+        json.dumps({**_REAL_SESSION, "procStart": _HUGE}),
+        "[" * 30000,
+    ],
+    ids=["huge-json-int", "huge-digit-pid", "huge-digit-proc-start", "deep-nesting"],
+)
+def test_read_sessions_survives_input_that_makes_the_parser_raise(
+    tmp_path: Path, body: str
+) -> None:
+    """int() and json.loads raise ValueError/RecursionError, not JSONDecodeError."""
+    home = _sessions_home(tmp_path)
+    _write_session(home, "1", body)
+    _write_session(home, "2", {**_REAL_SESSION, "pid": 2})
+
+    assert [s.pid for s in CLAUDE.read_sessions(home)] == [2]
