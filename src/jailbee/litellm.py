@@ -571,6 +571,8 @@ def container_sync_payload(incus: Incus, gcfg: GlobalConfig) -> dict[str, object
 
     Only accounts `up` has brought up (a port and a master key exist) are
     offered; profiles bound to any other account are listed as `unserved`.
+    When none is offered, `json` is None: `sync_container` then retires the
+    settings, and `unserved` still names the profiles for the warning.
     """
     cfg = gcfg.litellm
     if not cfg.enabled or _container(incus) is None:
@@ -588,14 +590,15 @@ def container_sync_payload(incus: Incus, gcfg: GlobalConfig) -> dict[str, object
         base_urls[account] = f"http://{ip}:{port}"
         key_paths[account] = str(key_path)
     profiles = container_profiles(cfg, base_urls=base_urls)
-    if not profiles:
-        return None
     effective = cfg.effective_profiles()
+    unserved = sorted(set(effective) - set(profiles))
+    if not profiles:
+        return {"json": None, "keys": {}, "unserved": unserved}
     used = {cfg.instance_account(effective[name]) for name in profiles}
     return {
         "json": {"version": 1, "default_profile": cfg.default_profile, "profiles": profiles},
         "keys": {account: key_paths[account] for account in sorted(used)},
-        "unserved": sorted(set(effective) - set(profiles)),
+        "unserved": unserved,
     }
 
 
@@ -604,14 +607,28 @@ def unserved_profiles(payload: dict[str, object] | None) -> list[str]:
     return [str(n) for n in names] if isinstance(names, list) else []
 
 
+def unserved_warning(payload: dict[str, object] | None) -> str | None:
+    """The one message `apply` and `new` print for profiles no instance serves."""
+    unserved = unserved_profiles(payload)
+    if not unserved:
+        return None
+    return (
+        f"LiteLLM profile(s) {', '.join(unserved)} have no proxy instance yet; "
+        "run `jailbee litellm up`, then `jailbee apply`."
+    )
+
+
 def _stale_key_loop(keep: list[str], pattern: str) -> str:
     listed = " ".join(keep)
     return f'for f in {pattern}; do case " {listed} " in *" $f "*) ;; *) rm -f "$f" ;; esac; done'
 
 
 def sync_container(incus: Incus, name: str, payload: dict[str, object] | None) -> None:
-    """Install the settings and one key per account, or retire stale settings."""
-    if payload is None:
+    """Install the settings and one key per account, or retire stale settings.
+
+    Retire when there is no payload, or when it serves nothing (`json` None).
+    """
+    if payload is None or payload.get("json") is None:
         incus.exec(name, ["bash", "-c", f"rm -f {CONTAINER_FILE} {CONTAINER_KEY_GLOB}"], timeout=30)
         return
     keys = payload["keys"]

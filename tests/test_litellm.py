@@ -850,10 +850,42 @@ def test_stopped_container_failed_acl_restore_force_stops_before_start():
     incus.stop.assert_called_once_with(ll.LITELLM_CONTAINER, force=True)
 
 
-def test_sync_payload_none_when_disabled_absent_or_without_key():
+def test_sync_payload_none_when_disabled_or_absent():
     assert ll.container_sync_payload(_incus(present=True), _gcfg(enabled=False)) is None
     assert ll.container_sync_payload(_incus(present=False), _gcfg()) is None
-    assert ll.container_sync_payload(_incus(present=True), _gcfg()) is None
+
+
+def test_sync_payload_serving_nothing_still_names_the_unserved_profiles():
+    """The docs' Accounts example, before `up` has brought either account up."""
+    payload = ll.container_sync_payload(_incus(present=True), _gcfg(**_TWO))
+    assert payload == {"json": None, "keys": {}, "unserved": ["codex", "work"]}
+    assert "codex, work" in ll.unserved_warning(payload)
+    assert "jailbee litellm up" in ll.unserved_warning(payload)
+
+
+def test_a_payload_serving_nothing_retires_the_settings_like_none():
+    incus = _incus(present=True)
+    ll.sync_container(incus, "repo-branch", {"json": None, "keys": {}, "unserved": ["codex"]})
+    script = incus.exec.call_args.args[1][-1]
+    assert f"rm -f {ll.CONTAINER_FILE} {ll.CONTAINER_KEY_GLOB}" in script
+    incus.exec_with_input.assert_not_called()
+
+
+def test_apply_warns_and_retires_when_nothing_is_served(mocker):
+    from jailbee import apply
+
+    incus = _incus(present=True)
+    warn = mocker.patch("jailbee.tui.warn")
+    payload = apply._litellm_payload_or_warn(incus, _gcfg(**_TWO))
+    assert "codex, work" in warn.call_args.args[0]
+    ll.sync_container(incus, "repo-branch", payload)
+    assert "rm -f" in incus.exec.call_args.args[1][-1]
+    incus.exec_with_input.assert_not_called()
+
+
+def test_unserved_warning_is_none_when_everything_is_served():
+    assert ll.unserved_warning(None) is None
+    assert ll.unserved_warning({"json": {}, "keys": {}, "unserved": []}) is None
 
 
 def test_sync_payload_after_up():

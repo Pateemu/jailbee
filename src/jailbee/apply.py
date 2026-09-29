@@ -652,7 +652,7 @@ def _ensure_acl_attached_to_bridge(cfg: Config, incus: Incus) -> None:
 
 
 def _litellm_payload_or_warn(incus: Incus, gcfg: GlobalConfig) -> dict[str, object] | None:
-    from jailbee.litellm import container_sync_payload, unserved_profiles
+    from jailbee.litellm import container_sync_payload, unserved_warning
     from jailbee.tui import warn
 
     try:
@@ -660,12 +660,9 @@ def _litellm_payload_or_warn(incus: Incus, gcfg: GlobalConfig) -> dict[str, obje
     except IncusError as e:
         warn(f"Could not resolve LiteLLM settings: {e}; removing stale settings from containers.")
         return None
-    unserved = unserved_profiles(payload)
-    if unserved:
-        warn(
-            f"LiteLLM profile(s) {', '.join(unserved)} have no proxy instance yet; "
-            "run `jailbee litellm up`, then `jailbee apply`."
-        )
+    message = unserved_warning(payload)
+    if message is not None:
+        warn(message)
     return payload
 
 

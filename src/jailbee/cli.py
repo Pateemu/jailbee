@@ -2326,12 +2326,9 @@ def new_cmd(
     except IncusError as e:
         warn(f"Could not resolve LiteLLM settings: {e}; run `jailbee apply` to retry.")
         litellm_payload = None
-    unserved = litellm.unserved_profiles(litellm_payload)
-    if unserved:
-        warn(
-            f"LiteLLM profile(s) {', '.join(unserved)} have no proxy instance yet; "
-            "run `jailbee litellm up`, then `jailbee apply`."
-        )
+    unserved = litellm.unserved_warning(litellm_payload)
+    if unserved is not None:
+        warn(unserved)
 
     if credential_group is not None and claude_group is not None:
         error(

@@ -221,7 +221,7 @@ On the host, `jailbee litellm up`, `login` and `jailbee apply` can report:
 |---|---|
 | `... does not define NAME`, `... does not exist` or `... has insecure permissions` (about `secrets.env`) | Add `NAME=value` to `~/.config/jailbee/litellm/secrets.env`, `chmod 600` it, run `jailbee litellm up`. |
 | `Several LiteLLM accounts are configured` | Name the account: `jailbee litellm login work`. |
-| `profile(s) ... have no proxy instance yet` (from `jailbee apply`) | Run `jailbee litellm up`, then `jailbee apply`. |
+| `profile(s) ... have no proxy instance yet` (from `jailbee apply` or `jailbee new`) | Run `jailbee litellm up`, then `jailbee apply`. |
 
 On the host, use `jailbee litellm status`, `jailbee litellm logs [ACCOUNT] [-f]`,
 and `jailbee doctor`. Doctor reports unreadable LiteLLM inputs (`secrets.env`,
