@@ -2377,26 +2377,32 @@ Lifecycle commands: `jailbee registry up`, `jailbee registry down`,
 Host-only proxy settings for `claude-jb`; see [Claude Code through LiteLLM](litellm.md)
 for setup, route examples, security and limitations. This block is accepted in
 `~/.config/jailbee/global.yaml` only, not in a committed repo config or a
-host-local per-repo overlay. It is disabled by default. This release accepts
-only `chatgpt/` model strings and one implicit `default` account. Other
-providers, account lists, raw LiteLLM fragments and per-repo overrides are not
-yet supported.
+host-local per-repo overlay. It is disabled by default. Per-repo overrides are
+not yet supported.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | Permit `jailbee litellm up` and dev-container proxy settings. |
 | `version` | pinned `1.103.0` | LiteLLM version. An explicit version bypasses the bundled hash lock and warns. |
 | `default_profile` | `codex` | Profile used by `claude-jb` unless overridden by its `--profile` or `JAILBEE_LITELLM_PROFILE`. |
-| `routes` | four built-in routes | Named `chatgpt/` models; same-name entries overlay the built-in route field by field. |
+| `accounts` | `[default]` | ChatGPT logins, one proxy instance each. The built-in `codex` profile uses `default`. |
+| `egress` | `[]` | Extra `host[:port]` the proxy may reach, for `extra` deployments. |
+| `extra` | none | Path to a raw LiteLLM config fragment merged into every instance last. |
+| `routes` | four built-in routes | Named models; same-name entries overlay the built-in route field by field. |
 | `profiles` | built-in `codex` | Named maps of `fable`, `opus`, `sonnet`, `haiku` tiers to routes; same-name entries overlay individual tiers. |
 
 Routes accept `model` (required for new routes), `effort` (fixed),
 `min_effort` (floor; mutually exclusive with `effort`), `context_window`
 (required for unknown models, default `922000` for built-in GPT-6 models),
-and `params` (raw LiteLLM deployment parameters; keys that change the provider,
-endpoint or credential, such as `model`, `api_base`, `api_key` or `extra_headers`,
-are rejected). Profiles also accept
-`effort` as the default session effort. `jailbee litellm up` renders changes
+`api_key` (name of a variable in `~/.config/jailbee/litellm/secrets.env`, never
+the key; not allowed on `chatgpt/` routes), `api_base` (endpoint URL; its host
+joins the egress allowlist; not allowed on `chatgpt/` routes), `egress` (extra
+`host[:port]` for this route; needed for a provider jailbee has no host table
+for, unless `api_base` is set) and `params` (raw LiteLLM deployment parameters;
+keys that change the provider, endpoint or credential, such as `model`,
+`api_base`, `api_key` or `extra_headers`, are rejected there: use the route's own
+fields). Profiles also accept `account` (from `accounts`; required when the
+profile maps a `chatgpt/` route) and `effort` as the default session effort. `jailbee litellm up` renders changes
 and restarts the instance if needed; `jailbee apply` synchronizes the gateway
 file/key into each running dev container but does not restart the proxy.
 

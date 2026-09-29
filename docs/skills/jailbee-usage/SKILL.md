@@ -686,16 +686,20 @@ credential lands in the holder as usual.
 ## Claude Code through LiteLLM — `claude-jb`
 
 On the host, enable `litellm.enabled: true` in `global.yaml`, then run
-`jailbee litellm up`, `jailbee litellm login` (interactive ChatGPT device
-code), `jailbee base build` per repo and `jailbee apply` per repo. Inside a
+`jailbee litellm up`, `jailbee litellm login [ACCOUNT]` (interactive ChatGPT
+device code), `jailbee base build` per repo and `jailbee apply` per repo. Inside a
 container, `claude-jb` runs Claude Code through the proxy while plain `claude`
 remains native. Choose a gateway profile with `claude-jb --profile NAME`, then
 `JAILBEE_LITELLM_PROFILE`, then the global `litellm.default_profile` (`codex`).
-The host also supports `jailbee litellm status`, `logs [-f]`, `logout` and
-`down`. After `down`, run `jailbee apply` to remove stale proxy settings from
-running dev containers. Phase 1 supports only `chatgpt/` routes and one
-`default` account, not other providers, per-repo overrides, LiteLLM autostart
-or `jailbee litellm ls`. ChatGPT subscription use through this gateway is
+The host also supports `jailbee litellm status`, `logs [ACCOUNT] [-f]`,
+`logout [ACCOUNT]` and `down [--purge]`. After `down`, run `jailbee apply` to
+remove stale proxy settings from running dev containers. Several ChatGPT
+accounts (`litellm.accounts`, one per profile via `profiles.<p>.account`) and
+API-key providers (keys in the host's `~/.config/jailbee/litellm/secrets.env`)
+are supported; per-repo overrides, LiteLLM autostart and `jailbee litellm ls`
+are not. Inside the container there is no key and no login: `claude-jb` only
+reads `/etc/jailbee/litellm.json` and the proxy key for the profile's account.
+ChatGPT subscription use through this gateway is
 unofficial and may break or risk account sanctions. Full setup and limits:
 [LiteLLM](../../litellm.md); exact CLI flags:
 [commands](references/commands.md#litellm-proxy).

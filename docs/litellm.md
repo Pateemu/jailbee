@@ -10,9 +10,9 @@ and history, but neither command changes the other's environment.
 > subscription outside the Codex CLI. OpenAI may change the backend, reject
 > requests or sanction the account without notice. Use it at your own risk.
 
-This release supports **one implicit account (`default`) and `chatgpt/` models
-only**. Other providers, multiple accounts, per-repo LiteLLM overrides,
-`litellm.autostart` and `jailbee litellm ls` are not implemented. LiteLLM
+Several ChatGPT accounts can run side by side (one proxy instance each), and
+routes can use any LiteLLM provider with an API key. Per-repo LiteLLM overrides,
+`litellm.autostart` and `jailbee litellm ls` are not implemented yet. LiteLLM
 settings belong in the host's `global.yaml`, not a committed repo config or a
 host-local per-repo file. See [Configuration](config.md#litellm) and
 [Commands](commands.md).
@@ -26,8 +26,9 @@ host-local per-repo file. See [Configuration](config.md#litellm) and
      enabled: true
    ```
 
-2. Run `jailbee litellm up`, then `jailbee litellm login`. The latter starts
-   LiteLLM's interactive ChatGPT device-code login for the `default` account.
+2. Run `jailbee litellm up`, then `jailbee litellm login [ACCOUNT]`. The latter
+   starts LiteLLM's interactive ChatGPT device-code login for that account (the
+   name may be omitted while there is only one account, `default` by default).
 3. Run `jailbee base build` in each repo that needs `claude-jb` (the wrapper is
    installed in the golden image). Run `jailbee apply` in each such repo to
    populate `/etc/jailbee/litellm.json` and its proxy key in existing running
@@ -38,8 +39,9 @@ host-local per-repo file. See [Configuration](config.md#litellm) and
    with Claude Code's `--model` flag, for example `claude-jb --model haiku`.
    Use `jailbee litellm status` on the host to inspect health and login state.
 
-`jailbee litellm down` deletes the proxy container but keeps its host-side
-login and settings. Run `jailbee apply` in each affected repo afterward: it
+`jailbee litellm down` deletes the proxy container but keeps its state volume
+(logins and settings); `jailbee litellm down --purge` deletes the volume too.
+Run `jailbee apply` in each affected repo afterward: it
 removes stale dev-container proxy settings, and `claude-jb` then fails clearly
 instead of silently falling back to native Claude. Bring the proxy back with
 `jailbee litellm up` and re-apply to restore access.
@@ -94,19 +96,88 @@ model needs an explicit `context_window`; the wrapper exports
 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` as the largest window among the selected
 profile's mapped routes.
 
+## Accounts
+
+Each entry in `litellm.accounts` is one ChatGPT login and one LiteLLM process
+(`jailbee-litellm@<account>`, its own port). A profile names the account that
+serves it; the built-in `codex` profile uses `default`, so renaming that
+account means rebinding `codex`:
+
+```yaml
+litellm:
+  enabled: true
+  accounts: [personal, work]
+  profiles:
+    codex: {account: personal}
+    codex-work: {account: work, fable: astra, opus: sol-xhigh, sonnet: sol-medium, haiku: luna-high}
+```
+
+Log each account in once: `jailbee litellm login personal`, `jailbee litellm
+login work`. `claude-jb --profile codex-work` then runs on the work
+subscription. A `chatgpt/` route is served only by the instances whose
+profiles map it. Removing an account from the list stops its instance on the
+next `jailbee litellm up` (which prints `Stopped <account>`); its login is kept
+in the state volume until `jailbee litellm down --purge`. `logout`, `login` and
+`logs` accept only accounts in the list, so log an account out before removing
+it.
+
+## Other providers and API keys
+
+Any LiteLLM model string works as a route. API keys live in
+`~/.config/jailbee/litellm/secrets.env` (mode `0600`, `NAME=value` lines);
+the config names the variable, never the key:
+
+```yaml
+litellm:
+  routes:
+    kimi:
+      model: openrouter/moonshotai/kimi-k3
+      context_window: 262144
+      api_key: OPENROUTER_API_KEY
+  profiles:
+    kimi: {opus: kimi, sonnet: kimi, haiku: kimi}
+```
+
+A profile of API-key routes needs no `account`; every instance serves API-key
+routes, and an unset `account` means the first account's instance. The proxy's
+egress allowlist follows the routes: jailbee knows the hosts of `chatgpt/`,
+`openai/`, `openrouter/`, `xai/`, `gemini/` and `deepseek/`. Any other provider
+needs `api_base` (whose host replaces the provider's default hosts) or
+`egress: [host[:port]]`. Only the secrets that routes (or `extra`) reference are
+handed to the proxy, and `jailbee litellm up` refuses to start while one is
+missing or the file is readable by others. Changing a secret restarts the
+instances on the next `up`.
+
+## Raw LiteLLM configuration
+
+`litellm.extra: ~/.config/jailbee/litellm/extra.yaml` names a LiteLLM-native
+fragment. `jailbee litellm up` deep-merges it into every instance's config
+last: mappings merge, lists append (`model_list`, `callbacks`), and other values
+replace jailbee's. It cannot define `jb-*` or `claude-*` models, set
+`general_settings.master_key`, or replace jailbee's settings blocks with a
+non-mapping. Secrets it needs are referenced as `os.environ/NAME` and read from
+`secrets.env`. Hosts its deployments reach go in `litellm.egress`. Setting
+`litellm_settings.turn_off_message_logging: false` there turns prompt logging
+back on; that is your choice.
+
 ## Security and limitations
 
-- ChatGPT OAuth tokens live under
-  `~/.local/share/jailbee/litellm/default/auth/auth.json` (or the equivalent
-  `$XDG_DATA_HOME` path), in an `auth/` directory with mode `0700`, bind-mounted
-  into the dedicated proxy container. `jailbee litellm logout` deletes the
-  token; `down` does not. Provider credentials are not copied to dev
-  containers. They contain only a proxy key in `/etc/jailbee/litellm-default.key`
-  (`0640`, readable by the dev group); its host copy is mode `0600`.
-- The proxy has default-deny egress restricted to `chatgpt.com` and
-  `auth.openai.com` after installation. During installation and reinstall,
+- The proxy's state (ChatGPT OAuth tokens, rendered configs and the API keys
+  it was given) lives in the Incus custom volume `jailbee-litellm-state` on the
+  default storage pool, mounted only in the proxy container. It is never on the
+  host filesystem, and the proxy container maps no host user (`raw.idmap`).
+  Jailbee writes the rendered files into the volume through `incus exec`'s
+  standard input. `jailbee litellm down` keeps the volume, so logins survive a
+  rebuild; `jailbee litellm down --purge` deletes it. On the host, only
+  `~/.local/share/jailbee/litellm/` remains, holding the port map and each
+  account's proxy key (`0600`). Dev containers get only the proxy keys, one
+  `/etc/jailbee/litellm-<account>.key` (`0640`, readable by the dev group) per
+  account. `jailbee litellm logout [ACCOUNT]` deletes that account's token.
+- The proxy has default-deny egress restricted to the hosts the routes need
+  (see [Other providers](#other-providers-and-api-keys)) plus `litellm.egress`
+  after installation. During installation and reinstall,
   only PyPI and Ubuntu package hosts are permitted; the proxy is stopped and
-  the host token directory is unmounted until package access is removed.
+  the state volume is detached until package access is removed.
   Dev containers can reach its static address through the
   `jailbee-services` ACL; a proxy key is not a provider token.
 - The default LiteLLM installation is pinned to version `1.103.0` and a
@@ -137,8 +208,17 @@ profile's mapped routes.
 | `proxy key ... is empty` | Run `jailbee apply` on the host to resync the key. |
 | `proxy ... is unreachable` | Run `jailbee litellm up` on the host, then `jailbee apply` in this repo. |
 
-On the host, use `jailbee litellm status`, `jailbee litellm logs [-f]`, and
-`jailbee doctor`. Doctor reports missing login, unhealthy service, mismatched
+On the host, `jailbee litellm up`, `login` and `jailbee apply` can report:
+
+| Error | Remedy |
+|---|---|
+| `... does not define NAME`, `... does not exist` or `... has insecure permissions` (about `secrets.env`) | Add `NAME=value` to `~/.config/jailbee/litellm/secrets.env`, `chmod 600` it, run `jailbee litellm up`. |
+| `Several LiteLLM accounts are configured` | Name the account: `jailbee litellm login work`. |
+| `profile(s) ... have no proxy instance yet` (from `jailbee apply`) | Run `jailbee litellm up`, then `jailbee apply`. |
+
+On the host, use `jailbee litellm status`, `jailbee litellm logs [ACCOUNT] [-f]`,
+and `jailbee doctor`. Doctor reports unreadable LiteLLM inputs (`secrets.env`,
+`extra`), and per account a missing login, unhealthy service, mismatched
 version and upstream reachability; `jailbee litellm up` re-resolves the proxy's
-provider allowlist when upstream addresses change. `jailbee litellm login`
-refreshes a missing login.
+provider allowlist when upstream addresses change. `jailbee litellm login
+[ACCOUNT]` refreshes a missing login.

@@ -59,23 +59,23 @@ speculatively.
 
 ## LiteLLM proxy
 
-Host commands for the dedicated `jailbee-litellm` Incus proxy. This release
-supports only `chatgpt/` models and the implicit `default` account. Setup,
+Host commands for the dedicated `jailbee-litellm` Incus proxy. Several ChatGPT
+accounts and API-key providers are supported. Setup,
 security and the `claude-jb` wrapper are described in [LiteLLM](../../../litellm.md).
 
 | Command | What it does |
 |---|---|
 | `jailbee litellm up [--reinstall]` | Create/repair the proxy, render the configuration, and start it. `--reinstall` forces package installation. Requires `litellm.enabled: true` in the host's `global.yaml`. |
-| `jailbee litellm down` | Delete the proxy container; leave host token/config intact. Run `jailbee apply` per repo afterward to remove stale dev-container settings. |
-| `jailbee litellm status` | Show container, IP, version, service health and login presence; nonzero when absent or unhealthy. |
-| `jailbee litellm login [default]` | Interactive ChatGPT device-code authentication. |
-| `jailbee litellm logout [default]` | Remove host-side ChatGPT auth token. |
-| `jailbee litellm logs [default] [-f]` | Show the instance's last 200 journal lines; optionally follow. |
+| `jailbee litellm down [--purge]` | Delete the proxy container; keep its state volume (logins, settings) unless `--purge`. Run `jailbee apply` per repo afterward. |
+| `jailbee litellm status` | Show container, IP, version, and per account the service health and login presence; nonzero when absent or unhealthy. |
+| `jailbee litellm login [ACCOUNT]` | Interactive ChatGPT device-code login for an account in `litellm.accounts` (optional when there is only one). |
+| `jailbee litellm logout [ACCOUNT]` | Delete that account's token in the proxy's state volume (the proxy must be running). |
+| `jailbee litellm logs [ACCOUNT] [-f]` | Show the instance's last 200 journal lines; optionally follow. |
 
 In a dev container, `claude-jb [--profile NAME] [Claude Code args…]` selects
 the gateway. Plain `claude` remains native. Profile selection: flag, then
 `JAILBEE_LITELLM_PROFILE`, then host-global `default_profile` (`codex`). No
-`jailbee litellm ls`, multi-account support or LiteLLM autostart in this phase.
+`jailbee litellm ls`, per-repo overrides or LiteLLM autostart yet.
 
 ## Remote SSH
 

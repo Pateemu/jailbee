@@ -62,7 +62,7 @@ mkdir -p "$XDG_CONFIG_HOME/jailbee"
 printf 'litellm:\n  enabled: true\n' > "$XDG_CONFIG_HOME/jailbee/global.yaml"
 jailbee init                     # if this disposable repo has not been initialized
 jailbee litellm up
-jailbee litellm login            # interactive device code; default account only
+jailbee litellm login            # interactive device code; the sole (`default`) account
 jailbee litellm status           # running, healthy, logged in
 jailbee base build               # installs claude-jb in this repo's golden image
 jailbee new feat/litellm-smoke --no-autostart
@@ -103,8 +103,34 @@ Checks that only a real daemon can settle, and that the mocked suite cannot:
   LiteLLM is off). If a running container cannot reach the proxy after
   `litellm up`, it needs a restart and this assumption is wrong.
 - Interrupt `jailbee litellm up` after the install (block DNS for the provider
-  hosts), then run it again: it must attach the state mount and come up
+  hosts), then run it again: it must attach the state volume and come up
   without `--reinstall`.
+
+### Several accounts, an API-key route, the state volume
+
+Use a throwaway `XDG_CONFIG_HOME`/`XDG_DATA_HOME` exactly as above.
+
+1. Set `accounts: [a, b]` and `profiles: {codex: {account: a}, cb: {account: b,
+   opus: sol-xhigh, haiku: luna-high}}` in the rig's `global.yaml`, then run
+   `jailbee litellm up`. Expect two ports in `jailbee litellm status`, and
+   `incus storage volume list default` showing `jailbee-litellm-state`.
+2. `incus config show jailbee-litellm --expanded | grep -c raw.idmap` prints
+   `0`. `ls ~/.local/share/jailbee/litellm/*/` (with the rig's
+   `XDG_DATA_HOME`) shows only `master.key` and `applied.sha256`.
+3. Run `jailbee litellm login a` in tmux. Then `incus exec jailbee-litellm --
+   ls -l /var/lib/jailbee-litellm/a/auth/`: `auth.json` is mode `0600`, owned by
+   container root.
+4. Add a route with `api_key: OPENROUTER_API_KEY` and a `0644` `secrets.env`:
+   `up` refuses and names `chmod 600`. Fix the mode: `up` restarts both
+   instances. `incus exec jailbee-litellm -- grep -c OPENROUTER
+   /var/lib/jailbee-litellm/a/instance.env` prints `1`.
+5. Remove `b` from `accounts` (and rebind or drop the `cb` profile): `up`
+   prints `Stopped b`. `incus exec jailbee-litellm -- systemctl is-enabled
+   jailbee-litellm@b` prints `disabled`.
+6. Run `jailbee litellm up --reinstall`; during the install step,
+   `incus config show jailbee-litellm | grep -A3 state:` finds nothing.
+7. `jailbee litellm down --purge`: the volume is gone from
+   `incus storage volume list default`.
 
 ## Optional SSH service loopback smoke test
 
