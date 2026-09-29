@@ -2331,32 +2331,6 @@ The Docker registry mirror overrides and `remote` (below) are unique to this
 file. `credentials.group` is the host-wide default and may be overridden for
 one repo in its host-local file (above).
 
-### `litellm`
-
-Host-only proxy settings for `claude-jb`; see [Claude Code through LiteLLM](litellm.md)
-for setup, route examples, security and limitations. This block is accepted in
-`~/.config/jailbee/global.yaml` only, not in a committed repo config or a
-host-local per-repo overlay. It is disabled by default. This release accepts
-only `chatgpt/` model strings and one implicit `default` account. Other
-providers, account lists, raw LiteLLM fragments and per-repo overrides are not
-yet supported.
-
-| Key | Default | Meaning |
-|---|---|---|
-| `enabled` | `false` | Permit `jailbee litellm up` and dev-container proxy settings. |
-| `version` | pinned `1.103.0` | LiteLLM version. An explicit version bypasses the bundled hash lock and warns. |
-| `default_profile` | `codex` | Profile used by `claude-jb` unless overridden by its `--profile` or `JAILBEE_LITELLM_PROFILE`. |
-| `routes` | four built-in routes | Named `chatgpt/` models; same-name entries overlay the built-in route field by field. |
-| `profiles` | built-in `codex` | Named maps of `fable`, `opus`, `sonnet`, `haiku` tiers to routes; same-name entries overlay individual tiers. |
-
-Routes accept `model` (required for new routes), `effort` (fixed),
-`min_effort` (floor; mutually exclusive with `effort`), `context_window`
-(required for unknown models, default `1050000` for built-in GPT-6 models),
-and `params` (raw LiteLLM deployment parameters). Profiles also accept
-`effort` as the default session effort. `jailbee litellm up` renders changes
-and restarts the instance if needed; `jailbee apply` synchronizes the gateway
-file/key into each running dev container but does not restart the proxy.
-
 ```yaml
 docker_registry_mirror:
   enabled: auto                                  # auto | true | false
@@ -2397,6 +2371,32 @@ by it — start it and run `jailbee apply` again.
 
 Lifecycle commands: `jailbee registry up`, `jailbee registry down`,
 `jailbee registry status` (`running` / `stopped` / `degraded` / `missing`).
+
+### `litellm`
+
+Host-only proxy settings for `claude-jb`; see [Claude Code through LiteLLM](litellm.md)
+for setup, route examples, security and limitations. This block is accepted in
+`~/.config/jailbee/global.yaml` only, not in a committed repo config or a
+host-local per-repo overlay. It is disabled by default. This release accepts
+only `chatgpt/` model strings and one implicit `default` account. Other
+providers, account lists, raw LiteLLM fragments and per-repo overrides are not
+yet supported.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Permit `jailbee litellm up` and dev-container proxy settings. |
+| `version` | pinned `1.103.0` | LiteLLM version. An explicit version bypasses the bundled hash lock and warns. |
+| `default_profile` | `codex` | Profile used by `claude-jb` unless overridden by its `--profile` or `JAILBEE_LITELLM_PROFILE`. |
+| `routes` | four built-in routes | Named `chatgpt/` models; same-name entries overlay the built-in route field by field. |
+| `profiles` | built-in `codex` | Named maps of `fable`, `opus`, `sonnet`, `haiku` tiers to routes; same-name entries overlay individual tiers. |
+
+Routes accept `model` (required for new routes), `effort` (fixed),
+`min_effort` (floor; mutually exclusive with `effort`), `context_window`
+(required for unknown models, default `1050000` for built-in GPT-6 models),
+and `params` (raw LiteLLM deployment parameters). Profiles also accept
+`effort` as the default session effort. `jailbee litellm up` renders changes
+and restarts the instance if needed; `jailbee apply` synchronizes the gateway
+file/key into each running dev container but does not restart the proxy.
 
 ### `remote.ssh`
 
