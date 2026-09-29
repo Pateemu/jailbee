@@ -8,6 +8,7 @@ import pytest
 from jailbee.config import load_config
 from jailbee.doctor import _check_pool_roots, run_checks
 from jailbee.global_config import DockerRegistryMirror, GlobalConfig
+from jailbee.litellm_inputs import load_host_inputs as _real_load_host_inputs
 from jailbee.registry import MirrorStatus
 from tests.conftest import with_agent
 
@@ -180,6 +181,40 @@ def test_litellm_doctor_reports_an_input_problem(mocker):
     mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
     row = _rows(gcfg)["litellm inputs"]
     assert not row.ok and "OPENROUTER_API_KEY" in row.detail and "jailbee litellm up" in row.detail
+
+
+@pytest.mark.parametrize("which", ["secrets", "extra"])
+def test_litellm_doctor_reports_an_unreadable_input_instead_of_raising(
+    mocker, monkeypatch, tmp_path, which
+):
+    """A real non-UTF-8 file, read by the real loader: a row, not a traceback."""
+    from jailbee import litellm as ll
+    from jailbee.litellm_inputs import secrets_path
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    kimi = {
+        "model": "openrouter/moonshotai/kimi-k3",
+        "context_window": 262144,
+        "api_key": "OPENROUTER_API_KEY",
+    }
+    extra = tmp_path / "extra.yaml"
+    extra.write_text("router_settings: {num_retries: 2}\n")
+    target = secrets_path() if which == "secrets" else extra
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"OPENROUTER_API_KEY=sk-or-\xff-tail\n")
+    target.chmod(0o600)
+    gcfg = _litellm_up(
+        mocker,
+        [ll.InstanceStatus("default", 4100, True, True, "present")],
+        routes={"kimi": kimi},
+        extra=str(extra),
+    )
+    # Over the autouse stub and `_litellm_up`'s: the real loader, reading the file.
+    mocker.patch("jailbee.litellm_inputs.load_host_inputs", _real_load_host_inputs)
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    row = _rows(gcfg)["litellm inputs"]
+    assert not row.ok and "not UTF-8" in row.detail and str(target) in row.detail
+    assert "sk-or" not in row.detail and "0xff" not in row.detail
 
 
 def test_missing_login_blocks_only_the_default_profiles_account(mocker):

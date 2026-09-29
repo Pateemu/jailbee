@@ -85,6 +85,51 @@ def test_a_malformed_line_is_refused_without_echo():
     assert "pasted" not in str(caught.value)
 
 
+_NON_UTF8 = b"OPENROUTER_API_KEY=sk-or-\xff\xfe-tail\n"
+
+
+def _assert_no_file_byte(message: str) -> None:
+    # A codec error would print "can't decode byte 0xff in position 25".
+    for fragment in ("sk-or", "tail", "0xff", "\\xff", "\xff", "position"):
+        assert fragment not in message
+
+
+def _deny_reading(monkeypatch: pytest.MonkeyPatch, target: Path) -> None:
+    """A root-owned file, without depending on the suite not running as root."""
+    real = Path.read_text
+
+    def read_text(self, *args, **kwargs):
+        if self == target:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+
+def _assert_unchained(error: BaseException) -> None:
+    assert error.__cause__ is None and error.__suppress_context__
+
+
+def test_an_unreadable_secrets_file_is_an_input_error(monkeypatch: pytest.MonkeyPatch):
+    path = _write_secrets("OPENROUTER_API_KEY=sk-or-1\n")
+    _deny_reading(monkeypatch, path)
+    with pytest.raises(
+        LiteLLMInputError, match=r"cannot read .*secrets\.env: Permission denied"
+    ) as caught:
+        load_secrets(_kimi_cfg(), None)
+    _assert_no_file_byte(str(caught.value))
+    _assert_unchained(caught.value)
+
+
+def test_a_non_utf8_secrets_file_is_an_input_error_without_its_bytes():
+    path = _write_secrets("")
+    path.write_bytes(_NON_UTF8)
+    with pytest.raises(LiteLLMInputError, match=r"secrets\.env: it is not UTF-8 text") as caught:
+        load_secrets(_kimi_cfg(), None)
+    _assert_no_file_byte(str(caught.value))
+    _assert_unchained(caught.value)
+
+
 def _write_extra(tmp_path: Path, text: str) -> str:
     path = tmp_path / "extra.yaml"
     path.write_text(text)
@@ -127,6 +172,30 @@ def test_missing_extra_file_is_an_error(tmp_path: Path):
     cfg = LiteLLMConfig.model_validate({"extra": str(tmp_path / "absent.yaml")})
     with pytest.raises(LiteLLMInputError, match=r"cannot read litellm\.extra"):
         load_extra(cfg)
+
+
+def test_an_unreadable_extra_file_is_an_input_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = Path(_write_extra(tmp_path, "router_settings: {redis_password: sk-or-1}\n"))
+    _deny_reading(monkeypatch, path)
+    cfg = LiteLLMConfig.model_validate({"extra": str(path)})
+    with pytest.raises(
+        LiteLLMInputError, match=r"cannot read litellm\.extra .*: Permission denied"
+    ) as caught:
+        load_extra(cfg)
+    _assert_no_file_byte(str(caught.value))
+    _assert_unchained(caught.value)
+
+
+def test_a_non_utf8_extra_file_is_an_input_error_without_its_bytes(tmp_path: Path):
+    path = tmp_path / "extra.yaml"
+    path.write_bytes(_NON_UTF8)
+    cfg = LiteLLMConfig.model_validate({"extra": str(path)})
+    with pytest.raises(LiteLLMInputError, match=r"extra\.yaml: it is not UTF-8 text") as caught:
+        load_extra(cfg)
+    _assert_no_file_byte(str(caught.value))
+    _assert_unchained(caught.value)
 
 
 @pytest.mark.parametrize(

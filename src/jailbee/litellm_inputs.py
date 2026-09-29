@@ -102,14 +102,25 @@ def check_extra(fragment: dict[str, object], origin: str) -> None:
             raise problem
 
 
+def _read(path: Path, label: str) -> str:
+    """The file's text, or an error naming why without quoting a byte of it.
+
+    A codec error's text shows the offending byte; both files hold keys.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise LiteLLMInputError(f"cannot read {label}: it is not UTF-8 text") from None
+    except OSError as error:
+        reason = error.strerror or type(error).__name__
+        raise LiteLLMInputError(f"cannot read {label}: {reason}") from None
+
+
 def load_extra(cfg: LiteLLMConfig) -> dict[str, object] | None:
     if cfg.extra is None:
         return None
     path = expand_path(cfg.extra)
-    try:
-        text = path.read_text()
-    except OSError as error:
-        raise LiteLLMInputError(f"cannot read litellm.extra {path}: {error.strerror}") from error
+    text = _read(path, f"litellm.extra {path}")
     try:
         raw = yaml.safe_load(text)
     except yaml.YAMLError as error:
@@ -133,7 +144,7 @@ def referenced_secrets(cfg: LiteLLMConfig, extra: dict[str, object] | None) -> l
 
 def _parse(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
-    for number, line in enumerate(path.read_text().splitlines(), start=1):
+    for number, line in enumerate(_read(path, str(path)).splitlines(), start=1):
         text = line.strip()
         if not text or text.startswith("#"):
             continue
