@@ -1,0 +1,191 @@
+"""The live-session match behind the AGENT column. Pure: no /proc, no files
+except for `read_sessions`, which only needs a fake adapter."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+from jailbee import agent_status
+from jailbee.accounts.adapters import base
+from jailbee.accounts.models import AgentSession
+
+T0 = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
+
+
+def _s(
+    pid: int,
+    start: int,
+    state: str = "busy",
+    *,
+    agent: str = "claude",
+    since: datetime | None = T0,
+    waiting_for: str | None = None,
+    updated_at: int | None = None,
+) -> AgentSession:
+    return AgentSession(
+        agent=agent,
+        pid=pid,
+        proc_start=start,
+        state=state,
+        waiting_for=waiting_for,
+        since=since,
+        updated_at=updated_at,
+    )
+
+
+def _match(sessions, processes, nspids):
+    return agent_status.match_sessions(sessions, processes, nspids.get)
+
+
+def test_two_containers_sharing_one_home_each_get_their_own_session():
+    """The repo's config home holds every container's files. The process
+    match, not the file, says whose a session is."""
+    sessions = [_s(10, 500, "waiting"), _s(20, 600, "busy")]
+    out = _match(sessions, {"a": {1010: 500}, "b": {2020: 600}}, {1010: 10, 2020: 20})
+
+    assert [s.state for s in out["a"]] == ["waiting"]
+    assert [s.state for s in out["b"]] == ["busy"]
+
+
+def test_a_stale_file_is_not_live():
+    """No process has its start time: the session's process is gone."""
+    out = _match([_s(10, 500)], {"a": {1010: 999}}, {1010: 10})
+
+    assert out == {"a": ()}
+
+
+def test_a_recycled_pid_is_not_live():
+    """Same namespace pid, different start time: a different process."""
+    out = _match([_s(10, 500)], {"a": {1010: 501}}, {1010: 10})
+
+    assert out["a"] == ()
+
+
+def test_same_start_time_but_another_namespace_pid_is_not_live():
+    out = _match([_s(10, 500)], {"a": {1010: 500}}, {1010: 11})
+
+    assert out["a"] == ()
+
+
+def test_an_unreadable_nspid_is_not_live():
+    out = _match([_s(10, 500)], {"a": {1010: 500}}, {})
+
+    assert out["a"] == ()
+
+
+def test_nspid_is_read_only_for_start_time_candidates():
+    """One status read per live session, not one per process."""
+    asked: list[int] = []
+
+    def nspid(pid: int) -> int | None:
+        asked.append(pid)
+        return 10
+
+    agent_status.match_sessions([_s(10, 500)], {"a": {1: 500, 2: 999, 3: 777}}, nspid)
+
+    assert asked == [1]
+
+
+def test_no_sessions_reads_no_nspid_at_all():
+    asked: list[int] = []
+    out = agent_status.match_sessions([], {"a": {1: 500}}, lambda p: asked.append(p) or None)
+
+    assert out == {"a": ()}
+    assert asked == []
+
+
+def test_the_most_urgent_session_speaks_for_the_agent_and_all_are_counted():
+    sessions = [_s(1, 11, "idle"), _s(2, 12, "waiting", waiting_for="input needed"), _s(3, 13)]
+    out = _match(sessions, {"a": {101: 11, 102: 12, 103: 13}}, {101: 1, 102: 2, 103: 3})
+
+    assert out["a"] == (
+        agent_status.AgentSummary(
+            agent="claude", state="waiting", since=T0, waiting_for="input needed", count=3
+        ),
+    )
+
+
+def test_among_equals_the_longest_wait_wins():
+    early, late = T0, T0 + timedelta(minutes=5)
+    sessions = [_s(1, 11, "waiting", since=late), _s(2, 12, "waiting", since=early)]
+    out = _match(sessions, {"a": {101: 11, 102: 12}}, {101: 1, 102: 2})
+
+    assert out["a"][0].since == early
+
+
+def test_an_undated_session_ranks_after_a_dated_one_of_the_same_state():
+    sessions = [_s(1, 11, "busy", since=None), _s(2, 12, "busy", since=T0)]
+    out = _match(sessions, {"a": {101: 11, 102: 12}}, {101: 1, 102: 2})
+
+    assert out["a"][0].since == T0
+
+
+def test_an_unknown_state_ranks_after_idle():
+    sessions = [_s(1, 11, "compacting"), _s(2, 12, "idle")]
+    out = _match(sessions, {"a": {101: 11, 102: 12}}, {101: 1, 102: 2})
+
+    assert out["a"][0].state == "idle"
+
+
+def test_an_unknown_state_alone_is_shown_raw():
+    out = _match([_s(1, 11, "compacting")], {"a": {101: 11}}, {101: 1})
+
+    assert out["a"][0].state == "compacting"
+
+
+def test_two_files_claiming_one_process_count_once_and_the_newest_wins():
+    sessions = [
+        _s(1, 11, "busy", updated_at=100),
+        _s(1, 11, "waiting", updated_at=200),
+        _s(1, 11, "idle", updated_at=None),
+    ]
+    out = _match(sessions, {"a": {101: 11}}, {101: 1})
+
+    assert [(s.state, s.count) for s in out["a"]] == [("waiting", 1)]
+
+
+def test_several_agents_are_ordered_most_urgent_first():
+    sessions = [_s(1, 11, "busy", agent="codex"), _s(2, 12, "waiting"), _s(3, 13, "busy", agent="aider")]
+    out = _match(sessions, {"a": {101: 11, 102: 12, 103: 13}}, {101: 1, 102: 2, 103: 3})
+
+    assert [s.agent for s in out["a"]] == ["claude", "aider", "codex"]
+
+
+class _SessionsAdapter:
+    def __init__(self, by_home: dict[Path, list[AgentSession]], *, boom: bool = False) -> None:
+        self.by_home = by_home
+        self.boom = boom
+        self.asked: list[Path] = []
+
+    def read_sessions(self, config_home: Path) -> list[AgentSession]:
+        self.asked.append(config_home)
+        if self.boom:
+            raise RuntimeError("parser bug")
+        return self.by_home.get(config_home, [])
+
+
+def test_read_sessions_reads_each_distinct_home_once(monkeypatch, tmp_path):
+    adapter = _SessionsAdapter({tmp_path: [_s(1, 11)]})
+    monkeypatch.setitem(base.ADAPTERS, "fakeagent", adapter)
+
+    got = agent_status.read_sessions([("fakeagent", tmp_path), ("fakeagent", tmp_path)])
+
+    assert got == [_s(1, 11)]
+    assert adapter.asked == [tmp_path]
+
+
+def test_read_sessions_skips_an_agent_with_no_adapter(tmp_path):
+    assert agent_status.read_sessions([("no-such-agent", tmp_path)]) == []
+
+
+def test_read_sessions_survives_an_adapter_that_raises(monkeypatch, tmp_path):
+    """The format is undocumented; a bug in one parser must not end the tick
+    or hide another agent's sessions."""
+    monkeypatch.setitem(base.ADAPTERS, "broken", _SessionsAdapter({}, boom=True))
+    monkeypatch.setitem(base.ADAPTERS, "fine", _SessionsAdapter({tmp_path: [_s(1, 11)]}))
+
+    got = agent_status.read_sessions([("broken", tmp_path), ("fine", tmp_path)])
+
+    assert got == [_s(1, 11)]
+
