@@ -12,7 +12,7 @@ import json
 import re
 import shlex
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from importlib import resources
@@ -39,10 +39,11 @@ from jailbee.network import SERVICES_ACL, service_container_acl_yaml
 from jailbee.services_acl import set_services_endpoint
 
 if TYPE_CHECKING:
-    from jailbee.config.models_litellm import LiteLLMRepoView
+    from jailbee.config.models_litellm import LiteLLMConfig, LiteLLMRepoView
     from jailbee.egress import EgressEntry
     from jailbee.global_config import GlobalConfig
     from jailbee.incus import Incus
+    from jailbee.litellm_inputs import HostInputs
 
 LITELLM_CONTAINER = "jailbee-litellm"
 LITELLM_PROFILE = "jailbee-litellm-profile"
@@ -423,6 +424,59 @@ def _retire_accounts(incus: Incus, keep: set[str]) -> list[str]:
     return retired
 
 
+def _render_all(
+    cfg: LiteLLMConfig,
+    scopes: Mapping[str, LiteLLMConfig],
+    ports: dict[str, int],
+    inputs: HostInputs,
+) -> list[InstanceFiles]:
+    return [
+        render_instance_files(
+            cfg,
+            account,
+            port=ports[account],
+            master_key=litellm_state.master_key(account),
+            secrets=inputs.secrets,
+            extra=inputs.extra,
+            scopes=scopes,
+        )
+        for account in cfg.accounts
+    ]
+
+
+def _restart_changed(
+    incus: Incus,
+    files: list[InstanceFiles],
+    ports: dict[str, int],
+    callback_source: str,
+    *,
+    force: bool,
+    on_step: Callable[[str], None],
+) -> list[str]:
+    """Restart each instance whose files changed (or whose unit is down); wait for health.
+
+    The digest is recorded only after the unit is healthy on the new files, so
+    a run that fails in between is retried by the next one.
+    """
+    restarted: list[str] = []
+    for instance in files:
+        account = instance.account
+        digest = instance.digest(callback_source)
+        restart = (
+            force
+            or not litellm_state.config_applied(account, digest)
+            or not _active(incus, account)
+        )
+        if restart:
+            incus.exec(LITELLM_CONTAINER, ["systemctl", "enable", unit(account)], timeout=30)
+            incus.exec(LITELLM_CONTAINER, ["systemctl", "restart", unit(account)], timeout=60)
+        _wait_healthy(incus, account, ports[account], on_step)
+        if restart:
+            litellm_state.record_applied(account, digest)
+            restarted.append(account)
+    return restarted
+
+
 def litellm_up(
     incus: Incus,
     gcfg: GlobalConfig,
@@ -442,18 +496,7 @@ def litellm_up(
     on_step("rendering the proxy configuration")
     callback_source = _read("jailbee_callback.py")
     ports = {account: litellm_state.port_for(account) for account in cfg.accounts}
-    files = [
-        render_instance_files(
-            cfg,
-            account,
-            scopes=scopes,
-            port=ports[account],
-            master_key=litellm_state.master_key(account),
-            secrets=inputs.secrets,
-            extra=inputs.extra,
-        )
-        for account in cfg.accounts
-    ]
+    files = _render_all(cfg, scopes, ports, inputs)
     listen = sorted(ports.values())
 
     if not incus.network_exists(LOOSE_BRIDGE):
@@ -537,22 +580,9 @@ def litellm_up(
     # enabled symlink of an account that has since been removed.
     retired = _retire_accounts(incus, set(cfg.accounts))
 
-    restarted: list[str] = []
-    for instance in files:
-        account = instance.account
-        digest = instance.digest(callback_source)
-        restart = (
-            needs_install
-            or not litellm_state.config_applied(account, digest)
-            or not _active(incus, account)
-        )
-        if restart:
-            incus.exec(LITELLM_CONTAINER, ["systemctl", "enable", unit(account)], timeout=30)
-            incus.exec(LITELLM_CONTAINER, ["systemctl", "restart", unit(account)], timeout=60)
-        _wait_healthy(incus, account, ports[account], on_step)
-        if restart:
-            litellm_state.record_applied(account, digest)
-            restarted.append(account)
+    restarted = _restart_changed(
+        incus, files, ports, callback_source, force=needs_install, on_step=on_step
+    )
 
     set_services_endpoint(incus, (ip, listen))
     return UpResult(
@@ -574,6 +604,88 @@ def litellm_down(incus: Incus, *, purge: bool = False) -> None:
         pool = _state_pool(incus)
         if incus.storage_volume_exists(pool, STATE_VOLUME):
             incus.storage_volume_delete(pool, STATE_VOLUME)
+
+
+@dataclass(frozen=True)
+class ReconcileResult:
+    """What `jailbee apply` did to the proxy."""
+
+    restarted: list[str] = field(default_factory=list)
+    # Changed but left alone (`--no-restart`); the digest is not recorded, so
+    # the next `apply` restarts them.
+    pending: list[str] = field(default_factory=list)
+    # Why only `jailbee litellm up` can bring the proxy in line; None if it was not needed.
+    needs_up: str | None = None
+    issues: list[str] = field(default_factory=list)
+
+
+def litellm_reconcile(
+    incus: Incus,
+    gcfg: GlobalConfig,
+    *,
+    restart: bool = True,
+    on_step: Callable[[str], None] = _no_steps,
+) -> ReconcileResult | None:
+    """Bring a running proxy in line with the config; restart only changed instances.
+
+    For `jailbee apply`, so an edited route or repo override reaches the
+    proxy without `jailbee litellm up`. Never creates the container,
+    installs, allocates a port or retires an account: those are `up`'s, and
+    `needs_up` says so. None when LiteLLM is off or its container is not
+    running: there is nothing to reconcile, and `apply` must not start it.
+    """
+    cfg = gcfg.litellm
+    if not cfg.enabled:
+        return None
+    info = _container(incus)
+    if info is None or info.get("status") != "Running":
+        return None
+    scopes, issues = local_litellm_scopes(cfg)
+    version = cfg.effective_version()
+    installed = _installed_version(incus)
+    if installed != version:
+        return ReconcileResult(
+            needs_up=f"it runs LiteLLM {installed or 'unknown'}, the config asks for {version}",
+            issues=issues,
+        )
+    ports = {account: litellm_state.known_port(account) for account in cfg.accounts}
+    missing = sorted(
+        account
+        for account, port in ports.items()
+        if port is None or not litellm_state.master_key_path(account).exists()
+    )
+    if missing:
+        return ReconcileResult(
+            needs_up=f"account(s) {', '.join(missing)} have no proxy instance yet", issues=issues
+        )
+    removed = sorted(_deployed_accounts(incus) - set(cfg.accounts))
+    if removed:
+        return ReconcileResult(
+            needs_up=f"account(s) {', '.join(removed)} left `litellm.accounts` but still run",
+            issues=issues,
+        )
+    known = {account: port for account, port in ports.items() if port is not None}
+    inputs = load_host_inputs(cfg, scopes.values())
+    callback_source = _read("jailbee_callback.py")
+    files = _render_all(cfg, scopes, known, inputs)
+    changed = [
+        f
+        for f in files
+        if not litellm_state.config_applied(f.account, f.digest(callback_source))
+        or not _active(incus, f.account)
+    ]
+    if not changed:
+        return ReconcileResult(issues=issues)
+    if not restart:
+        return ReconcileResult(pending=[f.account for f in changed], issues=issues)
+    on_step("writing the proxy's egress allowlist")
+    _set_egress(incus, _resolve_egress(egress_hosts(cfg, scopes=scopes)), sorted(known.values()))
+    on_step("writing the proxy configuration")
+    _push_state(incus, changed, callback_source)
+    restarted = _restart_changed(
+        incus, changed, known, callback_source, force=False, on_step=on_step
+    )
+    return ReconcileResult(restarted=restarted, issues=issues)
 
 
 def container_sync_payload(

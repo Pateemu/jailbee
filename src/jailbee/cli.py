@@ -1503,7 +1503,7 @@ def apply(
         bool,
         typer.Option(
             "--no-restart",
-            help="Update profiles/ACL/hosts/proxy but never restart a container or its dockerd",
+            help="Update profiles/ACL/hosts/proxy but never restart a container, its dockerd or a LiteLLM instance",
         ),
     ] = False,
 ) -> None:
@@ -1544,6 +1544,8 @@ def apply(
             result.docker_restart_pending,
             result.offline_migrated,
             result.ports_changed,
+            result.litellm_restarted,
+            result.litellm_pending,
         ]
     ):
         info("Configuration already up to date.")

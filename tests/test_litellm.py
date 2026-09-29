@@ -12,9 +12,11 @@ import pytest
 import yaml
 
 from jailbee import litellm as ll
+from jailbee.config.models_litellm import LiteLLMRepoOverlay, LiteLLMRepoView
 from jailbee.egress import EgressEntry
 from jailbee.global_config import GlobalConfig
 from jailbee.incus import IncusError
+from jailbee.litellm_inputs import LiteLLMInputError
 
 
 @pytest.fixture(autouse=True)
@@ -1205,8 +1207,6 @@ def test_resumed_up_pushes_the_state_only_after_reattaching_the_volume():
 
 
 def test_up_refuses_a_missing_secret_before_touching_incus():
-    from jailbee.litellm_inputs import LiteLLMInputError
-
     incus = _incus(present=False)
     cfg = _gcfg(routes={"kimi": _KIMI})
     with pytest.raises(LiteLLMInputError, match="OPENROUTER_API_KEY"):
@@ -1327,9 +1327,6 @@ def test_the_stale_key_loop_removes_only_unlisted_keys(tmp_path: Path):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["litellm-default.key", "litellm.json"]
 
 
-from jailbee.config.models_litellm import LiteLLMRepoOverlay, LiteLLMRepoView  # noqa: E402
-
-
 def _repo(xdg: Path, prefix: str, litellm: dict) -> Path:
     path = xdg / "config" / "jailbee" / "repos" / f"{prefix}.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1372,7 +1369,7 @@ def test_up_reads_a_secret_only_a_repo_scope_references(xdg):
         },
     )
     incus = _incus(present=True)
-    with pytest.raises(Exception, match="OPENROUTER_API_KEY"):
+    with pytest.raises(LiteLLMInputError, match="OPENROUTER_API_KEY"):
         ll.litellm_up(incus, _gcfg())
     _secrets(xdg, "OPENROUTER_API_KEY=sk-or-test\n")
     ll.litellm_up(incus, _gcfg())
@@ -1409,3 +1406,84 @@ def test_sync_payload_for_a_view_without_own_scope_uses_host_aliases():
     view = LiteLLMRepoView(config=_gcfg().litellm, scope=None, origin="/x/repos/r.yaml")
     payload = ll.container_sync_payload(incus, _gcfg(), view=view)
     assert payload["json"]["profiles"]["codex"]["tiers"]["opus"] == "jb-default-sol-xhigh"
+
+
+def _restarts(incus: MagicMock) -> list[str]:
+    return [cmd for cmd in _execs(incus) if cmd.startswith("systemctl restart")]
+
+
+def test_reconcile_is_none_when_disabled_missing_or_stopped():
+    assert ll.litellm_reconcile(_incus(present=True), _gcfg(enabled=False)) is None
+    assert ll.litellm_reconcile(_incus(present=False), _gcfg()) is None
+    assert ll.litellm_reconcile(_incus(present=True, running=False), _gcfg()) is None
+
+
+def test_reconcile_after_up_changes_nothing(xdg):
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    incus.reset_mock(return_value=False, side_effect=False)
+    result = ll.litellm_reconcile(incus, _gcfg())
+    assert result == ll.ReconcileResult()
+    assert _restarts(incus) == []
+    incus.exec_with_input.assert_not_called()
+
+
+def test_reconcile_restarts_only_the_account_whose_routes_changed(xdg):
+    two = {**_TWO, "routes": {"sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "low"}}}
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg(**two))
+    incus.reset_mock(return_value=False, side_effect=False)
+    changed = {**two, "routes": {"sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "high"}}}
+    result = ll.litellm_reconcile(incus, _gcfg(**changed))
+    assert result.restarted == ["work"]
+    assert _restarts(incus) == [f"systemctl restart {ll.unit('work')}"]
+    assert f"{ll.CONTAINER_STATE_DIR}/personal/config.yaml" not in _pushed(incus)
+
+
+def test_reconcile_picks_up_a_new_repo_scope(xdg):
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    _repo(xdg, "myrepo", {"routes": {"sol-xhigh": {"effort": "max"}}})
+    incus.reset_mock(return_value=False, side_effect=False)
+    result = ll.litellm_reconcile(incus, _gcfg())
+    assert result.restarted == ["default"]
+    config = _pushed(incus)[f"{ll.CONTAINER_STATE_DIR}/default/config.yaml"]
+    assert "jb-myrepo.sol-xhigh" in config
+
+
+def test_reconcile_without_restart_touches_nothing_and_stays_pending(xdg):
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    changed = _gcfg(routes={"sol-xhigh": {"effort": "max"}})
+    incus.reset_mock(return_value=False, side_effect=False)
+    first = ll.litellm_reconcile(incus, changed, restart=False)
+    assert (first.pending, first.restarted) == (["default"], [])
+    assert _restarts(incus) == []
+    incus.exec_with_input.assert_not_called()
+    incus.network_acl_set_yaml.assert_not_called()
+    second = ll.litellm_reconcile(incus, changed)
+    assert second.restarted == ["default"]
+
+
+def test_reconcile_leaves_structural_changes_to_up(xdg):
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    incus.reset_mock(return_value=False, side_effect=False)
+    grown = _gcfg(accounts=["default", "work"])
+    result = ll.litellm_reconcile(incus, grown)
+    assert result.needs_up is not None and "work" in result.needs_up
+    assert _restarts(incus) == []
+
+    stale = _incus(present=True, installed="1.0.0")
+    result = ll.litellm_reconcile(stale, _gcfg())
+    assert result.needs_up is not None and "1.103.0" in result.needs_up
+
+
+def test_reconcile_reports_a_broken_override_and_still_applies_the_rest(xdg):
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    broken = _repo(xdg, "broken", {"profiles": {"codex": {"opus": "gone"}}})
+    incus.reset_mock(return_value=False, side_effect=False)
+    result = ll.litellm_reconcile(incus, _gcfg(routes={"sol-xhigh": {"effort": "max"}}))
+    assert result.restarted == ["default"]
+    assert len(result.issues) == 1 and str(broken) in result.issues[0]

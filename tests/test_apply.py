@@ -2784,3 +2784,70 @@ def test_apply_passes_the_repo_view_to_the_litellm_payload(make_cfg, tmp_path, m
     payload = mocker.patch("jailbee.litellm.container_sync_payload", return_value=None)
     apply._litellm_payload_or_warn(MagicMock(), GlobalConfig(), cfg.litellm_view())
     assert payload.call_args.kwargs["view"] is view
+
+
+def _apply_harness(make_cfg, tmp_path, mocker):
+    from jailbee.lifecycle import ContainerInfo
+
+    cfg = make_cfg(tmp_path)
+    incus = MagicMock(spec=Incus)
+    incus.list_containers.return_value = []
+    incus.network_acl_list.return_value = []
+    incus.network_get.return_value = ""
+    mocker.patch("jailbee.apply._profile_differs", return_value=False)
+    mocker.patch("jailbee.apply._acl_differs", return_value=False)
+    mocker.patch("jailbee.apply._litellm_payload_or_warn", return_value=None)
+    mocker.patch(
+        "jailbee.apply._list_containers",
+        return_value=[ContainerInfo("a", "Running", "strict", "10.0.0.1", "16GiB", repo=tmp_path.name)],
+    )
+    mocker.patch("jailbee.hosts.apply_hosts")
+    mocker.patch("jailbee.litellm.sync_container")
+    return cfg, incus
+
+
+@pytest.mark.parametrize("no_restart", [False, True])
+def test_apply_reconciles_the_proxy_and_honours_no_restart(make_cfg, tmp_path, mocker, no_restart):
+    from jailbee import litellm as ll
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+
+    cfg, incus = _apply_harness(make_cfg, tmp_path, mocker)
+    outcome = (
+        ll.ReconcileResult(pending=["default"]) if no_restart else ll.ReconcileResult(restarted=["default"])
+    )
+    reconcile = mocker.patch("jailbee.litellm.litellm_reconcile", return_value=outcome)
+    info = mocker.patch("jailbee.tui.info")
+    warn_plain = mocker.patch("jailbee.tui.warn_plain")
+
+    result = run_apply(cfg, incus, GlobalConfig(), no_restart=no_restart)
+
+    assert reconcile.call_args.kwargs["restart"] is (not no_restart)
+    if no_restart:
+        assert result.litellm_pending == ["default"] and result.litellm_restarted == []
+        assert any("--no-restart" in c.args[0] for c in warn_plain.call_args_list)
+    else:
+        assert result.litellm_restarted == ["default"]
+        assert any("in-flight" in c.args[0] for c in info.call_args_list)
+
+
+def test_apply_survives_a_failing_reconcile_and_reports_needs_up(make_cfg, tmp_path, mocker):
+    from jailbee import litellm as ll
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+
+    cfg, incus = _apply_harness(make_cfg, tmp_path, mocker)
+    warn_plain = mocker.patch("jailbee.tui.warn_plain")
+    mocker.patch("jailbee.litellm.litellm_reconcile", side_effect=RuntimeError("dns down"))
+    run_apply(cfg, incus, GlobalConfig(), no_restart=True)
+    assert any("dns down" in c.args[0] for c in warn_plain.call_args_list)
+
+    mocker.patch(
+        "jailbee.litellm.litellm_reconcile",
+        return_value=ll.ReconcileResult(needs_up="account work has no instance", issues=["bad.yaml"]),
+    )
+    warn_plain.reset_mock()
+    run_apply(cfg, incus, GlobalConfig(), no_restart=True)
+    messages = [c.args[0] for c in warn_plain.call_args_list]
+    assert any("jailbee litellm up" in m and "work" in m for m in messages)
+    assert "bad.yaml" in messages
