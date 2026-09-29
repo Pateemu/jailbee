@@ -58,7 +58,7 @@ def test_system_list_is_flattened_for_chatgpt(cb):
     assert out["system"] == "a\n\nb"
 
 
-def test_non_text_system_blocks_are_not_flattened(cb):
+def test_non_text_system_blocks_are_dropped_when_flattening(cb):
     out = cb.transform(
         _req(
             "jb-default-astra",
@@ -154,3 +154,33 @@ def test_hook_delegates_to_transform(cb):
         cb.proxy_handler_instance.async_pre_call_hook(None, None, data, "anthropic_messages")
     )
     assert out["output_config"] == {"effort": "xhigh"}
+
+
+def test_hook_ignores_other_call_types(cb):
+    data = _req("jb-default-sol-xhigh", system=[{"type": "text", "text": "a"}])
+    for call_type in ("acompletion", "aresponses", "embeddings", None):
+        out = asyncio.run(
+            cb.proxy_handler_instance.async_pre_call_hook(None, None, dict(data), call_type)
+        )
+        assert out == data, call_type
+
+
+def test_hook_accepts_the_enum_shaped_call_type(cb):
+    class CallType:  # LiteLLM's CallTypes is an Enum whose `.value` is the wire name
+        value = "anthropic_messages"
+
+    out = asyncio.run(
+        cb.proxy_handler_instance.async_pre_call_hook(
+            None, None, _req("jb-default-sol-xhigh"), CallType()
+        )
+    )
+    assert out["output_config"] == {"effort": "xhigh"}
+
+
+def test_missing_table_variable_stops_the_proxy_at_import(
+    cb, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("JAILBEE_LITELLM_CALLBACK_DATA")
+    monkeypatch.delitem(sys.modules, "jailbee.provision.litellm.jailbee_callback", raising=False)
+    with pytest.raises(RuntimeError, match="JAILBEE_LITELLM_CALLBACK_DATA is not set"):
+        importlib.import_module("jailbee.provision.litellm.jailbee_callback")

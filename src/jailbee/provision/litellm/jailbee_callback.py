@@ -6,7 +6,12 @@ the ChatGPT backend rejects. A string becomes Responses instructions.
 The callback also replaces or floors Claude Code's requested effort because
 its ``output_config.effort`` overrides deployment defaults in LiteLLM.
 
+Only ``/v1/messages`` requests are rewritten (LiteLLM's ``anthropic_messages``
+call type); anything else passes through untouched.
+
 The per-instance alias table is read once from ``$JAILBEE_LITELLM_CALLBACK_DATA``.
+It is required: without it no request would be flattened and every one would fail
+upstream, so a missing variable stops the proxy at start instead.
 This module needs only the standard library and LiteLLM's CustomLogger base.
 """
 
@@ -19,12 +24,16 @@ from typing import Any
 from litellm.integrations.custom_logger import CustomLogger
 
 _ORDER = ("low", "medium", "high", "xhigh", "max")
+_MESSAGES_CALL_TYPE = "anthropic_messages"
 
 
 def _load_table() -> dict[str, Any]:
     path = os.environ.get("JAILBEE_LITELLM_CALLBACK_DATA")
     if not path:
-        return {"aliases": {}, "catch_all": None}
+        raise RuntimeError(
+            "JAILBEE_LITELLM_CALLBACK_DATA is not set: the jailbee callback has no alias "
+            "table, so it would forward every request unflattened. Run `jailbee litellm up`."
+        )
     with open(path) as f:
         loaded: dict[str, Any] = json.load(f)
     return loaded
@@ -74,6 +83,8 @@ class JailbeeCallback(CustomLogger):  # type: ignore[misc]  # LiteLLM's base is 
     async def async_pre_call_hook(
         self, user_api_key_dict: Any, cache: Any, data: dict[str, Any], call_type: Any
     ) -> dict[str, Any]:
+        if str(getattr(call_type, "value", call_type)) != _MESSAGES_CALL_TYPE:
+            return data
         return transform(data, self._table)
 
 
