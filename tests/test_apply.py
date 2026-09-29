@@ -2771,3 +2771,16 @@ def test_apply_warns_about_profiles_without_a_proxy_instance(mocker):
     warn = mocker.patch("jailbee.tui.warn")
     assert apply._litellm_payload_or_warn(MagicMock(), GlobalConfig()) is payload
     assert "work" in warn.call_args.args[0] and "jailbee litellm up" in warn.call_args.args[0]
+
+
+def test_apply_passes_the_repo_view_to_the_litellm_payload(make_cfg, tmp_path, mocker):
+    from jailbee import apply
+    from jailbee.config.models_litellm import LiteLLMRepoView
+    from jailbee.global_config import GlobalConfig
+
+    cfg = make_cfg(tmp_path)
+    view = LiteLLMRepoView(scope="x")
+    cfg._litellm_view = view
+    payload = mocker.patch("jailbee.litellm.container_sync_payload", return_value=None)
+    apply._litellm_payload_or_warn(MagicMock(), GlobalConfig(), cfg.litellm_view())
+    assert payload.call_args.kwargs["view"] is view

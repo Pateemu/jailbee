@@ -28,6 +28,7 @@ from jailbee.profiles import (
 from jailbee.tui import ConfirmFn, default_confirm
 
 if TYPE_CHECKING:
+    from jailbee.config.models_litellm import LiteLLMRepoView
     from jailbee.lifecycle import ContainerInfo
 
 
@@ -203,7 +204,7 @@ def run_apply(
     info("Refreshing egress pool + ACL + /etc/hosts...")
     mirror_endpoint = _mirror_endpoint_or_warn(cfg, incus, gcfg)
     mirror_ca_pem = _read_mirror_ca_or_warn(gcfg) if mirror_endpoint else None
-    litellm_payload = _litellm_payload_or_warn(incus, gcfg)
+    litellm_payload = _litellm_payload_or_warn(incus, gcfg, cfg.litellm_view())
 
     # Before `refresh_pool`, which writes the ACL with `incus network acl
     # edit` and fails against a name nobody created. `jailbee init` is where a
@@ -651,12 +652,14 @@ def _ensure_acl_attached_to_bridge(cfg: Config, incus: Incus) -> None:
     ensure_acl_attached_to_bridge(cfg, incus)
 
 
-def _litellm_payload_or_warn(incus: Incus, gcfg: GlobalConfig) -> dict[str, object] | None:
+def _litellm_payload_or_warn(
+    incus: Incus, gcfg: GlobalConfig, view: LiteLLMRepoView | None = None
+) -> dict[str, object] | None:
     from jailbee.litellm import container_sync_payload, unserved_warning
     from jailbee.tui import warn
 
     try:
-        payload = container_sync_payload(incus, gcfg)
+        payload = container_sync_payload(incus, gcfg, view=view)
     except IncusError as e:
         warn(f"Could not resolve LiteLLM settings: {e}; removing stale settings from containers.")
         return None

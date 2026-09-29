@@ -13,7 +13,7 @@ import re
 import shlex
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from importlib import resources
 from pathlib import Path
@@ -23,6 +23,7 @@ import yaml
 
 from jailbee import litellm_state
 from jailbee.config import CONTAINER_USERNAME
+from jailbee.config.local_layer import local_litellm_scopes
 from jailbee.incus import IncusError
 from jailbee.litellm_inputs import load_host_inputs
 from jailbee.litellm_render import (
@@ -38,6 +39,7 @@ from jailbee.network import SERVICES_ACL, service_container_acl_yaml
 from jailbee.services_acl import set_services_endpoint
 
 if TYPE_CHECKING:
+    from jailbee.config.models_litellm import LiteLLMRepoView
     from jailbee.egress import EgressEntry
     from jailbee.global_config import GlobalConfig
     from jailbee.incus import Incus
@@ -115,6 +117,7 @@ class UpResult:
     restarted: list[str]
     retired: list[str]
     installed: bool
+    issues: list[str] = field(default_factory=list)
 
 
 def _resolve_egress(hosts: list[str]) -> list[EgressEntry]:
@@ -431,7 +434,8 @@ def litellm_up(
     if not cfg.enabled:
         raise ValueError("LiteLLM is disabled: set `litellm.enabled: true` in global.yaml first.")
     # Host inputs first: a missing secret must fail before anything changes.
-    inputs = load_host_inputs(cfg)
+    scopes, issues = local_litellm_scopes(cfg)
+    inputs = load_host_inputs(cfg, scopes.values())
     version = cfg.effective_version()
     pinned = cfg.version is None
 
@@ -442,6 +446,7 @@ def litellm_up(
         render_instance_files(
             cfg,
             account,
+            scopes=scopes,
             port=ports[account],
             master_key=litellm_state.master_key(account),
             secrets=inputs.secrets,
@@ -504,7 +509,7 @@ def litellm_up(
             _provision(incus, version, pinned)
 
         on_step("writing the proxy's egress allowlist")
-        _set_egress(incus, _resolve_egress(egress_hosts(cfg)), listen)
+        _set_egress(incus, _resolve_egress(egress_hosts(cfg, scopes=scopes)), listen)
         _set_profile(incus, ip, with_acl=True)
         # A run that failed after the install but before this point leaves the
         # container installed and locked down without its state mount; the next
@@ -551,7 +556,12 @@ def litellm_up(
 
     set_services_endpoint(incus, (ip, listen))
     return UpResult(
-        ip=ip, ports=ports, restarted=restarted, retired=retired, installed=needs_install
+        ip=ip,
+        ports=ports,
+        restarted=restarted,
+        retired=retired,
+        installed=needs_install,
+        issues=issues,
     )
 
 
@@ -566,15 +576,19 @@ def litellm_down(incus: Incus, *, purge: bool = False) -> None:
             incus.storage_volume_delete(pool, STATE_VOLUME)
 
 
-def container_sync_payload(incus: Incus, gcfg: GlobalConfig) -> dict[str, object] | None:
+def container_sync_payload(
+    incus: Incus, gcfg: GlobalConfig, *, view: LiteLLMRepoView | None = None
+) -> dict[str, object] | None:
     """Resolve the dev-container settings without putting a key in a background job.
 
     Only accounts `up` has brought up (a port and a master key exist) are
     offered; profiles bound to any other account are listed as `unserved`.
     When none is offered, `json` is None: `sync_container` then retires the
     settings, and `unserved` still names the profiles for the warning.
+    `view` is one repo's (`Config.litellm_view()`); None means the host's own.
     """
-    cfg = gcfg.litellm
+    cfg = view.config if view is not None else gcfg.litellm
+    scope = view.scope if view is not None else None
     if not cfg.enabled or _container(incus) is None:
         return None
     ip = loose_bridge_host_ip(incus, _IP_INDEX)
@@ -589,7 +603,7 @@ def container_sync_payload(incus: Incus, gcfg: GlobalConfig) -> dict[str, object
             continue
         base_urls[account] = f"http://{ip}:{port}"
         key_paths[account] = str(key_path)
-    profiles = container_profiles(cfg, base_urls=base_urls)
+    profiles = container_profiles(cfg, base_urls=base_urls, scope=scope)
     effective = cfg.effective_profiles()
     unserved = sorted(set(effective) - set(profiles))
     if not profiles:

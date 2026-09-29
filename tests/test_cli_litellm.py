@@ -32,6 +32,7 @@ def test_up_prints_endpoint_and_next_steps(mocker, context):
             restarted=["default"],
             retired=[],
             installed=True,
+            issues=["/x/repos/broken.yaml is broken"],
         ),
     )
     result = runner.invoke(app, ["litellm", "up", "--reinstall"])
@@ -41,6 +42,7 @@ def test_up_prints_endpoint_and_next_steps(mocker, context):
     assert "jailbee litellm login" in out
     assert "jailbee apply" in out
     assert "in-flight" in out
+    assert "broken.yaml" in out
     assert up.call_args.kwargs["reinstall"] is True
     assert callable(up.call_args.kwargs["on_step"])
 

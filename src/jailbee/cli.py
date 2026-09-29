@@ -2322,7 +2322,7 @@ def new_cmd(
     from jailbee import litellm
 
     try:
-        litellm_payload = litellm.container_sync_payload(incus, gcfg)
+        litellm_payload = litellm.container_sync_payload(incus, gcfg, view=cfg.litellm_view())
     except IncusError as e:
         warn(f"Could not resolve LiteLLM settings: {e}; run `jailbee apply` to retry.")
         litellm_payload = None
@@ -10668,6 +10668,8 @@ def litellm_up_cmd(
             f"Stopped {', '.join(result.retired)}: no longer in `litellm.accounts`; "
             "their logins are kept."
         )
+    for issue in result.issues:
+        warn(issue)
     info(
         "Next: `jailbee litellm login <account>` for each new account, then "
         "`jailbee apply` in each repo that uses `claude-jb`."

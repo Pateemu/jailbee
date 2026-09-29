@@ -1325,3 +1325,87 @@ def test_the_stale_key_loop_removes_only_unlisted_keys(tmp_path: Path):
     )
     subprocess.run(["bash", "-c", loop], check=True)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["litellm-default.key", "litellm.json"]
+
+
+from jailbee.config.models_litellm import LiteLLMRepoOverlay, LiteLLMRepoView  # noqa: E402
+
+
+def _repo(xdg: Path, prefix: str, litellm: dict) -> Path:
+    path = xdg / "config" / "jailbee" / "repos" / f"{prefix}.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"litellm": litellm}))
+    return path
+
+
+def test_up_renders_every_repo_scope(xdg):
+    _repo(xdg, "myrepo", {"routes": {"sol-xhigh": {"effort": "max"}}})
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    config = yaml.safe_load(_pushed(incus)[f"{ll.CONTAINER_STATE_DIR}/default/config.yaml"])
+    names = {m["model_name"] for m in config["model_list"]}
+    assert {"jb-default-sol-xhigh", "jb-myrepo.sol-xhigh"} <= names
+
+
+def test_up_skips_a_broken_override_and_reports_it(xdg):
+    broken = _repo(xdg, "broken", {"profiles": {"codex": {"opus": "gone"}}})
+    _repo(xdg, "good", {"routes": {"sol-xhigh": {"effort": "max"}}})
+    incus = _incus(present=True)
+    result = ll.litellm_up(incus, _gcfg())
+    names = {
+        m["model_name"]
+        for m in yaml.safe_load(
+            _pushed(incus)[f"{ll.CONTAINER_STATE_DIR}/default/config.yaml"]
+        )["model_list"]
+    }
+    assert "jb-good.sol-xhigh" in names
+    assert not any(n.startswith("jb-broken.") for n in names)
+    assert len(result.issues) == 1 and str(broken) in result.issues[0]
+
+
+def test_up_reads_a_secret_only_a_repo_scope_references(xdg):
+    _repo(
+        xdg,
+        "myrepo",
+        {
+            "routes": {"kimi": _KIMI},
+            "profiles": {"kimi": {"opus": "kimi"}},
+        },
+    )
+    incus = _incus(present=True)
+    with pytest.raises(Exception, match="OPENROUTER_API_KEY"):
+        ll.litellm_up(incus, _gcfg())
+    _secrets(xdg, "OPENROUTER_API_KEY=sk-or-test\n")
+    ll.litellm_up(incus, _gcfg())
+    env = _pushed(incus)[f"{ll.CONTAINER_STATE_DIR}/default/instance.env"]
+    assert "OPENROUTER_API_KEY='sk-or-test'" in env
+
+
+def test_sync_payload_for_a_repo_view_uses_its_scope_and_default_profile():
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    host = _gcfg().litellm
+    view = LiteLLMRepoView(
+        config=host.with_overlay(
+            LiteLLMRepoOverlay.model_validate(
+                {
+                    "routes": {"sol-xhigh": {"effort": "max"}},
+                    "profiles": {"lean": {"account": "default", "opus": "sol-medium"}},
+                    "default_profile": "lean",
+                }
+            )
+        ),
+        scope="myrepo",
+        origin="/x/repos/myrepo.yaml",
+    )
+    payload = ll.container_sync_payload(incus, _gcfg(), view=view)
+    assert payload["json"]["default_profile"] == "lean"
+    assert payload["json"]["profiles"]["codex"]["tiers"]["opus"] == "jb-myrepo.sol-xhigh"
+    assert set(payload["json"]["profiles"]) == {"codex", "lean"}
+
+
+def test_sync_payload_for_a_view_without_own_scope_uses_host_aliases():
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    view = LiteLLMRepoView(config=_gcfg().litellm, scope=None, origin="/x/repos/r.yaml")
+    payload = ll.container_sync_payload(incus, _gcfg(), view=view)
+    assert payload["json"]["profiles"]["codex"]["tiers"]["opus"] == "jb-default-sol-xhigh"

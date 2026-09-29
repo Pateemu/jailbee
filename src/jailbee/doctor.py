@@ -98,9 +98,12 @@ def _check_litellm(incus: Incus, gcfg: GlobalConfig) -> list[CheckResult]:
     cfg = gcfg.litellm
     if not cfg.enabled:
         return [CheckResult("litellm", True, "not enabled")]
+    from jailbee.config.local_layer import local_litellm_scopes
+
+    scopes, _issues = local_litellm_scopes(cfg)
     rows: list[CheckResult] = []
     try:
-        litellm_inputs.load_host_inputs(cfg)
+        litellm_inputs.load_host_inputs(cfg, scopes.values())
     except litellm_inputs.LiteLLMInputError as e:
         rows.append(CheckResult("litellm inputs", False, f"{e} — then run 'jailbee litellm up'"))
     try:
@@ -187,7 +190,7 @@ def _check_litellm(incus: Incus, gcfg: GlobalConfig) -> list[CheckResult]:
         )
     unreachable = [
         f"{host}:{port}"
-        for host, port in upstream_targets(cfg)
+        for host, port in upstream_targets(cfg, scopes=scopes)
         if not litellm.upstream_reachable(incus, host, port)
     ]
     if unreachable:
