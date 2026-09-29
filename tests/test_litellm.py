@@ -932,7 +932,8 @@ def test_rendered_files_are_pushed_after_the_volume_and_restricted_egress():
     ll.litellm_up(incus, _gcfg())
     calls = incus.mock_calls
     mount = next(i for i, c in enumerate(calls) if c[0] == "config_device_add")
-    push = max(
+    # min: the FIRST push must already follow the attach (no provision script has base64 -d).
+    push = min(
         i for i, c in enumerate(calls) if c[0] == "exec_with_input" and "base64 -d" in c.args[2]
     )
     final_acl = max(
@@ -1015,6 +1016,7 @@ def test_down_keeps_the_volume_and_purge_deletes_it_after_the_container():
     incus = _incus(present=True)
     ll.litellm_down(incus)
     incus.storage_volume_delete.assert_not_called()
+    incus = _incus(present=True)
     ll.litellm_down(incus, purge=True)
     names = [c[0] for c in incus.mock_calls]
     incus.storage_volume_delete.assert_called_once_with("default", ll.STATE_VOLUME)
