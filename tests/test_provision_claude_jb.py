@@ -4,7 +4,6 @@ image and in the dev environment)."""
 
 import importlib.resources
 import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -86,18 +85,21 @@ def test_default_profile_env(script, env):
     assert "ANTHROPIC_AUTH_TOKEN=sk-jb-secret" in lines
     assert "ANTHROPIC_DEFAULT_OPUS_MODEL=jb-default-sol-xhigh" in lines
     assert "ANTHROPIC_DEFAULT_HAIKU_MODEL=jb-default-luna-high" in lines
-    assert not any(l.startswith("ANTHROPIC_DEFAULT_SONNET_MODEL=") for l in lines)
+    assert not any(line.startswith("ANTHROPIC_DEFAULT_SONNET_MODEL=") for line in lines)
     assert "CLAUDE_CODE_MAX_CONTEXT_TOKENS=1050000" in lines
     assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1" in lines
-    assert [l for l in lines if l.startswith("ARGV:")] == ["ARGV:-p", "ARGV:hi"]
+    assert [line for line in lines if line.startswith("ARGV:")] == ["ARGV:-p", "ARGV:hi"]
 
 
 def test_profile_flag_is_stripped_and_selects(script, env):
     r = _run(script, env, "--profile", "deep", "-p", "hi")
     lines = _lines(r.stdout)
     assert "ANTHROPIC_DEFAULT_OPUS_MODEL=jb-default-astra" in lines
-    assert [l for l in lines if l.startswith("ARGV:")] == [
-        "ARGV:--effort", "ARGV:max", "ARGV:-p", "ARGV:hi",
+    assert [line for line in lines if line.startswith("ARGV:")] == [
+        "ARGV:--effort",
+        "ARGV:max",
+        "ARGV:-p",
+        "ARGV:hi",
     ]
 
 
@@ -118,13 +120,13 @@ def test_flag_beats_env_var(script, env):
 
 def test_user_effort_wins_over_profile_effort(script, env):
     r = _run(script, env, "--profile", "deep", "--effort", "low")
-    argv = [l for l in _lines(r.stdout) if l.startswith("ARGV:")]
+    argv = [line for line in _lines(r.stdout) if line.startswith("ARGV:")]
     assert argv == ["ARGV:--effort", "ARGV:low"]
 
 
 def test_user_effort_equals_form_also_wins(script, env):
     r = _run(script, env, "--profile", "deep", "--effort=low")
-    argv = [l for l in _lines(r.stdout) if l.startswith("ARGV:")]
+    argv = [line for line in _lines(r.stdout) if line.startswith("ARGV:")]
     assert argv == ["ARGV:--effort=low"]
 
 
@@ -159,5 +161,5 @@ def test_unreadable_key_errors(script, env, tmp_path):
 def test_inherited_anthropic_vars_are_replaced(script, env):
     r = _run(script, {**env, "ANTHROPIC_DEFAULT_SONNET_MODEL": "stale", "ANTHROPIC_API_KEY": "x"})
     lines = _lines(r.stdout)
-    assert not any(l.startswith("ANTHROPIC_DEFAULT_SONNET_MODEL=") for l in lines)
-    assert not any(l.startswith("ANTHROPIC_API_KEY=") for l in lines)
+    assert not any(line.startswith("ANTHROPIC_DEFAULT_SONNET_MODEL=") for line in lines)
+    assert not any(line.startswith("ANTHROPIC_API_KEY=") for line in lines)
