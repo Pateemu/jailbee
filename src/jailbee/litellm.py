@@ -22,8 +22,8 @@ import yaml
 
 from jailbee import litellm_state
 from jailbee.config import CONTAINER_USERNAME
-from jailbee.incus import IncusError
 from jailbee.config.models_litellm import DEFAULT_ACCOUNT
+from jailbee.incus import IncusError
 from jailbee.litellm_render import CONTAINER_STATE_DIR, container_key_file, egress_hosts
 from jailbee.loose_bridge import LOOSE_BRIDGE, loose_bridge_gateways, loose_bridge_host_ip
 from jailbee.network import SERVICES_ACL, service_container_acl_yaml
@@ -463,9 +463,7 @@ def container_sync_payload(incus: Incus, gcfg: GlobalConfig) -> dict[str, object
         return None
     ip, port = ep
     return {
-        "json": container_payload(
-            gcfg.litellm, base_urls={DEFAULT_ACCOUNT: f"http://{ip}:{port}"}
-        ),
+        "json": container_payload(gcfg.litellm, base_urls={DEFAULT_ACCOUNT: f"http://{ip}:{port}"}),
         "key_path": str(key_path),
     }
 

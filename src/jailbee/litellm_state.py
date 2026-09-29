@@ -169,7 +169,8 @@ def write_instance_files(cfg: LiteLLMConfig, account: str) -> WriteResult:
     changed = [
         _write_private(callback_dir / "jailbee_callback.py", source),
         _write_private(
-            base / "config.yaml", yaml.safe_dump(render_instance_config(cfg, account), sort_keys=False)
+            base / "config.yaml",
+            yaml.safe_dump(render_instance_config(cfg, account), sort_keys=False),
         ),
         _write_private(
             base / "callback.json", json.dumps(render_callback_data(cfg, account), indent=2) + "\n"
