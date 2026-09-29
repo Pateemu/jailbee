@@ -234,14 +234,6 @@ def container_profiles(
     return out
 
 
-def container_payload(cfg: LiteLLMConfig, *, base_urls: Mapping[str, str]) -> dict[str, object]:
-    return {
-        "version": 1,
-        "default_profile": cfg.default_profile,
-        "profiles": container_profiles(cfg, base_urls=base_urls),
-    }
-
-
 def _route_egress(route: ResolvedRoute) -> list[str]:
     if route.api_base:
         hosts = [api_base_endpoint(route.api_base)]

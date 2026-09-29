@@ -893,6 +893,7 @@ def test_sync_payload_after_up():
     ll.litellm_up(incus, _gcfg())
     payload = ll.container_sync_payload(incus, _gcfg())
     assert payload is not None
+    assert (payload["json"]["version"], payload["json"]["default_profile"]) == (1, "codex")
     assert payload["json"]["profiles"]["codex"]["base_url"] == "http://10.79.115.3:4100"
     assert payload["json"]["profiles"]["codex"]["key_file"] == "/etc/jailbee/litellm-default.key"
     assert str(payload["keys"]["default"]).endswith("default/master.key")

@@ -10,7 +10,7 @@ from jailbee.litellm_render import (
     alias,
     catch_all_route,
     container_key_file,
-    container_payload,
+    container_profiles,
     egress_hosts,
     merge_extra,
     render_callback_data,
@@ -121,38 +121,34 @@ def test_instance_env():
     assert env.endswith("\n")
 
 
-def test_container_payload():
-    payload = container_payload(LiteLLMConfig(), base_urls={"default": "http://10.0.0.3:4100"})
-    assert payload == {
-        "version": 1,
-        "default_profile": "codex",
-        "profiles": {
-            "codex": {
-                "base_url": "http://10.0.0.3:4100",
-                "key_file": "/etc/jailbee/litellm-default.key",
-                "effort": None,
-                "tiers": {
-                    "fable": "jb-default-astra",
-                    "opus": "jb-default-sol-xhigh",
-                    "sonnet": "jb-default-sol-medium",
-                    "haiku": "jb-default-luna-high",
-                },
-                "context_window": 922_000,
-            }
-        },
+def test_container_profiles():
+    profiles = container_profiles(LiteLLMConfig(), base_urls={"default": "http://10.0.0.3:4100"})
+    assert profiles == {
+        "codex": {
+            "base_url": "http://10.0.0.3:4100",
+            "key_file": "/etc/jailbee/litellm-default.key",
+            "effort": None,
+            "tiers": {
+                "fable": "jb-default-astra",
+                "opus": "jb-default-sol-xhigh",
+                "sonnet": "jb-default-sol-medium",
+                "haiku": "jb-default-luna-high",
+            },
+            "context_window": 922_000,
+        }
     }
 
 
-def test_payload_context_window_is_the_largest_of_the_profiles_routes():
+def test_profile_context_window_is_the_largest_of_the_profiles_routes():
     cfg = LiteLLMConfig.model_validate(
         {
             "routes": {"sol-medium": {"context_window": 400_000}},
             "profiles": {"small": {"account": "default", "sonnet": "sol-medium"}},
         }
     )
-    payload = container_payload(cfg, base_urls={"default": "u"})
-    assert payload["profiles"]["small"]["context_window"] == 400_000
-    assert payload["profiles"]["codex"]["context_window"] == 922_000
+    profiles = container_profiles(cfg, base_urls={"default": "u"})
+    assert profiles["small"]["context_window"] == 400_000
+    assert profiles["codex"]["context_window"] == 922_000
 
 
 def test_egress_hosts_for_chatgpt():
@@ -297,12 +293,11 @@ def test_instance_files_digest_changes_with_every_part():
     assert isinstance(files, InstanceFiles) and files.account == "default"
 
 
-def test_container_payload_points_each_profile_at_its_account():
+def test_container_profiles_point_each_profile_at_its_account():
     cfg = _two_accounts()
-    payload = container_payload(
+    profiles = container_profiles(
         cfg, base_urls={"personal": "http://10.0.0.3:4100", "work": "http://10.0.0.3:4101"}
     )
-    profiles = payload["profiles"]
     assert profiles["codex"]["base_url"] == "http://10.0.0.3:4100"
     assert profiles["codex"]["key_file"] == container_key_file("personal")
     assert profiles["work"]["base_url"] == "http://10.0.0.3:4101"
@@ -310,9 +305,9 @@ def test_container_payload_points_each_profile_at_its_account():
     assert container_key_file("work") == "/etc/jailbee/litellm-work.key"
 
 
-def test_container_payload_leaves_out_profiles_without_an_instance():
-    payload = container_payload(_two_accounts(), base_urls={"personal": "http://10.0.0.3:4100"})
-    assert set(payload["profiles"]) == {"codex", "kimi"}
+def test_container_profiles_leave_out_profiles_without_an_instance():
+    profiles = container_profiles(_two_accounts(), base_urls={"personal": "http://10.0.0.3:4100"})
+    assert set(profiles) == {"codex", "kimi"}
 
 
 def test_egress_is_derived_from_served_routes_api_base_and_host_egress():
