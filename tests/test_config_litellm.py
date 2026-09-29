@@ -289,6 +289,8 @@ def test_a_pasted_key_is_not_echoed_back():
         validate_global_raw(raw, Path("global.yaml"))
     assert "deadbeefcafe" not in str(caught.value)
     assert "litellm.routes.kimi.api_key" in str(caught.value)
+    # A chained ValidationError would carry the key as `input_value`.
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__
 
 
 def test_other_global_errors_keep_pydantics_text():

@@ -357,9 +357,11 @@ def validate_global_raw(
                 raise ValueError(f"unknown remote Jailbee command path(s): {joined}")
         return config
     except ValidationError as e:
+        # Unchained: the ValidationError carries `input_value`, a pasted key
+        # included, into any traceback that prints the cause.
         raise ConfigError(
             f"Global config validation failed in {path}:\n{_validation_text(e)}"
-        ) from e
+        ) from None
     except ValueError as e:
         raise ConfigError(f"Global config validation failed in {path}:\n{e}") from e
 
