@@ -1,6 +1,8 @@
 """`jailbee-litellm` lifecycle through a MagicMock Incus (style of test_registry.py)."""
 
+import base64
 import os
+import re
 import subprocess
 from importlib import resources
 from pathlib import Path
@@ -18,6 +20,7 @@ from jailbee.incus import IncusError
 @pytest.fixture(autouse=True)
 def xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(
         ll,
         "_resolve_egress",
@@ -47,6 +50,10 @@ def _incus(*, present: bool, running: bool = True, installed: str | None = "1.10
     incus.config_show.return_value = yaml.safe_dump(
         {"devices": {"state": {"type": "disk", "path": ll.CONTAINER_STATE_DIR}}}
     )
+    incus.profile_show.return_value = yaml.safe_dump(
+        {"devices": {"root": {"type": "disk", "path": "/", "pool": "default"}}}
+    )
+    incus.storage_volume_exists.return_value = True
     incus.list_containers.return_value = (
         [{"name": ll.LITELLM_CONTAINER, "status": "Running" if running else "Stopped"}]
         if present
@@ -63,10 +70,27 @@ def _incus(*, present: bool, running: bool = True, installed: str | None = "1.10
             return "active\n"
         if "health/liveliness" in text:
             return "ok\n"
+        if "auth.json" in text:
+            return "missing\n"
         return ""
 
     incus.exec.side_effect = exec_
     return incus
+
+
+def _pushed(incus: MagicMock) -> dict[str, str]:
+    """Container path -> content, for every file a push script wrote."""
+    files: dict[str, str] = {}
+    for call in incus.exec_with_input.call_args_list:
+        for path, blob in re.findall(r"^put (\S+) ([A-Za-z0-9+/=]+)$", call.args[2], re.M):
+            files[path] = base64.b64decode(blob).decode()
+    return files
+
+
+def _install_script(incus: MagicMock) -> str:
+    return next(
+        c.args[2] for c in incus.exec_with_input.call_args_list if "/root/install.sh" in c.args[2]
+    )
 
 
 def _execs(incus: MagicMock) -> list[str]:
@@ -82,8 +106,7 @@ def test_up_creates_provisions_and_opens_services_rule():
     incus = _incus(present=False)
     result = ll.litellm_up(incus, _gcfg())
     incus.init.assert_called_once_with("images:ubuntu/26.04/cloud", ll.LITELLM_CONTAINER)
-    assert incus.exec_with_input.call_args.args[1] == ["bash", "-s"]
-    assert "/root/install.sh" in incus.exec_with_input.call_args.args[2]
+    assert "/root/install.sh" in _install_script(incus)
     assert result.ip == "10.79.115.3" and result.port == 4100 and result.installed is True
     services = [
         c for c in incus.network_acl_set_yaml.call_args_list if c.args[0] == "jailbee-services"
@@ -867,3 +890,132 @@ def test_upstream_reachable_checks_proxy_container_only():
     assert "443" in incus.exec.call_args.args[1][-1]
     incus.exec.side_effect = IncusError("blocked")
     assert not ll.upstream_reachable(incus, "chatgpt.com")
+
+
+def test_state_lives_in_an_incus_volume_on_the_default_pool():
+    incus = _incus(present=False)
+    ll.litellm_up(incus, _gcfg())
+    incus.config_device_add.assert_called_once_with(
+        ll.LITELLM_CONTAINER,
+        "state",
+        "disk",
+        {"pool": "default", "source": ll.STATE_VOLUME, "path": ll.CONTAINER_STATE_DIR},
+    )
+
+
+def test_the_state_volume_is_created_before_it_is_attached():
+    incus = _incus(present=False)
+    incus.storage_volume_exists.return_value = False
+    ll.litellm_up(incus, _gcfg())
+    names = [c[0] for c in incus.mock_calls]
+    incus.storage_volume_create.assert_called_once_with("default", ll.STATE_VOLUME)
+    assert names.index("storage_volume_create") < names.index("config_device_add")
+
+
+def test_a_default_profile_without_a_root_pool_is_an_error():
+    incus = _incus(present=False)
+    incus.profile_show.return_value = yaml.safe_dump({"devices": {}})
+    with pytest.raises(RuntimeError, match="root disk pool"):
+        ll.litellm_up(incus, _gcfg())
+    incus.init.assert_not_called()
+
+
+def test_the_proxy_profile_maps_no_host_uid():
+    incus = _incus(present=False)
+    ll.litellm_up(incus, _gcfg())
+    for call in incus.profile_set_yaml.call_args_list:
+        assert "raw.idmap" not in yaml.safe_load(call.args[1])["config"]
+
+
+def test_rendered_files_are_pushed_after_the_volume_and_restricted_egress():
+    incus = _incus(present=False)
+    ll.litellm_up(incus, _gcfg())
+    calls = incus.mock_calls
+    mount = next(i for i, c in enumerate(calls) if c[0] == "config_device_add")
+    push = max(
+        i for i, c in enumerate(calls) if c[0] == "exec_with_input" and "base64 -d" in c.args[2]
+    )
+    final_acl = max(
+        i
+        for i, c in enumerate(calls)
+        if c[0] == "network_acl_set_yaml" and c.args[0] == ll.EGRESS_ACL
+    )
+    assert final_acl < mount < push
+    files = _pushed(incus)
+    env = files[f"{ll.CONTAINER_STATE_DIR}/default/instance.env"]
+    assert "PORT=4100" in env and "LITELLM_MASTER_KEY=sk-jb-" in env
+    assert f"{ll.CONTAINER_STATE_DIR}/default/config.yaml" in files
+    assert f"{ll.CONTAINER_STATE_DIR}/callback/jailbee_callback.py" in files
+
+
+def test_no_secret_reaches_incus_argv():
+    incus = _incus(present=False)
+    ll.litellm_up(incus, _gcfg())
+    argv = [repr(c.args[1]) for c in incus.exec.call_args_list]
+    argv += [repr(c.args[1]) for c in incus.exec_with_input.call_args_list]
+    assert not any("sk-jb-" in a for a in argv)
+
+
+def test_host_keeps_no_rendered_file_or_token(xdg: Path):
+    incus = _incus(present=False)
+    ll.litellm_up(incus, _gcfg())
+    root = xdg / "jailbee" / "litellm"
+    names = sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
+    assert names == [
+        ".allocation.lock",
+        "default/applied.sha256",
+        "default/master.key",
+        "ports.json",
+    ]
+
+
+def test_a_quiet_up_still_pushes_the_files():
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    incus.exec_with_input.reset_mock()
+    assert ll.litellm_up(incus, _gcfg()).restarted is False
+    assert _pushed(incus)
+
+
+def test_status_reads_the_login_inside_the_container():
+    incus = _incus(present=True)
+    healthy = incus.exec.side_effect
+    incus.exec.side_effect = lambda n, c, **kw: (
+        "present\n" if "auth.json" in " ".join(c) else healthy(n, c, **kw)
+    )
+    ll.litellm_up(incus, _gcfg())
+    assert ll.litellm_status(incus).instances[0].login == "present"
+
+
+def test_login_state_is_unknown_when_the_probe_fails():
+    incus = _incus(present=True)
+    incus.exec.side_effect = IncusError("exec failed")
+    assert ll.auth_state(incus, "default") == "unknown"
+
+
+def test_logout_removes_the_token_inside_the_container():
+    incus = _incus(present=True)
+    incus.exec.side_effect = None
+    incus.exec.return_value = "removed\n"
+    assert ll.litellm_logout(incus, "default") is True
+    name, cmd = incus.exec.call_args.args
+    assert name == ll.LITELLM_CONTAINER
+    assert f"{ll.CONTAINER_STATE_DIR}/default/auth/auth.json" in cmd[-1]
+    incus.exec.return_value = ""
+    assert ll.litellm_logout(incus, "default") is False
+
+
+@pytest.mark.parametrize("present,running", [(False, True), (True, False)])
+def test_logout_requires_a_running_proxy(present: bool, running: bool):
+    with pytest.raises(RuntimeError, match="jailbee litellm up"):
+        ll.litellm_logout(_incus(present=present, running=running), "default")
+
+
+def test_down_keeps_the_volume_and_purge_deletes_it_after_the_container():
+    incus = _incus(present=True)
+    ll.litellm_down(incus)
+    incus.storage_volume_delete.assert_not_called()
+    ll.litellm_down(incus, purge=True)
+    names = [c[0] for c in incus.mock_calls]
+    incus.storage_volume_delete.assert_called_once_with("default", ll.STATE_VOLUME)
+    assert names.index("delete") < names.index("storage_volume_delete")

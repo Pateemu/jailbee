@@ -52,8 +52,8 @@ def test_down_removes_proxy_but_keeps_login(mocker, context):
     down = mocker.patch("jailbee.litellm.litellm_down")
     result = runner.invoke(app, ["litellm", "down"])
     assert result.exit_code == 0, result.output
-    assert "login and settings are kept" in result.output
-    down.assert_called_once_with(context.return_value[0])
+    assert "logins and settings are kept" in " ".join(result.output.split())
+    down.assert_called_once_with(context.return_value[0], purge=False)
 
 
 def test_status_never_prints_tokens(mocker, context):
@@ -100,7 +100,7 @@ def test_status_exits_nonzero_when_proxy_is_unavailable(mocker, context, status)
 @pytest.mark.parametrize("command", ["login", "logout", "logs"])
 def test_non_default_account_rejected_before_side_effects(mocker, context, command):
     login = mocker.patch("jailbee.litellm.litellm_login")
-    logout = mocker.patch("jailbee.litellm_state.logout")
+    logout = mocker.patch("jailbee.litellm.litellm_logout")
     logs = mocker.patch("jailbee.litellm.litellm_logs")
     result = runner.invoke(app, ["litellm", command, "work"])
     assert result.exit_code == 2
@@ -118,13 +118,13 @@ def test_login_returns_device_flow_exit_code(mocker, context):
 
 
 def test_logout(mocker, context):
-    mocker.patch("jailbee.litellm_state.logout", return_value=True)
+    mocker.patch("jailbee.litellm.litellm_logout", return_value=True)
     result = runner.invoke(app, ["litellm", "logout"])
     assert result.exit_code == 0 and "Logged out" in result.output
 
 
 def test_logout_without_existing_auth(mocker, context):
-    mocker.patch("jailbee.litellm_state.logout", return_value=False)
+    mocker.patch("jailbee.litellm.litellm_logout", return_value=False)
     result = runner.invoke(app, ["litellm", "logout"])
     assert result.exit_code == 0 and "Not logged in" in result.output
 
@@ -134,3 +134,20 @@ def test_logs_passes_follow_and_exit_code(mocker, context):
     result = runner.invoke(app, ["litellm", "logs", "-f"])
     assert result.exit_code == 17
     logs.assert_called_once_with(context.return_value[0], "default", follow=True)
+
+
+def test_down_purge_is_passed_through(mocker, context):
+    down = mocker.patch("jailbee.litellm.litellm_down")
+    result = runner.invoke(app, ["litellm", "down", "--purge"])
+    assert result.exit_code == 0, result.output
+    down.assert_called_once_with(context.return_value[0], purge=True)
+    assert "logins are gone" in " ".join(result.output.split())
+
+
+def test_logout_needs_a_running_proxy(mocker, context):
+    mocker.patch(
+        "jailbee.litellm.litellm_logout", side_effect=RuntimeError("run jailbee litellm up")
+    )
+    result = runner.invoke(app, ["litellm", "logout"])
+    assert result.exit_code == 1
+    assert "jailbee litellm up" in result.output

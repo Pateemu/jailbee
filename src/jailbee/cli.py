@@ -10656,18 +10656,29 @@ def litellm_up_cmd(
 
 
 @litellm_app.command("down")
-def litellm_down_cmd() -> None:
-    """Remove the proxy container without deleting host-side login or settings."""
+def litellm_down_cmd(
+    purge: Annotated[
+        bool,
+        typer.Option(
+            "--purge",
+            help="Also delete the state volume: every login, the rendered configs and their secrets.",
+        ),
+    ] = False,
+) -> None:
+    """Remove the proxy container; its state volume (logins, settings) is kept."""
     from jailbee import litellm as ll
     from jailbee.incus import IncusError
 
     incus, _gcfg = _litellm_context()
     try:
-        ll.litellm_down(incus)
+        ll.litellm_down(incus, purge=purge)
     except (RuntimeError, IncusError) as exc:
         error(str(exc))
         raise typer.Exit(1) from exc
-    success("LiteLLM proxy removed; login and settings are kept.")
+    if purge:
+        success("LiteLLM proxy and its state volume removed; logins are gone.")
+    else:
+        success("LiteLLM proxy removed; logins and settings are kept.")
 
 
 @litellm_app.command("status")
@@ -10690,11 +10701,12 @@ def litellm_status_cmd() -> None:
         typer.echo(f"port: {instance.port}")
         typer.echo(f"service: {'active' if instance.active else 'inactive'}")
         typer.echo(f"health: {'healthy' if instance.healthy else 'unhealthy'}")
-        typer.echo(
-            "login: logged in"
-            if instance.login == "present"
-            else "login: not logged in — run jailbee litellm login"
-        )
+        if instance.login == "present":
+            typer.echo("login: logged in")
+        elif instance.login == "unknown":
+            typer.echo("login: unknown (could not read it; see jailbee litellm logs)")
+        else:
+            typer.echo("login: not logged in — run jailbee litellm login")
     if (
         status.container != ll.ContainerState.RUNNING
         or not status.instances
@@ -10729,14 +10741,15 @@ def litellm_logout_cmd(
         str, typer.Argument(help="Account to log out (only default is supported).")
     ] = "default",
 ) -> None:
-    """Delete the host-side ChatGPT token without removing proxy settings."""
-    from jailbee import litellm_state
+    """Delete the ChatGPT token in the proxy's state volume, keeping its settings."""
+    from jailbee import litellm as ll
+    from jailbee.incus import IncusError
 
     account = _single_account(account)
-    _litellm_context()
+    incus, _gcfg = _litellm_context()
     try:
-        removed = litellm_state.logout(account)
-    except OSError as exc:
+        removed = ll.litellm_logout(incus, account)
+    except (RuntimeError, IncusError) as exc:
         error(str(exc))
         raise typer.Exit(1) from exc
     if removed:

@@ -1,14 +1,14 @@
 """Manage the dedicated LiteLLM Incus container and its per-account proxy.
 
-Provision with a temporary package-host-only ACL and no auth state mount,
-then restrict egress to providers before mounting state and starting the proxy.
-Host-side authentication and configuration survive container deletion.
+Provision with a temporary package-host-only ACL and no state volume, then
+restrict egress to providers before attaching the state volume, pushing the
+rendered files and starting the proxy. The volume survives container deletion.
 """
 
 from __future__ import annotations
 
+import base64
 import json
-import os
 import shlex
 import time
 from collections.abc import Callable
@@ -24,7 +24,13 @@ from jailbee import litellm_state
 from jailbee.config import CONTAINER_USERNAME
 from jailbee.config.models_litellm import DEFAULT_ACCOUNT
 from jailbee.incus import IncusError
-from jailbee.litellm_render import CONTAINER_STATE_DIR, container_key_file, egress_hosts
+from jailbee.litellm_render import (
+    CONTAINER_STATE_DIR,
+    InstanceFiles,
+    container_key_file,
+    egress_hosts,
+    render_instance_files,
+)
 from jailbee.loose_bridge import LOOSE_BRIDGE, loose_bridge_gateways, loose_bridge_host_ip
 from jailbee.network import SERVICES_ACL, service_container_acl_yaml
 from jailbee.services_acl import set_services_endpoint
@@ -54,6 +60,18 @@ _PACKAGE_ENDPOINTS = (
 )
 CONTAINER_FILE = "/etc/jailbee/litellm.json"
 CONTAINER_KEY_FILE = container_key_file(DEFAULT_ACCOUNT)
+STATE_VOLUME = "jailbee-litellm-state"
+_AUTH_PROBE = (
+    "import json, sys\n"
+    "try:\n"
+    "    data = json.load(open(sys.argv[1]))\n"
+    "except (OSError, ValueError):\n"
+    "    data = None\n"
+    "ok = isinstance(data, dict) and any(\n"
+    "    isinstance(data.get(k), str) and data[k] for k in ('access_token', 'refresh_token')\n"
+    ")\n"
+    "print('present' if ok else 'missing')\n"
+)
 
 
 def unit(account: str) -> str:
@@ -76,7 +94,7 @@ class InstanceStatus:
     port: int
     active: bool
     healthy: bool
-    login: Literal["missing", "present"]
+    login: Literal["missing", "present", "unknown"]
 
 
 @dataclass(frozen=True)
@@ -166,6 +184,57 @@ def _detach_state(incus: Incus) -> None:
         incus.config_device_remove(LITELLM_CONTAINER, "state")
 
 
+def _state_pool(incus: Incus) -> str:
+    """The pool of the `default` profile's root disk, where the volume lives."""
+    parsed = yaml.safe_load(incus.profile_show("default")) or {}
+    devices = parsed.get("devices") if isinstance(parsed, dict) else None
+    root = devices.get("root") if isinstance(devices, dict) else None
+    pool = root.get("pool") if isinstance(root, dict) else None
+    if not isinstance(pool, str) or not pool:
+        raise RuntimeError(
+            "the default Incus profile has no root disk pool, so there is nowhere to "
+            "keep the LiteLLM state volume; run `jailbee init` first."
+        )
+    return pool
+
+
+def _ensure_state_volume(incus: Incus) -> str:
+    pool = _state_pool(incus)
+    if not incus.storage_volume_exists(pool, STATE_VOLUME):
+        incus.storage_volume_create(pool, STATE_VOLUME)
+    return pool
+
+
+def _b64(text: str) -> str:
+    return base64.b64encode(text.encode()).decode()
+
+
+def _push_state(incus: Incus, files: list[InstanceFiles], callback_source: str) -> None:
+    """Write the rendered files into the state volume, through stdin: they hold keys.
+
+    Base64 keeps arbitrary content (an `extra` fragment included) out of any
+    heredoc delimiter or shell quoting.
+    """
+    root = CONTAINER_STATE_DIR
+    lines = [
+        "set -euo pipefail",
+        "umask 077",
+        'put() { tmp=$(mktemp "$(dirname "$1")/.jb.XXXXXX"); '
+        'printf %s "$2" | base64 -d > "$tmp"; chmod 0600 "$tmp"; mv -f "$tmp" "$1"; }',
+        f"mkdir -p {root}/callback; chmod 0700 {root} {root}/callback",
+        f"put {root}/callback/jailbee_callback.py {_b64(callback_source)}",
+    ]
+    for f in files:
+        base = f"{root}/{litellm_state.check_account(f.account)}"
+        lines += [
+            f"mkdir -p {base}/auth; chmod 0700 {base} {base}/auth",
+            f"put {base}/config.yaml {_b64(f.config_yaml)}",
+            f"put {base}/callback.json {_b64(f.callback_json)}",
+            f"put {base}/instance.env {_b64(f.instance_env)}",
+        ]
+    incus.exec_with_input(LITELLM_CONTAINER, ["bash", "-s"], "\n".join(lines) + "\n", timeout=60)
+
+
 def _profile_yaml(ip: str | None, *, with_acl: bool) -> str:
     eth0: dict[str, str] = {"type": "nic", "name": "eth0", "network": LOOSE_BRIDGE}
     if ip is not None:
@@ -177,10 +246,7 @@ def _profile_yaml(ip: str | None, *, with_acl: bool) -> str:
     profile = {
         "name": LITELLM_PROFILE,
         "description": "security + network for the jailbee-litellm container",
-        "config": {
-            "security.nesting": "true",
-            "raw.idmap": f"uid {os.getuid()} 0\ngid {os.getgid()} 0",
-        },
+        "config": {"security.nesting": "true"},
         "devices": {"eth0": eth0},
     }
     return yaml.safe_dump(profile, sort_keys=False)
@@ -346,8 +412,12 @@ def litellm_up(
     pinned = cfg.version is None
 
     on_step("rendering the proxy configuration")
-    litellm_state.write_instance_files(cfg, account)
     port = litellm_state.port_for(account)
+    callback_source = _read("jailbee_callback.py")
+    files = render_instance_files(
+        cfg, account, port=port, master_key=litellm_state.master_key(account)
+    )
+    digest = files.digest(callback_source)
 
     if not incus.network_exists(LOOSE_BRIDGE):
         incus.network_create(LOOSE_BRIDGE)
@@ -359,6 +429,7 @@ def litellm_up(
 
     containers = incus.list_containers()
     _check_static_ip(incus, ip, containers)
+    pool = _ensure_state_volume(incus)
     info = next((c for c in containers if c.get("name") == LITELLM_CONTAINER), None)
     needs_install = reinstall or info is None
     if info is None:
@@ -412,7 +483,7 @@ def litellm_up(
                 LITELLM_CONTAINER,
                 "state",
                 "disk",
-                {"source": str(litellm_state.state_dir()), "path": CONTAINER_STATE_DIR},
+                {"pool": pool, "source": STATE_VOLUME, "path": CONTAINER_STATE_DIR},
             )
     except BaseException as error:
         if needs_install:
@@ -423,23 +494,31 @@ def litellm_up(
         # Never autoboot while package access and auth state can coexist.
         incus.config_set(LITELLM_CONTAINER, "boot.autostart", "true")
 
-    stale = not litellm_state.config_applied(account)
+    on_step("writing the proxy configuration")
+    _push_state(incus, [files], callback_source)
+
+    stale = not litellm_state.config_applied(account, digest)
     restart = needs_install or stale or not _active(incus, account)
     if restart:
         incus.exec(LITELLM_CONTAINER, ["systemctl", "enable", unit(account)], timeout=30)
         incus.exec(LITELLM_CONTAINER, ["systemctl", "restart", unit(account)], timeout=60)
     _wait_healthy(incus, account, port, on_step)
     if restart:
-        litellm_state.record_applied(account)
+        litellm_state.record_applied(account, digest)
 
     set_services_endpoint(incus, (ip, [port]))
     return UpResult(ip=ip, port=port, restarted=restart, installed=needs_install)
 
 
-def litellm_down(incus: Incus) -> None:
+def litellm_down(incus: Incus, *, purge: bool = False) -> None:
+    """Delete the proxy container; with `purge`, also every login and secret it held."""
     set_services_endpoint(incus, None)
     if _container(incus) is not None:
         incus.delete(LITELLM_CONTAINER, force=True)
+    if purge:
+        pool = _state_pool(incus)
+        if incus.storage_volume_exists(pool, STATE_VOLUME):
+            incus.storage_volume_delete(pool, STATE_VOLUME)
 
 
 def endpoint(incus: Incus) -> tuple[str, int] | None:
@@ -458,7 +537,7 @@ def container_sync_payload(incus: Incus, gcfg: GlobalConfig) -> dict[str, object
     if not gcfg.litellm.enabled:
         return None
     ep = endpoint(incus)
-    key_path = litellm_state.state_dir() / DEFAULT_ACCOUNT / "master.key"
+    key_path = litellm_state.master_key_path(DEFAULT_ACCOUNT)
     if ep is None or not key_path.exists():
         return None
     ip, port = ep
@@ -515,7 +594,7 @@ def litellm_status(incus: Incus) -> LiteLLMStatus:
         port=port,
         active=_active(incus, DEFAULT_ACCOUNT),
         healthy=_healthy(incus, port),
-        login=litellm_state.auth_state(DEFAULT_ACCOUNT),
+        login=auth_state(incus, DEFAULT_ACCOUNT),
     )
     return LiteLLMStatus(ContainerState.RUNNING, ip, _installed_version(incus), [instance])
 
@@ -524,6 +603,26 @@ def _require_running(incus: Incus) -> None:
     info = _container(incus)
     if info is None or info.get("status") != "Running":
         raise RuntimeError(f"{LITELLM_CONTAINER} is not running. Run `jailbee litellm up` first.")
+
+
+def auth_state(incus: Incus, account: str) -> Literal["missing", "present", "unknown"]:
+    """Whether the account holds a ChatGPT login; never reads token material out."""
+    path = f"{CONTAINER_STATE_DIR}/{litellm_state.check_account(account)}/auth/auth.json"
+    try:
+        out = incus.exec(LITELLM_CONTAINER, [_PY, "-c", _AUTH_PROBE, path], timeout=15).strip()
+    except IncusError:
+        return "unknown"
+    return "present" if out == "present" else "missing"
+
+
+def litellm_logout(incus: Incus, account: str) -> bool:
+    """Delete the account's token in the volume; True if there was one."""
+    _require_running(incus)
+    path = shlex.quote(
+        f"{CONTAINER_STATE_DIR}/{litellm_state.check_account(account)}/auth/auth.json"
+    )
+    script = f"if [ -e {path} ]; then rm -f -- {path}; echo removed; fi"
+    return incus.exec(LITELLM_CONTAINER, ["bash", "-c", script], timeout=15).strip() == "removed"
 
 
 def litellm_login(incus: Incus, account: str) -> int:

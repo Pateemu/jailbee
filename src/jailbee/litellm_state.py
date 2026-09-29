@@ -1,47 +1,28 @@
-"""Host-side state of the LiteLLM proxy, bind-mounted into `jailbee-litellm`.
+"""Host-only state of the LiteLLM proxy.
 
     <xdg_data_home>/jailbee/litellm/
       ports.json                      account -> port
-      callback/jailbee_callback.py    copied from the installed package on every write
-      <account>/master.key            0600, created once
-      <account>/auth/                 0700; LiteLLM's CHATGPT_TOKEN_DIR
-      <account>/config.yaml           rendered
-      <account>/callback.json         rendered
-      <account>/instance.env          0600, rendered (holds the master key)
+      <account>/master.key            0600, created once (dev containers get a copy)
       <account>/applied.sha256        digest of the files the running unit last restarted on
 
-State survives `jailbee litellm down` and container rebuilds, so a rebuild
-does not require a new login. LiteLLM writes auth.json; its file mode depends
-on the proxy process umask, not this module. The auth directory is kept 0700.
+Everything the proxy itself reads (rendered config, instance.env with its
+secrets, ChatGPT tokens) lives in the `jailbee-litellm-state` Incus volume,
+never on the host filesystem (`litellm._push_state`).
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import secrets
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from fcntl import LOCK_EX, LOCK_UN, flock
-from importlib import resources
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
-
-import yaml
 
 from jailbee.config.models_litellm import ACCOUNT_NAME_RE
-from jailbee.litellm_render import (
-    render_callback_data,
-    render_instance_config,
-    render_instance_env,
-)
 from jailbee.paths import xdg_data_home
-
-if TYPE_CHECKING:
-    from jailbee.config.models_litellm import LiteLLMConfig
 
 BASE_PORT = 4100
 
@@ -57,7 +38,7 @@ def _private_dir(path: Path) -> Path:
     return path
 
 
-def _checked(account: str) -> str:
+def check_account(account: str) -> str:
     """An account name becomes a path component, so it must not be able to leave the state dir."""
     if not ACCOUNT_NAME_RE.fullmatch(account):
         raise ValueError(
@@ -68,7 +49,7 @@ def _checked(account: str) -> str:
 
 
 def _account_dir(account: str) -> Path:
-    return _private_dir(state_dir() / _checked(account))
+    return _private_dir(state_dir() / check_account(account))
 
 
 def _write_private(path: Path, text: str) -> bool:
@@ -123,7 +104,7 @@ def _read_ports(path: Path) -> dict[str, int]:
 
 
 def port_for(account: str) -> int:
-    _checked(account)
+    check_account(account)
     path = state_dir() / "ports.json"
     with _state_lock():
         ports = _read_ports(path)
@@ -154,90 +135,31 @@ def master_key(account: str) -> str:
         return path.read_text().strip()
 
 
-@dataclass(frozen=True)
-class WriteResult:
-    changed: bool
+def known_port(account: str) -> int | None:
+    """The account's port if one was ever allocated; never allocates."""
+    ports = _read_ports(state_dir() / "ports.json")
+    port = ports.get(check_account(account))
+    return port if isinstance(port, int) else None
 
 
-def write_instance_files(cfg: LiteLLMConfig, account: str) -> WriteResult:
-    base = _account_dir(account)
-    _private_dir(base / "auth")
-    callback_dir = _private_dir(state_dir() / "callback")
-    source = (
-        resources.files("jailbee.provision").joinpath("litellm").joinpath("jailbee_callback.py")
-    ).read_text()
-    changed = [
-        _write_private(callback_dir / "jailbee_callback.py", source),
-        _write_private(
-            base / "config.yaml",
-            yaml.safe_dump(render_instance_config(cfg, account), sort_keys=False),
-        ),
-        _write_private(
-            base / "callback.json", json.dumps(render_callback_data(cfg, account), indent=2) + "\n"
-        ),
-        _write_private(
-            base / "instance.env",
-            render_instance_env(
-                port=port_for(account), master_key=master_key(account), account=account
-            ),
-        ),
-    ]
-    return WriteResult(changed=any(changed))
+def master_key_path(account: str) -> Path:
+    """Where the account's master key lives; creates nothing."""
+    return state_dir() / check_account(account) / "master.key"
 
 
-def config_digest(account: str) -> str:
-    """Digest of every file the proxy unit reads from the state directory."""
-    base = state_dir() / _checked(account)
-    sha = hashlib.sha256()
-    for path in (
-        state_dir() / "callback" / "jailbee_callback.py",
-        base / "config.yaml",
-        base / "callback.json",
-        base / "instance.env",
-    ):
-        sha.update(path.name.encode() + b"\0")
-        sha.update(path.read_bytes() if path.exists() else b"")
-    return sha.hexdigest()
+def config_applied(account: str, digest: str) -> bool:
+    """Whether the running unit was last restarted on files with this digest.
 
-
-def config_applied(account: str) -> bool:
-    """Whether the running unit was last restarted on exactly the files now on disk.
-
-    Files are written before the restart, so a run that fails in between would
-    otherwise leave a stale proxy that a re-run, seeing unchanged files, never
-    restarts. A missing stamp counts as not applied.
+    Files are pushed before the restart, so a run that fails in between would
+    otherwise leave a stale proxy that a re-run never restarts. A missing
+    stamp counts as not applied.
     """
     try:
-        stamp = (state_dir() / _checked(account) / "applied.sha256").read_text().strip()
+        stamp = (state_dir() / check_account(account) / "applied.sha256").read_text().strip()
     except OSError:
         return False
-    return stamp == config_digest(account)
+    return stamp == digest
 
 
-def record_applied(account: str) -> None:
-    _write_private(_account_dir(account) / "applied.sha256", config_digest(account) + "\n")
-
-
-def _auth_file(account: str) -> Path:
-    return state_dir() / _checked(account) / "auth" / "auth.json"
-
-
-def auth_state(account: str) -> Literal["missing", "present"]:
-    path = _auth_file(account)  # outside the try: a bad name is a caller bug, not "missing"
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return "missing"
-    if isinstance(data, dict) and any(
-        isinstance(data.get(name), str) and data[name] for name in ("access_token", "refresh_token")
-    ):
-        return "present"
-    return "missing"
-
-
-def logout(account: str) -> bool:
-    path = _auth_file(account)
-    if not path.exists():
-        return False
-    path.unlink()
-    return True
+def record_applied(account: str, digest: str) -> None:
+    _write_private(_account_dir(account) / "applied.sha256", digest + "\n")
