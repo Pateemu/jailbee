@@ -12,13 +12,16 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
+import stat
 from contextlib import suppress
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from jailbee.accounts import engine
 from jailbee.accounts.adapters import base
-from jailbee.accounts.models import Identity, LiveAccount, slug_for
+from jailbee.accounts.models import AgentSession, Identity, LiveAccount, slug_for
 from jailbee.claude_locks import ClaudeLockTimeoutError, config_lock
 from jailbee.config import CONTAINER_USERNAME, ConfigError
 from jailbee.tui import choose_shared_credential, success
@@ -318,6 +321,10 @@ def _member_account(
     return None
 
 
+SESSIONS_DIRNAME = "sessions"
+"""Where Claude Code writes `<pid>.json` per session, inside a config home."""
+
+
 def live_session_prefixes(found: Sequence[Member]) -> list[str]:
     """Members that look like they have a Claude Code session running.
 
@@ -332,11 +339,130 @@ def live_session_prefixes(found: Sequence[Member]) -> list[str]:
     busy: list[str] = []
     for member in found:
         try:
-            if any((member.config_home / "sessions").glob("*.json")):
+            if any((member.config_home / SESSIONS_DIRNAME).glob("*.json")):
                 busy.append(member.container_prefix)
         except OSError:
             continue
     return sorted(busy)
+
+
+MAX_SESSION_FILE_BYTES = 64 * 1024
+"""Real session files are about 500 bytes. The cap exists because a container writes them."""
+
+MAX_STATE_CHARS = 24
+MAX_WAITING_FOR_CHARS = 200
+
+
+def _read_small_regular_file(path: Path, limit: int) -> bytes | None:
+    """At most `limit` bytes of `path`, or None unless it is a small regular file.
+
+    `O_NONBLOCK` and the `S_ISREG` check handle a FIFO or device a container
+    could leave in `sessions/`: opening one without them blocks the
+    dashboard's refresh thread for good. `O_NOFOLLOW` keeps a symlink from
+    aiming the host's read at a file outside the config home.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        chunks: list[bytes] = []
+        size = 0
+        while size <= limit:
+            chunk = os.read(fd, limit + 1 - size)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return None if size > limit else b"".join(chunks)
+
+
+def _as_int(value: object) -> int | None:
+    """An int, or an ASCII digit string. Anything else, a bool included, is None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isascii() and value.isdigit():
+        return int(value)
+    return None
+
+
+def _printable(text: str, limit: int) -> str:
+    """Printable characters only, at most `limit` of them.
+
+    The value reaches a terminal and a Qt label, and it came from a file the
+    container wrote.
+    """
+    return "".join(ch for ch in text if ch.isprintable())[:limit]
+
+
+def _since(value: object) -> datetime | None:
+    """`statusUpdatedAt` (epoch milliseconds) as UTC, or None when unusable."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    try:
+        return datetime.fromtimestamp(value / 1000, tz=UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _parse_session(raw: bytes) -> AgentSession | None:
+    """One session file's contents, or None for any shape it cannot trust.
+
+    This is an undocumented, internal Claude Code format (observed on 2.1.285).
+    Every unexpected shape degrades to "no session" rather than raising.
+    `kind` is not filtered: the dashboard shows background sessions too.
+    """
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    pid = _as_int(data.get("pid"))
+    proc_start = _as_int(data.get("procStart"))
+    status = data.get("status")
+    if pid is None or pid <= 0 or proc_start is None or not isinstance(status, str):
+        return None
+    state = _printable(status, MAX_STATE_CHARS)
+    if not state:
+        return None
+    waiting = data.get("waitingFor")
+    waiting_for = _printable(waiting, MAX_WAITING_FOR_CHARS) if isinstance(waiting, str) else ""
+    updated = data.get("updatedAt")
+    return AgentSession(
+        agent="claude",
+        pid=pid,
+        proc_start=proc_start,
+        state=state,
+        waiting_for=waiting_for or None,
+        since=_since(data.get("statusUpdatedAt")),
+        updated_at=updated if isinstance(updated, int) and not isinstance(updated, bool) else None,
+    )
+
+
+def read_session_files(home: Path) -> list[AgentSession]:
+    """Every session file under `home`, in filename order. See `AccountAdapter.read_sessions`."""
+    try:
+        paths = sorted((home / SESSIONS_DIRNAME).glob("*.json"))
+    except OSError:
+        return []
+    sessions: list[AgentSession] = []
+    for path in paths:
+        raw = _read_small_regular_file(path, MAX_SESSION_FILE_BYTES)
+        if raw is None:
+            continue
+        session = _parse_session(raw)
+        if session is not None:
+            sessions.append(session)
+    return sessions
 
 
 def _login_block(raw: str | None) -> dict[str, Any] | None:
@@ -790,6 +916,9 @@ class ClaudeAdapter:
 
     def sessions(self, found: Sequence[Member]) -> list[str]:
         return live_session_prefixes(found)
+
+    def read_sessions(self, config_home: Path) -> list[AgentSession]:
+        return read_session_files(config_home)
 
     def blockers(self, cfg: Config, incus: Incus, containers: Sequence[str]) -> list[str]:
         """Claude never blocks a switch: it re-reads the credential itself."""

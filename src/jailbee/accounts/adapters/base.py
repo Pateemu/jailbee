@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from collections.abc import Collection, Sequence
     from pathlib import Path
 
-    from jailbee.accounts.models import LiveAccount, Member, Slot
+    from jailbee.accounts.models import AgentSession, LiveAccount, Member, Slot
     from jailbee.config import Config
     from jailbee.incus import Incus
 
@@ -269,6 +269,27 @@ class AccountAdapter(Protocol):
         the agent leaves behind, say — so a stale one reads as live, which is
         the right way round for a warning. An agent that leaves no such trace
         returns `[]`.
+        """
+        ...
+
+    def read_sessions(self, config_home: Path) -> list[AgentSession]:
+        """Every session this agent has recorded under one config home.
+
+        The input to the dashboard's AGENT column. `agent_status` decides
+        which of these are live and whose they are, so an implementation
+        reports what the agent wrote and nothing more. A file left behind by
+        a dead process is returned like any other.
+
+        **Never raises.** A missing directory is `[]`. Each unreadable,
+        non-JSON or wrongly typed file is skipped on its own, so one torn file
+        never hides the rest. An unrecognised state string is kept raw rather
+        than dropped. The files are written from inside a container, so treat
+        them as untrusted: bound what is read, and never block on something
+        that is not a regular file.
+
+        Distinct from `sessions`: "any file counts" is right for a warning and
+        wrong for a status column. An agent that records no sessions returns
+        `[]`.
         """
         ...
 

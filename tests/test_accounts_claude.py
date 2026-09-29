@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from jailbee.accounts import engine, models
+from jailbee.accounts.adapters import base
 from jailbee.accounts.adapters import claude as claude_adapter
 from jailbee.accounts.adapters.claude import CLAUDE
 from jailbee.accounts.models import Identity, Slot
@@ -2186,3 +2187,180 @@ def test_wiring_env_key_follows_the_shared_constant(tmp_path: Path, monkeypatch)
     env = CLAUDE.wiring(cfg, CLAUDE.holder_override(cfg)).env
 
     assert env == {"JAILBEE_SECURESTORAGE": "/home/dev/.claude-creds"}
+
+
+# ---- session files (the dashboard's AGENT column) ----
+
+# Shaped like a real file Claude Code 2.1.285 wrote, unprompted, per session.
+_REAL_SESSION = {
+    "pid": 3679,
+    "sessionId": "0f1e2d3c-aaaa-bbbb-cccc-000000000000",
+    "procStart": "557381979",
+    "kind": "interactive",
+    "status": "waiting",
+    "statusUpdatedAt": 1790714013497,
+    "updatedAt": 1790714013498,
+    "waitingFor": "input needed",
+    "pidDomain": "linux:boot:pid:[4026537899]",
+    "tmux": "autostart:@8.%8",
+}
+
+
+def _sessions_home(tmp_path: Path) -> Path:
+    home = tmp_path / "claude"
+    (home / "sessions").mkdir(parents=True)
+    return home
+
+
+def _write_session(home: Path, name: str, body: object) -> Path:
+    path = home / "sessions" / f"{name}.json"
+    path.write_text(body if isinstance(body, str) else json.dumps(body), encoding="utf-8")
+    return path
+
+
+def test_the_claude_adapter_satisfies_the_protocol() -> None:
+    """`AccountAdapter` is runtime-checkable, so a missing method is a False here."""
+    assert isinstance(CLAUDE, base.AccountAdapter)
+
+
+def test_read_sessions_parses_a_real_shaped_session_file(tmp_path: Path) -> None:
+    home = _sessions_home(tmp_path)
+    _write_session(home, "3679", _REAL_SESSION)
+
+    assert CLAUDE.read_sessions(home) == [
+        models.AgentSession(
+            agent="claude",
+            pid=3679,
+            proc_start=557381979,  # a string in the file, an int here
+            state="waiting",
+            waiting_for="input needed",
+            since=datetime.fromtimestamp(1790714013497 / 1000, tz=UTC),
+            updated_at=1790714013498,
+        )
+    ]
+
+
+def test_read_sessions_is_empty_without_a_sessions_dir(tmp_path: Path) -> None:
+    assert CLAUDE.read_sessions(tmp_path / "claude") == []
+
+
+def test_read_sessions_skips_a_torn_file_but_keeps_the_rest(tmp_path: Path) -> None:
+    """One file Claude was mid-way through writing must not hide every other session."""
+    home = _sessions_home(tmp_path)
+    _write_session(home, "1", '{"pid": 1, "procStart": "5", "stat')
+    _write_session(home, "2", {**_REAL_SESSION, "pid": 2})
+    _write_session(home, "3", "[1, 2]")
+    (home / "sessions" / "4.json").write_bytes(b"\xff\xfe not utf-8")
+
+    assert [s.pid for s in CLAUDE.read_sessions(home)] == [2]
+
+
+def test_read_sessions_keeps_an_unknown_state_raw(tmp_path: Path) -> None:
+    """A state a later Claude Code adds is still worth showing, verbatim."""
+    home = _sessions_home(tmp_path)
+    _write_session(home, "1", {**_REAL_SESSION, "status": "compacting"})
+
+    assert [s.state for s in CLAUDE.read_sessions(home)] == ["compacting"]
+
+
+def test_read_sessions_tolerates_missing_optional_fields(tmp_path: Path) -> None:
+    home = _sessions_home(tmp_path)
+    _write_session(home, "1", {"pid": 1, "procStart": 5, "status": "busy"})
+
+    [session] = CLAUDE.read_sessions(home)
+
+    assert (session.since, session.waiting_for, session.updated_at) == (None, None, None)
+
+
+@pytest.mark.parametrize("key", ["pid", "procStart", "status"])
+def test_read_sessions_skips_a_file_missing_a_required_field(tmp_path: Path, key: str) -> None:
+    home = _sessions_home(tmp_path)
+    _write_session(home, "1", {k: v for k, v in _REAL_SESSION.items() if k != key})
+
+    assert CLAUDE.read_sessions(home) == []
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"pid": "abc"},
+        {"pid": True},  # a bool is an int to isinstance, and never a pid
+        {"pid": 0},
+        {"pid": -4},
+        {"procStart": 1.5},
+        {"procStart": "12a"},
+        {"procStart": "²"},  # str.isdigit() accepts it; int() does not
+        {"status": 3},
+        {"status": ""},
+    ],
+)
+def test_read_sessions_skips_a_wrongly_typed_file(tmp_path: Path, override: dict) -> None:
+    home = _sessions_home(tmp_path)
+    _write_session(home, "1", {**_REAL_SESSION, **override})
+
+    assert CLAUDE.read_sessions(home) == []
+
+
+@pytest.mark.parametrize("stamp", ["1790714013497", True, 10**400, float("nan")])
+def test_read_sessions_drops_an_unusable_timestamp_but_keeps_the_session(
+    tmp_path: Path, stamp: object
+) -> None:
+    """`fromtimestamp` raises OverflowError/ValueError on these; the session survives."""
+    home = _sessions_home(tmp_path)
+    _write_session(home, "1", {**_REAL_SESSION, "statusUpdatedAt": stamp, "updatedAt": True})
+
+    [session] = CLAUDE.read_sessions(home)
+
+    assert session.since is None
+    assert session.updated_at is None
+
+
+def test_read_sessions_never_blocks_on_a_fifo(tmp_path: Path) -> None:
+    """The directory is written from inside the container. A FIFO there,
+    opened without O_NONBLOCK, hangs the dashboard's refresh thread until
+    something writes to it, which is never."""
+    import os
+    import threading
+
+    home = _sessions_home(tmp_path)
+    os.mkfifo(home / "sessions" / "1.json")
+    _write_session(home, "2", {**_REAL_SESSION, "pid": 2})
+    result: list[list[models.AgentSession]] = []
+    worker = threading.Thread(target=lambda: result.append(CLAUDE.read_sessions(home)), daemon=True)
+
+    worker.start()
+    worker.join(timeout=5)
+
+    assert not worker.is_alive(), "read_sessions blocked on a FIFO"
+    assert [s.pid for s in result[0]] == [2]
+
+
+def test_read_sessions_does_not_follow_a_symlink(tmp_path: Path) -> None:
+    """A container can point a session file at any path the host user can read."""
+    home = _sessions_home(tmp_path)
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps(_REAL_SESSION), encoding="utf-8")
+    (home / "sessions" / "1.json").symlink_to(outside)
+
+    assert CLAUDE.read_sessions(home) == []
+
+
+def test_read_sessions_skips_an_oversized_file(tmp_path: Path) -> None:
+    home = _sessions_home(tmp_path)
+    _write_session(home, "1", {**_REAL_SESSION, "pad": "x" * claude_adapter.MAX_SESSION_FILE_BYTES})
+    _write_session(home, "2", {**_REAL_SESSION, "pid": 2, "pad": "x" * 1000})
+
+    assert [s.pid for s in CLAUDE.read_sessions(home)] == [2]
+
+
+def test_read_sessions_strips_control_characters_and_bounds_the_text(tmp_path: Path) -> None:
+    """Both strings reach a terminal and a Qt label; the file is the container's."""
+    home = _sessions_home(tmp_path)
+    _write_session(home, "1", {**_REAL_SESSION, "status": "busy\x1b[2J", "waitingFor": "y" * 5000})
+    _write_session(home, "2", {**_REAL_SESSION, "pid": 2, "status": "z" * 500})
+
+    first, second = CLAUDE.read_sessions(home)
+
+    assert first.state == "busy[2J"
+    assert first.waiting_for == "y" * claude_adapter.MAX_WAITING_FOR_CHARS
+    assert second.state == "z" * claude_adapter.MAX_STATE_CHARS

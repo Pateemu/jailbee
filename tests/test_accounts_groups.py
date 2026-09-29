@@ -347,6 +347,9 @@ class _RecordingAdapter:
     def sessions(self, found):
         return []
 
+    def read_sessions(self, config_home):
+        return []
+
     def blockers(self, cfg, incus, containers):
         return []
 

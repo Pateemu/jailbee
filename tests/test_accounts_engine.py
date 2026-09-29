@@ -83,6 +83,9 @@ class FakeAdapter:
     def sessions(self, found: Any) -> list[str]:
         return []
 
+    def read_sessions(self, config_home: Path) -> list[models.AgentSession]:
+        return []
+
     def blockers(self, cfg: Any, incus: Any, containers: Any) -> list[str]:
         return []
 

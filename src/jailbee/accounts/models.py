@@ -235,6 +235,31 @@ class LiveAccount:
 
 
 @dataclass(frozen=True)
+class AgentSession:
+    """One agent session as the agent itself recorded it.
+
+    Read from a file the agent writes on its own, so nothing here is known to
+    be live, or to be any particular container's, until `agent_status`
+    matches `(pid, proc_start)` against a real process. `pid` is the pid in
+    the agent's own pid namespace (the container's), and `proc_start` is
+    proc(5) field 22 of that process, in clock ticks since boot.
+
+    `state` is kept raw: `waiting`, `busy` and `idle` are the values seen so
+    far, and an unknown one is still worth showing. `since` is the last state
+    change, tz-aware UTC. `updated_at` is milliseconds and serves only to pick
+    between two files claiming one process.
+    """
+
+    agent: str
+    pid: int
+    proc_start: int
+    state: str
+    waiting_for: str | None
+    since: datetime | None
+    updated_at: int | None
+
+
+@dataclass(frozen=True)
 class PoolChange:
     """What one pool operation did, for the CLI to report."""
 
