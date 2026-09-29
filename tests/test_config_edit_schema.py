@@ -779,3 +779,9 @@ def test_an_optional_union_of_model_lists_keeps_every_arm():
     assert result.optional is True
     assert result.item_model is _A
     assert result.item_models == (_A, _B)
+
+
+def test_litellm_autostart_is_a_global_leaf():
+    from jailbee.config_edit.schema import global_specs
+
+    assert ("litellm", "autostart") in {s.path for s in global_specs()}
