@@ -597,7 +597,12 @@ def sample_activity(groups: list[RepoGroup], sampler: ActivitySampler) -> None:
     """
     annotate_activity([c for g in groups for c in g.containers], sampler)
     for g in groups:
-        annotate_agent_status(g.containers, agent_status.read_sessions(g.agent_homes), sampler)
+        try:
+            annotate_agent_status(g.containers, agent_status.read_sessions(g.agent_homes), sampler)
+        except Exception:  # one group's reading must not end the tick for the rest
+            log.debug("failed to read agent state for %s", g.prefix, exc_info=True)
+            for c in g.containers:
+                c.agent_status = ()
 
 
 @dataclass(frozen=True)

@@ -5945,6 +5945,26 @@ def test_sample_activity_matches_agents_per_group_never_across_repos(mocker):
     ]
 
 
+def test_sample_activity_survives_a_group_whose_agent_reading_fails(mocker):
+    """One group's failure clears that group's AGENT and leaves the others."""
+    mocker.patch.object(dashboard, "annotate_activity")
+    agents = mocker.patch.object(
+        dashboard, "annotate_agent_status", side_effect=[RuntimeError("boom"), None]
+    )
+    mocker.patch("jailbee.agent_status.read_sessions", return_value=[])
+    a, b = _ci("p-a", "p"), _ci("q-b", "q")
+    a.agent_status = (mocker.Mock(),)
+    groups = [
+        dashboard.RepoGroup("p", "/p", None, [a]),
+        dashboard.RepoGroup("q", "/q", None, [b]),
+    ]
+
+    dashboard.sample_activity(groups, mocker.Mock())
+
+    assert agents.call_count == 2
+    assert a.agent_status == ()
+
+
 def test_sample_activity_reads_the_agent_state_after_the_activity_reading(mocker):
     """AGENT uses the reading `annotate_activity` just took."""
     order: list[str] = []
