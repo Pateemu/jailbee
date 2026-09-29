@@ -7614,3 +7614,30 @@ def test_run_cli_foreground_plain_does_not_pause(mocker, tmp_path):
     dashboard._run_cli_foreground(_target(tmp_path), ["disk-usage"], style="plain")
 
     wait.assert_not_called()
+
+
+@pytest.mark.parametrize(("remote", "over_ssh"), [(False, True), (True, False)])
+def test_run_cli_foreground_either_remote_flag_alone_forbids_the_pager(
+    mocker, tmp_path, remote, over_ssh
+):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    pager = mocker.patch.object(dashboard, "pager_argv", return_value=["less", "-R"])
+    paged = mocker.patch.object(dashboard, "_run_paged")
+    run = mocker.patch.object(dashboard.subprocess, "run")
+    run.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+
+    dashboard._run_cli_foreground(
+        _target(tmp_path),
+        ["doctor"],
+        style="paged",
+        remote=remote,
+        over_ssh=over_ssh,
+        ssh_policy=RemoteSSHConfig(),
+    )
+
+    pager.assert_not_called()
+    paged.assert_not_called()
+    run.assert_called_once()
+    wait.assert_called_once()

@@ -2465,7 +2465,7 @@ def _run_cli_foreground(
     """
     check_dashboard_command(argv, ssh_policy, over_ssh=over_ssh)
     full = ["jailbee", *dact.addressed(argv, target.flags(), over_ssh=over_ssh)]
-    if style == "paged" and remote:
+    if style == "paged" and (remote or over_ssh):
         style = "output"
     if style == "paged":
         pager = pager_argv()
