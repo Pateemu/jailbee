@@ -1074,11 +1074,11 @@ KEY_BINDINGS: tuple[KeyBinding, ...] = (
     ),
     KeyBinding("cancel", (b"\x1b",), "Esc", "close the menu or help", "Navigate"),
     KeyBinding(
-        "settings-toggle",
+        "space",
         (b" ",),
         "Space",
-        "toggle the selected setting",
-        "Settings",
+        "fold/unfold the selected repo (Settings: toggle)",
+        "Navigate",
     ),
     KeyBinding("action:tmux", (b"t",), "t", "attach tmux", "Actions", verb="tmux", brief="tmux"),
     KeyBinding(
@@ -3094,7 +3094,7 @@ def run(
                             overlay = move_settings(overlay, -1 if key == "up" else 1)
                         elif key == "tab":
                             overlay = switch_tab(overlay)
-                        elif key == "settings-toggle":
+                        elif key == "space":
                             overlay = toggle_current(overlay)
                             enabled = enabled_names(overlay)
                             folded = overlay.folded
@@ -3210,6 +3210,17 @@ def run(
                     edit_config(global_layer=key == "config-edit-global")
                 elif key == "refresh":
                     force.set()
+                elif key == "space":
+                    prefix = fold_target(groups, selected)
+                    if prefix is not None:
+                        folded = toggle_folded(folded, prefix)
+                        # The container rows just vanished under the cursor;
+                        # park it on the header rather than letting
+                        # reconcile_selection pick a neighbour repo.
+                        selected = Row("repo", prefix)
+                        persist_view_state(
+                            ViewState(enabled, folded, show_empty_repos, hidden_repos)
+                        )
     except KeyboardInterrupt:
         pass
     finally:

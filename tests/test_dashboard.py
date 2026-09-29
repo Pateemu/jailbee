@@ -4053,7 +4053,7 @@ def test_render_help_overlay_documents_every_key(tmp_path):
             assert b.hint in out, f"{b.token}: hint {b.hint!r} missing from help"
             assert b.label in out, f"{b.token}: label {b.label!r} missing from help"
     assert "open a container or repo menu (fold there)" in out
-    assert "toggle the selected setting" in out
+    assert "fold/unfold the selected repo (Settings: toggle)" in out
     # Help replaces neither the table nor the hint line, and explains gating.
     assert "NAME" in out and "one" in out
     assert "offered" in out or "available" in out
@@ -4732,12 +4732,46 @@ def test_show_if_is_computed_from_visible_containers_only(tmp_path):
     assert "PR" not in folded
 
 
-def test_space_key_is_settings_toggle_and_enter_remains_bound():
-    assert dashboard.parse_key(b" ") == "settings-toggle"
-    binding = dashboard.binding_for_token("settings-toggle")
+def test_space_key_is_fold_key_and_enter_remains_bound():
+    assert dashboard.parse_key(b" ") == "space"
+    binding = dashboard.binding_for_token("space")
     assert binding is not None
     assert binding.hint and binding.label
     assert dashboard.parse_key(b"\r") == "enter"
+
+
+def test_space_is_the_fold_key_and_still_toggles_settings_binding():
+    assert dashboard.parse_key(b" ") == "space"
+    binding = dashboard.binding_for_token("space")
+    assert binding is not None
+    assert "fold" in binding.label and "Settings" in binding.label
+
+
+def test_space_folds_then_unfolds_the_selected_repo(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    save = mocker.patch.object(dashboard, "save_view_state")
+
+    assert _drive_run(mocker, [b" ", b" "], [group]) == 0
+
+    folded = [c.args[2].folded for c in save.call_args_list]
+    assert folded == [frozenset({"alpha"}), frozenset()]
+
+
+def test_space_on_a_container_row_folds_its_repo_and_selects_the_header(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    save = mocker.patch.object(dashboard, "save_view_state")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    _drive_run(mocker, [b"j", b" "], [group])
+
+    assert save.call_args.args[2].folded == frozenset({"alpha"})
+    assert render.call_args_list[-1].args[1] == dashboard.Row("repo", "alpha")
+
+
+def test_space_with_nothing_selected_does_nothing(mocker):
+    save = mocker.patch.object(dashboard, "save_view_state")
+    assert _drive_run(mocker, [b" "]) == 0
+    save.assert_not_called()
 
 
 def test_run_space_only_persists_when_settings_overlay_is_open(mocker):

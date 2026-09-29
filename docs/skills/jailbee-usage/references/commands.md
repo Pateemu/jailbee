@@ -582,8 +582,8 @@ repo, grouped by repo. Keys: `↑/↓` or `j/k` move (spans repos; repo headers
 are cursor stops, not skipped), `Enter` action menu (on a repo header, a repo
 menu with New container, `Network → Egress…` and Fold/Unfold (orphan repos
 only offer Fold/Unfold; on a container, its action menu),
-`Space` toggle the selected setting
-in the settings overlay, `F2`/`S` settings overlay (columns + folding), `r`
+`Space` fold/unfold the selected repo (in the settings overlay: toggle the
+selected setting), `F2`/`S` settings overlay (columns + folding), `r`
 force refresh, `h`/`?` keybinding
 help, `q`/`Ctrl-C` quit. The action menu opens *inline below the table* — the
 dashboard stays visible and keeps refreshing behind it; `↑/↓` then move the
