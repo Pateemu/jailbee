@@ -1010,3 +1010,71 @@ def test_claude_auto_update_env_reaches_the_autostart_step(tmp_path):
     (step,) = agent_autostart_steps(cfg)
 
     assert step.env["JAILBEE_CLAUDE_AUTO_UPDATE"] == "true"
+
+
+def _with_litellm(cfg, *, enabled=True, autostart=True):
+    from jailbee.config.models_litellm import LiteLLMConfig, LiteLLMRepoView
+
+    cfg._litellm_view = LiteLLMRepoView(
+        config=LiteLLMConfig(enabled=enabled, autostart=autostart)
+    )
+    return cfg
+
+
+def _claude_cfg(tmp_path, command=None):
+    from tests.conftest import make_cfg, with_agent
+
+    cfg = make_cfg(tmp_path, agents={"claude": {"enabled": True, "autostart": True}})
+    if command is not None:
+        cfg = with_agent(cfg, "claude", command=command)
+    return cfg
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        ("claude", "exec claude-jb"),
+        ("claude --dangerously-skip-permissions", "exec claude-jb --dangerously-skip-permissions"),
+        ("/home/dev/.local/bin/claude --resume", "exec claude-jb --resume"),
+        ("env FOO=1 claude", "exec env FOO=1 claude"),
+        ("claude-wrapper", "exec claude-wrapper"),
+        ("/opt/bin/claude-wrapper --x", "exec /opt/bin/claude-wrapper --x"),
+    ],
+)
+def test_litellm_autostart_rewrites_only_a_leading_claude(tmp_path, command, expected):
+    from jailbee.autostart import agent_autostart_steps
+
+    cfg = _with_litellm(_claude_cfg(tmp_path, command))
+    (step,) = agent_autostart_steps(cfg)
+    assert step.run == expected
+    assert step.name == "claude"
+
+
+@pytest.mark.parametrize("enabled,autostart", [(False, True), (True, False), (False, False)])
+def test_litellm_autostart_needs_both_switches(tmp_path, enabled, autostart):
+    from jailbee.autostart import agent_autostart_steps
+
+    cfg = _with_litellm(
+        _claude_cfg(tmp_path, "claude --flag"), enabled=enabled, autostart=autostart
+    )
+    (step,) = agent_autostart_steps(cfg)
+    assert step.run == "exec claude --flag"
+
+
+def test_litellm_autostart_leaves_other_agents_alone(tmp_path):
+    from jailbee.autostart import agent_autostart_steps
+    from tests.conftest import with_agent
+
+    cfg = with_agent(_claude_cfg(tmp_path), "codex", enabled=True, autostart=True, command="claude")
+    cfg = _with_litellm(cfg)
+    runs = {s.name: s.run for s in agent_autostart_steps(cfg)}
+    assert runs["codex"] == "exec claude"
+    assert runs["claude"] == "exec claude-jb"
+
+
+def test_litellm_autostart_keeps_the_install_check_on_claude(tmp_path):
+    from jailbee.agents import enabled_agent_specs
+
+    cfg = _with_litellm(_claude_cfg(tmp_path))
+    (spec,) = [s for s in enabled_agent_specs(cfg) if s.name == "claude"]
+    assert spec.install_check == "command -v claude"
