@@ -19,8 +19,10 @@ def ensure_services_acl(incus: Incus) -> None:
     """Create an empty services ACL if this host has not seen it yet."""
     if incus.network_acl_exists(SERVICES_ACL):
         return
+    from jailbee.egress_pool import _apply_acl_with_nft_quirk
+
     incus.network_acl_create(SERVICES_ACL)
-    incus.network_acl_set_yaml(SERVICES_ACL, services_acl_yaml(None))
+    _apply_acl_with_nft_quirk(incus, SERVICES_ACL, services_acl_yaml(None))
 
 
 def set_services_endpoint(incus: Incus, endpoint: tuple[str, list[int]] | None) -> None:

@@ -2,10 +2,19 @@
 
 from unittest.mock import MagicMock
 
+import pytest
 import yaml
 
+from jailbee.incus import IncusError
 from jailbee.network import SERVICES_ACL
 from jailbee.services_acl import ensure_services_acl, set_services_endpoint
+
+NFT_FLUSH_MISSING_STDERR = (
+    "`incus network acl edit jailbee-services` failed: "
+    "Error: Failed to run: nft -f -: exit status 1 "
+    "(/dev/stdin:2:24-35: Error: No such file or directory; "
+    "flush chain inet incus acl.incusbr0"
+)
 
 
 def test_ensure_creates_empty_acl_once():
@@ -27,6 +36,27 @@ def test_ensure_is_noop_when_present():
 
     incus.network_acl_create.assert_not_called()
     incus.network_acl_set_yaml.assert_not_called()
+
+
+def test_ensure_tolerates_missing_nft_chain_after_acl_creation():
+    incus = MagicMock()
+    incus.network_acl_exists.return_value = False
+    incus.network_acl_set_yaml.side_effect = IncusError(NFT_FLUSH_MISSING_STDERR)
+
+    ensure_services_acl(incus)
+
+    incus.network_acl_create.assert_called_once_with(SERVICES_ACL)
+    incus.network_acl_set_yaml.assert_called_once()
+    assert incus.network_acl_set_yaml.call_args.args[0] == SERVICES_ACL
+
+
+def test_ensure_does_not_swallow_other_acl_write_errors():
+    incus = MagicMock()
+    incus.network_acl_exists.return_value = False
+    incus.network_acl_set_yaml.side_effect = IncusError("Error: yaml: invalid syntax")
+
+    with pytest.raises(IncusError, match="invalid syntax"):
+        ensure_services_acl(incus)
 
 
 def test_set_endpoint_writes_rules():

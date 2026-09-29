@@ -409,6 +409,43 @@ def test_init_acl_edit_nft_flush_chain_missing_swallowed_on_first_run(tmp_path):
     assert f"{p}-net-loose" in profile_set_names
 
 
+def test_init_continues_when_services_acl_edit_hits_missing_nft_chain(tmp_path):
+    cfg = load_config(FIXTURES / "full_config.yaml")
+    cfg = cfg.model_copy(update={"shared_dir": tmp_path / "shared"})
+    incus = MagicMock()
+    incus.profile_exists.return_value = False
+    incus.network_acl_exists.side_effect = lambda name: (
+        name == "jailbee-services"
+        and any(call.args == (name,) for call in incus.network_acl_create.call_args_list)
+    )
+    incus.network_get.return_value = ""
+    incus.network_exists.return_value = True
+
+    def write_acl(name, _body):
+        if name == "jailbee-services":
+            raise IncusError(NFT_FLUSH_MISSING_STDERR)
+
+    incus.network_acl_set_yaml.side_effect = write_acl
+
+    run_init(cfg, incus)
+
+    calls = incus.mock_calls
+    service_write = next(
+        i for i, call in enumerate(calls)
+        if call[0] == "network_acl_set_yaml" and call.args[0] == "jailbee-services"
+    )
+    attach = next(
+        i for i, call in enumerate(calls)
+        if call[0] == "network_set" and "jailbee-services" in call.args[2].split(",")
+    )
+    strict_profile = next(
+        i for i, call in enumerate(calls)
+        if call[0] == "profile_set_yaml"
+        and call.args[0] == f"{cfg.container_prefix}-net-strict"
+    )
+    assert service_write < attach < strict_profile
+
+
 def test_init_acl_edit_reraises_other_errors(tmp_path):
     """Only the specific nftables-flush-missing pattern is swallowed."""
     cfg = load_config(FIXTURES / "full_config.yaml")
