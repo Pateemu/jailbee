@@ -210,7 +210,7 @@ def test_write_private_replaces_atomically_and_leaves_no_temp_files(
 def test_corrupt_ports_file_names_the_file() -> None:
     st.state_dir().mkdir(parents=True)
     (st.state_dir() / "ports.json").write_text("{not json")
-    with pytest.raises(RuntimeError, match="ports.json is not valid JSON"):
+    with pytest.raises(RuntimeError, match=r"ports\.json is not valid JSON"):
         st.port_for("default")
     (st.state_dir() / "ports.json").write_text("[1, 2]")
     with pytest.raises(RuntimeError, match="must hold a JSON object"):
