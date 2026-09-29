@@ -71,6 +71,13 @@ def test_phase1_rejects_non_chatgpt_models():
         LiteLLMConfig.model_validate({"routes": {"k": {"model": "openrouter/moonshotai/kimi-k3"}}})
 
 
+def test_route_params_cannot_override_validated_model():
+    with pytest.raises(ValidationError, match="route 'astra' params must not override model"):
+        LiteLLMConfig.model_validate(
+            {"routes": {"astra": {"params": {"model": "openrouter/moonshotai/kimi-k3"}}}}
+        )
+
+
 def test_unknown_chatgpt_model_needs_context_window():
     with pytest.raises(ValidationError, match="route 't' needs `context_window`"):
         LiteLLMConfig.model_validate({"routes": {"t": {"model": "chatgpt/gpt-5.6-terra"}}})

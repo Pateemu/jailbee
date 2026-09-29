@@ -190,6 +190,8 @@ class LiteLLMConfig(BaseModel):
                 raise ValueError(f"route '{name}' needs `context_window` (unknown model {model!r})")
             params = raw.get("params") or {}
             assert isinstance(params, dict)
+            if "model" in params:
+                raise ValueError(f"route '{name}' params must not override model")
             out[name] = ResolvedRoute(
                 name=name,
                 model=model,
