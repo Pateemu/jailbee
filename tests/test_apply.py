@@ -827,8 +827,8 @@ def test_run_apply_reapplies_docker_proxy_when_mirror_enabled(
     "payload,failure",
     [
         (None, None),
-        ({"json": {"version": 1}, "key_path": "/host/key"}, None),
-        ({"json": {"version": 1}, "key_path": "/host/key"}, FileNotFoundError("key removed")),
+        ({"json": {"version": 1}, "keys": {"default": "/host/key"}}, None),
+        ({"json": {"version": 1}, "keys": {"default": "/host/key"}}, FileNotFoundError("key removed")),
     ],
 )
 def test_run_apply_syncs_or_removes_litellm_for_running_containers(
@@ -2755,3 +2755,16 @@ def test_run_apply_survives_a_failed_services_reconcile(
     result = run_apply(cfg, incus, GlobalConfig(), confirm_fn=lambda _m: False)
 
     assert result.profiles_changed == []  # apply carried on past the failure
+
+
+def test_apply_warns_about_profiles_without_a_proxy_instance(mocker):
+    from unittest.mock import MagicMock
+
+    from jailbee import apply
+    from jailbee.global_config import GlobalConfig
+
+    payload = {"json": {"profiles": {}}, "keys": {}, "unserved": ["work"]}
+    mocker.patch("jailbee.litellm.container_sync_payload", return_value=payload)
+    warn = mocker.patch("jailbee.tui.warn")
+    assert apply._litellm_payload_or_warn(MagicMock(), GlobalConfig()) is payload
+    assert "work" in warn.call_args.args[0] and "jailbee litellm up" in warn.call_args.args[0]

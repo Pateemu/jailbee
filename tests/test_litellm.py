@@ -37,8 +37,27 @@ def xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def _gcfg(enabled: bool = True) -> GlobalConfig:
-    return GlobalConfig.model_validate({"litellm": {"enabled": enabled}})
+def _gcfg(enabled: bool = True, **litellm: object) -> GlobalConfig:
+    return GlobalConfig.model_validate({"litellm": {"enabled": enabled, **litellm}})
+
+
+_KIMI = {
+    "model": "openrouter/moonshotai/kimi-k3",
+    "context_window": 262144,
+    "api_key": "OPENROUTER_API_KEY",
+}
+_TWO = {
+    "accounts": ["personal", "work"],
+    "routes": {"sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "low"}},
+    "profiles": {"codex": {"account": "personal"}, "work": {"account": "work", "opus": "sol-low"}},
+}
+
+
+def _secrets(xdg: Path, text: str) -> None:
+    path = xdg / "config" / "jailbee" / "litellm" / "secrets.env"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    path.chmod(0o600)
 
 
 def _incus(*, present: bool, running: bool = True, installed: str | None = "1.103.0") -> MagicMock:
@@ -107,7 +126,8 @@ def test_up_creates_provisions_and_opens_services_rule():
     result = ll.litellm_up(incus, _gcfg())
     incus.init.assert_called_once_with("images:ubuntu/26.04/cloud", ll.LITELLM_CONTAINER)
     assert "/root/install.sh" in _install_script(incus)
-    assert result.ip == "10.79.115.3" and result.port == 4100 and result.installed is True
+    assert result.ip == "10.79.115.3" and result.ports == {"default": 4100}
+    assert result.installed is True
     services = [
         c for c in incus.network_acl_set_yaml.call_args_list if c.args[0] == "jailbee-services"
     ]
@@ -261,7 +281,7 @@ def test_sync_publishes_json_only_after_private_key():
     ll.litellm_up(incus, _gcfg())
     ll.sync_container(incus, "repo-branch", ll.container_sync_payload(incus, _gcfg()))
     script = incus.exec_with_input.call_args.args[2]
-    assert script.index('mv "$tmp" ' + ll.CONTAINER_KEY_FILE) < script.index(
+    assert script.index('mv "$tmp" /etc/jailbee/litellm-default.key') < script.index(
         'mv "$tmp" ' + ll.CONTAINER_FILE
     )
 
@@ -271,7 +291,7 @@ def test_up_is_quiet_when_nothing_changed():
     ll.litellm_up(incus, _gcfg())
     incus.exec.reset_mock()
     result = ll.litellm_up(incus, _gcfg())
-    assert result.restarted is False
+    assert result.restarted == []
     assert not any("systemctl restart" in e for e in _execs(incus))
 
 
@@ -283,7 +303,7 @@ def test_up_restarts_once_after_config_change():
         {"litellm": {"enabled": True, "routes": {"sol-xhigh": {"effort": "max"}}}}
     )
     result = ll.litellm_up(incus, changed)
-    assert result.restarted is True
+    assert result.restarted == ["default"]
     assert sum("systemctl restart" in e for e in _execs(incus)) == 1
 
 
@@ -308,10 +328,10 @@ def test_up_restarts_again_after_a_run_that_failed_before_the_restart():
     incus.exec.side_effect = healthy
     incus.exec.reset_mock()
     result = ll.litellm_up(incus, changed)
-    assert result.restarted is True
+    assert result.restarted == ["default"]
     assert sum("systemctl restart" in e for e in _execs(incus)) == 1
     incus.exec.reset_mock()
-    assert ll.litellm_up(incus, changed).restarted is False
+    assert ll.litellm_up(incus, changed).restarted == []
 
 
 def test_up_reattaches_state_mount_after_a_failure_between_install_and_mount():
@@ -411,28 +431,19 @@ def test_down_empties_services_rule_and_deletes_container():
 
 
 def test_status_missing():
-    assert ll.litellm_status(_incus(present=False)).container == ll.ContainerState.MISSING
+    status = ll.litellm_status(_incus(present=False), _gcfg())
+    assert status.container == ll.ContainerState.MISSING
 
 
 def test_status_running_reports_instance_and_login(xdg):
     incus = _incus(present=True)
     ll.litellm_up(incus, _gcfg())
-    status = ll.litellm_status(incus)
+    status = ll.litellm_status(incus, _gcfg())
     assert status.container == ll.ContainerState.RUNNING
     assert status.version == "1.103.0"
     assert status.instances == [
         ll.InstanceStatus(account="default", port=4100, active=True, healthy=True, login="missing")
     ]
-
-
-def test_endpoint_none_without_container():
-    assert ll.endpoint(_incus(present=False)) is None
-
-
-def test_endpoint_is_static_ip_and_port():
-    incus = _incus(present=True)
-    ll.litellm_up(incus, _gcfg())
-    assert ll.endpoint(incus) == ("10.79.115.3", 4100)
 
 
 def test_service_limits_token_file_mode(tmp_path: Path):
@@ -712,7 +723,7 @@ def test_up_requires_static_bridge_address():
 
 def test_status_stopped_does_not_probe_container():
     incus = _incus(present=True, running=False)
-    assert ll.litellm_status(incus) == ll.LiteLLMStatus(
+    assert ll.litellm_status(incus, _gcfg()) == ll.LiteLLMStatus(
         container=ll.ContainerState.STOPPED, ip="10.79.115.3", version=None, instances=[]
     )
     incus.exec.assert_not_called()
@@ -851,8 +862,9 @@ def test_sync_payload_after_up():
     payload = ll.container_sync_payload(incus, _gcfg())
     assert payload is not None
     assert payload["json"]["profiles"]["codex"]["base_url"] == "http://10.79.115.3:4100"
-    assert payload["json"]["profiles"]["codex"]["key_file"] == ll.CONTAINER_KEY_FILE
-    assert str(payload["key_path"]).endswith("default/master.key")
+    assert payload["json"]["profiles"]["codex"]["key_file"] == "/etc/jailbee/litellm-default.key"
+    assert str(payload["keys"]["default"]).endswith("default/master.key")
+    assert payload["unserved"] == []
     assert "sk-jb-" not in repr(payload)
 
 
@@ -866,7 +878,7 @@ def test_sync_container_writes_json_and_key():
     assert name == "repo-branch"
     assert cmd == ["bash", "-s"]
     assert "sk-jb-" not in repr(cmd)
-    assert ll.CONTAINER_FILE in script and ll.CONTAINER_KEY_FILE in script
+    assert ll.CONTAINER_FILE in script and "/etc/jailbee/litellm-default.key" in script
     assert "chmod 0644" in script
     assert "chmod 0640" in script and "chown root:dev" in script
     assert "sk-jb-" in script
@@ -876,7 +888,7 @@ def test_sync_container_removes_when_none():
     incus = _incus(present=True)
     ll.sync_container(incus, "repo-branch", None)
     script = incus.exec.call_args.args[1][-1]
-    assert f"rm -f {ll.CONTAINER_FILE} {ll.CONTAINER_KEY_FILE}" in script
+    assert f"rm -f {ll.CONTAINER_FILE} {ll.CONTAINER_KEY_GLOB}" in script
     incus.exec_with_input.assert_not_called()
 
 
@@ -884,12 +896,12 @@ def test_upstream_reachable_checks_proxy_container_only():
     incus = _incus(present=True)
     incus.exec.side_effect = None
     incus.exec.return_value = "ok\n"
-    assert ll.upstream_reachable(incus, "chatgpt.com")
+    assert ll.upstream_reachable(incus, "chatgpt.com", 443)
     assert incus.exec.call_args.args[0] == ll.LITELLM_CONTAINER
     assert "chatgpt.com" in incus.exec.call_args.args[1][-1]
     assert "443" in incus.exec.call_args.args[1][-1]
     incus.exec.side_effect = IncusError("blocked")
-    assert not ll.upstream_reachable(incus, "chatgpt.com")
+    assert not ll.upstream_reachable(incus, "chatgpt.com", 443)
 
 
 def test_state_lives_in_an_incus_volume_on_the_default_pool():
@@ -974,7 +986,7 @@ def test_a_quiet_up_still_pushes_the_files():
     incus = _incus(present=True)
     ll.litellm_up(incus, _gcfg())
     incus.exec_with_input.reset_mock()
-    assert ll.litellm_up(incus, _gcfg()).restarted is False
+    assert ll.litellm_up(incus, _gcfg()).restarted == []
     assert _pushed(incus)
 
 
@@ -985,7 +997,7 @@ def test_status_reads_the_login_inside_the_container():
         "present\n" if "auth.json" in " ".join(c) else healthy(n, c, **kw)
     )
     ll.litellm_up(incus, _gcfg())
-    assert ll.litellm_status(incus).instances[0].login == "present"
+    assert ll.litellm_status(incus, _gcfg()).instances[0].login == "present"
 
 
 def test_login_state_is_unknown_when_the_probe_fails():
@@ -1021,3 +1033,169 @@ def test_down_keeps_the_volume_and_purge_deletes_it_after_the_container():
     names = [c[0] for c in incus.mock_calls]
     incus.storage_volume_delete.assert_called_once_with("default", ll.STATE_VOLUME)
     assert names.index("delete") < names.index("storage_volume_delete")
+
+
+def test_up_runs_one_instance_per_account_on_its_own_port():
+    incus = _incus(present=False)
+    result = ll.litellm_up(incus, _gcfg(**_TWO))
+    assert result.ports == {"personal": 4100, "work": 4101}
+    assert result.restarted == ["personal", "work"]
+    restarts = [e for e in _execs(incus) if "systemctl restart" in e]
+    assert restarts == [
+        "systemctl restart jailbee-litellm@personal.service",
+        "systemctl restart jailbee-litellm@work.service",
+    ]
+    services = [
+        c for c in incus.network_acl_set_yaml.call_args_list if c.args[0] == "jailbee-services"
+    ]
+    ports = {r["destination_port"] for r in yaml.safe_load(services[-1].args[1])["egress"]}
+    assert ports == {"4100", "4101"}
+    own = [c for c in incus.network_acl_set_yaml.call_args_list if c.args[0] == ll.EGRESS_ACL]
+    listen = {r.get("destination_port") for r in yaml.safe_load(own[-1].args[1])["ingress"]}
+    assert {"4100", "4101"} <= listen
+    files = _pushed(incus)
+    work = yaml.safe_load(files[f"{ll.CONTAINER_STATE_DIR}/work/config.yaml"])
+    assert {m["model_name"] for m in work["model_list"]} == {"jb-default-sol-low", "claude-*"}
+
+
+def test_up_restarts_only_the_account_whose_files_changed():
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg(**_TWO))
+    incus.exec.reset_mock()
+    changed = {**_TWO, "routes": {"sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "medium"}}}
+    assert ll.litellm_up(incus, _gcfg(**changed)).restarted == ["work"]
+
+
+def test_up_retires_the_unit_of_a_removed_account():
+    incus = _incus(present=True)
+    healthy = incus.exec.side_effect
+
+    def exec_(name, cmd, **kw):
+        if "list-units" in " ".join(cmd):
+            return "jailbee-litellm@old.service loaded active running JailBee LiteLLM proxy (old)\n"
+        return healthy(name, cmd, **kw)
+
+    incus.exec.side_effect = exec_
+    result = ll.litellm_up(incus, _gcfg())
+    assert result.retired == ["old"]
+    assert "systemctl disable --now jailbee-litellm@old.service" in _execs(incus)
+
+
+def test_up_refuses_a_missing_secret_before_touching_incus():
+    from jailbee.litellm_inputs import LiteLLMInputError
+
+    incus = _incus(present=False)
+    cfg = _gcfg(routes={"kimi": _KIMI})
+    with pytest.raises(LiteLLMInputError, match="OPENROUTER_API_KEY"):
+        ll.litellm_up(incus, cfg)
+    assert incus.mock_calls == []
+
+
+def test_a_secret_reaches_only_the_pushed_instance_env(xdg: Path):
+    _secrets(xdg, "OPENROUTER_API_KEY=sk-or-test-123\n")
+    incus = _incus(present=False)
+    ll.litellm_up(incus, _gcfg(routes={"kimi": _KIMI}))
+    env = _pushed(incus)[f"{ll.CONTAINER_STATE_DIR}/default/instance.env"]
+    assert "OPENROUTER_API_KEY='sk-or-test-123'" in env
+    config = _pushed(incus)[f"{ll.CONTAINER_STATE_DIR}/default/config.yaml"]
+    assert "sk-or-test-123" not in config
+    argv = [
+        repr(c.args[1]) for c in incus.exec.call_args_list + incus.exec_with_input.call_args_list
+    ]
+    assert not any("sk-or-test" in a for a in argv)
+    on_disk = [
+        p
+        for p in xdg.rglob("*")
+        if p.is_file() and p.name != "secrets.env" and b"sk-or-test" in p.read_bytes()
+    ]
+    assert on_disk == []
+
+
+def test_a_changed_secret_restarts_the_instance(xdg: Path):
+    _secrets(xdg, "OPENROUTER_API_KEY=sk-or-1\n")
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg(routes={"kimi": _KIMI}))
+    _secrets(xdg, "OPENROUTER_API_KEY=sk-or-2\n")
+    assert ll.litellm_up(incus, _gcfg(routes={"kimi": _KIMI})).restarted == ["default"]
+
+
+def test_up_allows_the_providers_of_every_served_route(xdg: Path):
+    _secrets(xdg, "OPENROUTER_API_KEY=sk-or-1\n")
+    incus = _incus(present=False)
+    ll.litellm_up(incus, _gcfg(routes={"kimi": _KIMI}, egress=["10.0.0.5:11434"]))
+    own = [c for c in incus.network_acl_set_yaml.call_args_list if c.args[0] == ll.EGRESS_ACL]
+    described = {
+        r.get("description", "").removeprefix("allowlisted: ")
+        for r in yaml.safe_load(own[-1].args[1])["egress"]
+    }
+    assert {"openrouter.ai:443", "chatgpt.com:443", "10.0.0.5:11434"} <= described
+
+
+def test_the_extra_fragment_reaches_every_instance(tmp_path: Path):
+    extra = tmp_path / "extra.yaml"
+    extra.write_text("router_settings: {num_retries: 3}\n")
+    incus = _incus(present=False)
+    ll.litellm_up(incus, _gcfg(**_TWO, extra=str(extra)))
+    for account in ("personal", "work"):
+        config = yaml.safe_load(_pushed(incus)[f"{ll.CONTAINER_STATE_DIR}/{account}/config.yaml"])
+        assert config["router_settings"] == {"num_retries": 3}
+
+
+def test_status_lists_every_configured_account():
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg(**_TWO))
+    status = ll.litellm_status(incus, _gcfg(**_TWO))
+    assert [(i.account, i.port) for i in status.instances] == [("personal", 4100), ("work", 4101)]
+
+
+def test_status_of_an_account_never_brought_up_has_no_port():
+    incus = _incus(present=True)
+    status = ll.litellm_status(incus, _gcfg(accounts=["default", "spare"]))
+    assert [i.port for i in status.instances] == [None, None]
+
+
+def test_sync_payload_gives_each_profile_its_account_and_key():
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg(**_TWO))
+    payload = ll.container_sync_payload(incus, _gcfg(**_TWO))
+    profiles = payload["json"]["profiles"]
+    assert profiles["codex"]["base_url"] == "http://10.79.115.3:4100"
+    assert profiles["work"]["key_file"] == "/etc/jailbee/litellm-work.key"
+    assert sorted(payload["keys"]) == ["personal", "work"]
+    assert "sk-jb-" not in repr(payload)
+
+
+def test_sync_payload_names_profiles_whose_account_has_no_instance():
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())  # only `default` exists
+    cfg = _gcfg(
+        accounts=["default", "work"],
+        routes={"sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "low"}},
+        profiles={"work": {"account": "work", "opus": "sol-low"}},
+    )
+    payload = ll.container_sync_payload(incus, cfg)
+    assert set(payload["json"]["profiles"]) == {"codex"}
+    assert ll.unserved_profiles(payload) == ["work"]
+
+
+def test_sync_container_writes_every_key_and_retires_stale_ones():
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg(**_TWO))
+    payload = ll.container_sync_payload(incus, _gcfg(**_TWO))
+    incus.exec_with_input.reset_mock()
+    ll.sync_container(incus, "repo-branch", payload)
+    script = incus.exec_with_input.call_args.args[2]
+    assert "/etc/jailbee/litellm-personal.key" in script
+    assert "/etc/jailbee/litellm-work.key" in script
+    assert f"for f in {ll.CONTAINER_KEY_GLOB}" in script
+    assert script.index("litellm-work.key") < script.index(f'mv "$tmp" {ll.CONTAINER_FILE}')
+
+
+def test_the_stale_key_loop_removes_only_unlisted_keys(tmp_path: Path):
+    for name in ("litellm-default.key", "litellm-old.key", "litellm.json"):
+        (tmp_path / name).write_text("x")
+    loop = ll._stale_key_loop(
+        [str(tmp_path / "litellm-default.key")], str(tmp_path / "litellm-*.key")
+    )
+    subprocess.run(["bash", "-c", loop], check=True)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["litellm-default.key", "litellm.json"]

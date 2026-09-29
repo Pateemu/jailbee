@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import shlex
 import time
 from collections.abc import Callable
@@ -22,12 +23,13 @@ import yaml
 
 from jailbee import litellm_state
 from jailbee.config import CONTAINER_USERNAME
-from jailbee.config.models_litellm import DEFAULT_ACCOUNT
 from jailbee.incus import IncusError
+from jailbee.litellm_inputs import load_host_inputs
 from jailbee.litellm_render import (
     CONTAINER_STATE_DIR,
     InstanceFiles,
     container_key_file,
+    container_profiles,
     egress_hosts,
     render_instance_files,
 )
@@ -59,7 +61,8 @@ _PACKAGE_ENDPOINTS = (
     "ports.ubuntu.com:443",
 )
 CONTAINER_FILE = "/etc/jailbee/litellm.json"
-CONTAINER_KEY_FILE = container_key_file(DEFAULT_ACCOUNT)
+CONTAINER_KEY_GLOB = "/etc/jailbee/litellm-*.key"
+_UNIT_NAME = re.compile(r"jailbee-litellm@([a-z0-9][a-z0-9_-]*)\.service")
 STATE_VOLUME = "jailbee-litellm-state"
 _AUTH_PROBE = (
     "import json, sys\n"
@@ -91,7 +94,7 @@ class ContainerState(StrEnum):
 @dataclass(frozen=True)
 class InstanceStatus:
     account: str
-    port: int
+    port: int | None
     active: bool
     healthy: bool
     login: Literal["missing", "present", "unknown"]
@@ -108,8 +111,9 @@ class LiteLLMStatus:
 @dataclass(frozen=True)
 class UpResult:
     ip: str
-    port: int
-    restarted: bool
+    ports: dict[str, int]
+    restarted: list[str]
+    retired: list[str]
     installed: bool
 
 
@@ -134,8 +138,8 @@ def _write_egress_acl(incus: Incus, entries: list[EgressEntry], listen_ports: li
     )
 
 
-def _set_egress(incus: Incus, entries: list[EgressEntry], port: int) -> None:
-    _write_egress_acl(incus, entries, [port])
+def _set_egress(incus: Incus, entries: list[EgressEntry], ports: list[int]) -> None:
+    _write_egress_acl(incus, entries, ports)
 
 
 def _check_static_ip(incus: Incus, ip: str, containers: list[dict[str, object]]) -> None:
@@ -397,6 +401,23 @@ def _wait_healthy(incus: Incus, account: str, port: int, on_step: Callable[[str]
         time.sleep(2)
 
 
+def _deployed_accounts(incus: Incus) -> set[str]:
+    """Accounts with a loaded or enabled unit in the proxy container."""
+    script = (
+        "systemctl list-units --all --plain --no-legend 'jailbee-litellm@*.service' || true; "
+        "ls -1 /etc/systemd/system/multi-user.target.wants/ 2>/dev/null || true"
+    )
+    return set(_UNIT_NAME.findall(incus.exec(LITELLM_CONTAINER, ["bash", "-c", script], timeout=30)))
+
+
+def _retire_accounts(incus: Incus, keep: set[str]) -> list[str]:
+    """Stop and disable units of accounts no longer configured; their logins stay in the volume."""
+    retired = sorted(_deployed_accounts(incus) - keep)
+    for account in retired:
+        incus.exec(LITELLM_CONTAINER, ["systemctl", "disable", "--now", unit(account)], timeout=60)
+    return retired
+
+
 def litellm_up(
     incus: Incus,
     gcfg: GlobalConfig,
@@ -407,17 +428,26 @@ def litellm_up(
     cfg = gcfg.litellm
     if not cfg.enabled:
         raise ValueError("LiteLLM is disabled: set `litellm.enabled: true` in global.yaml first.")
-    account = DEFAULT_ACCOUNT
+    # Host inputs first: a missing secret must fail before anything changes.
+    inputs = load_host_inputs(cfg)
     version = cfg.effective_version()
     pinned = cfg.version is None
 
     on_step("rendering the proxy configuration")
-    port = litellm_state.port_for(account)
     callback_source = _read("jailbee_callback.py")
-    files = render_instance_files(
-        cfg, account, port=port, master_key=litellm_state.master_key(account)
-    )
-    digest = files.digest(callback_source)
+    ports = {account: litellm_state.port_for(account) for account in cfg.accounts}
+    files = [
+        render_instance_files(
+            cfg,
+            account,
+            port=ports[account],
+            master_key=litellm_state.master_key(account),
+            secrets=inputs.secrets,
+            extra=inputs.extra,
+        )
+        for account in cfg.accounts
+    ]
+    listen = sorted(ports.values())
 
     if not incus.network_exists(LOOSE_BRIDGE):
         incus.network_create(LOOSE_BRIDGE)
@@ -433,7 +463,7 @@ def litellm_up(
     info = next((c for c in containers if c.get("name") == LITELLM_CONTAINER), None)
     needs_install = reinstall or info is None
     if info is None:
-        _set_egress(incus, _resolve_egress(list(_PACKAGE_ENDPOINTS)), port)
+        _set_egress(incus, _resolve_egress(list(_PACKAGE_ENDPOINTS)), listen)
         _set_profile(incus, ip, with_acl=True)
         on_step(f"creating {LITELLM_CONTAINER} from {_IMAGE}")
         try:
@@ -465,14 +495,14 @@ def litellm_up(
                 if info.get("status") == "Running" or not reinstall:
                     incus.stop(LITELLM_CONTAINER, force=True)
                 _detach_state(incus)
-                _set_egress(incus, _resolve_egress(list(_PACKAGE_ENDPOINTS)), port)
+                _set_egress(incus, _resolve_egress(list(_PACKAGE_ENDPOINTS)), listen)
                 _set_profile(incus, ip, with_acl=True)
                 incus.start(LITELLM_CONTAINER)
             on_step(f"installing LiteLLM {version} (up to 15 min)")
             _provision(incus, version, pinned)
 
         on_step("writing the proxy's egress allowlist")
-        _set_egress(incus, _resolve_egress(egress_hosts(cfg)), port)
+        _set_egress(incus, _resolve_egress(egress_hosts(cfg)), listen)
         _set_profile(incus, ip, with_acl=True)
         # A run that failed after the install but before this point leaves the
         # container installed and locked down without its state mount; the next
@@ -495,19 +525,32 @@ def litellm_up(
         incus.config_set(LITELLM_CONTAINER, "boot.autostart", "true")
 
     on_step("writing the proxy configuration")
-    _push_state(incus, [files], callback_source)
+    _push_state(incus, files, callback_source)
+    # Always, reinstall included: a reinstall keeps the rootfs, and with it the
+    # enabled symlink of an account that has since been removed.
+    retired = _retire_accounts(incus, set(cfg.accounts))
 
-    stale = not litellm_state.config_applied(account, digest)
-    restart = needs_install or stale or not _active(incus, account)
-    if restart:
-        incus.exec(LITELLM_CONTAINER, ["systemctl", "enable", unit(account)], timeout=30)
-        incus.exec(LITELLM_CONTAINER, ["systemctl", "restart", unit(account)], timeout=60)
-    _wait_healthy(incus, account, port, on_step)
-    if restart:
-        litellm_state.record_applied(account, digest)
+    restarted: list[str] = []
+    for instance in files:
+        account = instance.account
+        digest = instance.digest(callback_source)
+        restart = (
+            needs_install
+            or not litellm_state.config_applied(account, digest)
+            or not _active(incus, account)
+        )
+        if restart:
+            incus.exec(LITELLM_CONTAINER, ["systemctl", "enable", unit(account)], timeout=30)
+            incus.exec(LITELLM_CONTAINER, ["systemctl", "restart", unit(account)], timeout=60)
+        _wait_healthy(incus, account, ports[account], on_step)
+        if restart:
+            litellm_state.record_applied(account, digest)
+            restarted.append(account)
 
-    set_services_endpoint(incus, (ip, [port]))
-    return UpResult(ip=ip, port=port, restarted=restart, installed=needs_install)
+    set_services_endpoint(incus, (ip, listen))
+    return UpResult(
+        ip=ip, ports=ports, restarted=restarted, retired=retired, installed=needs_install
+    )
 
 
 def litellm_down(incus: Incus, *, purge: bool = False) -> None:
@@ -521,82 +564,109 @@ def litellm_down(incus: Incus, *, purge: bool = False) -> None:
             incus.storage_volume_delete(pool, STATE_VOLUME)
 
 
-def endpoint(incus: Incus) -> tuple[str, int] | None:
-    if _container(incus) is None:
+def container_sync_payload(incus: Incus, gcfg: GlobalConfig) -> dict[str, object] | None:
+    """Resolve the dev-container settings without putting a key in a background job.
+
+    Only accounts `up` has brought up (a port and a master key exist) are
+    offered; profiles bound to any other account are listed as `unserved`.
+    """
+    cfg = gcfg.litellm
+    if not cfg.enabled or _container(incus) is None:
         return None
     ip = loose_bridge_host_ip(incus, _IP_INDEX)
     if ip is None:
         return None
-    return ip, litellm_state.port_for(DEFAULT_ACCOUNT)
-
-
-def container_sync_payload(incus: Incus, gcfg: GlobalConfig) -> dict[str, object] | None:
-    """Resolve the dev-container settings without putting a key in a background job."""
-    from jailbee.litellm_render import container_payload
-
-    if not gcfg.litellm.enabled:
+    base_urls: dict[str, str] = {}
+    key_paths: dict[str, str] = {}
+    for account in cfg.accounts:
+        port = litellm_state.known_port(account)
+        key_path = litellm_state.master_key_path(account)
+        if port is None or not key_path.exists():
+            continue
+        base_urls[account] = f"http://{ip}:{port}"
+        key_paths[account] = str(key_path)
+    profiles = container_profiles(cfg, base_urls=base_urls)
+    if not profiles:
         return None
-    ep = endpoint(incus)
-    key_path = litellm_state.master_key_path(DEFAULT_ACCOUNT)
-    if ep is None or not key_path.exists():
-        return None
-    ip, port = ep
+    effective = cfg.effective_profiles()
+    used = {cfg.instance_account(effective[name]) for name in profiles}
     return {
-        "json": container_payload(gcfg.litellm, base_urls={DEFAULT_ACCOUNT: f"http://{ip}:{port}"}),
-        "key_path": str(key_path),
+        "json": {"version": 1, "default_profile": cfg.default_profile, "profiles": profiles},
+        "keys": {account: key_paths[account] for account in sorted(used)},
+        "unserved": sorted(set(effective) - set(profiles)),
     }
 
 
+def unserved_profiles(payload: dict[str, object] | None) -> list[str]:
+    names = payload.get("unserved") if payload else None
+    return [str(n) for n in names] if isinstance(names, list) else []
+
+
+def _stale_key_loop(keep: list[str], pattern: str) -> str:
+    listed = " ".join(keep)
+    return f'for f in {pattern}; do case " {listed} " in *" $f "*) ;; *) rm -f "$f" ;; esac; done'
+
+
 def sync_container(incus: Incus, name: str, payload: dict[str, object] | None) -> None:
-    """Install both files in a running dev container, or retire stale settings."""
+    """Install the settings and one key per account, or retire stale settings."""
     if payload is None:
-        script = f"rm -f {CONTAINER_FILE} {CONTAINER_KEY_FILE}"
-        incus.exec(name, ["bash", "-c", script], timeout=30)
+        incus.exec(name, ["bash", "-c", f"rm -f {CONTAINER_FILE} {CONTAINER_KEY_GLOB}"], timeout=30)
         return
-
+    keys = payload["keys"]
+    assert isinstance(keys, dict)
     body = json.dumps(payload["json"], indent=2)
-    key = Path(str(payload["key_path"])).read_text().strip()
-    assert "'" not in key
-    script = f"""\
-set -euo pipefail
-mkdir -p /etc/jailbee
-tmp=$(mktemp)
-printf '%s\\n' '{key}' > "$tmp"
-chmod 0640 "$tmp"; chown root:{CONTAINER_USERNAME} "$tmp"; mv "$tmp" {CONTAINER_KEY_FILE}
-tmp=$(mktemp)
-cat > "$tmp" <<'JB_EOF'
-{body}
-JB_EOF
-chmod 0644 "$tmp"; mv "$tmp" {CONTAINER_FILE}
-"""
-    incus.exec_with_input(name, ["bash", "-s"], script, timeout=30)
+    lines = ["set -euo pipefail", "mkdir -p /etc/jailbee"]
+    targets: list[str] = []
+    for account, key_path in sorted(keys.items()):
+        key = Path(str(key_path)).read_text().strip()
+        assert "'" not in key
+        target = container_key_file(litellm_state.check_account(str(account)))
+        targets.append(target)
+        lines += [
+            "tmp=$(mktemp)",
+            f"printf '%s\\n' '{key}' > \"$tmp\"",
+            f'chmod 0640 "$tmp"; chown root:{CONTAINER_USERNAME} "$tmp"; mv "$tmp" {target}',
+        ]
+    lines += [
+        _stale_key_loop(targets, CONTAINER_KEY_GLOB),
+        "tmp=$(mktemp)",
+        "cat > \"$tmp\" <<'JB_EOF'",
+        body,
+        "JB_EOF",
+        f'chmod 0644 "$tmp"; mv "$tmp" {CONTAINER_FILE}',
+    ]
+    incus.exec_with_input(name, ["bash", "-s"], "\n".join(lines) + "\n", timeout=30)
 
 
-def upstream_reachable(incus: Incus, host: str) -> bool:
+def upstream_reachable(incus: Incus, host: str, port: int = 443) -> bool:
     """Probe provider TCP reachability from inside the restricted proxy."""
-    probe = f"import socket; socket.create_connection(({host!r}, 443), 5); print('ok')"
+    probe = f"import socket; socket.create_connection(({host!r}, {port}), 5); print('ok')"
     try:
         return incus.exec(LITELLM_CONTAINER, [_PY, "-c", probe], timeout=15).strip() == "ok"
     except IncusError:
         return False
 
 
-def litellm_status(incus: Incus) -> LiteLLMStatus:
+def litellm_status(incus: Incus, gcfg: GlobalConfig) -> LiteLLMStatus:
     info = _container(incus)
     if info is None:
         return LiteLLMStatus(ContainerState.MISSING, None, None, [])
     ip = loose_bridge_host_ip(incus, _IP_INDEX)
     if info.get("status") != "Running":
         return LiteLLMStatus(ContainerState.STOPPED, ip, None, [])
-    port = litellm_state.port_for(DEFAULT_ACCOUNT)
-    instance = InstanceStatus(
-        account=DEFAULT_ACCOUNT,
-        port=port,
-        active=_active(incus, DEFAULT_ACCOUNT),
-        healthy=_healthy(incus, port),
-        login=auth_state(incus, DEFAULT_ACCOUNT),
-    )
-    return LiteLLMStatus(ContainerState.RUNNING, ip, _installed_version(incus), [instance])
+    instances: list[InstanceStatus] = []
+    for account in gcfg.litellm.accounts:
+        port = litellm_state.known_port(account)
+        instances.append(
+            InstanceStatus(
+                account=account,
+                port=port,
+                active=_active(incus, account),
+                healthy=port is not None and _healthy(incus, port),
+                login=auth_state(incus, account),
+            )
+        )
+    return LiteLLMStatus(ContainerState.RUNNING, ip, _installed_version(incus), instances)
 
 
 def _require_running(incus: Incus) -> None:

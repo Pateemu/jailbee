@@ -97,7 +97,7 @@ def _check_litellm(incus: Incus, gcfg: GlobalConfig) -> list[CheckResult]:
     if not gcfg.litellm.enabled:
         return [CheckResult("litellm", True, "not enabled")]
     try:
-        status = litellm.litellm_status(incus)
+        status = litellm.litellm_status(incus, gcfg)
     except IncusError as e:
         return [CheckResult("litellm", False, f"error querying: {e} — run 'jailbee litellm up'")]
     if status.container != litellm.ContainerState.RUNNING:
@@ -108,6 +108,9 @@ def _check_litellm(incus: Incus, gcfg: GlobalConfig) -> list[CheckResult]:
     rows: list[CheckResult] = []
     for instance in status.instances:
         name = f"litellm {instance.account}"
+        if instance.port is None:
+            rows.append(CheckResult(name, False, "not set up — run 'jailbee litellm up'"))
+            continue
         address = f"{status.ip}:{instance.port}"
         if instance.active and instance.healthy:
             rows.append(CheckResult(name, True, f"running on {address}, LiteLLM {status.version}"))
@@ -140,7 +143,7 @@ def _check_litellm(incus: Incus, gcfg: GlobalConfig) -> list[CheckResult]:
                 "containers cannot reach the proxy — run 'jailbee apply'",
             )
         )
-    if not litellm.upstream_reachable(incus, "chatgpt.com"):
+    if not litellm.upstream_reachable(incus, "chatgpt.com", 443):
         rows.append(
             CheckResult(
                 "litellm upstream",

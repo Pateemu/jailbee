@@ -170,7 +170,7 @@ def test_litellm_sync_key_never_in_incus_argv_or_error(tmp_path, mocker):
     run = _mock_run(mocker, returncode=1, stderr="permission denied")
 
     with pytest.raises(IncusError) as exc:
-        sync_container(Incus(), "feat-foo", {"json": {"version": 1}, "key_path": str(key)})
+        sync_container(Incus(), "feat-foo", {"json": {"version": 1}, "keys": {"default": str(key)}})
 
     assert secret not in repr(run.call_args.args[0])
     assert secret not in str(exc.value)

@@ -2326,6 +2326,12 @@ def new_cmd(
     except IncusError as e:
         warn(f"Could not resolve LiteLLM settings: {e}; run `jailbee apply` to retry.")
         litellm_payload = None
+    unserved = litellm.unserved_profiles(litellm_payload)
+    if unserved:
+        warn(
+            f"LiteLLM profile(s) {', '.join(unserved)} have no proxy instance yet; "
+            "run `jailbee litellm up`, then `jailbee apply`."
+        )
 
     if credential_group is not None and claude_group is not None:
         error(
@@ -10646,12 +10652,21 @@ def litellm_up_cmd(
     except (ValueError, RuntimeError, IncusError) as exc:
         error(str(exc))
         raise typer.Exit(1) from exc
-    success(f"LiteLLM proxy running on {result.ip}:{result.port}")
+    ports = ", ".join(f"{account} on :{port}" for account, port in result.ports.items())
+    success(f"LiteLLM proxy running on {result.ip} ({ports})")
     if result.restarted:
-        info("The proxy restarted; in-flight `claude-jb` requests were interrupted.")
+        info(
+            f"Restarted {', '.join(result.restarted)}; their in-flight `claude-jb` "
+            "requests were interrupted."
+        )
+    if result.retired:
+        info(
+            f"Stopped {', '.join(result.retired)}: no longer in `litellm.accounts`; "
+            "their logins are kept."
+        )
     info(
-        "Next: `jailbee litellm login` (once), then `jailbee apply` in each repo "
-        "that uses `claude-jb`."
+        "Next: `jailbee litellm login <account>` for each new account, then "
+        "`jailbee apply` in each repo that uses `claude-jb`."
     )
 
 
@@ -10689,9 +10704,9 @@ def litellm_status_cmd() -> None:
     from jailbee import litellm as ll
     from jailbee.incus import IncusError
 
-    incus, _gcfg = _litellm_context()
+    incus, gcfg = _litellm_context()
     try:
-        status = ll.litellm_status(incus)
+        status = ll.litellm_status(incus, gcfg)
     except (RuntimeError, IncusError) as exc:
         error(str(exc))
         raise typer.Exit(1) from exc
@@ -10700,7 +10715,10 @@ def litellm_status_cmd() -> None:
     typer.echo(f"version: {status.version or 'unknown'}")
     for instance in status.instances:
         typer.echo(f"account: {instance.account}")
-        typer.echo(f"port: {instance.port}")
+        if instance.port is None:
+            typer.echo("port: not set up — run jailbee litellm up")
+        else:
+            typer.echo(f"port: {instance.port}")
         typer.echo(f"service: {'active' if instance.active else 'inactive'}")
         typer.echo(f"health: {'healthy' if instance.healthy else 'unhealthy'}")
         if instance.login == "present":

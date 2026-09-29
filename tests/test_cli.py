@@ -2504,7 +2504,7 @@ def test_new_cmd_threads_litellm_payload_to_both_modes(tmp_path, mocker, flags):
     from jailbee.cli import app
 
     _, new_container = _setup_new_cmd_env(tmp_path, mocker)
-    payload = {"json": {"version": 1}, "key_path": "/host/default/master.key"}
+    payload = {"json": {"version": 1}, "keys": {"default": "/host/default/master.key"}}
     lookup = mocker.patch("jailbee.litellm.container_sync_payload", return_value=payload)
 
     result = CliRunner().invoke(

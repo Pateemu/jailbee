@@ -504,7 +504,7 @@ def test_op_to_job_round_trip_preserves_every_field():
         autostart=False,
         mirror_endpoint=("10.0.0.1", 5000),
         mirror_ca_path=Path("/tmp/ca.crt"),
-        litellm_payload={"json": {"version": 1}, "key_path": "/host/default/master.key"},
+        litellm_payload={"json": {"version": 1}, "keys": {"default": "/host/default/master.key"}},
         base="main",
         mount=False,
         base_branch_label="main",
@@ -520,7 +520,7 @@ def test_op_to_job_round_trip_preserves_every_field():
     )
 
     job = op_to_job(opts, container_name="p-feature", log_path="/tmp/l.log")
-    assert job["opts"]["litellm_payload"]["key_path"] == "/host/default/master.key"
+    assert job["opts"]["litellm_payload"]["keys"] == {"default": "/host/default/master.key"}
     assert "sk-jb-" not in json.dumps(job)
     restored, _name, _log = job_to_opts(job)
 

@@ -18,14 +18,22 @@ def context(mocker):
 
 def test_up_prints_endpoint_and_next_steps(mocker, context):
     up = mocker.patch(
-        "jailbee.litellm.litellm_up", return_value=ll.UpResult("10.0.0.3", 4100, True, True)
+        "jailbee.litellm.litellm_up",
+        return_value=ll.UpResult(
+            ip="10.0.0.3",
+            ports={"default": 4100},
+            restarted=["default"],
+            retired=[],
+            installed=True,
+        ),
     )
     result = runner.invoke(app, ["litellm", "up", "--reinstall"])
+    out = " ".join(result.output.split())
     assert result.exit_code == 0, result.output
-    assert "10.0.0.3:4100" in result.output
-    assert "jailbee litellm login" in result.output
-    assert "jailbee apply" in result.output
-    assert "in-flight" in result.output
+    assert "10.0.0.3" in out and ":4100" in out
+    assert "jailbee litellm login" in out
+    assert "jailbee apply" in out
+    assert "in-flight" in out
     assert up.call_args.kwargs["reinstall"] is True
     assert callable(up.call_args.kwargs["on_step"])
 
@@ -40,12 +48,50 @@ def test_up_disabled_is_exit_1_with_message(mocker, context):
 def test_up_warns_if_install_is_unlocked(mocker, context):
     context.return_value[1].litellm.version = "1.104.0"
     mocker.patch(
-        "jailbee.litellm.litellm_up", return_value=ll.UpResult("10.0.0.3", 4100, False, False)
+        "jailbee.litellm.litellm_up",
+        return_value=ll.UpResult(
+            ip="10.0.0.3",
+            ports={"default": 4100},
+            restarted=[],
+            retired=[],
+            installed=False,
+        ),
     )
     result = runner.invoke(app, ["litellm", "up"])
     assert result.exit_code == 0
     assert "hash-locked" in result.output
     assert "in-flight" not in result.output
+
+
+def test_up_names_restarted_and_retired_accounts(mocker, context):
+    mocker.patch(
+        "jailbee.litellm.litellm_up",
+        return_value=ll.UpResult(
+            ip="10.79.115.3",
+            ports={"a": 4100, "b": 4101},
+            restarted=["b"],
+            retired=["old"],
+            installed=False,
+        ),
+    )
+    result = runner.invoke(app, ["litellm", "up"])
+    out = " ".join(result.output.split())
+    assert result.exit_code == 0, result.output
+    assert "Restarted b" in out
+    assert "Stopped old" in out and "logins are kept" in out
+
+
+def test_up_reports_a_missing_secret_as_a_clean_error(mocker, context):
+    from jailbee.litellm_inputs import LiteLLMInputError
+
+    mocker.patch(
+        "jailbee.litellm.litellm_up",
+        side_effect=LiteLLMInputError("OPENROUTER_API_KEY is not set in secrets.env"),
+    )
+    result = runner.invoke(app, ["litellm", "up"])
+    assert result.exit_code == 1
+    assert "OPENROUTER_API_KEY" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_down_removes_proxy_but_keeps_login(mocker, context):
