@@ -4827,5 +4827,10 @@ runs the dashboard:
 
 Then, in `jailbee dashboard`: start Claude in a container and leave it at a
 prompt — the row reads `claude: waiting …` in yellow. `kill -9` it inside
-the container — the file stays behind, and the row returns to `—` on the
+the container (with no other session running in that container) — the file stays behind, and the row returns to `—` on the
 next tick.
+
+Known limitation (shared sessions directory): start two containers of one
+repo and run a session in each at the same in-container pid. Both write
+`sessions/<pid>.json` in the one shared directory, so the files collide and
+one of the two containers shows `—`.
