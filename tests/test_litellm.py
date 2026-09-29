@@ -1465,6 +1465,24 @@ def test_reconcile_without_restart_touches_nothing_and_stays_pending(xdg):
     assert second.restarted == ["default"]
 
 
+def test_reconcile_without_restart_tells_a_stopped_instance_from_a_changed_one(xdg):
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    real_exec = incus.exec.side_effect
+
+    def down(name, cmd, **kw):
+        return "inactive\n" if "is-active" in " ".join(cmd) else real_exec(name, cmd, **kw)
+
+    incus.exec.side_effect = down
+    result = ll.litellm_reconcile(incus, _gcfg(), restart=False)
+    assert (result.pending, result.stopped) == (["default"], ["default"])
+    incus.exec.side_effect = real_exec
+    changed = ll.litellm_reconcile(
+        incus, _gcfg(routes={"sol-xhigh": {"effort": "max"}}), restart=False
+    )
+    assert (changed.pending, changed.stopped) == (["default"], [])
+
+
 def test_reconcile_leaves_structural_changes_to_up(xdg):
     incus = _incus(present=True)
     ll.litellm_up(incus, _gcfg())

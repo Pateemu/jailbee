@@ -67,6 +67,9 @@ class ApplyResult:
     # left on the old ones because of `--no-restart`.
     litellm_restarted: list[str] = field(default_factory=list)
     litellm_pending: list[str] = field(default_factory=list)
+    # The proxy step failed or needs `jailbee litellm up`: a warning was
+    # printed, so the CLI must not follow it with "already up to date".
+    litellm_problem: bool = False
 
     @property
     def fully_successful(self) -> bool:
@@ -209,7 +212,9 @@ def run_apply(
     info("Refreshing egress pool + ACL + /etc/hosts...")
     mirror_endpoint = _mirror_endpoint_or_warn(cfg, incus, gcfg)
     mirror_ca_pem = _read_mirror_ca_or_warn(gcfg) if mirror_endpoint else None
-    litellm_result = _reconcile_litellm_or_warn(incus, gcfg, restart=not no_restart)
+    litellm_result, litellm_problem = _reconcile_litellm_or_warn(
+        incus, gcfg, restart=not no_restart
+    )
     litellm_payload = _litellm_payload_or_warn(incus, gcfg, cfg.litellm_view())
 
     # Before `refresh_pool`, which writes the ACL with `incus network acl
@@ -578,6 +583,7 @@ def run_apply(
         unresolved_pools=unresolved_pools,
         litellm_restarted=litellm_result.restarted if litellm_result else [],
         litellm_pending=litellm_result.pending if litellm_result else [],
+        litellm_problem=litellm_problem,
     )
 
 
@@ -662,9 +668,12 @@ def _ensure_acl_attached_to_bridge(cfg: Config, incus: Incus) -> None:
 
 def _reconcile_litellm_or_warn(
     incus: Incus, gcfg: GlobalConfig, *, restart: bool
-) -> ReconcileResult | None:
+) -> tuple[ReconcileResult | None, bool]:
     """Non-fatal: the proxy is shared host infrastructure, and a user may be
-    running `apply` to repair something unrelated to it."""
+    running `apply` to repair something unrelated to it.
+
+    The flag is True when a warning said the proxy was not brought in line.
+    """
     from jailbee.litellm import litellm_reconcile
     from jailbee.tui import info, warn_plain
 
@@ -672,9 +681,9 @@ def _reconcile_litellm_or_warn(
         result = litellm_reconcile(incus, gcfg, restart=restart)
     except Exception as e:  # non-fatal, see docstring
         warn_plain(f"Could not update the LiteLLM proxy: {e}; run `jailbee litellm up` to retry.")
-        return None
+        return None, True
     if result is None:
-        return None
+        return None, False
     for issue in result.issues:
         warn_plain(issue)
     if result.needs_up is not None:
@@ -684,12 +693,19 @@ def _reconcile_litellm_or_warn(
             f"Restarted LiteLLM instance(s) {', '.join(result.restarted)} on the new routes; "
             "their in-flight `claude-jb` requests were interrupted."
         )
-    if result.pending:
+    # No flag is named: `jailbee new` skips restarts for a scratch bootstrap too.
+    waiting = [a for a in result.pending if a not in result.stopped]
+    if waiting:
         warn_plain(
-            f"LiteLLM instance(s) {', '.join(result.pending)} still serve the previous routes "
-            "(`--no-restart`); run `jailbee apply` again to restart them."
+            f"LiteLLM instance(s) {', '.join(waiting)} still serve the previous routes; "
+            "run `jailbee apply` again to restart them."
         )
-    return result
+    if result.stopped:
+        warn_plain(
+            f"LiteLLM instance(s) {', '.join(result.stopped)} not running; "
+            "run `jailbee apply` again to start them."
+        )
+    return result, result.needs_up is not None
 
 
 def _litellm_payload_or_warn(

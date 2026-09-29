@@ -1549,10 +1549,11 @@ def apply(
             result.ports_changed,
             result.litellm_restarted,
             result.litellm_pending,
+            result.litellm_problem,
         ]
     ):
         info("Configuration already up to date.")
-    elif not result.restart_failures and not result.restarted:
+    elif not result.restart_failures and not result.restarted and not result.litellm_problem:
         success("Apply complete.")
 
     for name, err in result.restart_failures:

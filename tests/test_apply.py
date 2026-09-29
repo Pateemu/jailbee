@@ -2829,10 +2829,50 @@ def test_apply_reconciles_the_proxy_and_honours_no_restart(make_cfg, tmp_path, m
     assert reconcile.call_args.kwargs["restart"] is (not no_restart)
     if no_restart:
         assert result.litellm_pending == ["default"] and result.litellm_restarted == []
-        assert any("--no-restart" in c.args[0] for c in warn_plain.call_args_list)
+        pending = [c.args[0] for c in warn_plain.call_args_list if "previous routes" in c.args[0]]
+        assert pending and "--no-restart" not in pending[0]
     else:
         assert result.litellm_restarted == ["default"]
         assert any("in-flight" in c.args[0] for c in info.call_args_list)
+
+
+def test_apply_says_a_stopped_instance_is_not_running_not_serving_old_routes(
+    make_cfg, tmp_path, mocker
+):
+    from jailbee import litellm as ll
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+
+    cfg, incus = _apply_harness(make_cfg, tmp_path, mocker)
+    mocker.patch(
+        "jailbee.litellm.litellm_reconcile",
+        return_value=ll.ReconcileResult(pending=["a", "b"], stopped=["b"]),
+    )
+    warn_plain = mocker.patch("jailbee.tui.warn_plain")
+    run_apply(cfg, incus, GlobalConfig(), no_restart=True)
+    texts = [c.args[0] for c in warn_plain.call_args_list]
+    old = next(t for t in texts if "previous routes" in t)
+    down = next(t for t in texts if "not running" in t)
+    assert " a " in f" {old} " and " b " not in f" {old} " and "--no-restart" not in old
+    assert " b " in f" {down} " and "previous routes" not in down and "--no-restart" not in down
+
+
+def test_apply_flags_a_litellm_problem_so_the_cli_never_says_up_to_date(make_cfg, tmp_path, mocker):
+    from jailbee import litellm as ll
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+
+    cfg, incus = _apply_harness(make_cfg, tmp_path, mocker)
+    mocker.patch("jailbee.tui.warn_plain")
+    mocker.patch("jailbee.litellm.litellm_reconcile", side_effect=RuntimeError("dns down"))
+    assert run_apply(cfg, incus, GlobalConfig()).litellm_problem is True
+    mocker.patch(
+        "jailbee.litellm.litellm_reconcile",
+        return_value=ll.ReconcileResult(needs_up="account(s) work have no proxy instance yet"),
+    )
+    assert run_apply(cfg, incus, GlobalConfig()).litellm_problem is True
+    mocker.patch("jailbee.litellm.litellm_reconcile", return_value=ll.ReconcileResult())
+    assert run_apply(cfg, incus, GlobalConfig()).litellm_problem is False
 
 
 def test_apply_survives_a_failing_reconcile_and_reports_needs_up(make_cfg, tmp_path, mocker):

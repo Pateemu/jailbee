@@ -101,7 +101,9 @@ def _check_litellm(incus: Incus, gcfg: GlobalConfig) -> list[CheckResult]:
     from jailbee.config.local_layer import local_litellm_scopes, scope_files
 
     scopes, issues = local_litellm_scopes(cfg)
-    rows: list[CheckResult] = [CheckResult("litellm repo override", False, issue) for issue in issues]
+    rows: list[CheckResult] = [
+        CheckResult("litellm repo override", False, issue) for issue in issues
+    ]
     try:
         litellm_inputs.load_host_inputs(cfg, scopes.values(), scope_files(scopes))
     except litellm_inputs.LiteLLMInputError as e:

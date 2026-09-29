@@ -614,6 +614,8 @@ class ReconcileResult:
     # Changed but left alone (`--no-restart`); the digest is not recorded, so
     # the next `apply` restarts them.
     pending: list[str] = field(default_factory=list)
+    # The subset of `pending` whose unit is not running at all (not merely on old routes).
+    stopped: list[str] = field(default_factory=list)
     # Why only `jailbee litellm up` can bring the proxy in line; None if it was not needed.
     needs_up: str | None = None
     issues: list[str] = field(default_factory=list)
@@ -675,16 +677,21 @@ def litellm_reconcile(
     inputs = load_host_inputs(cfg, scopes.values(), scope_files(scopes))
     callback_source = _read("jailbee_callback.py")
     files = _render_all(cfg, scopes, known, inputs)
+    down = {f.account for f in files if not _active(incus, f.account)}
     changed = [
         f
         for f in files
         if not litellm_state.config_applied(f.account, f.digest(callback_source))
-        or not _active(incus, f.account)
+        or f.account in down
     ]
     if not changed:
         return ReconcileResult(issues=issues)
     if not restart:
-        return ReconcileResult(pending=[f.account for f in changed], issues=issues)
+        return ReconcileResult(
+            pending=[f.account for f in changed],
+            stopped=[f.account for f in changed if f.account in down],
+            issues=issues,
+        )
     on_step("writing the proxy's egress allowlist")
     _set_egress(incus, _resolve_egress(egress_hosts(cfg, scopes=scopes)), sorted(known.values()))
     on_step("writing the proxy configuration")
