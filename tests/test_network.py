@@ -8,7 +8,16 @@ import yaml
 
 from jailbee.config import load_config
 from jailbee.egress import EgressEntry, build_egress_entries
-from jailbee.network import acl_name, allowlist_acl_yaml, entries_from_acl_yaml, work_loose_rule
+from jailbee.network import (
+    SERVICES_ACL,
+    acl_name,
+    allowlist_acl_yaml,
+    entries_from_acl_yaml,
+    service_container_acl_yaml,
+    services_acl_yaml,
+    strict_nic_acls,
+    work_loose_rule,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -518,3 +527,61 @@ def test_allowlist_acl_yaml_requires_entries(make_cfg, tmp_path):
     cfg = make_cfg(tmp_path / "myrepo")
     with pytest.raises(TypeError):
         allowlist_acl_yaml(cfg)  # type: ignore[call-arg]
+
+
+def test_strict_nic_acls_order(make_cfg, tmp_path):
+    cfg = make_cfg(tmp_path)
+    assert strict_nic_acls(cfg) == [f"{cfg.container_prefix}-allowlist", SERVICES_ACL]
+    assert strict_nic_acls(cfg, "x-extra") == [
+        f"{cfg.container_prefix}-allowlist",
+        "x-extra",
+        SERVICES_ACL,
+    ]
+
+
+def test_services_acl_empty_without_endpoint():
+    acl = yaml.safe_load(services_acl_yaml(None))
+    assert acl["name"] == SERVICES_ACL
+    assert acl["egress"] == [] and acl["ingress"] == []
+
+
+def test_services_acl_allows_each_port():
+    acl = yaml.safe_load(services_acl_yaml(("10.9.0.3", [4100, 4101])))
+    assert [(r["destination"], r["destination_port"], r["protocol"]) for r in acl["egress"]] == [
+        ("10.9.0.3/32", "4100", "tcp"),
+        ("10.9.0.3/32", "4101", "tcp"),
+    ]
+
+
+def test_service_container_acl_has_dhcp_dns_egress_and_listen_ingress():
+    entries = [EgressEntry(destinations=["1.2.3.4"], port=443, description="chatgpt.com:443")]
+    acl = yaml.safe_load(
+        service_container_acl_yaml("jailbee-litellm-egress", entries, listen_ports=[4100])
+    )
+    ports = {(r.get("destination_port"), r.get("protocol")) for r in acl["egress"]}
+    assert {
+        ("67", "udp"),
+        ("547", "udp"),
+        ("53", "udp"),
+        ("53", "tcp"),
+        ("443", "tcp"),
+    } <= ports
+    assert {
+        "action": "allow",
+        "destination_port": "4100",
+        "protocol": "tcp",
+        "description": "jailbee service port",
+        "state": "enabled",
+    } in acl["ingress"]
+    assert {r.get("destination_port") for r in acl["ingress"]} >= {"68", "546", "4100"}
+
+
+def test_allowlist_acl_yaml_unchanged_by_refactor(make_cfg, tmp_path):
+    """Regression guard for the base-rule extraction: DHCP and DNS stay first."""
+    acl = yaml.safe_load(allowlist_acl_yaml(make_cfg(tmp_path), []))
+    assert [r["description"] for r in acl["egress"][:4]] == [
+        "DHCPv4 client → server",
+        "DHCPv6 client → server",
+        "DNS",
+        "DNS over TCP",
+    ]
