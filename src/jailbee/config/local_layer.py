@@ -53,11 +53,15 @@ _COMPUTED_KEYS = frozenset({"credential_group", "claude_credentials_dir"})
 def _refused_keys() -> frozenset[str]:
     from jailbee.config.root import Config
 
-    host_only = _HOST_LEVEL_KEYS - set(Config.model_fields) - {
-        "credentials",
-        "claude_credentials",
-        "litellm",
-    }
+    host_only = (
+        _HOST_LEVEL_KEYS
+        - set(Config.model_fields)
+        - {
+            "credentials",
+            "claude_credentials",
+            "litellm",
+        }
+    )
     return frozenset({"container_prefix", *_COMPUTED_KEYS, *host_only})
 
 
