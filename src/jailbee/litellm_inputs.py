@@ -143,10 +143,7 @@ def referenced_secrets(
     scopes: Iterable[LiteLLMConfig] = (),
 ) -> list[str]:
     names = {
-        r.api_key
-        for view in (cfg, *scopes)
-        for r in view.effective_routes().values()
-        if r.api_key
+        r.api_key for view in (cfg, *scopes) for r in view.effective_routes().values() if r.api_key
     }
     names |= extra_secret_names(extra or {})
     return sorted(names)

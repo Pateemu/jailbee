@@ -239,7 +239,8 @@ def render_instance_files(
         config_yaml=yaml.safe_dump(
             render_instance_config(cfg, account, extra=extra, scopes=scopes), sort_keys=False
         ),
-        callback_json=json.dumps(render_callback_data(cfg, account, scopes=scopes), indent=2) + "\n",
+        callback_json=json.dumps(render_callback_data(cfg, account, scopes=scopes), indent=2)
+        + "\n",
         instance_env=render_instance_env(
             port=port, master_key=master_key, account=account, secrets=secrets
         ),
@@ -287,9 +288,7 @@ def egress_hosts(cfg: LiteLLMConfig, *, scopes: Scopes | None = None) -> list[st
     return sorted(entries)
 
 
-def upstream_targets(
-    cfg: LiteLLMConfig, *, scopes: Scopes | None = None
-) -> list[tuple[str, int]]:
+def upstream_targets(cfg: LiteLLMConfig, *, scopes: Scopes | None = None) -> list[tuple[str, int]]:
     """Hosts `jailbee doctor` probes from inside the proxy; CIDR entries are not probeable."""
     targets: list[tuple[str, int]] = []
     for raw in egress_hosts(cfg, scopes=scopes):
