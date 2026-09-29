@@ -602,6 +602,18 @@ ACL updates and repo `jailbee apply` advice. Over SSH, the read panel requires
 `net egress ls`; add/remove require their own permitted command leaves, and
 `restrict_host: true` keeps them unavailable even under a full command policy.
 
+`A` opens the credential-group overlay — every credential group and stored
+login on the host, as `jailbee account ls` lists them. `Enter` on a row offers
+what applies to it: use a stored login in a group, park a group's live login,
+use a parked login in a group, delete a parked login, or remove an unused group
+(deleting and removing ask for confirmation, with "No" first). `n` creates a
+group. The repo and container menus carry `Credential group…` to change which
+group a repo (`account group set`/`unset`) or a single container (`account
+group use`/`reset`) follows. Changes run the real `jailbee account …` commands
+in the selected row's repo; a refusal (for example a running agent) is shown
+as a notice — use `!` with `--force` to override. `Esc` backs out of each
+question to the overlay, and closes the overlay itself.
+
 The menu, in order: `job clear`, `job log`, `pr --open`, `pr`, `git push`,
 `git push --pr`, `git pull`, `git diff`, then tmux/shell, then one "Launch
 `<name>`" entry per app the repo's GUI registry declares (browsers, the

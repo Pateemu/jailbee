@@ -1142,6 +1142,16 @@ KEY_BINDINGS: tuple[KeyBinding, ...] = (
         brief="config",
     ),
     KeyBinding("config-edit-global", (b"E",), "", "", "Actions"),
+    # Host-wide, not row-scoped: the selected row only picks which repo the
+    # `jailbee account …` children are run in.
+    KeyBinding(
+        "accounts",
+        (b"A",),
+        "A",
+        "credential groups and stored logins",
+        "Actions",
+        brief="accounts",
+    ),
     KeyBinding("refresh", (b"r",), "r", "force a full refresh", "View", brief="refresh"),
     KeyBinding(
         "settings",
@@ -1470,6 +1480,7 @@ def _render_help() -> RenderableType:
     lines += [
         "",
         "Egress panel: a adds, r removes a scoped override; Esc backs to its menu.",
+        "Accounts panel: Enter acts on a login or group, n creates a group.",
         "",
         f"[dim]{_GATE_NOTE}[/dim]",
     ]
@@ -2949,9 +2960,11 @@ def run(
                 force.set()  # a group change re-renders the containers' profiles
                 return result.ok
 
-            def load_group_rows(repo: RepoTarget) -> tuple[da.AccountRow, ...] | None:
-                """The host's credential groups, or None after noticing why not."""
-                argv = [*da.group_ls_argv(), *(repo.flags() if not over_ssh else [])]
+            def load_listing(
+                repo: RepoTarget, listing_argv: list[str], what: str
+            ) -> tuple[da.AccountRow, ...] | None:
+                """Rows of one `jailbee account … ls`, or None after noticing why not."""
+                argv = [*listing_argv, *(repo.flags() if not over_ssh else [])]
                 try:
                     check_dashboard_command(argv, ssh_policy, over_ssh=over_ssh)
                     result = da.run_cli_quiet(argv, cwd=repo.cwd())
@@ -2959,11 +2972,12 @@ def run(
                         raise da.AccountLoadError(result.message)
                     return da.parse_account_rows(result.stdout)
                 except (RouteError, da.AccountLoadError) as exc:
-                    set_notice(
-                        f"could not list credential groups: {exc}",
-                        seconds=_FAILURE_NOTICE_SECONDS,
-                    )
+                    set_notice(f"could not list {what}: {exc}", seconds=_FAILURE_NOTICE_SECONDS)
                     return None
+
+            def load_group_rows(repo: RepoTarget) -> tuple[da.AccountRow, ...] | None:
+                """The host's credential groups, or None after noticing why not."""
+                return load_listing(repo, da.group_ls_argv(), "credential groups")
 
             def group_picker(
                 purpose: Literal["repo-group", "container-group"],
@@ -3007,6 +3021,140 @@ def run(
                     set_notice(f"'{target}' is gone")
                     return
                 run_account_cli(repo, argv)
+
+            def accounts_target() -> str | None:
+                """The repo prefix the Accounts panel runs its `jailbee account …` in.
+
+                The listing is host-wide, so any real repo would answer it; the
+                selected row's repo is preferred because that is the config a
+                user expects `--config` to name. Falls back to the first repo
+                with a root, so `A` also works from an orphan row.
+                """
+                prefix = fold_target(groups, selected)
+                if prefix is not None and repo_for(prefix) is not None:
+                    return prefix
+                return next((g.prefix for g in groups if RepoTarget.of(g) is not None), None)
+
+            def load_accounts(prefix: str, index: int = 0) -> da.AccountsState | None:
+                """The Accounts panel for ``prefix``'s repo, the cursor clamped to ``index``."""
+                repo = repo_for(prefix)
+                if repo is None:
+                    set_notice(f"'{prefix}' is gone", seconds=_FAILURE_NOTICE_SECONDS)
+                    return None
+                rows = load_listing(repo, da.account_ls_argv(), "accounts")
+                if rows is None:
+                    return None
+                return da.AccountsState(rows, max(0, min(index, len(rows) - 1)), prefix)
+
+            def open_accounts() -> da.AccountsState | None:
+                """Open the Accounts panel, or notice why not."""
+                prefix = accounts_target()
+                if prefix is None:
+                    set_notice("No repo to address account commands at")
+                    return None
+                return load_accounts(prefix)
+
+            def account_actions_picker(state: da.AccountsState) -> Overlay:
+                """What can be done with the highlighted row, or the panel with a notice."""
+                row = da.selected_account(state)
+                actions = da.account_actions(row, state.rows) if row is not None else ()
+                if row is None or not actions:
+                    set_notice("No actions for this row")
+                    return state
+                title = (
+                    f"Login {row.account} ({row.agent})"
+                    if row.state == "parked"
+                    else f"Group {row.group} ({row.agent})"
+                )
+                return Picker(
+                    "acct-action",
+                    title,
+                    tuple(PickerEntry(label, action) for label, action in actions),
+                    target=state.prefix,
+                    carry=(row.agent, row.group or "", row.account or ""),
+                    back=state,
+                )
+
+            def run_account_change(state: da.AccountsState, argv: list[str]) -> Overlay | None:
+                """Run one change from the panel, then show the listing reloaded.
+
+                The repo is re-resolved first — it may have vanished while a
+                picker was open. A refused change keeps the old listing up
+                under its notice; a listing that fails after a change that
+                worked keeps the old rows too, under the listing's notice.
+                """
+                repo = repo_for(state.prefix)
+                if repo is None:
+                    set_notice(f"'{state.prefix}' is gone", seconds=_FAILURE_NOTICE_SECONDS)
+                    return None
+                if not run_account_cli(repo, argv):
+                    return state
+                return load_accounts(state.prefix, state.index) or state
+
+            def submit_account_picker(
+                picker: Picker, entry: PickerEntry, state: da.AccountsState
+            ) -> Overlay | None:
+                """The `acct-*` steps: every one lands back on the panel ``state``."""
+                if picker.purpose == "acct-action":
+                    agent, group, ref = picker.carry
+                    if entry.value == "use":
+                        logins = da.parked_for(state.rows, agent)
+                        return Picker(
+                            "acct-use",
+                            "Use which login?",
+                            tuple(
+                                PickerEntry(r.account, r.account)
+                                for r in logins
+                                if r.account is not None
+                            ),
+                            target=picker.target,
+                            carry=picker.carry,
+                            back=state,
+                        )
+                    if entry.value == "park":
+                        return run_account_change(state, da.park_argv(agent, group or None))
+                    if entry.value == "use-in":
+                        return Picker(
+                            "acct-use-in",
+                            "Use in which group?",
+                            tuple(PickerEntry(name, name) for name in da.group_names(state.rows)),
+                            target=picker.target,
+                            carry=(agent, "", ref),
+                            back=state,
+                        )
+                    if entry.value in ("delete", "group-rm"):
+                        question = (
+                            f"Really delete login {ref}?"
+                            if entry.value == "delete"
+                            else f"Really remove group {group}?"
+                        )
+                        # "No" first: a stray Enter must not delete anything.
+                        return Picker(
+                            "acct-confirm",
+                            question,
+                            (PickerEntry("No", "no"), PickerEntry("Yes, delete", "yes")),
+                            target=picker.target,
+                            carry=(entry.value, agent, group, ref),
+                            back=state,
+                        )
+                    return state
+                if picker.purpose == "acct-use":
+                    agent, group, _ref = picker.carry
+                    return run_account_change(state, da.use_argv(agent, group or None, entry.value))
+                if picker.purpose == "acct-use-in":
+                    agent, _group, ref = picker.carry
+                    return run_account_change(state, da.use_argv(agent, entry.value, ref))
+                if picker.purpose == "acct-confirm":
+                    if entry.value != "yes":
+                        return state
+                    action, agent, group, ref = picker.carry
+                    return run_account_change(
+                        state,
+                        da.rm_login_argv(agent, ref)
+                        if action == "delete"
+                        else da.group_rm_argv(group),
+                    )
+                return state
 
             def submit_prompt(prompt: TextPrompt) -> Overlay | None:
                 """Act on a confirmed answer; return the overlay to show next.
@@ -3057,6 +3205,10 @@ def run(
                 if prompt.purpose == "container-group-name":
                     change_group(prompt.target, da.container_group_use_argv(answer, prompt.target))
                     return None
+                if prompt.purpose == "acct-group-new":
+                    # asked only from the Accounts panel, which it returns to
+                    assert isinstance(prompt.back, da.AccountsState)
+                    return run_account_change(prompt.back, da.group_create_argv(answer))
                 return None
 
             def submit_picker(picker: Picker, entry: PickerEntry) -> Overlay | None:
@@ -3091,6 +3243,10 @@ def run(
                         else da.container_group_use_argv(entry.value, picker.target),
                     )
                     return None
+                if picker.purpose.startswith("acct-"):
+                    # every account picker is opened from the Accounts panel
+                    assert isinstance(picker.back, da.AccountsState)
+                    return submit_account_picker(picker, entry, picker.back)
                 return picker.back
 
             def edit_config(*, global_layer: bool) -> None:
@@ -3212,6 +3368,11 @@ def run(
                 ):
                     set_notice("Egress target is gone — panel closed")
                     overlay = None
+                if isinstance(overlay, da.AccountsState) and repo_for(overlay.prefix) is None:
+                    # The repo its account commands run in is gone; a reopen
+                    # (`A`) picks another one.
+                    set_notice(f"'{overlay.prefix}' is gone — accounts closed")
+                    overlay = None
                 if (
                     isinstance(overlay, (TextPrompt, Picker))
                     and overlay.target
@@ -3239,6 +3400,14 @@ def run(
                         if panel.container is not None
                         else Row("repo", panel.prefix)
                     )
+                elif isinstance(overlay, da.AccountsState) or (
+                    isinstance(overlay, (TextPrompt, Picker))
+                    and isinstance(overlay.back, da.AccountsState)
+                ):
+                    # Host-wide: its questions target a repo only to run the
+                    # CLI there, so the cursor stays where `A` was pressed
+                    # instead of jumping to that repo's header.
+                    selected = reconcile_selection(rows, selected, sel_index)
                 elif isinstance(overlay, (TextPrompt, Picker)) and overlay.target in {
                     g.prefix for g in groups
                 }:
@@ -3408,6 +3577,19 @@ def run(
                             overlay = begin_egress_add(overlay)
                         elif data == b"r":
                             overlay = mutate_egress(overlay, "rm")
+                    elif isinstance(overlay, da.AccountsState):
+                        if key in ("up", "down"):
+                            overlay = da.move_accounts(overlay, -1 if key == "up" else 1)
+                        elif key == "enter":
+                            overlay = account_actions_picker(overlay)
+                        elif data == b"n":
+                            overlay = TextPrompt(
+                                "acct-group-new",
+                                "New credential group",
+                                "Group name",
+                                target=overlay.prefix,
+                                back=overlay,
+                            )
                     elif isinstance(overlay, Picker):
                         if key in ("up", "down"):
                             overlay = move_picker(overlay, -1 if key == "up" else 1)
@@ -3516,6 +3698,8 @@ def run(
                         )
                 elif key == "new":
                     overlay = start_new_container()
+                elif key == "accounts":
+                    overlay = open_accounts()
                 elif key in ("config-edit", "config-edit-global") and remote:
                     set_notice(REMOTE_CONFIG_EDIT_NOTE)
                 elif key in ("config-edit", "config-edit-global"):

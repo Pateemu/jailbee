@@ -6808,3 +6808,524 @@ def test_terminal_menu_drops_an_empty_pr_group_when_only_apply_remains():
     ]
     assert labels[0].startswith("Apply 2 PR action(s)")
     assert "PR →" not in labels
+
+
+# --- The Accounts panel (A) --------------------------------------------------
+
+# Same rows as `ROWS` in tests/test_dashboard_accounts.py: a live login in
+# "team", a parked login, an empty "spare" group.
+_ACCOUNT_ROWS = (
+    '[{"agent": "claude", "group": "team", "account": "a@x.io#org12345", "state": "live",'
+    ' "repos": ["alpha"], "containers": ["alpha-x"]},'
+    ' {"agent": "claude", "group": null, "account": "b@x.io~2", "state": "parked",'
+    ' "repos": [], "containers": []},'
+    ' {"agent": "claude", "group": "spare", "account": null, "state": "empty",'
+    ' "repos": [], "containers": []}]'
+)
+_ACCOUNT_LS = dashboard.da.account_ls_argv()
+
+
+def _fake_accounts_cli(mocker, *, listings=None, change=None):
+    """Patch the quiet CLI runner for the Accounts panel.
+
+    Each `account ls` answers the next of ``listings`` (the last one repeats);
+    anything else is a change and answers ``change``.
+    """
+    answers = list(listings or [_groups_listing(_ACCOUNT_ROWS)])
+    change = change or dashboard.da.CliResult(True, "Done.")
+
+    def fake(argv, **_kwargs):
+        if argv[:2] == ["account", "ls"]:
+            return answers.pop(0) if len(answers) > 1 else answers[0]
+        return change
+
+    return mocker.patch.object(dashboard.da, "run_cli_quiet", side_effect=fake)
+
+
+def _alpha(tmp_path):
+    return dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+
+
+def test_key_a_opens_the_accounts_panel_with_rows_and_keeps_the_table(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-zebra", "alpha")])
+    run = _fake_accounts_cli(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [b"A"], [group]) == 0
+
+    assert run.call_args_list == [mocker.call(_ACCOUNT_LS, cwd=tmp_path)]
+    child.assert_not_called()
+    frames = [
+        c
+        for c in render.call_args_list
+        if isinstance(c.kwargs["overlay"], dashboard.da.AccountsState)
+    ]
+    assert frames, "the Accounts panel was never drawn"
+    state = frames[-1].kwargs["overlay"]
+    assert [r.account for r in state.rows] == ["a@x.io#org12345", "b@x.io~2", None]
+    assert (state.index, state.prefix) == (0, "alpha")
+    out = _render_text(dashboard.render(*frames[-1].args, **frames[-1].kwargs))
+    assert "NAME" in out and "zebra" in out  # the container table is still drawn
+    assert "credential groups and logins" in out
+    assert "b@x.io~2" in out
+    assert "n new group" in out  # the panel's own hint line
+
+
+def test_key_a_runs_the_listing_in_the_selected_rows_repo(mocker, tmp_path):
+    alpha = dashboard.RepoGroup("alpha", str(tmp_path / "a"), None, [])
+    beta = dashboard.RepoGroup("beta", str(tmp_path / "b"), tmp_path / "b.yaml", [])
+    run = _fake_accounts_cli(mocker)
+
+    assert _drive_run(mocker, [b"j", b"A"], [alpha, beta]) == 0
+
+    assert run.call_args_list == [
+        mocker.call([*_ACCOUNT_LS, "--config", str(tmp_path / "b.yaml")], cwd=tmp_path / "b")
+    ]
+
+
+def test_key_a_from_an_orphan_row_falls_back_to_the_first_real_repo(mocker, tmp_path):
+    orphan = dashboard.RepoGroup("gamma", None, None, [_ci("gamma-x", "gamma")])
+    beta = dashboard.RepoGroup("beta", str(tmp_path), None, [])
+    run = _fake_accounts_cli(mocker)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [b"A"], [orphan, beta]) == 0
+
+    assert render.call_args_list[0].args[1] == dashboard.Row("repo", "gamma")
+    assert run.call_args_list == [mocker.call(_ACCOUNT_LS, cwd=tmp_path)]
+    assert _rendered(render, dashboard.da.AccountsState)[-1].prefix == "beta"
+
+
+def test_key_a_with_no_real_repo_is_a_notice(mocker):
+    orphan = dashboard.RepoGroup("gamma", None, None, [_ci("gamma-x", "gamma")])
+    run = _fake_accounts_cli(mocker)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [b"A"], [orphan]) == 0
+
+    run.assert_not_called()
+    last = render.call_args_list[-1].kwargs
+    assert last["overlay"] is None
+    assert last["notice"] == "No repo to address account commands at"
+
+
+@pytest.mark.parametrize(
+    ("listing", "reason"),
+    [
+        (dashboard.da.CliResult(False, "error: no pool"), "no pool"),
+        (dashboard.da.CliResult(True, "done", "not json"), "unexpected output"),
+    ],
+    ids=["command-failed", "garbled-output"],
+)
+def test_accounts_panel_survives_a_failing_listing(mocker, tmp_path, listing, reason):
+    run = _fake_accounts_cli(mocker, listings=[listing])
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    # j after the failure: the dashboard is still reading keys, not crashed
+    assert _drive_run(mocker, [b"A", b"j"], [_alpha(tmp_path)]) == 0
+
+    assert run.call_count == 1
+    assert not _rendered(render, dashboard.da.AccountsState)
+    last = render.call_args_list[-1].kwargs
+    assert last["overlay"] is None
+    assert last["notice"].startswith("could not list accounts: ")
+    assert reason in last["notice"]
+    assert render.call_args_list[-1].args[1] == dashboard.Row("container", "alpha-x")
+
+
+def test_accounts_panel_with_an_empty_pool_says_so(mocker, tmp_path):
+    run = _fake_accounts_cli(mocker, listings=[_groups_listing("[]")])
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [b"A", _ENTER, b"j"], [_alpha(tmp_path)]) == 0
+
+    assert run.call_count == 1  # Enter on nothing ran nothing
+    last = render.call_args_list[-1]
+    assert isinstance(last.kwargs["overlay"], dashboard.da.AccountsState)
+    assert last.kwargs["overlay"].rows == ()
+    assert last.kwargs["notice"] == "No actions for this row"
+    assert "(no logins or groups on this host)" in _render_text(
+        dashboard.render(*last.args, **last.kwargs)
+    )
+    assert not _rendered(render, dashboard.Picker)
+
+
+def test_accounts_actions_picker_offers_the_rows_actions(mocker, tmp_path):
+    _fake_accounts_cli(mocker)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    # row 0 (live in team), then Esc back to the panel, then row 1 (parked)
+    keys = [b"A", _ENTER, _ESC, b"j", _ENTER]
+    assert _drive_run(mocker, keys, [_alpha(tmp_path)]) == 0
+
+    pickers = _rendered(render, dashboard.Picker)
+    live, parked = pickers[0], pickers[-1]
+    assert (live.purpose, live.title, live.target, live.carry) == (
+        "acct-action",
+        "Group team (claude)",
+        "alpha",
+        ("claude", "team", "a@x.io#org12345"),
+    )
+    assert [(e.label, e.value) for e in live.entries] == [
+        ("Use a stored login…", "use"),
+        ("Park the live login", "park"),
+    ]
+    assert (parked.title, parked.carry) == ("Login b@x.io~2 (claude)", ("claude", "", "b@x.io~2"))
+    assert [e.value for e in parked.entries] == ["use-in", "delete"]
+    assert isinstance(parked.back, dashboard.da.AccountsState)
+    assert parked.back.index == 1  # the panel remembers its cursor
+
+
+def test_accounts_questions_keep_the_cursor_where_the_key_was_pressed(mocker, tmp_path):
+    _fake_accounts_cli(mocker)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    # j: onto the container row, then A and Enter (the actions picker)
+    assert _drive_run(mocker, [b"j", b"A", _ENTER], [_alpha(tmp_path)]) == 0
+
+    frames = [c for c in render.call_args_list if isinstance(c.kwargs["overlay"], dashboard.Picker)]
+    assert frames, "the actions picker was never drawn"
+    # the picker targets the repo "alpha" but must not pin its header
+    assert frames[-1].args[1] == dashboard.Row("container", "alpha-x")
+
+
+def test_accounts_park_runs_the_scoped_command_and_reloads(mocker, tmp_path):
+    after = _groups_listing(
+        '[{"agent": "claude", "group": "team", "account": null, "state": "empty",'
+        ' "repos": ["alpha"], "containers": []}]'
+    )
+    run = _fake_accounts_cli(
+        mocker,
+        listings=[_groups_listing(_ACCOUNT_ROWS), after],
+        change=dashboard.da.CliResult(True, "Parked a@x.io#org12345."),
+    )
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    # A, Enter (row 0's actions), Down to "Park the live login", Enter
+    assert _drive_run(mocker, [b"A", _ENTER, b"j", _ENTER], [_alpha(tmp_path)]) == 0
+
+    assert run.call_args_list == [
+        mocker.call(_ACCOUNT_LS, cwd=tmp_path),
+        mocker.call(["account", "park", "-a", "claude", "-g", "team"], cwd=tmp_path),
+        mocker.call(_ACCOUNT_LS, cwd=tmp_path),
+    ]
+    child.assert_not_called()
+    last = render.call_args_list[-1].kwargs
+    assert isinstance(last["overlay"], dashboard.da.AccountsState)
+    assert [r.state for r in last["overlay"].rows] == ["empty"]  # the reloaded listing
+    assert last["notice"] == "Parked a@x.io#org12345."
+
+
+def test_accounts_refused_change_keeps_the_panel_under_its_notice(mocker, tmp_path):
+    refusal = dashboard.da.CliResult(False, "error: an agent is running; pass --force")
+    run = _fake_accounts_cli(mocker, change=refusal)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [b"A", _ENTER, b"j", _ENTER], [_alpha(tmp_path)]) == 0
+
+    # no reload after a refusal, and never a silent --force retry
+    assert [c.args[0] for c in run.call_args_list] == [
+        _ACCOUNT_LS,
+        ["account", "park", "-a", "claude", "-g", "team"],
+    ]
+    last = render.call_args_list[-1].kwargs
+    assert isinstance(last["overlay"], dashboard.da.AccountsState)
+    assert len(last["overlay"].rows) == 3  # the listing it had before
+    assert last["notice"] == "error: an agent is running; pass --force"
+
+
+def test_accounts_use_stored_login_two_step(mocker, tmp_path):
+    run = _fake_accounts_cli(mocker)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    # A, Enter (row 0's actions), Enter ("Use a stored login…"), Enter (the one parked login)
+    assert _drive_run(mocker, [b"A", _ENTER, _ENTER, _ENTER], [_alpha(tmp_path)]) == 0
+
+    use = [p for p in _rendered(render, dashboard.Picker) if p.purpose == "acct-use"]
+    assert use, "the stored-login picker was never drawn"
+    assert use[0].title == "Use which login?"
+    assert [(e.label, e.value) for e in use[0].entries] == [("b@x.io~2", "b@x.io~2")]
+    assert run.call_args_list == [
+        mocker.call(_ACCOUNT_LS, cwd=tmp_path),
+        mocker.call(["account", "use", "b@x.io~2", "-a", "claude", "-g", "team"], cwd=tmp_path),
+        mocker.call(_ACCOUNT_LS, cwd=tmp_path),
+    ]
+    assert isinstance(render.call_args_list[-1].kwargs["overlay"], dashboard.da.AccountsState)
+
+
+@pytest.mark.parametrize(("downs", "group"), [(0, "spare"), (1, "team")])
+def test_accounts_use_a_parked_login_in_a_chosen_group(mocker, tmp_path, downs, group):
+    run = _fake_accounts_cli(mocker)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    # A, Down (the parked row), Enter, Enter ("Use in a group…"), [Down], Enter
+    keys = [b"A", b"j", _ENTER, _ENTER, *[b"j"] * downs, _ENTER]
+    assert _drive_run(mocker, keys, [_alpha(tmp_path)]) == 0
+
+    use_in = [p for p in _rendered(render, dashboard.Picker) if p.purpose == "acct-use-in"]
+    assert [e.value for e in use_in[0].entries] == ["spare", "team"]
+    assert run.call_args_list == [
+        mocker.call(_ACCOUNT_LS, cwd=tmp_path),
+        mocker.call(["account", "use", "b@x.io~2", "-a", "claude", "-g", group], cwd=tmp_path),
+        mocker.call(_ACCOUNT_LS, cwd=tmp_path),
+    ]
+    last = render.call_args_list[-1].kwargs["overlay"]
+    assert isinstance(last, dashboard.da.AccountsState)
+    assert last.index == 1  # the reload keeps the cursor on the row acted on
+
+
+def test_accounts_panel_closes_when_its_repo_vanishes(mocker, tmp_path):
+    groups = [_alpha(tmp_path)]
+    run = _fake_accounts_cli(mocker)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    script = iter([b"A"])
+
+    def read(_fd, _n):
+        item = next(script, None)
+        if item is not None:
+            return item
+        if groups:
+            groups.clear()  # the repo drops out of the registry
+            return b"j"
+        return b"\x03"
+
+    assert _drive_run_with_reader(mocker, read, groups) == 0
+
+    assert run.call_count == 1
+    last = render.call_args_list[-1].kwargs
+    assert last["overlay"] is None
+    assert last["notice"] == "'alpha' is gone — accounts closed"
+
+
+def test_accounts_key_is_documented_in_help():
+    assert dashboard.parse_key(b"A") == "accounts"
+    out = _render_text(dashboard._render_help())
+    line = next(ln for ln in out.splitlines() if "credential groups and stored logins" in ln)
+    assert line.split()[1] == "A"
+    assert "Accounts panel: Enter acts on a login or group, n creates a group." in out
+
+
+# A, Down (the parked row b@x.io~2), Enter, Down ("Delete this login…"), Enter
+_OPEN_DELETE_CONFIRM = [b"A", b"j", _ENTER, b"j", _ENTER]
+# A, Down x2 (the empty "spare" group), Enter, Down ("Remove this group"), Enter
+_OPEN_GROUP_RM_CONFIRM = [b"A", b"j", b"j", _ENTER, b"j", _ENTER]
+
+
+@pytest.mark.parametrize(
+    ("keys", "title", "argv"),
+    [
+        (
+            _OPEN_DELETE_CONFIRM,
+            "Really delete login b@x.io~2?",
+            ["account", "rm", "b@x.io~2", "-a", "claude", "--yes"],
+        ),
+        (
+            _OPEN_GROUP_RM_CONFIRM,
+            "Really remove group spare?",
+            ["account", "group", "rm", "spare", "--yes"],
+        ),
+    ],
+    ids=["delete-login", "remove-group"],
+)
+def test_accounts_confirmation_yes_runs_the_removal_and_reloads(
+    mocker, tmp_path, keys, title, argv
+):
+    run = _fake_accounts_cli(mocker)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [*keys, b"j", _ENTER], [_alpha(tmp_path)]) == 0
+
+    confirm = next(p for p in _rendered(render, dashboard.Picker) if p.purpose == "acct-confirm")
+    assert confirm.title == title
+    assert [(e.label, e.value) for e in confirm.entries] == [
+        ("No", "no"),
+        ("Yes, delete", "yes"),
+    ]
+    assert confirm.index == 0  # "No" is where the cursor starts
+    assert run.call_args_list == [
+        mocker.call(_ACCOUNT_LS, cwd=tmp_path),
+        mocker.call(argv, cwd=tmp_path),
+        mocker.call(_ACCOUNT_LS, cwd=tmp_path),
+    ]
+    assert isinstance(render.call_args_list[-1].kwargs["overlay"], dashboard.da.AccountsState)
+
+
+@pytest.mark.parametrize(
+    "keys", [_OPEN_DELETE_CONFIRM, _OPEN_GROUP_RM_CONFIRM], ids=["delete-login", "remove-group"]
+)
+def test_accounts_confirmation_stray_enter_removes_nothing(mocker, tmp_path, keys):
+    run = _fake_accounts_cli(mocker)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [*keys, _ENTER], [_alpha(tmp_path)]) == 0
+
+    assert run.call_args_list == [mocker.call(_ACCOUNT_LS, cwd=tmp_path)]
+    calls = render.call_args_list
+    confirm_at = max(
+        i
+        for i, c in enumerate(calls)
+        if isinstance(c.kwargs["overlay"], dashboard.Picker)
+        and c.kwargs["overlay"].purpose == "acct-confirm"
+    )
+    back = calls[confirm_at + 1].kwargs["overlay"]
+    assert isinstance(back, dashboard.da.AccountsState)
+    assert back is calls[confirm_at].kwargs["overlay"].back  # the same panel, not reloaded
+
+
+def test_accounts_new_group_prompt_creates_the_typed_group_and_reloads(mocker, tmp_path):
+    after = _groups_listing(
+        '[{"agent": "claude", "group": "spare2", "account": null, "state": "empty",'
+        ' "repos": [], "containers": []}]'
+    )
+    run = _fake_accounts_cli(
+        mocker,
+        listings=[_groups_listing(_ACCOUNT_ROWS), after],
+        change=dashboard.da.CliResult(True, "Created group spare2."),
+    )
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [b"A", b"n", *_keys("spare2"), _ENTER], [_alpha(tmp_path)]) == 0
+
+    prompt = _rendered(render, dashboard.TextPrompt)[0]
+    assert (prompt.purpose, prompt.title, prompt.label, prompt.target) == (
+        "acct-group-new",
+        "New credential group",
+        "Group name",
+        "alpha",
+    )
+    assert run.call_args_list == [
+        mocker.call(_ACCOUNT_LS, cwd=tmp_path),
+        mocker.call(["account", "group", "create", "spare2"], cwd=tmp_path),
+        mocker.call(_ACCOUNT_LS, cwd=tmp_path),
+    ]
+    last = render.call_args_list[-1].kwargs
+    assert [r.group for r in last["overlay"].rows] == ["spare2"]
+    assert last["notice"] == "Created group spare2."
+
+
+def test_accounts_new_group_prompt_rejects_a_blank_name_inline(mocker, tmp_path):
+    run = _fake_accounts_cli(mocker)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [b"A", b"n", b" ", _ENTER, b"z"], [_alpha(tmp_path)]) == 0
+
+    assert run.call_count == 1  # the listing only
+    prompts = _rendered(render, dashboard.TextPrompt)
+    assert prompts[-1].error is None and prompts[-1].text == " z"  # still editing after
+    assert any(p.error == "Group name cannot be empty" for p in prompts)
+
+
+# How to reach each question the panel can ask, and what it is.
+_ACCOUNT_QUESTIONS = pytest.mark.parametrize(
+    ("keys", "purpose"),
+    [
+        ([b"A", _ENTER], "acct-action"),
+        ([b"A", _ENTER, _ENTER], "acct-use"),
+        ([b"A", b"j", _ENTER, _ENTER], "acct-use-in"),
+        (_OPEN_DELETE_CONFIRM, "acct-confirm"),
+        (_OPEN_GROUP_RM_CONFIRM, "acct-confirm"),
+        ([b"A", b"n", *_keys("x")], "acct-group-new"),
+    ],
+    ids=["actions", "use", "use-in", "confirm-delete", "confirm-group-rm", "name-prompt"],
+)
+
+
+@_ACCOUNT_QUESTIONS
+@pytest.mark.parametrize("cancel", [_ESC, b"\x03", "SIGINT"], ids=["esc", "ctrl-c", "sigint"])
+def test_accounts_cancel_at_every_question_returns_to_the_panel(
+    mocker, tmp_path, keys, purpose, cancel
+):
+    run = _fake_accounts_cli(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    # after the cancel, `j` must move the panel's cursor: still open, still live
+    script = iter([*keys, cancel, b"j"])
+
+    assert _drive_run_with_reader(mocker, _sigint_or(script), [_alpha(tmp_path)]) == 0
+
+    calls = render.call_args_list
+    asked_at = max(
+        i
+        for i, c in enumerate(calls)
+        if isinstance(c.kwargs["overlay"], (dashboard.Picker, dashboard.TextPrompt))
+    )
+    question = calls[asked_at].kwargs["overlay"]
+    assert question.purpose == purpose
+    after = calls[asked_at + 1].kwargs["overlay"]
+    assert after is question.back
+    assert isinstance(after, dashboard.da.AccountsState)
+    moved = calls[asked_at + 2].kwargs["overlay"]
+    assert isinstance(moved, dashboard.da.AccountsState)
+    assert moved.index == min(after.index + 1, len(after.rows) - 1)
+    assert run.call_args_list == [mocker.call(_ACCOUNT_LS, cwd=tmp_path)]
+    child.assert_not_called()
+
+
+@pytest.mark.parametrize("cancel", [_ESC, b"q"], ids=["esc", "q"])
+def test_accounts_esc_or_q_on_the_panel_closes_it(mocker, tmp_path, cancel):
+    run = _fake_accounts_cli(mocker)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    # j after closing moves the table cursor: the dashboard is back in the main view
+    assert _drive_run(mocker, [b"A", cancel, b"j"], [_alpha(tmp_path)]) == 0
+
+    last = render.call_args_list[-1]
+    assert last.kwargs["overlay"] is None
+    assert last.args[1] == dashboard.Row("container", "alpha-x")
+    assert run.call_count == 1
+
+
+@pytest.mark.parametrize("ctrl_c", [b"\x03", "SIGINT"], ids=["byte", "keyboard-interrupt"])
+def test_ctrl_c_on_the_bare_accounts_panel_quits(mocker, tmp_path, ctrl_c):
+    """A documented choice: the panel has no text input, so Ctrl-C keeps its
+    generic meaning there (quit), unlike the questions opened from it."""
+    _fake_accounts_cli(mocker)
+    reads = []
+    script = iter([b"A", ctrl_c])
+
+    def read(fd, n):
+        reads.append(n)
+        return _sigint_or(script)(fd, n) if len(reads) <= 2 else b"j"
+
+    assert _drive_run_with_reader(mocker, read, [_alpha(tmp_path)]) == 0
+    assert len(reads) == 2  # the Ctrl-C at the panel ended the loop
+
+
+@pytest.mark.parametrize("when", ["frame-before-enter", "same-read-as-enter"])
+@pytest.mark.parametrize(
+    "keys",
+    [
+        [b"A", _ENTER, b"j"],  # the actions picker, on "Park the live login"
+        [b"A", b"n", *_keys("spare2")],  # the new-group prompt, answer typed
+    ],
+    ids=["park-picker", "name-prompt"],
+)
+def test_accounts_repo_vanishing_while_a_question_is_open_runs_nothing(
+    mocker, tmp_path, keys, when
+):
+    group = _alpha(tmp_path)
+    groups = [group]
+    run = _fake_accounts_cli(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    script = iter([*keys, "vanish", _ENTER])
+
+    def read(_fd, _n):
+        item = next(script, b"\x03")
+        if item != "vanish":
+            return item
+        if when == "frame-before-enter":
+            groups.clear()  # the next frame no longer lists the repo
+            return b"\x1b[C"  # an inert key (right arrow)
+        # this read already holds the Enter: only the submit's re-resolve can catch it
+        group.repo_root = None
+        return _ENTER
+
+    assert _drive_run_with_reader(mocker, read, groups) == 0
+
+    assert run.call_args_list == [mocker.call(_ACCOUNT_LS, cwd=tmp_path)]
+    child.assert_not_called()
+    notices = " ".join(str(c.kwargs["notice"]) for c in render.call_args_list)
+    assert "'alpha' is gone" in notices
