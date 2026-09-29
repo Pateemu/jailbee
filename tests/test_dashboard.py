@@ -3527,6 +3527,43 @@ def test_render_subtitle_is_empty_without_a_notice(tmp_path):
     assert "refreshed" not in out
 
 
+def test_render_long_notice_keeps_its_start_and_ellipsizes_the_end(tmp_path):
+    """A long CLI message is cut on the right; its verdict stays readable."""
+    g = dashboard.RepoGroup(
+        "alpha", "/repos/alpha", tmp_path / "a.yaml", [_ci("alpha-one", "alpha")]
+    )
+    notice = "✗ invalid credential group name 'Bad Name': " + "lowercase letters " * 12
+    out = _render_text(
+        dashboard.render(
+            [g],
+            selected=None,
+            now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
+            git_enabled=True,
+            notice=notice,
+        ),
+        width=100,
+    )
+    bottom = out.rstrip().splitlines()[-1]
+    assert "✗ invalid credential group name 'Bad Name'" in bottom
+    assert "…" in bottom
+
+
+def test_render_notice_with_square_brackets_is_not_markup(tmp_path):
+    g = dashboard.RepoGroup(
+        "alpha", "/repos/alpha", tmp_path / "a.yaml", [_ci("alpha-one", "alpha")]
+    )
+    out = _render_text(
+        dashboard.render(
+            [g],
+            selected=None,
+            now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
+            git_enabled=True,
+            notice="bad [/x] value",
+        )
+    )
+    assert "bad [/x] value" in out
+
+
 def test_render_keeps_the_table_visible_under_the_menu_overlay(tmp_path):
     """The point of the inline menu: the dashboard stays on screen behind it."""
     g = dashboard.RepoGroup(
@@ -5959,7 +5996,9 @@ def test_ctrl_c_without_an_overlay_still_quits(mocker, tmp_path, ctrl_c):
 
     def read(fd, n):
         reads.append(n)
-        return _sigint_or(script)(fd, n) if len(reads) == 1 else b"j"
+        # EOF after the script: a regression quits with a wrong read count
+        # instead of hanging the suite on an endless stream of keys.
+        return _sigint_or(script)(fd, n) if len(reads) == 1 else b""
 
     assert _drive_run_with_reader(mocker, read, [group]) == 0
     assert len(reads) == 1  # the first Ctrl-C ended the loop
@@ -7287,7 +7326,8 @@ def test_ctrl_c_on_the_bare_accounts_panel_quits(mocker, tmp_path, ctrl_c):
 
     def read(fd, n):
         reads.append(n)
-        return _sigint_or(script)(fd, n) if len(reads) <= 2 else b"j"
+        # EOF after the script (see above): fail on the count, never hang.
+        return _sigint_or(script)(fd, n) if len(reads) <= 2 else b""
 
     assert _drive_run_with_reader(mocker, read, [_alpha(tmp_path)]) == 0
     assert len(reads) == 2  # the Ctrl-C at the panel ended the loop

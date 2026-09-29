@@ -1867,7 +1867,9 @@ def render(
     )
     # Subtitle is notice-only: a transient message on the bottom border cannot
     # push the table around.
-    subtitle = f"[yellow]{notice}[/yellow]" if notice else None
+    # A plain `Text`, not markup: a CLI message may contain `[...]`, and a long
+    # one is cut on the right with an ellipsis so its start (the verdict) stays.
+    subtitle = Text(notice, style="yellow", no_wrap=True, overflow="ellipsis") if notice else None
     return Panel(
         Group(*body),
         title=title,

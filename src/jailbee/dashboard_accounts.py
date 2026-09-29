@@ -126,10 +126,37 @@ def parse_account_rows(stdout: str) -> tuple[AccountRow, ...]:
     return tuple(rows)
 
 
-def _last_line(text: str) -> str:
+_VERDICT_MARKS = ("\u2713", "\u2717", "error")
+
+
+def _is_verdict(line: str) -> bool:
+    return line.lower().startswith(_VERDICT_MARKS)
+
+
+def _verdict(text: str, *, whole_paragraph: bool) -> str:
+    """The one line of CLI output that says what happened.
+
+    The CLI prints `✓ ...` / `✗ ...` (or `error: ...`) first and hints after, so
+    the verdict is the first line carrying a marker, else the first line. Rich
+    hard-wraps output at 80 columns when piped, so a refusal may span several
+    lines: `whole_paragraph` joins the continuation lines (up to a blank line or
+    the next verdict) back into one. A success keeps only its first line; what
+    follows is a hint.
+    """
     lines = [_ANSI.sub("", ln).strip() for ln in text.splitlines()]
-    lines = [ln for ln in lines if ln]
-    return lines[-1] if lines else ""
+    start = next((i for i, ln in enumerate(lines) if ln and _is_verdict(ln)), None)
+    if start is None:
+        start = next((i for i, ln in enumerate(lines) if ln), None)
+    if start is None:
+        return ""
+    parts = [lines[start]]
+    if whole_paragraph:
+        for ln in lines[start + 1 :]:
+            if not ln or _is_verdict(ln):
+                break
+            parts.append(ln)
+    # A success line wraps before its path ("Created group `g` for claude →").
+    return " ".join(parts).rstrip(" \u2192")
 
 
 def run_cli_quiet(argv: Sequence[str], *, cwd: Path, timeout: float = 60.0) -> CliResult:
@@ -149,8 +176,12 @@ def run_cli_quiet(argv: Sequence[str], *, cwd: Path, timeout: float = 60.0) -> C
     except (OSError, ValueError) as exc:  # ValueError: undecodable output
         return CliResult(False, str(exc))
     if proc.returncode == 0:
-        return CliResult(True, _last_line(proc.stdout) or "done", proc.stdout)
-    message = _last_line(proc.stderr) or _last_line(proc.stdout) or f"exited {proc.returncode}"
+        return CliResult(True, _verdict(proc.stdout, whole_paragraph=False) or "done", proc.stdout)
+    message = (
+        _verdict(proc.stderr, whole_paragraph=True)
+        or _verdict(proc.stdout, whole_paragraph=True)
+        or f"exited {proc.returncode}"
+    )
     return CliResult(False, message)
 
 

@@ -587,8 +587,9 @@ selected setting), `F2`/`S` settings overlay (columns + folding), `r`
 force refresh, `h`/`?` keybinding
 help, `q`/`Ctrl-C` quit. The action menu opens *inline below the table* — the
 dashboard stays visible and keeps refreshing behind it; `↑/↓` then move the
-menu cursor, `Enter` runs the entry, `Esc`/`q` closes it (`Ctrl-C` always quits
-the dashboard).
+menu cursor, `Enter` runs the entry, `Esc`/`q` closes it (`Ctrl-C` quits from
+the plain view and menus; at an inline prompt or picker it cancels just that
+question).
 
 Container actions group network mode switches and `Egress…` under `Network →`;
 stopped containers retain the read-only Egress view even though they have no

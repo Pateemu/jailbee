@@ -224,3 +224,85 @@ def test_run_cli_quiet_turns_a_decode_error_into_a_failed_result(mocker: MockerF
     run.side_effect = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
     result = da.run_cli_quiet(["account", "park"], cwd=Path("/r"))
     assert result.ok is False and result.message
+
+
+# Real output of the CLI in a scratch HOME, piped (so Rich wraps at 80 columns).
+# The refusal is the source text of `_refuse_if_agent_running` wrapped the same
+# way: reproducing it needs a running container.
+_CREATE_OK = (
+    "✓ Created group `alpha` for claude → \n"
+    "/tmp/scratch/d/jailbee/claude-credentials/alpha\n"
+    "It holds no login yet. `jailbee account group set alpha` moves this repo into \n"
+    "it, `jailbee account group use alpha <container>` moves one container, and \n"
+    "`jailbee account use -g alpha <account>` activates a stored login into it.\n"
+)
+_INVALID_NAME = (
+    "✗ invalid credential group name 'Bad Name': must match * — lowercase letters, \n"
+    "digits and hyphens, starting with a letter or digit.\n"
+)
+_REFUSAL = (
+    "✗ An agent is running in repo-feat-x. Swapping the credential group under a live \n"
+    "session can overwrite the target group's login with this one's on the next token \n"
+    "refresh, and that login cannot be recovered.\n"
+    "Close it in that container and run this again, or pass --force if you are sure.\n"
+)
+
+
+def _old_last_line(text: str) -> str:
+    return [ln.strip() for ln in text.splitlines() if ln.strip()][-1]
+
+
+@pytest.mark.parametrize(
+    ("rc", "stdout", "stderr", "expected"),
+    [
+        (0, _CREATE_OK, "", "✓ Created group `alpha` for claude"),
+        (0, "✓ Removed group `alpha`\n", "", "✓ Removed group `alpha`"),
+        (
+            0,
+            "Nothing to park: this holder has no stored login.\n",
+            "",
+            "Nothing to park: this holder has no stored login.",
+        ),
+        (
+            2,
+            "",
+            _INVALID_NAME,
+            "✗ invalid credential group name 'Bad Name': must match * — "
+            "lowercase letters, digits and hyphens, starting with a letter or digit.",
+        ),
+        (
+            2,
+            "",
+            _REFUSAL,
+            "✗ An agent is running in repo-feat-x. Swapping the credential group under "
+            "a live session can overwrite the target group's login with this one's on the "
+            "next token refresh, and that login cannot be recovered. Close it in that "
+            "container and run this again, or pass --force if you are sure.",
+        ),
+    ],
+    ids=["create-ok", "rm-ok", "no-marker", "invalid-name", "refused"],
+)
+def test_run_cli_quiet_message_is_the_verdict_not_the_last_line(
+    mocker: MockerFixture, rc: int, stdout: str, stderr: str, expected: str
+) -> None:
+    run = mocker.patch.object(da.subprocess, "run")
+    run.return_value.returncode = rc
+    run.return_value.stdout = stdout
+    run.return_value.stderr = stderr
+    result = da.run_cli_quiet(["account", "group", "create", "x"], cwd=Path("/r"))
+    assert result.message == expected
+    assert "\n" not in result.message
+    assert result.stdout == (stdout if rc == 0 else "")
+    if len((stdout or stderr).splitlines()) > 1 and expected.startswith(("✓", "✗")):
+        # the pre-fix rule (last non-empty line) got these wrong
+        assert _old_last_line(stdout or stderr) != expected
+
+
+def test_verdict_marker_beats_an_earlier_warning_and_stops_at_the_next_verdict(
+    mocker: MockerFixture,
+) -> None:
+    run = mocker.patch.object(da.subprocess, "run")
+    run.return_value.returncode = 2
+    run.return_value.stdout = ""
+    run.return_value.stderr = "⚠ something odd\n✗ first\nmore\n✗ second\n"
+    assert da.run_cli_quiet(["x"], cwd=Path("/r")).message == "✗ first more"
