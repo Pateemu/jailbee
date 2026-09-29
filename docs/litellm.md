@@ -70,8 +70,12 @@ litellm:
     luna-floor: {model: chatgpt/gpt-6-luna, min_effort: medium}
   profiles:
     codex: {haiku: luna-floor} # other codex tiers keep their defaults
-    fast: {sonnet: luna-floor, haiku: luna-floor, effort: low}
+    fast: {account: default, sonnet: luna-floor, haiku: luna-floor, effort: low}
 ```
+
+A profile that maps a `chatgpt/` route must name the `account` that serves it
+(the built-in `codex` profile names `default`), so a new profile of ChatGPT
+routes carries `account:` as above.
 
 `effort` **fixes** the reasoning effort on every request; `min_effort` only
 raises requests below its floor. They cannot be set together on a route. The
@@ -112,7 +116,7 @@ litellm:
   routes:
     luna-high: {effort: low}          # this repo's Haiku tier thinks less
   profiles:
-    fast: {sonnet: luna-high, haiku: luna-high, effort: low}
+    fast: {account: default, sonnet: luna-high, haiku: luna-high, effort: low}
   autostart: true
 ```
 
@@ -120,7 +124,9 @@ The layers stack as built-in, then `global.yaml`, then the repo. The merge is
 per route field and per profile tier: a route or profile named like an existing
 one overrides only the fields it sets, and a field set in the repo replaces the
 value below it whole. `params` and `egress` are replaced, not appended, unlike
-list keys elsewhere in jailbee's config. An explicit `null` tier unmaps it. The
+list keys elsewhere in jailbee's config. An explicit `null` tier unmaps it. Switching a route between `effort` and `min_effort`
+needs the old key cleared explicitly (`effort: low` next to `min_effort: null`, or the
+reverse), because the merge keeps the value below and the two cannot be set together. The
 merged result must be valid as a whole (known routes, accounts and so on),
 otherwise the repo's config fails to load.
 
@@ -137,7 +143,13 @@ proxy configuration and restarts only the instances whose routes changed,
 saying which, and it syncs the repo's running containers. `jailbee apply
 --no-restart` writes nothing to a running instance and warns which ones still
 serve the previous routes; a later plain `jailbee apply` restarts them.
-`jailbee new` does not update the proxy. If the proxy needs more than a
+`jailbee new` does not update the proxy.
+
+`apply` sees an edit through the rendered instance files, and the proxy's egress
+allowlist is not part of them. An edit that changes **only** egress (a route's
+`egress` list, `litellm.egress` in `global.yaml`, or an override that adds a route
+with a new egress host) is therefore not applied by `jailbee apply`; run
+`jailbee litellm up`, which rewrites the allowlist. If the proxy needs more than a
 restart (a different LiteLLM version, a new account, an unattached state
 volume), `apply` says so and points at `jailbee litellm up`.
 
@@ -274,7 +286,7 @@ back on; that is your choice.
 |---|---|
 | `no LiteLLM proxy configured for this container` | On the host run `jailbee litellm up`, then `jailbee apply` in this repo; rebuild the golden image if the wrapper itself is absent. |
 | `cannot read ... (not valid JSON)` or `cannot read the proxy key` | Run `jailbee apply` in the repo on the host. |
-| `unknown profile` | Check the names in global `litellm.profiles`; select a valid `--profile` or fix `JAILBEE_LITELLM_PROFILE`. |
+| `unknown profile` | Check the names in `litellm.profiles`, in `global.yaml` and in this repo's override (`jailbee litellm ls` lists both); select a valid `--profile` or fix `JAILBEE_LITELLM_PROFILE`. |
 | `--profile needs a name` | Pass `--profile NAME` or remove the flag. |
 | `proxy key ... is empty` | Run `jailbee apply` on the host to resync the key. |
 | `proxy ... is unreachable` | Run `jailbee litellm up` on the host, then `jailbee apply` in this repo. |
@@ -283,14 +295,15 @@ On the host, `jailbee litellm up`, `login` and `jailbee apply` can report:
 
 | Error | Remedy |
 |---|---|
-| `... does not define NAME`, `... does not exist` or `... has insecure permissions` (about `secrets.env`) | Add `NAME=value` to `~/.config/jailbee/litellm/secrets.env`, `chmod 600` it, run `jailbee litellm up`. |
+| `... does not define NAME`, `... does not exist` or `... has insecure permissions` (about `secrets.env`) | Add `NAME=value` to `~/.config/jailbee/litellm/secrets.env`, `chmod 600` it, run `jailbee litellm up`. When a repo override's route names the secret, the message adds `(named by .../repos/<prefix>.yaml)`; a missing secret there still blocks `up` and the proxy update in `apply` for every repo, since the proxy is shared. |
 | `cannot read ...` (about `secrets.env` or the `extra` file) | Make the file readable by your user and plain UTF-8 text, then run `jailbee litellm up`. |
 | `Several LiteLLM accounts are configured` | Name the account: `jailbee litellm login work`. |
 | `profile(s) ... have no proxy instance yet` (from `jailbee apply` or `jailbee new`) | Run `jailbee litellm up`, then `jailbee apply`. |
 
 On the host, use `jailbee litellm ls` (profiles, tiers, routes, efforts and
 context windows, globally and per repo override), `jailbee litellm status`,
-`jailbee litellm logs [ACCOUNT] [-f]`, and `jailbee doctor`. Doctor reports unreadable LiteLLM inputs (`secrets.env`,
+`jailbee litellm logs [ACCOUNT] [-f]`, and `jailbee doctor`. Doctor reports a broken repo override (one `litellm repo override` row
+per skipped file), unreadable LiteLLM inputs (`secrets.env`,
 `extra`), one `litellm version` row for the installed-versus-configured
 version, and per account an instance row (not set up, or unhealthy) and a login
 row. A missing login fails doctor only for the account that serves the default

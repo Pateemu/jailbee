@@ -152,7 +152,12 @@ never Astra.
    `jailbee apply` run from a different repo, warn and skip it naming the file.
    Any command in this repo itself, `jailbee apply` included, fails at config
    load naming the file. Restore the file.
-5. Set `litellm: {autostart: true}` in the same file, run `jailbee apply`, then
+   A YAML syntax error in the file is reported as `is not valid YAML (line N)`
+   without quoting the line.
+5. Add `egress: [example.org]` to a route in the file and run `jailbee apply`:
+   it reports nothing to restart (egress is not part of the rendered instance
+   files). `jailbee litellm up` then rewrites the allowlist.
+6. Set `litellm: {autostart: true}` in the same file, run `jailbee apply`, then
    `jailbee restart <container>` and `jailbee tmux`: the Claude window runs
    `claude-jb`.
 

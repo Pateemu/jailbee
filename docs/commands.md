@@ -69,7 +69,7 @@
 | `jailbee litellm up [--reinstall]` | Create/repair the dedicated proxy, render its routes and start its service. Requires `litellm.enabled: true` in global config; `--reinstall` forces the package install again. See [LiteLLM](litellm.md). |
 | `jailbee litellm down [--purge]` | Delete the proxy container and its dev-container ACL allowance; keep its state volume (logins, settings) unless `--purge`. Run `jailbee apply` per repo afterward. |
 | `jailbee litellm status` | Show container state, proxy address/version, and per account the instance health and login presence; exits nonzero if absent or unhealthy. |
-| `jailbee litellm ls` | List every profile as `claude-jb` uses it: default profile, autostart, model aliases, and per tier the route, model, effort and context window. Shows the global block, then one block per repo with a LiteLLM override (skipping broken ones with a warning). Read-only; allowed over remote SSH in the default commands mode. |
+| `jailbee litellm ls` | List every profile as `claude-jb` uses it: default profile, autostart, model aliases, and per tier the route, model, effort and context window. Shows the global block, then one block per repo with a LiteLLM override (skipping broken ones with a warning). Read-only; allowed over remote SSH in the default commands mode, but refused when `remote.ssh.excluded_repos` is set (it lists every repo). |
 | `jailbee litellm login [ACCOUNT]` | Interactive ChatGPT device-code login for an account in `litellm.accounts` (optional when there is only one). |
 | `jailbee litellm logout [ACCOUNT]` | Delete that account's token in the proxy's state volume (the proxy must be running). |
 | `jailbee litellm logs [ACCOUNT] [-f]` | Show the instance's last 200 journal lines; `-f` follows. |
