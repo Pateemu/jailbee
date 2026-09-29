@@ -1,6 +1,7 @@
 """`jailbee-litellm` lifecycle through a MagicMock Incus (style of test_registry.py)."""
 
 import os
+import subprocess
 from importlib import resources
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -407,3 +408,90 @@ def test_status_stopped_does_not_probe_container():
         container=ll.ContainerState.STOPPED, ip="10.79.115.3", version=None, instances=[]
     )
     incus.exec.assert_not_called()
+
+
+def test_login_runs_litellm_device_flow_with_private_umask(tmp_path: Path):
+    incus = _incus(present=True)
+    incus.exec_interactive.return_value = 0
+    assert ll.litellm_login(incus, "default") == 0
+    name, cmd = incus.exec_interactive.call_args.args
+    script = cmd[-1]
+    assert name == ll.LITELLM_CONTAINER
+    assert cmd[:2] == ["bash", "-c"]
+    assert ". /var/lib/jailbee-litellm/default/instance.env" in script
+    assert "Authenticator().get_access_token()" in script
+    # Run the login shell prefix with a harmless stand-in for Authenticator.
+    # A newly created auth.json in the bind-mounted host directory must be 0600.
+    env_file = tmp_path / "instance.env"
+    env_file.write_text("CHATGPT_TOKEN_DIR=/unused\n")
+    prefix = script.split("exec ", 1)[0].replace(
+        "/var/lib/jailbee-litellm/default/instance.env", str(env_file)
+    )
+    auth_file = tmp_path / "auth.json"
+    subprocess.run(
+        ["bash", "-c", prefix + f"python -c 'open(\"{auth_file}\", \"w\").write(\"token\")'"],
+        check=True,
+    )
+    assert auth_file.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("present,running", [(False, True), (True, False)])
+def test_login_requires_running_container(present: bool, running: bool):
+    incus = _incus(present=present, running=running)
+    with pytest.raises(RuntimeError, match="jailbee litellm up"):
+        ll.litellm_login(incus, "default")
+    incus.exec_interactive.assert_not_called()
+
+
+def test_logs_follow_flag():
+    incus = _incus(present=True)
+    incus.exec_interactive.return_value = 0
+    assert ll.litellm_logs(incus, "default", follow=True) == 0
+    assert incus.exec_interactive.call_args.args == (
+        ll.LITELLM_CONTAINER,
+        ["journalctl", "-u", "jailbee-litellm@default.service", "-n", "200", "--no-pager", "-f"],
+    )
+
+
+def test_stopped_container_gets_restrictive_acl_before_start():
+    incus = _incus(present=True, running=False)
+    ll.litellm_up(incus, _gcfg())
+    start_at = next(i for i, call in enumerate(incus.mock_calls) if call[0] == "start")
+    acl_at = next(
+        i for i, call in enumerate(incus.mock_calls)
+        if call[0] == "network_acl_set_yaml" and call.args[0] == ll.EGRESS_ACL
+    )
+    restricted_at = next(
+        i for i, call in enumerate(incus.mock_calls)
+        if call[0] == "profile_set_yaml"
+        and yaml.safe_load(call.args[1])["devices"]["eth0"].get("security.acls") == ll.EGRESS_ACL
+    )
+    assert acl_at < restricted_at < start_at
+    incus.delete.assert_not_called()
+
+
+def test_stopped_container_ambiguous_start_failure_restricts_before_start():
+    incus = _incus(present=True, running=False)
+    error = IncusError("start timed out after container became Running")
+    incus.start.side_effect = error
+    with pytest.raises(IncusError) as caught:
+        ll.litellm_up(incus, _gcfg())
+    assert caught.value is error
+    start_at = next(i for i, call in enumerate(incus.mock_calls) if call[0] == "start")
+    assert any(
+        call[0] == "profile_set_yaml"
+        and yaml.safe_load(call.args[1])["devices"]["eth0"].get("security.acls") == ll.EGRESS_ACL
+        for call in incus.mock_calls[:start_at]
+    )
+
+
+def test_stopped_container_failed_acl_restore_force_stops_before_start():
+    incus = _incus(present=True, running=False)
+    error = IncusError("ACL setup failed")
+    incus.network_acl_set_yaml.side_effect = error
+    with pytest.raises(IncusError) as caught:
+        ll.litellm_up(incus, _gcfg())
+    assert caught.value is error
+    incus.start.assert_not_called()
+    incus.config_set.assert_any_call(ll.LITELLM_CONTAINER, "boot.autostart", "false")
+    incus.stop.assert_called_once_with(ll.LITELLM_CONTAINER, force=True)

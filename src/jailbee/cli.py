@@ -10594,6 +10594,160 @@ def registry_status_cmd(config: ConfigOption = None) -> None:
     info(f"Registry mirror: {status.value}")
 
 
+litellm_app = typer.Typer(
+    name="litellm",
+    help="LiteLLM proxy for coding agents on other providers' models.",
+    no_args_is_help=True,
+)
+app.add_typer(litellm_app)
+
+
+def _litellm_context() -> tuple["IncusType", GlobalConfig]:
+    """LiteLLM is host infrastructure; no repository config is needed."""
+    from jailbee.incus import Incus
+
+    return Incus(), _load_global()
+
+
+def _single_account(account: str) -> str:
+    if account != "default":
+        error("This release supports only the `default` account.")
+        raise typer.Exit(2)
+    return account
+
+
+@litellm_app.command("up")
+def litellm_up_cmd(
+    reinstall: Annotated[
+        bool, typer.Option("--reinstall", help="Reinstall LiteLLM in the container.")
+    ] = False,
+) -> None:
+    """Create or repair the LiteLLM container and start the proxy."""
+    from jailbee import litellm as ll
+    from jailbee.incus import IncusError
+    from jailbee.tui import status_with_elapsed
+
+    incus, gcfg = _litellm_context()
+    if gcfg.litellm.version is not None:
+        warn(f"litellm.version={gcfg.litellm.version} bypasses jailbee's hash-locked install.")
+    try:
+        with status_with_elapsed("starting the LiteLLM proxy") as status:
+            result = ll.litellm_up(incus, gcfg, reinstall=reinstall, on_step=status.update)
+    except (ValueError, RuntimeError, IncusError) as exc:
+        error(str(exc))
+        raise typer.Exit(1) from exc
+    success(f"LiteLLM proxy running on {result.ip}:{result.port}")
+    if result.restarted:
+        info("The proxy restarted; in-flight `claude-jb` requests were interrupted.")
+    info("Next: `jailbee litellm login` (once), then `jailbee apply` in each repo that uses `claude-jb`.")
+
+
+@litellm_app.command("down")
+def litellm_down_cmd() -> None:
+    """Remove the proxy container without deleting host-side login or settings."""
+    from jailbee import litellm as ll
+    from jailbee.incus import IncusError
+
+    incus, _gcfg = _litellm_context()
+    try:
+        ll.litellm_down(incus)
+    except (RuntimeError, IncusError) as exc:
+        error(str(exc))
+        raise typer.Exit(1) from exc
+    success("LiteLLM proxy removed; login and settings are kept.")
+
+
+@litellm_app.command("status")
+def litellm_status_cmd() -> None:
+    """Show proxy container, endpoint, version, health and login state."""
+    from jailbee import litellm as ll
+    from jailbee.incus import IncusError
+
+    incus, _gcfg = _litellm_context()
+    try:
+        status = ll.litellm_status(incus)
+    except (RuntimeError, IncusError) as exc:
+        error(str(exc))
+        raise typer.Exit(1) from exc
+    typer.echo(f"container: {status.container.value}")
+    typer.echo(f"ip: {status.ip or 'unavailable'}")
+    typer.echo(f"version: {status.version or 'unknown'}")
+    for instance in status.instances:
+        typer.echo(f"account: {instance.account}")
+        typer.echo(f"port: {instance.port}")
+        typer.echo(f"service: {'active' if instance.active else 'inactive'}")
+        typer.echo(f"health: {'healthy' if instance.healthy else 'unhealthy'}")
+        typer.echo(
+            "login: logged in"
+            if instance.login == "present"
+            else "login: not logged in — run jailbee litellm login"
+        )
+    if status.container != ll.ContainerState.RUNNING or not status.instances or any(
+        not instance.active or not instance.healthy for instance in status.instances
+    ):
+        raise typer.Exit(1)
+
+
+@litellm_app.command("login")
+def litellm_login_cmd(
+    account: Annotated[str, typer.Argument(help="Account to log in (only default is supported).")]
+    = "default",
+) -> None:
+    """Log in to ChatGPT with LiteLLM's interactive device-code flow."""
+    from jailbee import litellm as ll
+    from jailbee.incus import IncusError
+
+    account = _single_account(account)
+    incus, _gcfg = _litellm_context()
+    try:
+        exit_code = ll.litellm_login(incus, account)
+    except (RuntimeError, IncusError) as exc:
+        error(str(exc))
+        raise typer.Exit(1) from exc
+    raise typer.Exit(exit_code)
+
+
+@litellm_app.command("logout")
+def litellm_logout_cmd(
+    account: Annotated[str, typer.Argument(help="Account to log out (only default is supported).")]
+    = "default",
+) -> None:
+    """Delete the host-side ChatGPT token without removing proxy settings."""
+    from jailbee import litellm_state
+
+    account = _single_account(account)
+    _litellm_context()
+    try:
+        removed = litellm_state.logout(account)
+    except OSError as exc:
+        error(str(exc))
+        raise typer.Exit(1) from exc
+    if removed:
+        success("Logged out.")
+    else:
+        info("Not logged in.")
+
+
+@litellm_app.command("logs")
+def litellm_logs_cmd(
+    account: Annotated[str, typer.Argument(help="Account to inspect (only default is supported).")]
+    = "default",
+    follow: Annotated[bool, typer.Option("-f", "--follow", help="Follow new log entries.")] = False,
+) -> None:
+    """Show the proxy's journal for an account."""
+    from jailbee import litellm as ll
+    from jailbee.incus import IncusError
+
+    account = _single_account(account)
+    incus, _gcfg = _litellm_context()
+    try:
+        exit_code = ll.litellm_logs(incus, account, follow=follow)
+    except (RuntimeError, IncusError) as exc:
+        error(str(exc))
+        raise typer.Exit(1) from exc
+    raise typer.Exit(exit_code)
+
+
 def _entry_noun(n: int) -> str:
     return "entry" if n == 1 else "entries"
 

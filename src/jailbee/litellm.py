@@ -296,7 +296,20 @@ def litellm_up(
             _secure_failed_create(incus, error)
             raise
     elif info.get("status") != "Running":
-        incus.start(LITELLM_CONTAINER)
+        # A stopped container can retain an ACL-free profile from an interrupted
+        # install. Restrict it before start: Incus may report a failed start
+        # after the instance has already reached Running.
+        try:
+            if not incus.network_acl_exists(EGRESS_ACL):
+                incus.network_acl_create(EGRESS_ACL)
+            incus.network_acl_set_yaml(
+                EGRESS_ACL, service_container_acl_yaml(EGRESS_ACL, [], listen_ports=[])
+            )
+            _set_profile(incus, ip, with_acl=True)
+            incus.start(LITELLM_CONTAINER)
+        except BaseException as error:
+            _secure_failed_install(incus, ip, error)
+            raise
     if not needs_install and _installed_version(incus) != version:
         needs_install = True
 
@@ -364,3 +377,30 @@ def litellm_status(incus: Incus) -> LiteLLMStatus:
         login=litellm_state.auth_state(ACCOUNT_DEFAULT),
     )
     return LiteLLMStatus(ContainerState.RUNNING, ip, _installed_version(incus), [instance])
+
+
+def _require_running(incus: Incus) -> None:
+    info = _container(incus)
+    if info is None or info.get("status") != "Running":
+        raise RuntimeError(f"{LITELLM_CONTAINER} is not running. Run `jailbee litellm up` first.")
+
+
+def litellm_login(incus: Incus, account: str) -> int:
+    """Start LiteLLM's own ChatGPT device-code flow on an interactive PTY."""
+    _require_running(incus)
+    env_file = shlex.quote(f"{CONTAINER_STATE_DIR}/{account}/instance.env")
+    script = (
+        f"umask 0077; set -a; . {env_file}; set +a; "
+        f"exec {_PY} -c 'from litellm.llms.chatgpt.authenticator import Authenticator; "
+        f"Authenticator().get_access_token(); print(\"Logged in.\")'"
+    )
+    return incus.exec_interactive(LITELLM_CONTAINER, ["bash", "-c", script])
+
+
+def litellm_logs(incus: Incus, account: str, *, follow: bool, lines: int = 200) -> int:
+    """Display the per-account systemd journal, optionally following updates."""
+    _require_running(incus)
+    cmd = ["journalctl", "-u", unit(account), "-n", str(lines), "--no-pager"]
+    if follow:
+        cmd.append("-f")
+    return incus.exec_interactive(LITELLM_CONTAINER, cmd)

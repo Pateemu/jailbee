@@ -1,0 +1,134 @@
+"""Host-only LiteLLM CLI commands and their user-visible diagnostics."""
+
+from unittest.mock import MagicMock
+
+import pytest
+from typer.testing import CliRunner
+
+from jailbee import litellm as ll
+from jailbee.cli import app
+
+runner = CliRunner()
+
+
+@pytest.fixture
+def context(mocker):
+    return mocker.patch("jailbee.cli._litellm_context", return_value=(MagicMock(), MagicMock()))
+
+
+def test_up_prints_endpoint_and_next_steps(mocker, context):
+    up = mocker.patch(
+        "jailbee.litellm.litellm_up", return_value=ll.UpResult("10.0.0.3", 4100, True, True)
+    )
+    result = runner.invoke(app, ["litellm", "up", "--reinstall"])
+    assert result.exit_code == 0, result.output
+    assert "10.0.0.3:4100" in result.output
+    assert "jailbee litellm login" in result.output
+    assert "jailbee apply" in result.output
+    assert "in-flight" in result.output
+    assert up.call_args.kwargs["reinstall"] is True
+    assert callable(up.call_args.kwargs["on_step"])
+
+
+def test_up_disabled_is_exit_1_with_message(mocker, context):
+    mocker.patch("jailbee.litellm.litellm_up", side_effect=ValueError("LiteLLM is disabled"))
+    result = runner.invoke(app, ["litellm", "up"])
+    assert result.exit_code == 1 and "disabled" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_up_warns_if_install_is_unlocked(mocker, context):
+    context.return_value[1].litellm.version = "1.104.0"
+    mocker.patch("jailbee.litellm.litellm_up", return_value=ll.UpResult("10.0.0.3", 4100, False, False))
+    result = runner.invoke(app, ["litellm", "up"])
+    assert result.exit_code == 0
+    assert "hash-locked" in result.output
+    assert "in-flight" not in result.output
+
+
+def test_down_removes_proxy_but_keeps_login(mocker, context):
+    down = mocker.patch("jailbee.litellm.litellm_down")
+    result = runner.invoke(app, ["litellm", "down"])
+    assert result.exit_code == 0, result.output
+    assert "login and settings are kept" in result.output
+    down.assert_called_once_with(context.return_value[0])
+
+
+def test_status_never_prints_tokens(mocker, context):
+    mocker.patch(
+        "jailbee.litellm.litellm_status",
+        return_value=ll.LiteLLMStatus(
+            ll.ContainerState.RUNNING,
+            "10.0.0.3",
+            "1.103.0",
+            [ll.InstanceStatus("default", 4100, True, True, "present")],
+        ),
+    )
+    result = runner.invoke(app, ["litellm", "status"])
+    assert result.exit_code == 0, result.output
+    assert "running" in result.output and "logged in" in result.output
+    assert "10.0.0.3" in result.output and "1.103.0" in result.output
+    assert "4100" in result.output
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        ll.LiteLLMStatus(ll.ContainerState.MISSING, None, None, []),
+        ll.LiteLLMStatus(ll.ContainerState.STOPPED, "10.0.0.3", None, []),
+        ll.LiteLLMStatus(ll.ContainerState.RUNNING, "10.0.0.3", "1.103.0", []),
+        ll.LiteLLMStatus(
+            ll.ContainerState.RUNNING,
+            "10.0.0.3",
+            "1.103.0",
+            [ll.InstanceStatus("default", 4100, True, False, "missing")],
+        ),
+    ],
+)
+def test_status_exits_nonzero_when_proxy_is_unavailable(mocker, context, status):
+    mocker.patch("jailbee.litellm.litellm_status", return_value=status)
+    result = runner.invoke(app, ["litellm", "status"])
+    assert result.exit_code == 1
+    assert status.container.value in result.output
+    if status.instances:
+        assert "not logged in" in result.output
+        assert "jailbee litellm login" in result.output
+
+
+@pytest.mark.parametrize("command", ["login", "logout", "logs"])
+def test_non_default_account_rejected_before_side_effects(mocker, context, command):
+    login = mocker.patch("jailbee.litellm.litellm_login")
+    logout = mocker.patch("jailbee.litellm_state.logout")
+    logs = mocker.patch("jailbee.litellm.litellm_logs")
+    result = runner.invoke(app, ["litellm", command, "work"])
+    assert result.exit_code == 2
+    assert "only the `default` account" in result.output
+    login.assert_not_called()
+    logout.assert_not_called()
+    logs.assert_not_called()
+
+
+def test_login_returns_device_flow_exit_code(mocker, context):
+    login = mocker.patch("jailbee.litellm.litellm_login", return_value=19)
+    result = runner.invoke(app, ["litellm", "login"])
+    assert result.exit_code == 19
+    login.assert_called_once_with(context.return_value[0], "default")
+
+
+def test_logout(mocker, context):
+    mocker.patch("jailbee.litellm_state.logout", return_value=True)
+    result = runner.invoke(app, ["litellm", "logout"])
+    assert result.exit_code == 0 and "Logged out" in result.output
+
+
+def test_logout_without_existing_auth(mocker, context):
+    mocker.patch("jailbee.litellm_state.logout", return_value=False)
+    result = runner.invoke(app, ["litellm", "logout"])
+    assert result.exit_code == 0 and "Not logged in" in result.output
+
+
+def test_logs_passes_follow_and_exit_code(mocker, context):
+    logs = mocker.patch("jailbee.litellm.litellm_logs", return_value=17)
+    result = runner.invoke(app, ["litellm", "logs", "-f"])
+    assert result.exit_code == 17
+    logs.assert_called_once_with(context.return_value[0], "default", follow=True)
