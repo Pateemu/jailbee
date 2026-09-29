@@ -4807,3 +4807,25 @@ the temporary attachment was removed before the unmanaged-container check.
 This is an observed setup limitation, not proof that the first refresh applied
 its allowlist. UFW/firewalld behavior, Docker mirror access, and a real host
 outside nested Incus were **not tested**.
+
+## AGENT column (host-only checks)
+
+The unit suite drives the match against a fake `/proc`. Three facts it
+rests on can only be confirmed on a real host, as the non-root user that
+runs the dashboard:
+
+1. **No time-namespace offset.** Inside a container running Claude,
+   `cat ~/.claude/sessions/*.json` shows `pid` and `procStart`. On the host,
+   for that process (`jailbee` finds it via the container's cgroup),
+   field 22 of `/proc/<hostpid>/stat` must equal `procStart`.
+2. **`NSpid` is readable.** `grep NSpid /proc/<hostpid>/status` as the
+   dashboard user prints two numbers, the last equal to the file's `pid`
+   (no `hidepid` on `/proc`).
+3. **The cgroup walk works unprivileged** — the same prerequisite as
+   CPU/DOING: `jailbee ls --fields name,cpu,doing,agent` shows values, not
+   dashes, for a busy container.
+
+Then, in `jailbee dashboard`: start Claude in a container and leave it at a
+prompt — the row reads `claude: waiting …` in yellow. `kill -9` it inside
+the container — the file stays behind, and the row returns to `—` on the
+next tick.

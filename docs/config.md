@@ -2057,11 +2057,12 @@ something has one" still applies to a hidden-by-config column, unlike
 
 **The two views have different built-in defaults.** `jailbee ls` is a
 one-shot listing and stays narrow: NAME, BASE, STATE, CREATED, NETWORK, WT,
-DIFF ±, ↑, ↓, MERGE. The dashboards add MEM, CPU and DOING, because a live
+DIFF ±, ↑, ↓, MERGE. The dashboards add MEM, CPU, DOING and AGENT, because a live
 number is worth its width in a view that refreshes and is a stale sample in
 one that does not — CPU and DOING are rates and have no value at all in a
 single reading, so `ls` takes a second one when you name either in
-`--fields`. IP is off in both — enable it in the dashboard settings UI, or
+`--fields`. AGENT (whether an agent in the container is waiting for you) needs a
+single reading. IP is off in both — enable it in the dashboard settings UI, or
 ask for it from `ls` with `--fields ip`.
 
 Four columns are dynamic and appear only when they have

@@ -513,14 +513,23 @@ programs above 5% of a core are listed, so an idle container reads `—`
 rather than a list of daemons. Both are read from the host's own `/proc`,
 so they cost no command inside the container.
 
+**AGENT** says whether an agent session inside the container needs you:
+`claude: waiting 4m` (it is waiting for input, and has been for four
+minutes), `claude: busy 12s`, `claude: idle 2h`; `·2` counts several
+sessions of one agent, and `—` means none is running. It reads the session
+files Claude Code writes on its own under the repo's shared config home —
+nothing is installed into Claude's settings — and trusts a file only while a
+process of *that* container still matches it, so a crashed session never
+reads as live. Under `ls --all`, only the current repo's rows are filled in.
+
 The default table is NAME, BASE, STATE, CREATED, NETWORK and the four git
-columns. **IP**, **MEM**, **CPU** and **DOING** are *not* in it — reach any
-of them from `ls` with `--fields ip,mem,cpu,doing`. The dashboards' own
-default set adds **MEM**, **CPU** and **DOING**, since the view refreshes
+columns. **IP**, **MEM**, **CPU**, **DOING** and **AGENT** are *not* in it — reach any
+of them from `ls` with `--fields ip,mem,cpu,doing,agent`. The dashboards' own
+default set adds **MEM**, **CPU**, **DOING** and **AGENT**, since the view refreshes
 and a live number earns its width there; **IP** is off by default in both —
 enable it in the dashboard settings (see below) if you want it there
 instead. CPU and DOING are *rates*, measured between two readings, so `ls`
-takes a second reading (about 0.2 s) when you ask for either by name. **MODE** is dynamic like JOB, TTL and PR: it appears only once a
+takes a second reading (about 0.2 s) when you ask for either by name. AGENT is a state, not a rate: `--fields agent` takes one reading and no pause. **MODE** is dynamic like JOB, TTL and PR: it appears only once a
 mount-mode container exists, since on a clone-only host every row would
 read `clone`.
 
