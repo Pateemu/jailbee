@@ -622,3 +622,81 @@ def test_staged_local_raw_is_used_instead_of_the_file(repo_and_global):
         local_raw={"jetbrains": {"ide": "goland"}},
     )
     assert cfg.jetbrains.ide == "goland"
+
+
+# ---------- litellm: the repo view (spec 4.5)
+
+
+def _local(global_path: Path, prefix: str, data: dict) -> Path:
+    path = global_path.parent / "repos" / f"{prefix}.yaml"
+    _write(path, data)
+    return path
+
+
+def test_litellm_view_without_override_is_the_host_block(repo_and_global):
+    _, repo_path, global_path = repo_and_global
+    _write(global_path, {"litellm": {"enabled": True, "autostart": True}})
+    _write(repo_path, {})
+    view = load_config(repo_path).litellm_view()
+    assert (view.scope, view.origin) == (None, None)
+    assert view.config.enabled is True and view.config.autostart is True
+
+
+def test_litellm_view_applies_the_repo_override(repo_and_global):
+    _, repo_path, global_path = repo_and_global
+    _write(global_path, {"litellm": {"enabled": True}})
+    _write(repo_path, {})
+    local = _local(
+        global_path,
+        "myrepo",
+        {
+            "litellm": {
+                "routes": {"luna-low": {"model": "chatgpt/gpt-6-luna", "effort": "low"}},
+                "profiles": {"codex": {"haiku": "luna-low"}},
+                "autostart": True,
+            }
+        },
+    )
+    view = load_config(repo_path).litellm_view()
+    assert (view.scope, view.origin) == ("myrepo", str(local))
+    assert view.config.effective_profiles()["codex"].tiers["haiku"] == "luna-low"
+    assert view.config.autostart is True
+
+
+def test_a_broken_override_fails_the_repo_load_naming_the_file(repo_and_global):
+    _, repo_path, global_path = repo_and_global
+    _write(repo_path, {})
+    local = _local(global_path, "myrepo", {"litellm": {"default_profile": "nope"}})
+    with pytest.raises(ConfigError, match=str(local)):
+        load_config(repo_path)
+
+
+def test_litellm_in_a_committed_repo_config_is_refused_with_directions(repo_and_global):
+    _, repo_path, _ = repo_and_global
+    _write(repo_path, {"litellm": {"default_profile": "codex"}})
+    with pytest.raises(ConfigError, match=r"global\.yaml.*repos/"):
+        load_config(repo_path)
+
+
+def test_a_pasted_key_in_global_litellm_is_not_echoed_by_the_repo_load(repo_and_global):
+    _, repo_path, global_path = repo_and_global
+    key = "sk-or-v1-" + "c" * 40
+    _write(
+        global_path,
+        {"litellm": {"routes": {"kimi": {"model": "openrouter/x", "api_key": key}}}},
+    )
+    _write(repo_path, {})
+    with pytest.raises(ConfigError) as caught:
+        load_config(repo_path)
+    assert key not in str(caught.value)
+    assert caught.value.__cause__ is None
+
+
+def test_model_copy_keeps_the_litellm_view(repo_and_global):
+    """The autostart supervisor grafts the branch's block with model_copy."""
+    _, repo_path, global_path = repo_and_global
+    _write(global_path, {"litellm": {"enabled": True, "autostart": True}})
+    _write(repo_path, {})
+    cfg = load_config(repo_path)
+    copied = cfg.model_copy(update={"autostart": cfg.autostart})
+    assert copied.litellm_view() is cfg.litellm_view()

@@ -7,12 +7,21 @@ Files live at `<config dir>/repos/<container_prefix>.yaml`; writes belong to
 from __future__ import annotations
 
 import stat
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
 from jailbee.config.common import _HOST_LEVEL_KEYS, _read_yaml_or_empty
 from jailbee.config.errors import ConfigError
+from jailbee.config.models_host import _PREFIX_RE
+from jailbee.config.models_litellm import (
+    REPO_REFUSED_KEYS,
+    LiteLLMConfig,
+    LiteLLMRepoOverlay,
+    LiteLLMRepoView,
+    input_free_lines,
+)
 from jailbee.config.models_net import LocalCredentials
 
 if TYPE_CHECKING:
@@ -44,7 +53,11 @@ _COMPUTED_KEYS = frozenset({"credential_group", "claude_credentials_dir"})
 def _refused_keys() -> frozenset[str]:
     from jailbee.config.root import Config
 
-    host_only = _HOST_LEVEL_KEYS - set(Config.model_fields) - {"credentials", "claude_credentials"}
+    host_only = _HOST_LEVEL_KEYS - set(Config.model_fields) - {
+        "credentials",
+        "claude_credentials",
+        "litellm",
+    }
     return frozenset({"container_prefix", *_COMPUTED_KEYS, *host_only})
 
 
@@ -71,7 +84,7 @@ def split_local_raw(
             f"`github.api_tokens` is not allowed in {origin} — this file is already "
             "per-repo; set `github.token` instead."
         )
-    overlay = {k: v for k, v in raw.items() if k != "credentials"}
+    overlay = {k: v for k, v in raw.items() if k not in ("credentials", "litellm")}
     if "credentials" not in raw:
         return overlay, None
     try:
@@ -87,10 +100,95 @@ def validate_local_raw(raw: dict[str, object], origin: str) -> None:
     from jailbee.config.root import Config
 
     overlay, _ = split_local_raw(raw, origin)
+    local_litellm_overlay(raw, origin)
     try:
         Config.model_validate(resolve_browsers_raw(resolve_agents_raw(overlay)))
     except (ValidationError, ConfigError) as e:
         raise ConfigError(f"Config validation failed in {origin}:\n{e}") from e
+
+
+def local_litellm_overlay(raw: dict[str, object], origin: str) -> LiteLLMRepoOverlay | None:
+    """The layer's validated `litellm:` block; None when it has none.
+
+    Validation errors are input-free and unchained: a key pasted into
+    `api_key` must not come back in the message or a traceback's cause.
+    """
+    block = raw.get("litellm")
+    if block is None:
+        return None
+    if isinstance(block, dict):
+        refused = [k for k in REPO_REFUSED_KEYS if k in block]
+        if refused:
+            listed = ", ".join(f"`litellm.{k}`" for k in refused)
+            raise ConfigError(
+                f"{listed} not allowed in {origin}: the proxy and its logins are shared by "
+                "every repo on this host; set it in global.yaml."
+            )
+    try:
+        return LiteLLMRepoOverlay.model_validate(block)
+    except ValidationError as e:
+        raise ConfigError(
+            f"Invalid `litellm` in {origin}:\n{input_free_lines(e, ('litellm',))}"
+        ) from None
+
+
+def repo_litellm_view(
+    host: LiteLLMConfig, prefix: str, overlay: LiteLLMRepoOverlay | None, origin: str
+) -> LiteLLMRepoView:
+    """What `claude-jb` uses in this repo's containers (spec 4.5)."""
+    if overlay is None:
+        return LiteLLMRepoView(config=host)
+    try:
+        merged = host.with_overlay(overlay)
+    except ValidationError as e:
+        raise ConfigError(
+            f"`litellm` in {origin} does not fit the `litellm` block in global.yaml:\n"
+            f"{input_free_lines(e, ('litellm',))}"
+        ) from None
+    own = bool(overlay.routes or overlay.profiles)
+    return LiteLLMRepoView(config=merged, scope=prefix if own else None, origin=origin)
+
+
+@dataclass(frozen=True)
+class LocalLiteLLMView:
+    prefix: str
+    view: LiteLLMRepoView
+
+
+def all_local_litellm_views(host: LiteLLMConfig) -> tuple[list[LocalLiteLLMView], list[str]]:
+    """Every repo override on this host, merged over `host`; broken ones reported, not raised.
+
+    The proxy serves every repo, so one repo's broken file must not stop it;
+    that repo's own commands fail at load time, naming the same file.
+    """
+    root = local_config_dir()
+    if not root.is_dir():
+        return [], []
+    views: list[LocalLiteLLMView] = []
+    issues: list[str] = []
+    for path in sorted(root.glob("*.yaml")):
+        prefix = path.stem
+        if not _PREFIX_RE.match(prefix):
+            continue
+        try:
+            overlay = local_litellm_overlay(_read_yaml_or_empty(path), str(path))
+            if overlay is None:
+                continue
+            views.append(
+                LocalLiteLLMView(prefix, repo_litellm_view(host, prefix, overlay, str(path)))
+            )
+        except ConfigError as e:
+            issues.append(
+                f"{e}\nSkipped: `claude-jb` in {prefix}'s containers cannot use its "
+                "override until this is fixed."
+            )
+    return views, issues
+
+
+def local_litellm_scopes(host: LiteLLMConfig) -> tuple[dict[str, LiteLLMConfig], list[str]]:
+    """Repo prefix -> merged config, for repos the proxy serves under their own aliases."""
+    views, issues = all_local_litellm_views(host)
+    return {v.prefix: v.view.config for v in views if v.view.scope is not None}, issues
 
 
 def check_token_perms(path: Path, overlay: dict[str, object]) -> None:

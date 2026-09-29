@@ -9,15 +9,20 @@ from pydantic import SecretStr
 from jailbee.config import ConfigError
 from jailbee.config.local_layer import (
     all_local_credential_groups,
+    all_local_litellm_views,
     check_token_perms,
     local_config_dir,
     local_config_path,
     local_credentials,
+    local_litellm_overlay,
+    local_litellm_scopes,
     read_local_raw,
+    repo_litellm_view,
     split_local_raw,
     validate_local_raw,
 )
 from jailbee.config.models_agents import GithubConfig
+from jailbee.config.models_litellm import LiteLLMConfig
 from jailbee.config.models_net import Credentials, LocalCredentials
 
 
@@ -171,3 +176,73 @@ def test_all_local_credential_groups_skips_null_and_unreadable():
     broken = local_config_path("c")
     broken.write_text("{nope\n")
     assert all_local_credential_groups() == {"g1"}
+
+
+def test_litellm_is_peeled_off_the_overlay_not_refused():
+    overlay, _ = split_local_raw({"litellm": {"default_profile": "codex"}}, "/tmp/x.yaml")
+    assert "litellm" not in overlay
+
+
+@pytest.mark.parametrize("key", ["enabled", "version", "accounts", "egress", "extra"])
+def test_host_only_litellm_keys_are_refused_by_name(key):
+    with pytest.raises(ConfigError, match=rf"`litellm\.{key}`.*global\.yaml"):
+        local_litellm_overlay({"litellm": {key: None}}, "/tmp/x.yaml")
+
+
+def test_no_litellm_block_is_no_overlay():
+    assert local_litellm_overlay({}, "/tmp/x.yaml") is None
+    assert local_litellm_overlay({"litellm": None}, "/tmp/x.yaml") is None
+
+
+def test_a_pasted_key_in_an_overlay_is_never_echoed_or_chained():
+    key = "sk-or-v1-" + "b" * 40
+    raw = {"litellm": {"routes": {"kimi": {"model": "openrouter/x", "api_key": key}}}}
+    with pytest.raises(ConfigError) as caught:
+        local_litellm_overlay(raw, "/tmp/x.yaml")
+    assert key not in str(caught.value)
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__
+
+
+def test_view_scope_is_the_prefix_only_when_routes_or_profiles_change():
+    host = LiteLLMConfig()
+    own = local_litellm_overlay(
+        {"litellm": {"routes": {"sol-xhigh": {"effort": "max"}}}}, "/tmp/a.yaml"
+    )
+    shared = local_litellm_overlay({"litellm": {"autostart": True}}, "/tmp/b.yaml")
+    assert repo_litellm_view(host, "a", own, "/tmp/a.yaml").scope == "a"
+    view = repo_litellm_view(host, "b", shared, "/tmp/b.yaml")
+    assert (view.scope, view.origin, view.config.autostart) == (None, "/tmp/b.yaml", True)
+    assert repo_litellm_view(host, "c", None, "/tmp/c.yaml").origin is None
+
+
+def test_an_overlay_that_does_not_fit_names_its_file_and_global_yaml():
+    overlay = local_litellm_overlay(
+        {"litellm": {"profiles": {"codex": {"opus": "gone"}}}}, "/tmp/a.yaml"
+    )
+    with pytest.raises(ConfigError, match=r"/tmp/a\.yaml.*global\.yaml") as caught:
+        repo_litellm_view(LiteLLMConfig(), "a", overlay, "/tmp/a.yaml")
+    assert "unknown route 'gone'" in str(caught.value)
+
+
+def test_all_views_skip_a_broken_file_and_keep_the_rest():
+    _write_local("good", {"litellm": {"routes": {"sol-xhigh": {"effort": "max"}}}})
+    _write_local("plain", {"egress_allow": ["x.org"]})
+    broken = _write_local("broken", {"litellm": {"profiles": {"codex": {"opus": "gone"}}}})
+    views, issues = all_local_litellm_views(LiteLLMConfig())
+    assert [v.prefix for v in views] == ["good"]
+    assert len(issues) == 1 and str(broken) in issues[0] and "skipped" in issues[0].lower()
+    scopes, _ = local_litellm_scopes(LiteLLMConfig())
+    assert list(scopes) == ["good"]
+    assert scopes["good"].effective_routes()["sol-xhigh"].effort == "max"
+
+
+def test_a_prefix_only_override_is_a_view_but_not_a_scope():
+    _write_local("only", {"litellm": {"default_profile": "codex"}})
+    views, _ = all_local_litellm_views(LiteLLMConfig())
+    assert [(v.prefix, v.view.scope) for v in views] == [("only", None)]
+    assert local_litellm_scopes(LiteLLMConfig())[0] == {}
+
+
+def test_validate_local_raw_checks_the_litellm_block():
+    with pytest.raises(ConfigError, match="litellm"):
+        validate_local_raw({"litellm": {"autostart": "sometimes"}}, "/tmp/x.yaml")
