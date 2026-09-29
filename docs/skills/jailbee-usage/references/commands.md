@@ -20,6 +20,7 @@ Common conventions:
 ## Table of contents
 
 - [Setup & host (`setup`, `init`, `apply`, `doctor`, `base`, `registry`)](#setup--host)
+- [LiteLLM proxy (`litellm up|down|status|login|logout|logs`)](#litellm-proxy)
 - [Remote SSH (`remote ssh`)](#remote-ssh)
 - [Config (`config show|validate|init|edit`)](#config)
 - [Create & lifecycle (`new`, `start`, `stop`, `restart`, `destroy`, `autostart status|cancel`)](#create--lifecycle)
@@ -55,6 +56,26 @@ speculatively.
 | `jailbee registry up [--recreate]\|down\|status\|verify [--purge]` | Control the Incus-hosted Docker registry mirror (rpardini proxy; caches all upstreams). `up` is idempotent and self-repairing: if an earlier provisioning run died partway (a network drop during `apt-get install`), it reinstalls the proxy rather than failing forever. `--recreate` deletes and rebuilds the container for damage reinstalling can't fix; the host-side cache and CA survive. `status`: `running`/`stopped`/`degraded`/`missing`. `verify` checks cached blobs/manifests against their digests and removes corrupt ones on confirmation (`--purge`: without asking) — the fix when a pull fails with `unexpected commit digest`. Host-only: the container has no `jailbee`. |
 | `jailbee net install` | Deprecated alias for `jailbee setup --yes --only timer`, which does exactly the same work — (re)installing the `jailbee-net-refresh` user systemd timer + service. Still works; prints a deprecation warning. |
 | `jailbee version` / `jailbee --version` | Print the version. |
+
+## LiteLLM proxy
+
+Host commands for the dedicated `jailbee-litellm` Incus proxy. This release
+supports only `chatgpt/` models and the implicit `default` account. Setup,
+security and the `claude-jb` wrapper are described in [LiteLLM](../../../litellm.md).
+
+| Command | What it does |
+|---|---|
+| `jailbee litellm up [--reinstall]` | Create/repair the proxy, render the configuration, and start it. `--reinstall` forces package installation. Requires `litellm.enabled: true` in the host's `global.yaml`. |
+| `jailbee litellm down` | Delete the proxy container; leave host token/config intact. Run `jailbee apply` per repo afterward to remove stale dev-container settings. |
+| `jailbee litellm status` | Show container, IP, version, service health and login presence; nonzero when absent or unhealthy. |
+| `jailbee litellm login [default]` | Interactive ChatGPT device-code authentication. |
+| `jailbee litellm logout [default]` | Remove host-side ChatGPT auth token. |
+| `jailbee litellm logs [default] [-f]` | Show the instance's last 200 journal lines; optionally follow. |
+
+In a dev container, `claude-jb [--profile NAME] [Claude Code args…]` selects
+the gateway. Plain `claude` remains native. Profile selection: flag, then
+`JAILBEE_LITELLM_PROFILE`, then host-global `default_profile` (`codex`). No
+`jailbee litellm ls`, multi-account support or LiteLLM autostart in this phase.
 
 ## Remote SSH
 

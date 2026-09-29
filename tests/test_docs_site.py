@@ -316,7 +316,7 @@ def test_mermaid_is_the_pinned_file_loaded_only_where_needed() -> None:
     """The theme fetches mermaid from unpkg unless something defines
     window.mermaid first. main.html does that conditionally — only on a page
     whose content contains a mermaid diagram — instead of extra_javascript
-    shipping the 3.6 MB bundle on all 14 pages. This pins the file itself,
+    shipping the 3.6 MB bundle on all 15 pages. This pins the file itself,
     byte for byte, and that the template is what references it."""
     import hashlib
 

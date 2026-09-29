@@ -20,7 +20,7 @@ edit_uri = "blob/main/docs/"
 # The brand layer that maps the landing page's palette onto the theme's own
 # variables — see website/docs-theme/assets/jailbee-docs.css.
 extra_css = ["assets/jailbee-docs.css"]
-# Mermaid is NOT listed here: it would ship on all 14 pages. Instead
+# Mermaid is NOT listed here: it would ship on all 15 pages. Instead
 # website/docs-theme/main.html loads the pinned, self-hosted bundle only on a
 # page whose rendered content contains a mermaid diagram — see that file's
 # header comment.
@@ -40,6 +40,7 @@ nav = [
   { "Reference" = [
     "config.md",
     "agents.md",
+    "litellm.md",
     "security.md",
     "architecture.md",
     "comparison.md",

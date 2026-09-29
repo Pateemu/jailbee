@@ -29,6 +29,65 @@ exit
 jailbee destroy feat-smoke --force
 ```
 
+## LiteLLM proxy end to end
+
+**Maintainer recipe; not a CI test.** Use a disposable, configured repository
+and a real Incus daemon, a ChatGPT subscription you are willing to use through
+the [unofficial integration](litellm.md), and network access to the image
+server, Ubuntu packages, PyPI and ChatGPT. The dogfood dev container has the
+Incus binary but its daemon is normally **stopped**: a nested rig can be
+started with `sudo systemctl start incus` and `incus admin init --minimal`.
+Image pulls and package installation may first require switching the **outer**
+dogfood container to loose networking from its host (`jailbee net loose
+<dogfood-container>`); an inner shell cannot switch its own outer network.
+
+Keep the rig's host credentials separate with temporary `XDG_CONFIG_HOME` and
+`XDG_DATA_HOME` values, then create `$XDG_CONFIG_HOME/jailbee/global.yaml`
+with `litellm: {enabled: true}`. Use a disposable repo
+config without unwanted host devices. On a nested daemon, do **not** follow
+doctor's `root:1000000:1000000000` uid-delegation recommendation: it exceeds
+the outer container's namespace. Preserve the existing `root:1000000:65536`
+range and add only `root:53023:1` if delegation needs repair. Remove
+`dri-renderD128`/`dri-renderD129` from the generated `<prefix>-base` profile
+after `init` or `apply` if they block nested container starts (`mode: 0666`
+on nested GPU devices is rejected). `base build` can appear idle while it
+publishes/compresses an image; allow it to complete.
+
+```bash
+# Host in the disposable rig; pick a configured repo and keep this shell's XDG env.
+mkdir -p /tmp/opencode
+export XDG_CONFIG_HOME="$(mktemp -d /tmp/opencode/jailbee-litellm-config.XXXXXX)"
+export XDG_DATA_HOME="$(mktemp -d /tmp/opencode/jailbee-litellm-data.XXXXXX)"
+mkdir -p "$XDG_CONFIG_HOME/jailbee"
+printf 'litellm:\n  enabled: true\n' > "$XDG_CONFIG_HOME/jailbee/global.yaml"
+jailbee init                     # if this disposable repo has not been initialized
+jailbee litellm up
+jailbee litellm login            # interactive device code; default account only
+jailbee litellm status           # running, healthy, logged in
+jailbee base build               # installs claude-jb in this repo's golden image
+jailbee new feat/litellm-smoke --no-autostart
+jailbee shell feat-litellm-smoke
+# Inside that dev container:
+claude-jb -p "What is 17*23? Use Bash with python3, answer with only the number." --allowedTools Bash --model haiku
+# Expect only 391; exit the shell to return to the rig host.
+exit
+jailbee litellm down
+jailbee apply                    # removes the stale proxy JSON/key from running containers
+jailbee shell feat-litellm-smoke
+# Inside the same dev container:
+claude-jb -p 'hello'
+# Expect exit 2: "no LiteLLM proxy configured for this container" (not native fallback).
+exit
+jailbee destroy feat-litellm-smoke --force
+```
+
+`jailbee litellm logs` and `jailbee doctor` on the rig host help diagnose a
+failed health check, login or provider reachability. Restore the outer
+container's original networking when finished; clean up the disposable rig's
+state separately, without deleting any pre-existing Incus resources or real
+credentials. Do not count this recipe as executed merely because the mocked
+unit suite passes.
+
 ## Optional SSH service loopback smoke test
 
 This recipe exercises the real SSH listener, PTY relay and systemd user unit.

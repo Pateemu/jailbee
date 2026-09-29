@@ -32,7 +32,7 @@ def test_config_reference_names_every_host_level_deep_merge_bypass() -> None:
         "### Inspecting the layers", 1
     )[0]
 
-    assert "Nine top-level keys" in section
+    assert "Ten top-level keys" in section
     for key in (
         "docker_registry_mirror",
         "ls",
@@ -43,6 +43,7 @@ def test_config_reference_names_every_host_level_deep_merge_bypass() -> None:
         "update_check",
         "install_host_skills",
         "remote",
+        "litellm",
     ):
         assert f"`{key}`" in section
 

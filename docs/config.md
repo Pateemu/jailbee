@@ -174,11 +174,11 @@ If you need per-user defaults for `extra_registries`, set them per-repo. There i
 
 ### Keys that bypass the deep-merge pipeline
 
-Nine top-level keys are read from `~/.config/jailbee/global.yaml` into
+Ten top-level keys are read from `~/.config/jailbee/global.yaml` into
 `GlobalConfig` and are **not** merged into the Config layer:
 `docker_registry_mirror` (see above), `ls`, `dashboard`,
 `credentials`, `scratch`, `config_edit`, `update_check`,
-`install_host_skills` and `remote`. `ls`'s column block is
+`install_host_skills`, `remote` and `litellm`. `ls`'s column block is
 merged field-by-field instead
 (repo block over global block) — the generic pipeline would *append* its
 `fields`/`hide` lists and concatenate the two layers' column lists rather
@@ -191,12 +191,12 @@ merged this way — see
 `config_edit` describe this host rather than any one repo — what a directory
 with no config file gets, and how jailbee writes your files — so there is no
 repo-layer counterpart to merge them with; see [`scratch`](#scratch) and
-[`config_edit`](#config_edit). `update_check` and `remote` are likewise
+[`config_edit`](#config_edit). `update_check`, `remote` and `litellm` are likewise
 properties of this host, not a repo: they are validated directly against
 `GlobalConfig`; explicitly configured values override their schema defaults,
 omitted fields retain their defaults, and no repo layer can augment or
-override them. See [`update_check`](#update_check) and
-[`remote.ssh`](#remotessh).
+override them. See [`update_check`](#update_check),
+[`remote.ssh`](#remotessh) and [`litellm`](#litellm).
 
 One consequence: `jailbee config show` prints the *Config* layer, so the `ls:` /
 `dashboard:` values it shows come from the repo file only. Use `jailbee config
@@ -2330,6 +2330,32 @@ can still be adjusted per repo.
 The Docker registry mirror overrides and `remote` (below) are unique to this
 file. `credentials.group` is the host-wide default and may be overridden for
 one repo in its host-local file (above).
+
+### `litellm`
+
+Host-only proxy settings for `claude-jb`; see [Claude Code through LiteLLM](litellm.md)
+for setup, route examples, security and limitations. This block is accepted in
+`~/.config/jailbee/global.yaml` only, not in a committed repo config or a
+host-local per-repo overlay. It is disabled by default. This release accepts
+only `chatgpt/` model strings and one implicit `default` account. Other
+providers, account lists, raw LiteLLM fragments and per-repo overrides are not
+yet supported.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Permit `jailbee litellm up` and dev-container proxy settings. |
+| `version` | pinned `1.103.0` | LiteLLM version. An explicit version bypasses the bundled hash lock and warns. |
+| `default_profile` | `codex` | Profile used by `claude-jb` unless overridden by its `--profile` or `JAILBEE_LITELLM_PROFILE`. |
+| `routes` | four built-in routes | Named `chatgpt/` models; same-name entries overlay the built-in route field by field. |
+| `profiles` | built-in `codex` | Named maps of `fable`, `opus`, `sonnet`, `haiku` tiers to routes; same-name entries overlay individual tiers. |
+
+Routes accept `model` (required for new routes), `effort` (fixed),
+`min_effort` (floor; mutually exclusive with `effort`), `context_window`
+(required for unknown models, default `1050000` for built-in GPT-6 models),
+and `params` (raw LiteLLM deployment parameters). Profiles also accept
+`effort` as the default session effort. `jailbee litellm up` renders changes
+and restarts the instance if needed; `jailbee apply` synchronizes the gateway
+file/key into each running dev container but does not restart the proxy.
 
 ```yaml
 docker_registry_mirror:
