@@ -600,7 +600,9 @@ def test_litellm_host_actions_are_denied_remotely(command: str) -> None:
 
 
 def test_litellm_status_is_allowed_remotely() -> None:
-    assert policy_allows(("litellm", "status"), RemoteCommandPolicy(mode="full")) == "litellm status"
+    assert (
+        policy_allows(("litellm", "status"), RemoteCommandPolicy(mode="full")) == "litellm status"
+    )
 
 
 def test_policy_refuses_unclassified_commands_unless_host_unrestricted(monkeypatch) -> None:

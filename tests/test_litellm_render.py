@@ -25,8 +25,11 @@ def test_instance_config_has_one_deployment_per_route_plus_catch_all():
     rendered = render_instance_config(LiteLLMConfig())
     models = _by_name(rendered)
     assert set(models) == {
-        "jb-default-astra", "jb-default-sol-xhigh", "jb-default-sol-medium",
-        "jb-default-luna-high", CATCH_ALL,
+        "jb-default-astra",
+        "jb-default-sol-xhigh",
+        "jb-default-sol-medium",
+        "jb-default-luna-high",
+        CATCH_ALL,
     }
     sol = models["jb-default-sol-xhigh"]
     assert sol["litellm_params"] == {"model": "chatgpt/gpt-6-sol"}
@@ -43,7 +46,8 @@ def test_route_params_pass_through():
     cfg = LiteLLMConfig.model_validate({"routes": {"astra": {"params": {"timeout": 600}}}})
     models = _by_name(render_instance_config(cfg))
     assert models["jb-default-astra"]["litellm_params"] == {
-        "model": "chatgpt/gpt-6-astra", "timeout": 600,
+        "model": "chatgpt/gpt-6-astra",
+        "timeout": 600,
     }
 
 
@@ -71,10 +75,14 @@ def test_proxy_settings_always_set():
 def test_callback_data_marks_chatgpt_and_efforts():
     data = render_callback_data(LiteLLMConfig())
     assert data["aliases"]["jb-default-sol-xhigh"] == {
-        "chatgpt": True, "effort": "xhigh", "min_effort": None,
+        "chatgpt": True,
+        "effort": "xhigh",
+        "min_effort": None,
     }
     assert data["aliases"]["jb-default-astra"] == {
-        "chatgpt": True, "effort": None, "min_effort": None,
+        "chatgpt": True,
+        "effort": None,
+        "min_effort": None,
     }
     assert data["catch_all"] == {"chatgpt": True, "effort": "high", "min_effort": None}
 
@@ -85,7 +93,9 @@ def test_callback_data_keeps_effort_floor_for_overridden_route():
     )
     data = render_callback_data(cfg)
     assert data["aliases"]["jb-default-luna-high"] == {
-        "chatgpt": True, "effort": None, "min_effort": "medium",
+        "chatgpt": True,
+        "effort": None,
+        "min_effort": "medium",
     }
     assert data["catch_all"] == {"chatgpt": True, "effort": None, "min_effort": "medium"}
 
@@ -104,7 +114,9 @@ def test_instance_env():
 
 def test_container_payload():
     payload = container_payload(
-        LiteLLMConfig(), base_url="http://10.0.0.3:4100", key_file="/etc/jailbee/litellm-default.key"
+        LiteLLMConfig(),
+        base_url="http://10.0.0.3:4100",
+        key_file="/etc/jailbee/litellm-default.key",
     )
     assert payload == {
         "version": 1,
@@ -128,8 +140,10 @@ def test_container_payload():
 
 def test_payload_context_window_is_the_largest_of_the_profiles_routes():
     cfg = LiteLLMConfig.model_validate(
-        {"routes": {"sol-medium": {"context_window": 400_000}},
-         "profiles": {"small": {"sonnet": "sol-medium"}}}
+        {
+            "routes": {"sol-medium": {"context_window": 400_000}},
+            "profiles": {"small": {"sonnet": "sol-medium"}},
+        }
     )
     payload = container_payload(cfg, base_url="u", key_file="k")
     assert payload["profiles"]["small"]["context_window"] == 400_000

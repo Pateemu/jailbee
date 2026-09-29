@@ -26,11 +26,18 @@ def test_defaults_are_disabled_with_builtin_codex_profile():
 def test_builtin_routes_carry_spec_models_and_efforts():
     routes = LiteLLMConfig().effective_routes()
     assert routes["astra"] == ResolvedRoute(
-        name="astra", model="chatgpt/gpt-6-astra", effort=None, min_effort=None,
-        context_window=1_050_000, params={},
+        name="astra",
+        model="chatgpt/gpt-6-astra",
+        effort=None,
+        min_effort=None,
+        context_window=1_050_000,
+        params={},
     )
     assert (routes["sol-xhigh"].model, routes["sol-xhigh"].effort) == ("chatgpt/gpt-6-sol", "xhigh")
-    assert (routes["sol-medium"].model, routes["sol-medium"].effort) == ("chatgpt/gpt-6-sol", "medium")
+    assert (routes["sol-medium"].model, routes["sol-medium"].effort) == (
+        "chatgpt/gpt-6-sol",
+        "medium",
+    )
     assert (routes["luna-high"].model, routes["luna-high"].effort) == ("chatgpt/gpt-6-luna", "high")
 
 

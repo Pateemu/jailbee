@@ -81,15 +81,18 @@ def render_callback_data(cfg: LiteLLMConfig) -> dict[str, object]:
 
 def render_instance_env(*, port: int, master_key: str, account: str) -> str:
     base = f"{CONTAINER_STATE_DIR}/{account}"
-    return "\n".join(
-        [
-            f"PORT={port}",
-            f"LITELLM_MASTER_KEY={master_key}",
-            f"CHATGPT_TOKEN_DIR={base}/auth",
-            f"JAILBEE_LITELLM_CALLBACK_DATA={base}/callback.json",
-            "LITELLM_LOCAL_MODEL_COST_MAP=True",
-        ]
-    ) + "\n"
+    return (
+        "\n".join(
+            [
+                f"PORT={port}",
+                f"LITELLM_MASTER_KEY={master_key}",
+                f"CHATGPT_TOKEN_DIR={base}/auth",
+                f"JAILBEE_LITELLM_CALLBACK_DATA={base}/callback.json",
+                "LITELLM_LOCAL_MODEL_COST_MAP=True",
+            ]
+        )
+        + "\n"
+    )
 
 
 def container_payload(cfg: LiteLLMConfig, *, base_url: str, key_file: str) -> dict[str, object]:

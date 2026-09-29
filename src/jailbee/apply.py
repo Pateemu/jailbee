@@ -428,7 +428,9 @@ def run_apply(
         try:
             sync_container(incus, ci.name, litellm_payload)
         except (IncusError, OSError) as e:
-            warn(f"Could not update LiteLLM settings on {short}: {e}; run `jailbee apply` to retry.")
+            warn(
+                f"Could not update LiteLLM settings on {short}: {e}; run `jailbee apply` to retry."
+            )
 
     orphans = _sweep_orphan_extra_acls(cfg, incus)
     if orphans:

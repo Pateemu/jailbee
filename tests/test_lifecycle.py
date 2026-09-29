@@ -1324,7 +1324,14 @@ def test_new_container_syncs_litellm_only_when_payload_supplied(tmp_path, mocker
     key = tmp_path / "master.key"
     key.write_text("sk-jb-demo\n")
     opts = NewContainerOptions(
-        "feat/x", None, "strict", "8GiB", 4, "base", True, autostart=False,
+        "feat/x",
+        None,
+        "strict",
+        "8GiB",
+        4,
+        "base",
+        True,
+        autostart=False,
         litellm_payload={"json": {"version": 1}, "key_path": str(key)} if with_payload else None,
     )
 
@@ -1343,7 +1350,14 @@ def test_new_container_litellm_write_failure_warns_without_aborting(tmp_path, mo
     mocker.patch("jailbee.litellm.sync_container", side_effect=failure)
     warn = mocker.patch("jailbee.lifecycle.warn")
     opts = NewContainerOptions(
-        "feat/x", None, "strict", "8GiB", 4, "base", True, autostart=False,
+        "feat/x",
+        None,
+        "strict",
+        "8GiB",
+        4,
+        "base",
+        True,
+        autostart=False,
         litellm_payload={"json": {}, "key_path": "/host/key"},
     )
 

@@ -63,10 +63,13 @@ def test_reconcile_work_nic_ensures_services_acl_before_device_write(make_cfg, t
         f"{cfg.container_prefix}-allowlist,jailbee-services"
     )
     create_idx = next(
-        i for i, call in enumerate(incus.mock_calls)
+        i
+        for i, call in enumerate(incus.mock_calls)
         if call[0] == "network_acl_create" and call.args == ("jailbee-services",)
     )
-    device_idx = next(i for i, call in enumerate(incus.mock_calls) if call[0] == "config_device_set")
+    device_idx = next(
+        i for i, call in enumerate(incus.mock_calls) if call[0] == "config_device_set"
+    )
     assert create_idx < device_idx
 
 
@@ -95,7 +98,9 @@ def test_reconcile_work_nic_adds_only_that_strict_containers_extra_acl(make_cfg,
         "eth0",
         {
             **original,
-            "security.acls": f"{cfg.container_prefix}-allowlist,{extra_acl_name(name)},jailbee-services",
+            "security.acls": (
+                f"{cfg.container_prefix}-allowlist,{extra_acl_name(name)},jailbee-services"
+            ),
         },
     )
 
@@ -160,8 +165,12 @@ def test_work_strict_nic_creates_services_acl_before_device_write(make_cfg, tmp_
     assert incus.config_device_set.call_args.args[2]["security.acls"] == (
         f"{cfg.container_prefix}-allowlist,jailbee-services"
     )
-    create_idx = next(i for i, call in enumerate(incus.mock_calls) if call[0] == "network_acl_create")
-    device_idx = next(i for i, call in enumerate(incus.mock_calls) if call[0] == "config_device_set")
+    create_idx = next(
+        i for i, call in enumerate(incus.mock_calls) if call[0] == "network_acl_create"
+    )
+    device_idx = next(
+        i for i, call in enumerate(incus.mock_calls) if call[0] == "config_device_set"
+    )
     assert incus.mock_calls[create_idx].args == ("jailbee-services",)
     assert create_idx < device_idx
 
@@ -292,7 +301,9 @@ def test_work_bridge_ensures_services_acl_before_attachment(make_cfg, tmp_path):
     ensure_work_repo_acl(cfg, incus)
 
     assert "jailbee-services" in incus.network_set.call_args.args[2].split(",")
-    create_idx = next(i for i, call in enumerate(incus.mock_calls) if call[0] == "network_acl_create")
+    create_idx = next(
+        i for i, call in enumerate(incus.mock_calls) if call[0] == "network_acl_create"
+    )
     attach_idx = next(i for i, call in enumerate(incus.mock_calls) if call[0] == "network_set")
     assert incus.mock_calls[create_idx].args == ("jailbee-services",)
     assert create_idx < attach_idx

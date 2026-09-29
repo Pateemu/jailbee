@@ -75,20 +75,25 @@ def test_litellm_doctor_disabled_does_not_probe(mocker):
     status.assert_not_called()
 
 
-@pytest.mark.parametrize("healthy,version,login,reachable,expected", [
-    (True, "1.103.0", "present", True, "running on 10.79.115.3:4100"),
-    (False, "1.103.0", "present", True, "unhealthy"),
-    (True, "0.1.0", "present", True, "installed 0.1.0"),
-    (True, "1.103.0", "missing", True, "not logged in"),
-    (True, "1.103.0", "present", False, "cannot reach chatgpt.com:443"),
-])
+@pytest.mark.parametrize(
+    "healthy,version,login,reachable,expected",
+    [
+        (True, "1.103.0", "present", True, "running on 10.79.115.3:4100"),
+        (False, "1.103.0", "present", True, "unhealthy"),
+        (True, "0.1.0", "present", True, "installed 0.1.0"),
+        (True, "1.103.0", "missing", True, "not logged in"),
+        (True, "1.103.0", "present", False, "cannot reach chatgpt.com:443"),
+    ],
+)
 def test_litellm_doctor_running_branches(mocker, healthy, version, login, reachable, expected):
     from jailbee import litellm
     from jailbee.doctor import _check_litellm
 
     gcfg = GlobalConfig.model_validate({"litellm": {"enabled": True}})
     status = litellm.LiteLLMStatus(
-        litellm.ContainerState.RUNNING, "10.79.115.3", version,
+        litellm.ContainerState.RUNNING,
+        "10.79.115.3",
+        version,
         [litellm.InstanceStatus("default", 4100, True, healthy, login)],
     )
     mocker.patch("jailbee.litellm.litellm_status", return_value=status)
@@ -105,7 +110,9 @@ def test_litellm_doctor_running_branches(mocker, healthy, version, login, reacha
 def test_run_checks_includes_litellm_diagnostics(tmp_path, mocker):
     from jailbee.doctor import CheckResult
 
-    check = mocker.patch("jailbee.doctor._check_litellm", return_value=[CheckResult("litellm", True, "ok")])
+    check = mocker.patch(
+        "jailbee.doctor._check_litellm", return_value=[CheckResult("litellm", True, "ok")]
+    )
     run_checks(_cfg(tmp_path), _baseline_incus())
     check.assert_called_once()
 

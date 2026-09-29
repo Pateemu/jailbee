@@ -39,7 +39,9 @@ def test_up_disabled_is_exit_1_with_message(mocker, context):
 
 def test_up_warns_if_install_is_unlocked(mocker, context):
     context.return_value[1].litellm.version = "1.104.0"
-    mocker.patch("jailbee.litellm.litellm_up", return_value=ll.UpResult("10.0.0.3", 4100, False, False))
+    mocker.patch(
+        "jailbee.litellm.litellm_up", return_value=ll.UpResult("10.0.0.3", 4100, False, False)
+    )
     result = runner.invoke(app, ["litellm", "up"])
     assert result.exit_code == 0
     assert "hash-locked" in result.output

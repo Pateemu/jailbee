@@ -290,7 +290,11 @@ def test_run_apply_ensures_services_acl_before_profile_write(make_cfg, tmp_path,
     run_apply(cfg, incus, GlobalConfig(), no_restart=True)
 
     calls = incus.mock_calls
-    create_idx = next(i for i, call in enumerate(calls) if call[0] == "network_acl_create" and call.args == ("jailbee-services",))
+    create_idx = next(
+        i
+        for i, call in enumerate(calls)
+        if call[0] == "network_acl_create" and call.args == ("jailbee-services",)
+    )
     profile_idx = next(i for i, call in enumerate(calls) if call[0] == "profile_set_yaml")
     assert create_idx < profile_idx
 
@@ -819,11 +823,14 @@ def test_run_apply_reapplies_docker_proxy_when_mirror_enabled(
     assert result.docker_restarted == []
 
 
-@pytest.mark.parametrize("payload,failure", [
-    (None, None),
-    ({"json": {"version": 1}, "key_path": "/host/key"}, None),
-    ({"json": {"version": 1}, "key_path": "/host/key"}, FileNotFoundError("key removed")),
-])
+@pytest.mark.parametrize(
+    "payload,failure",
+    [
+        (None, None),
+        ({"json": {"version": 1}, "key_path": "/host/key"}, None),
+        ({"json": {"version": 1}, "key_path": "/host/key"}, FileNotFoundError("key removed")),
+    ],
+)
 def test_run_apply_syncs_or_removes_litellm_for_running_containers(
     make_cfg, tmp_path: Path, mocker: MockerFixture, payload, failure
 ) -> None:
@@ -839,10 +846,13 @@ def test_run_apply_syncs_or_removes_litellm_for_running_containers(
     mocker.patch("jailbee.apply._profile_differs", return_value=False)
     mocker.patch("jailbee.apply._acl_differs", return_value=False)
     mocker.patch("jailbee.apply._litellm_payload_or_warn", return_value=payload)
-    mocker.patch("jailbee.apply._list_containers", return_value=[
-        ContainerInfo("a", "Running", "strict", "10.0.0.1", "16GiB", repo=tmp_path.name),
-        ContainerInfo("b", "Stopped", "loose", "10.0.0.2", "16GiB", repo=tmp_path.name),
-    ])
+    mocker.patch(
+        "jailbee.apply._list_containers",
+        return_value=[
+            ContainerInfo("a", "Running", "strict", "10.0.0.1", "16GiB", repo=tmp_path.name),
+            ContainerInfo("b", "Stopped", "loose", "10.0.0.2", "16GiB", repo=tmp_path.name),
+        ],
+    )
     mocker.patch("jailbee.hosts.apply_hosts")
     sync = mocker.patch("jailbee.litellm.sync_container", side_effect=failure)
     warn = mocker.patch("jailbee.tui.warn")

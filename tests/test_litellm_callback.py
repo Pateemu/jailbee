@@ -29,7 +29,7 @@ def cb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
     class CustomLogger:
         pass
 
-    setattr(base, "CustomLogger", CustomLogger)
+    base.CustomLogger = CustomLogger
     for name in ("litellm", "litellm.integrations"):
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
     monkeypatch.setitem(sys.modules, "litellm.integrations.custom_logger", base)

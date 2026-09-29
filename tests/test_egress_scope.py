@@ -416,10 +416,13 @@ def test_apply_container_acl_creates_the_acl_when_it_does_not_exist(make_cfg, tm
     incus.network_acl_create.assert_any_call("myrepo-feat-extra")
     incus.network_acl_create.assert_any_call("jailbee-services")
     create_idx = next(
-        i for i, call in enumerate(incus.mock_calls)
+        i
+        for i, call in enumerate(incus.mock_calls)
         if call[0] == "network_acl_create" and call.args == ("jailbee-services",)
     )
-    device_idx = next(i for i, call in enumerate(incus.mock_calls) if call[0] == "config_device_override")
+    device_idx = next(
+        i for i, call in enumerate(incus.mock_calls) if call[0] == "config_device_override"
+    )
     assert create_idx < device_idx
 
 
@@ -607,7 +610,9 @@ def test_apply_container_acl_updates_an_existing_override_in_place(make_cfg, tmp
     )
 
 
-def test_existing_strict_override_creates_services_acl_before_device_set(make_cfg, tmp_path, mocker):
+def test_existing_strict_override_creates_services_acl_before_device_set(
+    make_cfg, tmp_path, mocker
+):
     mocker.patch(
         "jailbee.egress_scope._resolve_entries_tolerant",
         return_value=[
@@ -628,7 +633,8 @@ def test_existing_strict_override_creates_services_acl_before_device_set(make_cf
         "myrepo-allowlist,myrepo-feat-extra,jailbee-services"
     )
     create_idx = next(
-        i for i, call in enumerate(incus.mock_calls)
+        i
+        for i, call in enumerate(incus.mock_calls)
         if call[0] == "network_acl_create" and call.args == ("jailbee-services",)
     )
     set_idx = next(i for i, call in enumerate(incus.mock_calls) if call[0] == "config_device_set")

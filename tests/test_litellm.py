@@ -34,7 +34,8 @@ def _incus(*, present: bool, running: bool = True, installed: str | None = "1.10
     incus.network_acl_exists.return_value = True
     incus.list_containers.return_value = (
         [{"name": ll.LITELLM_CONTAINER, "status": "Running" if running else "Stopped"}]
-        if present else []
+        if present
+        else []
     )
 
     def exec_(name, cmd, **_kw):
@@ -58,7 +59,7 @@ def _execs(incus: MagicMock) -> list[str]:
 
 
 def test_up_refuses_when_disabled():
-    with pytest.raises(ValueError, match="litellm.enabled"):
+    with pytest.raises(ValueError, match=r"litellm\.enabled"):
         ll.litellm_up(_incus(present=False), _gcfg(enabled=False))
 
 
@@ -165,7 +166,7 @@ def test_service_limits_token_file_mode(tmp_path: Path):
 def test_install_uses_only_hash_locked_requirements_by_default():
     script = resources.files("jailbee.provision").joinpath("litellm", "install.sh")
     assert (
-        'pip install --require-hashes --no-deps -r /root/litellm-requirements.lock'
+        "pip install --require-hashes --no-deps -r /root/litellm-requirements.lock"
         in script.read_text()
     )
 
@@ -228,12 +229,14 @@ def test_new_container_autostart_is_enabled_only_after_acl_is_attached():
     incus = _incus(present=False)
     ll.litellm_up(incus, _gcfg())
     restricted = [
-        idx for idx, call in enumerate(incus.mock_calls)
+        idx
+        for idx, call in enumerate(incus.mock_calls)
         if call[0] == "profile_set_yaml"
         and yaml.safe_load(call.args[1])["devices"]["eth0"].get("security.acls") == ll.EGRESS_ACL
     ]
     autostart = [
-        idx for idx, call in enumerate(incus.mock_calls)
+        idx
+        for idx, call in enumerate(incus.mock_calls)
         if call[0] == "config_set" and call.args[1:] == ("boot.autostart", "true")
     ]
     assert len(autostart) == 1
@@ -295,8 +298,7 @@ def test_failed_install_restores_restrictive_nic_acl(present: bool, reinstall: b
         ll.litellm_up(incus, _gcfg(), reinstall=reinstall)
     assert caught.value is install_error
     acl_calls = [
-        call for call in incus.network_acl_set_yaml.call_args_list
-        if call.args[0] == ll.EGRESS_ACL
+        call for call in incus.network_acl_set_yaml.call_args_list if call.args[0] == ll.EGRESS_ACL
     ]
     assert len(acl_calls) == 1
     acl = yaml.safe_load(acl_calls[0].args[1])
@@ -429,7 +431,7 @@ def test_login_runs_litellm_device_flow_with_private_umask(tmp_path: Path):
     )
     auth_file = tmp_path / "auth.json"
     subprocess.run(
-        ["bash", "-c", prefix + f"python -c 'open(\"{auth_file}\", \"w\").write(\"token\")'"],
+        ["bash", "-c", prefix + f'python -c \'open("{auth_file}", "w").write("token")\''],
         check=True,
     )
     assert auth_file.stat().st_mode & 0o777 == 0o600
@@ -490,11 +492,13 @@ def test_stopped_container_gets_restrictive_acl_before_start():
     ll.litellm_up(incus, _gcfg())
     start_at = next(i for i, call in enumerate(incus.mock_calls) if call[0] == "start")
     acl_at = next(
-        i for i, call in enumerate(incus.mock_calls)
+        i
+        for i, call in enumerate(incus.mock_calls)
         if call[0] == "network_acl_set_yaml" and call.args[0] == ll.EGRESS_ACL
     )
     restricted_at = next(
-        i for i, call in enumerate(incus.mock_calls)
+        i
+        for i, call in enumerate(incus.mock_calls)
         if call[0] == "profile_set_yaml"
         and yaml.safe_load(call.args[1])["devices"]["eth0"].get("security.acls") == ll.EGRESS_ACL
     )

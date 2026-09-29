@@ -7,8 +7,8 @@ Host-side authentication and configuration survive container deletion.
 
 from __future__ import annotations
 
-import os
 import json
+import os
 import shlex
 import time
 from collections.abc import Callable
@@ -223,9 +223,12 @@ def _secure_failed_install(incus: Incus, ip: str, error: BaseException) -> None:
 
 def _active(incus: Incus, account: str) -> bool:
     try:
-        return incus.exec(
-            LITELLM_CONTAINER, ["systemctl", "is-active", unit(account)], timeout=10
-        ).strip() == "active"
+        return (
+            incus.exec(
+                LITELLM_CONTAINER, ["systemctl", "is-active", unit(account)], timeout=10
+            ).strip()
+            == "active"
+        )
     except IncusError:
         return False
 
@@ -453,7 +456,7 @@ def litellm_login(incus: Incus, account: str) -> int:
         f"set -a; . {env_file}; set +a; "
         f'test "${{CHATGPT_TOKEN_DIR:-}}" = {auth_dir}; '
         f"exec {_PY} -c 'from litellm.llms.chatgpt.authenticator import Authenticator; "
-        f"Authenticator().get_access_token(); print(\"Logged in.\")'"
+        f'Authenticator().get_access_token(); print("Logged in.")\''
     )
     return incus.exec_interactive(LITELLM_CONTAINER, ["bash", "-c", script])
 

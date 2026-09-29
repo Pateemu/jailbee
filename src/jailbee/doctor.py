@@ -113,12 +113,15 @@ def _check_litellm(incus: Incus, gcfg: GlobalConfig) -> list[CheckResult]:
             rows.append(CheckResult(name, True, f"running on {address}, LiteLLM {status.version}"))
         else:
             rows.append(
-                CheckResult(name, False, f"running on {address}, unhealthy — see 'jailbee litellm logs'")
+                CheckResult(
+                    name, False, f"running on {address}, unhealthy — see 'jailbee litellm logs'"
+                )
             )
         if status.version != gcfg.litellm.effective_version():
             rows.append(
                 CheckResult(
-                    f"{name} version", False,
+                    f"{name} version",
+                    False,
                     f"installed {status.version}, configured {gcfg.litellm.effective_version()} "
                     "— run 'jailbee litellm up'",
                 )
@@ -130,7 +133,8 @@ def _check_litellm(incus: Incus, gcfg: GlobalConfig) -> list[CheckResult]:
     if not litellm.upstream_reachable(incus, "chatgpt.com"):
         rows.append(
             CheckResult(
-                "litellm upstream", False,
+                "litellm upstream",
+                False,
                 "cannot reach chatgpt.com:443 from the proxy (its address may have changed) "
                 "— run 'jailbee litellm up' to re-resolve the egress allowlist",
             )

@@ -287,10 +287,12 @@ def test_init_creates_acl(tmp_path):
     run_init(cfg, incus)
 
     assert [call.args[0] for call in incus.network_acl_create.call_args_list] == [
-        f"{cfg.container_prefix}-allowlist", "jailbee-services"
+        f"{cfg.container_prefix}-allowlist",
+        "jailbee-services",
     ]
     assert [call.args[0] for call in incus.network_acl_set_yaml.call_args_list] == [
-        f"{cfg.container_prefix}-allowlist", "jailbee-services"
+        f"{cfg.container_prefix}-allowlist",
+        "jailbee-services",
     ]
 
 
@@ -338,16 +340,18 @@ def test_init_creates_services_acl_before_strict_profile_and_bridge(tmp_path):
 
     calls = incus.mock_calls
     acl_idx = next(
-        i for i, call in enumerate(calls)
+        i
+        for i, call in enumerate(calls)
         if call[0] == "network_acl_create" and call.args == ("jailbee-services",)
     )
     strict_idx = next(
-        i for i, call in enumerate(calls)
-        if call[0] == "profile_set_yaml"
-        and call.args[0] == f"{cfg.container_prefix}-net-strict"
+        i
+        for i, call in enumerate(calls)
+        if call[0] == "profile_set_yaml" and call.args[0] == f"{cfg.container_prefix}-net-strict"
     )
     bridge_idx = next(
-        i for i, call in enumerate(calls)
+        i
+        for i, call in enumerate(calls)
         if call[0] == "network_set" and "jailbee-services" in call.args[2].split(",")
     )
     assert acl_idx < bridge_idx < strict_idx
@@ -431,17 +435,19 @@ def test_init_continues_when_services_acl_edit_hits_missing_nft_chain(tmp_path):
 
     calls = incus.mock_calls
     service_write = next(
-        i for i, call in enumerate(calls)
+        i
+        for i, call in enumerate(calls)
         if call[0] == "network_acl_set_yaml" and call.args[0] == "jailbee-services"
     )
     attach = next(
-        i for i, call in enumerate(calls)
+        i
+        for i, call in enumerate(calls)
         if call[0] == "network_set" and "jailbee-services" in call.args[2].split(",")
     )
     strict_profile = next(
-        i for i, call in enumerate(calls)
-        if call[0] == "profile_set_yaml"
-        and call.args[0] == f"{cfg.container_prefix}-net-strict"
+        i
+        for i, call in enumerate(calls)
+        if call[0] == "profile_set_yaml" and call.args[0] == f"{cfg.container_prefix}-net-strict"
     )
     assert service_write < attach < strict_profile
 
@@ -553,9 +559,7 @@ def test_init_attaches_acl_to_bridge_when_missing(tmp_path):
     run_init(cfg, incus)
 
     name = f"{cfg.container_prefix}-allowlist"
-    assert [call.args[2] for call in incus.network_set.call_args_list] == [
-        name, "jailbee-services"
-    ]
+    assert [call.args[2] for call in incus.network_set.call_args_list] == [name, "jailbee-services"]
 
 
 def test_init_skips_attach_when_already_present(tmp_path):
@@ -641,7 +645,8 @@ def test_init_preserves_other_repo_acls(tmp_path):
 
     name = f"{cfg.container_prefix}-allowlist"
     assert [call.args[2] for call in incus.network_set.call_args_list] == [
-        f"otherrepo-allowlist,{name}", "otherrepo-allowlist,jailbee-services"
+        f"otherrepo-allowlist,{name}",
+        "otherrepo-allowlist,jailbee-services",
     ]
 
 

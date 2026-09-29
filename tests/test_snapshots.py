@@ -121,7 +121,8 @@ def test_restore_strict_work_snapshot_creates_services_acl_before_nic_write(
         "myrepo-allowlist,jailbee-services"
     )
     create_idx = next(
-        i for i, call in enumerate(incus.mock_calls)
+        i
+        for i, call in enumerate(incus.mock_calls)
         if call[0] == "network_acl_create" and call.args == ("jailbee-services",)
     )
     set_idx = next(i for i, call in enumerate(incus.mock_calls) if call[0] == "config_device_set")

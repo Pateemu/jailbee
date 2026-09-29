@@ -11,7 +11,6 @@ from jailbee.constants import SHARED_SUBDIRS
 from jailbee.egress import EgressEntry, build_egress_entries
 from jailbee.incus import Incus, IncusError
 from jailbee.network import SERVICES_ACL, acl_name, allowlist_acl_yaml
-from jailbee.services_acl import ensure_services_acl
 from jailbee.profiles import (
     CLAUDE_CREDS_DEVICE,
     base_profile_yaml,
@@ -20,6 +19,7 @@ from jailbee.profiles import (
     net_profile_yaml,
     profile_names,
 )
+from jailbee.services_acl import ensure_services_acl
 from jailbee.ssh_seed import seed_ssh_dir
 from jailbee.systemd import systemd_user_dir as systemd_user_dir
 from jailbee.systemd import write_if_changed

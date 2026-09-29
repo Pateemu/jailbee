@@ -78,7 +78,8 @@ def test_set_endpoint_creates_missing_acl_before_writing_endpoint():
 
     calls = incus.mock_calls
     create = next(
-        i for i, call in enumerate(calls)
+        i
+        for i, call in enumerate(calls)
         if call[0] == "network_acl_create" and call.args == (SERVICES_ACL,)
     )
     writes = [i for i, call in enumerate(calls) if call[0] == "network_acl_set_yaml"]

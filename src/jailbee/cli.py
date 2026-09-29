@@ -10649,7 +10649,10 @@ def litellm_up_cmd(
     success(f"LiteLLM proxy running on {result.ip}:{result.port}")
     if result.restarted:
         info("The proxy restarted; in-flight `claude-jb` requests were interrupted.")
-    info("Next: `jailbee litellm login` (once), then `jailbee apply` in each repo that uses `claude-jb`.")
+    info(
+        "Next: `jailbee litellm login` (once), then `jailbee apply` in each repo "
+        "that uses `claude-jb`."
+    )
 
 
 @litellm_app.command("down")
@@ -10692,16 +10695,19 @@ def litellm_status_cmd() -> None:
             if instance.login == "present"
             else "login: not logged in — run jailbee litellm login"
         )
-    if status.container != ll.ContainerState.RUNNING or not status.instances or any(
-        not instance.active or not instance.healthy for instance in status.instances
+    if (
+        status.container != ll.ContainerState.RUNNING
+        or not status.instances
+        or any(not instance.active or not instance.healthy for instance in status.instances)
     ):
         raise typer.Exit(1)
 
 
 @litellm_app.command("login")
 def litellm_login_cmd(
-    account: Annotated[str, typer.Argument(help="Account to log in (only default is supported).")]
-    = "default",
+    account: Annotated[
+        str, typer.Argument(help="Account to log in (only default is supported).")
+    ] = "default",
 ) -> None:
     """Log in to ChatGPT with LiteLLM's interactive device-code flow."""
     from jailbee import litellm as ll
@@ -10719,8 +10725,9 @@ def litellm_login_cmd(
 
 @litellm_app.command("logout")
 def litellm_logout_cmd(
-    account: Annotated[str, typer.Argument(help="Account to log out (only default is supported).")]
-    = "default",
+    account: Annotated[
+        str, typer.Argument(help="Account to log out (only default is supported).")
+    ] = "default",
 ) -> None:
     """Delete the host-side ChatGPT token without removing proxy settings."""
     from jailbee import litellm_state
@@ -10740,8 +10747,9 @@ def litellm_logout_cmd(
 
 @litellm_app.command("logs")
 def litellm_logs_cmd(
-    account: Annotated[str, typer.Argument(help="Account to inspect (only default is supported).")]
-    = "default",
+    account: Annotated[
+        str, typer.Argument(help="Account to inspect (only default is supported).")
+    ] = "default",
     follow: Annotated[bool, typer.Option("-f", "--follow", help="Follow new log entries.")] = False,
 ) -> None:
     """Show the proxy's journal for an account."""
