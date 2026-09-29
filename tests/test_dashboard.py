@@ -8196,7 +8196,7 @@ def test_repo_vanishing_while_the_apply_picker_is_open_runs_nothing(mocker, tmp_
     assert "'alpha' is gone" in " ".join(str(n) for n in _notices(render))
 
 
-@pytest.mark.parametrize("verb", ["snapshots", "mount-add", "mount-remove"])
+@pytest.mark.parametrize("verb", ["mount-add", "mount-remove"])
 def test_unbuilt_container_entries_are_inert(mocker, tmp_path, verb):
     """A menu verb the dashboard has no handler for must never reach the CLI dispatcher."""
     group = _cfg_group(tmp_path, (_autostart_ci(),))
@@ -8236,3 +8236,247 @@ def test_stale_menu_refused_by_the_policy_at_submit_spawns_nothing(mocker, tmp_p
 
     child.assert_not_called()
     assert "autostart status is not permitted" in _notices(render)
+
+
+# --- Snapshots…: listing and create -----------------------------------------
+
+_SNAPS_JSON = '[{"name": "before-upgrade", "created": "2026-09-29T10:00:00.5Z"}]'
+_SNAPSHOT_LS = ["snapshot", "ls", "alpha-x", "-o", "json", "--fields", "name,created"]
+
+
+def _fake_snapshot_ls(mocker, result=None):
+    """Patch the quiet runner the snapshot listing goes through."""
+    return mocker.patch.object(
+        dashboard.da,
+        "run_cli_quiet",
+        return_value=result or dashboard.da.CliResult(True, "done", _SNAPS_JSON),
+    )
+
+
+@pytest.mark.parametrize("over_ssh", [False, True], ids=["local", "ssh-default"])
+def test_snapshots_lists_quietly_and_offers_create_above_the_snapshots(mocker, tmp_path, over_ssh):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    policy = RemoteSSHConfig() if over_ssh else None
+    listing = _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    kwargs = {"remote": over_ssh, "over_ssh": over_ssh, "ssh_policy": policy}
+
+    assert (
+        _drive_run(mocker, _container_menu_keys(group, "snapshots", **kwargs), [group], **kwargs)
+        == 0
+    )
+
+    flags = [] if over_ssh else ["--config", str(group.config_path)]
+    listing.assert_called_once_with([*_SNAPSHOT_LS, *flags], cwd=tmp_path)
+    picker = _rendered(render, dashboard.Picker)[0]
+    assert [e.value for e in picker.entries] == [
+        "create:timestamp",
+        "create:named",
+        "snapshot:before-upgrade",
+    ]
+    child.assert_not_called()  # listing is quiet: the screen never blanked
+
+
+@pytest.mark.parametrize("over_ssh", [False, True], ids=["local", "ssh-default"])
+def test_snapshot_create_with_a_timestamp_runs_in_the_terminal(mocker, tmp_path, over_ssh):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    policy = RemoteSSHConfig() if over_ssh else None
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+    kwargs = {"remote": over_ssh, "over_ssh": over_ssh, "ssh_policy": policy}
+
+    keys = [*_container_menu_keys(group, "snapshots", **kwargs), _ENTER]
+    assert _drive_run(mocker, keys, [group], **kwargs) == 0
+
+    flags = [] if over_ssh else ["--config", str(group.config_path)]
+    child.assert_called_once_with(
+        ["jailbee", "snapshot", "create", *flags, "--", "alpha-x"], check=False, cwd=tmp_path
+    )
+    wait.assert_called_once()
+
+
+def test_snapshot_create_named_takes_an_option_like_tag_as_a_tag(mocker, tmp_path):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+
+    keys = [*_container_menu_keys(group, "snapshots"), b"j", _ENTER, *_keys("--yes"), _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    child.assert_called_once_with(
+        [
+            "jailbee",
+            "snapshot",
+            "create",
+            "--config",
+            str(group.config_path),
+            "--",
+            "alpha-x",
+            "--yes",
+        ],
+        check=False,
+        cwd=tmp_path,
+    )
+
+
+def test_snapshot_tag_prompt_escape_runs_nothing(mocker, tmp_path):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+
+    keys = [*_container_menu_keys(group, "snapshots"), b"j", _ENTER, *_keys("x"), _ESC]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    child.assert_not_called()
+
+
+def test_snapshot_picker_escape_runs_nothing(mocker, tmp_path):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [*_container_menu_keys(group, "snapshots"), _ESC], [group]) == 0
+
+    assert _rendered(render, dashboard.Picker)
+    child.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("result", "notice"),
+    [
+        (dashboard.da.CliResult(False, "error: boom"), "could not list snapshots: error: boom"),
+        (
+            dashboard.da.CliResult(True, "done", "No snapshots"),
+            "could not list snapshots: unexpected output from 'jailbee snapshot ls'",
+        ),
+    ],
+    ids=["cli-failed", "not-json"],
+)
+def test_a_failed_snapshot_listing_is_a_notice(mocker, tmp_path, result, notice):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker, result)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, _container_menu_keys(group, "snapshots"), [group]) == 0
+
+    assert not _rendered(render, dashboard.Picker)
+    assert notice in _notices(render)
+
+
+def test_snapshot_listing_is_refused_when_create_is_not_permitted_and_there_are_none(
+    mocker, tmp_path
+):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    policy = RemoteSSHConfig.model_validate(
+        {"commands": {"mode": "allowlist", "allow": ["shell", "snapshot ls"]}}
+    )
+    _fake_snapshot_ls(mocker, dashboard.da.CliResult(True, "done", "[]"))
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    kwargs = {"remote": True, "over_ssh": True, "ssh_policy": policy}
+
+    assert (
+        _drive_run(mocker, _container_menu_keys(group, "snapshots", **kwargs), [group], **kwargs)
+        == 0
+    )
+
+    assert not _rendered(render, dashboard.Picker)
+    assert "No snapshots of 'alpha-x'" in _notices(render)
+
+
+def test_snapshot_picker_hides_create_when_only_the_listing_is_permitted(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    policy = RemoteSSHConfig.model_validate(
+        {"commands": {"mode": "allowlist", "allow": ["shell", "snapshot ls"]}}
+    )
+    _fake_snapshot_ls(mocker)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    kwargs = {"remote": True, "over_ssh": True, "ssh_policy": policy}
+
+    assert (
+        _drive_run(mocker, _container_menu_keys(group, "snapshots", **kwargs), [group], **kwargs)
+        == 0
+    )
+
+    picker = _rendered(render, dashboard.Picker)[0]
+    assert [e.value for e in picker.entries] == ["snapshot:before-upgrade"]
+
+
+def test_snapshot_create_permitted_over_ssh_with_an_empty_listing_still_opens_the_picker(
+    mocker, tmp_path
+):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    policy = RemoteSSHConfig.model_validate(
+        {"commands": {"mode": "allowlist", "allow": ["shell", "snapshot ls", "snapshot create"]}}
+    )
+    _fake_snapshot_ls(mocker, dashboard.da.CliResult(True, "done", "[]"))
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    kwargs = {"remote": True, "over_ssh": True, "ssh_policy": policy}
+
+    keys = [*_container_menu_keys(group, "snapshots", **kwargs), b"j", _ENTER, *_keys("--yes")]
+    assert _drive_run(mocker, [*keys, _ENTER], [group], **kwargs) == 0
+
+    picker = _rendered(render, dashboard.Picker)[0]
+    assert [e.value for e in picker.entries] == ["create:timestamp", "create:named"]
+    child.assert_called_once_with(
+        ["jailbee", "snapshot", "create", "--", "alpha-x", "--yes"], check=False, cwd=tmp_path
+    )
+
+
+def test_snapshot_create_refused_by_the_policy_at_submit_spawns_nothing(mocker, tmp_path):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    real_check = dashboard.check_dashboard_command
+
+    def refuse(argv, policy, *, over_ssh):
+        if argv[:2] == ["snapshot", "create"]:
+            raise dashboard.RouteError("snapshot create is not permitted")
+        return real_check(argv, policy, over_ssh=over_ssh)
+
+    mocker.patch.object(dashboard, "check_dashboard_command", side_effect=refuse)
+
+    keys = [*_container_menu_keys(group, "snapshots"), _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    child.assert_not_called()
+    assert "snapshot create is not permitted" in _notices(render)
+
+
+@_VANISH_WHEN
+@pytest.mark.parametrize("choice", ["timestamp", "named-tag"])
+def test_container_vanishing_while_the_snapshots_picker_or_tag_prompt_is_open_runs_nothing(
+    mocker, tmp_path, when, choice
+):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    listing = _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = _container_menu_keys(group, "snapshots")
+    if choice == "named-tag":
+        keys = [*keys, b"j", _ENTER, *_keys("v1")]
+    assert _drive_with_vanish(mocker, keys, [group], group.containers.clear, when=when) == 0
+
+    child.assert_not_called()
+    assert listing.call_count == 1  # nothing was listed again either
+    assert "'alpha-x' is gone" in " ".join(str(n) for n in _notices(render))

@@ -3109,6 +3109,59 @@ def run(
                     return None
                 if verb == dact.AUTOSTART_CANCEL:
                     return dact.autostart_cancel_picker(container)
+                if verb == dact.SNAPSHOTS:
+                    return open_snapshots(container)
+                return None
+
+            def open_snapshots(container: str) -> Picker | None:
+                """List the container's snapshots quietly and offer them, or notice why not.
+
+                Each entry is gated on its own argv: over SSH an allowlist may
+                permit the listing and not the create.
+                """
+                repo = repo_for(container, "container")
+                if repo is None:
+                    set_notice(f"'{container}' is gone")
+                    return None
+                argv = dact.addressed(
+                    dact.snapshot_ls_argv(container), repo.flags(), over_ssh=over_ssh
+                )
+                try:
+                    check_dashboard_command(argv, ssh_policy, over_ssh=over_ssh)
+                    result = da.run_cli_quiet(argv, cwd=repo.cwd())
+                    if not result.ok:
+                        raise dact.SnapshotLoadError(result.message)
+                    rows = dact.parse_snapshot_rows(result.stdout)
+                except (RouteError, dact.SnapshotLoadError) as exc:
+                    set_notice(f"could not list snapshots: {exc}", seconds=_FAILURE_NOTICE_SECONDS)
+                    return None
+                picker = dact.snapshot_picker(
+                    container,
+                    rows,
+                    can_create=permitted(
+                        dact.snapshot_create_argv(container, None), ssh_policy, over_ssh=over_ssh
+                    ),
+                )
+                if not picker.entries:
+                    set_notice(f"No snapshots of '{container}'")
+                    return None
+                return picker
+
+            def submit_snapshot_picker(picker: Picker, entry: PickerEntry) -> Overlay | None:
+                """The `container-snapshot*` steps. Every change runs in the terminal.
+
+                Not quietly: `run_cli_quiet` kills its child after 60 s, and an
+                `incus snapshot` of a large container can outlast that.
+                """
+                container = picker.target
+                if picker.purpose == "container-snapshots":
+                    if entry.value == dact.CREATE_TIMESTAMP:
+                        run_dashboard_command(
+                            container, "container", dact.snapshot_create_argv(container, None)
+                        )
+                        return None
+                    if entry.value == dact.CREATE_NAMED:
+                        return dact.snapshot_tag_prompt(container)
                 return None
 
             def repo_for(
@@ -3393,6 +3446,11 @@ def run(
                 if prompt.purpose == "container-group-name":
                     change_group(prompt, da.container_group_use_argv(answer, prompt.target))
                     return None
+                if prompt.purpose == "container-snapshot-tag":
+                    run_dashboard_command(
+                        prompt.target, "container", dact.snapshot_create_argv(prompt.target, answer)
+                    )
+                    return None
                 if prompt.purpose == "acct-group-new":
                     # asked only from the Accounts panel, which it returns to
                     assert isinstance(prompt.back, da.AccountsState)
@@ -3446,6 +3504,8 @@ def run(
                     else:
                         set_notice("Cancelled")
                     return None
+                if picker.purpose.startswith("container-snapshot"):
+                    return submit_snapshot_picker(picker, entry)
                 if picker.purpose.startswith("acct-"):
                     # every account picker is opened from the Accounts panel
                     assert isinstance(picker.back, da.AccountsState)
