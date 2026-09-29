@@ -2799,7 +2799,9 @@ def _apply_harness(make_cfg, tmp_path, mocker):
     mocker.patch("jailbee.apply._litellm_payload_or_warn", return_value=None)
     mocker.patch(
         "jailbee.apply._list_containers",
-        return_value=[ContainerInfo("a", "Running", "strict", "10.0.0.1", "16GiB", repo=tmp_path.name)],
+        return_value=[
+            ContainerInfo("a", "Running", "strict", "10.0.0.1", "16GiB", repo=tmp_path.name)
+        ],
     )
     mocker.patch("jailbee.hosts.apply_hosts")
     mocker.patch("jailbee.litellm.sync_container")
@@ -2814,7 +2816,9 @@ def test_apply_reconciles_the_proxy_and_honours_no_restart(make_cfg, tmp_path, m
 
     cfg, incus = _apply_harness(make_cfg, tmp_path, mocker)
     outcome = (
-        ll.ReconcileResult(pending=["default"]) if no_restart else ll.ReconcileResult(restarted=["default"])
+        ll.ReconcileResult(pending=["default"])
+        if no_restart
+        else ll.ReconcileResult(restarted=["default"])
     )
     reconcile = mocker.patch("jailbee.litellm.litellm_reconcile", return_value=outcome)
     info = mocker.patch("jailbee.tui.info")
@@ -2844,7 +2848,9 @@ def test_apply_survives_a_failing_reconcile_and_reports_needs_up(make_cfg, tmp_p
 
     mocker.patch(
         "jailbee.litellm.litellm_reconcile",
-        return_value=ll.ReconcileResult(needs_up="account work has no instance", issues=["bad.yaml"]),
+        return_value=ll.ReconcileResult(
+            needs_up="account work has no instance", issues=["bad.yaml"]
+        ),
     )
     warn_plain.reset_mock()
     run_apply(cfg, incus, GlobalConfig(), no_restart=True)

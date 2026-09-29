@@ -273,7 +273,9 @@ def test_apply_blocked_on_a_pool_still_records_the_watermark(mocker: MockerFixtu
 
 
 def test_cli_apply_does_not_call_a_proxy_restart_up_to_date(mocker: MockerFixture) -> None:
-    mocker.patch("jailbee.apply.run_apply", return_value=_fake_result(litellm_restarted=["default"]))
+    mocker.patch(
+        "jailbee.apply.run_apply", return_value=_fake_result(litellm_restarted=["default"])
+    )
     mocker.patch("jailbee.incus.Incus")
     result = runner.invoke(app, ["apply", "--config", str(FIXTURES / "full_config.yaml")])
     assert result.exit_code == 0, result.output

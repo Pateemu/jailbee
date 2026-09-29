@@ -1503,7 +1503,10 @@ def apply(
         bool,
         typer.Option(
             "--no-restart",
-            help="Update profiles/ACL/hosts/proxy but never restart a container, its dockerd or a LiteLLM instance",
+            help=(
+                "Update profiles/ACL/hosts/proxy but never restart a container, "
+                "its dockerd or a LiteLLM instance"
+            ),
         ),
     ] = False,
 ) -> None:
