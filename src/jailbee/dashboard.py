@@ -3194,11 +3194,12 @@ def run(
                         set_notice("Cancelled")
                         return None
                     action, tag = picker.carry
-                    build = (
-                        dact.snapshot_restore_argv
-                        if action == dact.RESTORE
-                        else dact.snapshot_delete_argv
-                    )
+                    if action == dact.RESTORE:
+                        build = dact.snapshot_restore_argv
+                    elif action == dact.DELETE:
+                        build = dact.snapshot_delete_argv
+                    else:
+                        return None  # never default to a destructive verb
                     # Foreground, like the create: an incus restore can outlast
                     # the 60 s cutoff of the quiet runner.
                     run_dashboard_command(container, "container", build(container, tag))

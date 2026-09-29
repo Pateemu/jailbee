@@ -8710,5 +8710,84 @@ def test_container_vanishing_while_a_snapshot_action_or_confirm_is_open_runs_not
         keys += [_ENTER, b"j"]  # Restore, then onto "Yes"
     assert _drive_with_vanish(mocker, keys, [group], group.containers.clear, when=when) == 0
 
+    purposes = {p.purpose for p in _rendered(render, dashboard.Picker)}
+    assert "container-snapshot-action" in purposes
+    assert ("container-snapshot-confirm" in purposes) == (step == "confirm")
     child.assert_not_called()
     assert "'alpha-x' is gone" in " ".join(str(n) for n in _notices(render))
+
+
+_THREE_SNAPS = json.dumps([{"name": n, "created": "2026-09-29T10:00:00Z"} for n in ("a", "b", "c")])
+
+
+@pytest.mark.parametrize("verb", ["restore", "delete"])
+@pytest.mark.parametrize(("row", "tag"), [(0, "a"), (1, "b"), (2, "c")], ids=["a", "b", "c"])
+def test_snapshot_change_acts_on_the_chosen_snapshot_not_the_first(
+    mocker, tmp_path, verb, row, tag
+):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker, dashboard.da.CliResult(True, "done", _THREE_SNAPS))
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+
+    keys = [
+        *_container_menu_keys(group, "snapshots"),
+        *[b"j"] * (2 + row),  # past the two create entries
+        _ENTER,
+        *([b"j"] if verb == "delete" else []),
+        _ENTER,
+        b"j",
+        _ENTER,
+    ]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    child.assert_called_once_with(
+        ["jailbee", "snapshot", verb, "--config", str(group.config_path), "--", "alpha-x", tag],
+        check=False,
+        cwd=tmp_path,
+    )
+
+
+@pytest.mark.parametrize("verb", ["restore", "delete"])
+def test_snapshot_named_config_stays_positional_over_ssh(mocker, tmp_path, verb):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    listing = json.dumps([{"name": "--config", "created": "2026-09-29T10:00:00Z"}])
+    _fake_snapshot_ls(mocker, dashboard.da.CliResult(True, "done", listing))
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+    kwargs = {"remote": True, "over_ssh": True, "ssh_policy": RemoteSSHConfig()}
+
+    keys = [
+        *_container_menu_keys(group, "snapshots", **kwargs),
+        *_TO_SNAPSHOT_ROW,
+        *([b"j"] if verb == "delete" else []),
+        _ENTER,
+        b"j",
+        _ENTER,
+    ]
+    assert _drive_run(mocker, keys, [group], **kwargs) == 0
+
+    child.assert_called_once_with(
+        ["jailbee", "snapshot", verb, "--", "alpha-x", "--config"], check=False, cwd=tmp_path
+    )
+
+
+def test_an_unknown_snapshot_action_spawns_nothing(mocker, tmp_path):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    real = dashboard.dact.snapshot_confirm_picker
+    mocker.patch.object(
+        dashboard.dact,
+        "snapshot_confirm_picker",
+        side_effect=lambda container, _action, tag: real(container, "bogus", tag),
+    )
+
+    keys = [*_container_menu_keys(group, "snapshots"), *_TO_SNAPSHOT_ROW, _ENTER, b"j", _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    child.assert_not_called()
