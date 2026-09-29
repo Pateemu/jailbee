@@ -33,6 +33,12 @@ def incus_on_path():
         yield
 
 
+@pytest.fixture(autouse=True)
+def litellm_inputs_ok(mocker):
+    """Keep the host's own LiteLLM secrets and config out of every doctor test."""
+    return mocker.patch("jailbee.litellm_inputs.load_host_inputs")
+
+
 def _cfg(tmp_path):
     cfg = load_config(FIXTURES / "full_config.yaml")
     return cfg.model_copy(update={"shared_dir": tmp_path / "shared"})
@@ -82,7 +88,7 @@ def test_litellm_doctor_disabled_does_not_probe(mocker):
         (False, "1.103.0", "present", True, "unhealthy"),
         (True, "0.1.0", "present", True, "installed 0.1.0"),
         (True, "1.103.0", "missing", True, "not logged in"),
-        (True, "1.103.0", "present", False, "cannot reach chatgpt.com:443"),
+        (True, "1.103.0", "present", False, "cannot reach auth.openai.com:443"),
     ],
 )
 def test_litellm_doctor_running_branches(mocker, healthy, version, login, reachable, expected):
@@ -104,7 +110,7 @@ def test_litellm_doctor_running_branches(mocker, healthy, version, login, reacha
         assert all(r.ok for r in rows)
     else:
         assert any(not r.ok and expected in r.detail for r in rows)
-    probe.assert_called_once_with(mocker.ANY, "chatgpt.com", 443)
+    assert probe.call_args_list[0].args[1:] == ("auth.openai.com", 443)
 
 
 def test_litellm_doctor_flags_an_account_without_an_instance(mocker):
@@ -143,6 +149,130 @@ def test_litellm_doctor_flags_a_bridge_without_the_services_acl(mocker):
     bad = [r for r in rows if not r.ok]
     assert len(bad) == 1
     assert "jailbee-work" in bad[0].detail and "jailbee apply" in bad[0].detail
+
+
+def _litellm_up(mocker, instances, **litellm):
+    from jailbee import litellm as ll
+
+    gcfg = GlobalConfig.model_validate({"litellm": {"enabled": True, **litellm}})
+    status = ll.LiteLLMStatus(ll.ContainerState.RUNNING, "10.79.115.3", "1.103.0", instances)
+    mocker.patch("jailbee.litellm.litellm_status", return_value=status)
+    mocker.patch("jailbee.litellm.bridges_missing_services_acl", return_value=[])
+    mocker.patch("jailbee.litellm_inputs.load_host_inputs")
+    return gcfg
+
+
+def _rows(gcfg):
+    from jailbee.doctor import _check_litellm
+
+    return {r.name: r for r in _check_litellm(_baseline_incus(), gcfg)}
+
+
+def test_litellm_doctor_reports_an_input_problem(mocker):
+    from jailbee import litellm as ll
+    from jailbee.litellm_inputs import LiteLLMInputError
+
+    gcfg = _litellm_up(mocker, [ll.InstanceStatus("default", 4100, True, True, "present")])
+    mocker.patch(
+        "jailbee.litellm_inputs.load_host_inputs",
+        side_effect=LiteLLMInputError("secrets.env does not define OPENROUTER_API_KEY"),
+    )
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    row = _rows(gcfg)["litellm inputs"]
+    assert not row.ok and "OPENROUTER_API_KEY" in row.detail and "jailbee litellm up" in row.detail
+
+
+def test_missing_login_blocks_only_the_default_profiles_account(mocker):
+    from jailbee import litellm as ll
+
+    gcfg = _litellm_up(
+        mocker,
+        [
+            ll.InstanceStatus("personal", 4100, True, True, "missing"),
+            ll.InstanceStatus("work", 4101, True, True, "missing"),
+        ],
+        accounts=["personal", "work"],
+        routes={"sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "low"}},
+        profiles={"codex": {"account": "personal"}, "w": {"account": "work", "opus": "sol-low"}},
+    )
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    rows = _rows(gcfg)
+    assert not rows["litellm personal login"].ok
+    assert "jailbee litellm login personal" in rows["litellm personal login"].detail
+    assert rows["litellm work login"].ok and "w" in rows["litellm work login"].detail
+
+
+def test_an_api_key_only_user_is_not_asked_to_log_in(mocker):
+    from jailbee import litellm as ll
+
+    gcfg = _litellm_up(
+        mocker,
+        [ll.InstanceStatus("default", 4100, True, True, "missing")],
+        default_profile="kimi",
+        routes={"kimi": {"model": "openrouter/k", "context_window": 1000, "api_key": "OR_KEY"}},
+        profiles={"kimi": {"opus": "kimi"}},
+    )
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    assert "litellm default login" not in _rows(gcfg) or _rows(gcfg)["litellm default login"].ok
+
+
+def test_an_unreadable_login_fails(mocker):
+    from jailbee import litellm as ll
+
+    gcfg = _litellm_up(mocker, [ll.InstanceStatus("default", 4100, True, True, "unknown")])
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    assert not _rows(gcfg)["litellm default login"].ok
+
+
+def test_the_version_row_appears_once_for_several_instances(mocker):
+    from jailbee import litellm as ll
+    from jailbee.doctor import _check_litellm
+
+    gcfg = _litellm_up(
+        mocker,
+        [
+            ll.InstanceStatus("personal", 4100, True, True, "present"),
+            ll.InstanceStatus("work", 4101, True, True, "present"),
+        ],
+        accounts=["personal", "work"],
+        profiles={"codex": {"account": "personal"}},
+        version="1.104.0",
+    )
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    names = [r.name for r in _check_litellm(_baseline_incus(), gcfg)]
+    assert names.count("litellm version") == 1
+
+
+def test_every_unreachable_upstream_is_named(mocker):
+    from jailbee import litellm as ll
+
+    gcfg = _litellm_up(
+        mocker,
+        [ll.InstanceStatus("default", 4100, True, True, "present")],
+        egress=["10.0.0.5:11434"],
+    )
+    mocker.patch(
+        "jailbee.litellm.upstream_reachable",
+        side_effect=lambda _incus, host, port: host != "10.0.0.5",
+    )
+    row = _rows(gcfg)["litellm upstream"]
+    assert not row.ok and "10.0.0.5:11434" in row.detail and "chatgpt.com" not in row.detail
+
+
+def test_an_instance_never_brought_up_says_so(mocker):
+    from jailbee import litellm as ll
+
+    gcfg = _litellm_up(
+        mocker,
+        [
+            ll.InstanceStatus("default", 4100, True, True, "present"),
+            ll.InstanceStatus("spare", None, False, False, "unknown"),
+        ],
+        accounts=["default", "spare"],
+    )
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    row = _rows(gcfg)["litellm spare"]
+    assert not row.ok and "jailbee litellm up" in row.detail
 
 
 def test_run_checks_includes_litellm_diagnostics(tmp_path, mocker):
