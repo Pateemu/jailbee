@@ -104,6 +104,19 @@ def test_read_container_pids_walks_the_whole_subtree(tmp_path):
     assert sorted(pids) == [500, 610, 700, 701]
 
 
+def test_read_container_pids_survives_a_cgroup_path_that_is_not_utf8(tmp_path):
+    """A container can mkdir a cgroup with any bytes; strict decoding raised
+    UnicodeDecodeError (a ValueError) out of the sampler."""
+    proc, cg = tmp_path / "proc", tmp_path / "cgroup"
+    (proc / "500").mkdir(parents=True)
+    (proc / "500" / "cgroup").write_bytes(b"0::/lxc.payload.p-a/\xff\n")
+    write_cgroup_procs(cg, "/lxc.payload.p-a", [500, 610])
+
+    pids = procstat.read_container_pids(500, "p-a", proc_root=proc, cgroup_root=cg)
+
+    assert sorted(pids) == [500, 610]
+
+
 def test_read_container_pids_climbs_out_of_init_scope(tmp_path):
     """init's own cgroup is a CHILD of the container's. Using it as the base
     would return pid 1 and nothing else."""

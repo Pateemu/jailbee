@@ -174,7 +174,7 @@ def read_container_pids(
     that is a note rather than a guard.
     """
     try:
-        raw = (proc_root / str(init_pid) / "cgroup").read_text()
+        raw = (proc_root / str(init_pid) / "cgroup").read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
     rel = _container_cgroup(raw, container)
