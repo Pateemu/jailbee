@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,6 +85,31 @@ def read_process(pid: int, *, proc_root: Path = PROC_ROOT) -> ProcSample | None:
         )
     except (IndexError, ValueError):
         return None
+
+
+def read_nspid(pid: int, *, proc_root: Path = PROC_ROOT) -> int | None:
+    """The pid `pid` has in its innermost pid namespace, or None.
+
+    The `NSpid:` line of /proc/<pid>/status lists the process's pid in every
+    namespace it is visible in, the reader's own first. The last field is
+    therefore the pid the process sees itself as: the one an agent inside a
+    container writes into its session file. A kernel older than 4.1 has no
+    such line. Missing, unreadable or garbled all mean None.
+
+    Read as bytes: the `Name:` line carries comm, which is arbitrary bytes.
+    """
+    try:
+        raw = (proc_root / str(pid) / "status").read_bytes()
+    except OSError:
+        return None
+    for line in raw.splitlines():
+        if line.startswith(b"NSpid:"):
+            fields = line.split()[1:]
+            try:
+                return int(fields[-1])
+            except (IndexError, ValueError):
+                return None
+    return None
 
 
 def _unified_cgroup_path(raw: str) -> str:
@@ -249,6 +274,20 @@ class ActivitySampler:
         self._prev = readings
         self._prev_at = now
         return out
+
+    def processes(self, name: str) -> Mapping[int, ProcSample]:
+        """Host pid → sample for container `name`, from the latest reading.
+
+        Unlike the rates `sample` returns, this needs no previous reading, so
+        it is populated from the first call on. It is empty for a container
+        the latest reading did not include or could not read.
+        """
+        reading = self._prev.get(name)
+        return {} if reading is None else reading.processes
+
+    def nspid(self, pid: int) -> int | None:
+        """`read_nspid` against this sampler's own /proc root."""
+        return read_nspid(pid, proc_root=self._proc_root)
 
     def _read(self, item: SampleInput) -> _Reading:
         processes: dict[int, ProcSample] = {}

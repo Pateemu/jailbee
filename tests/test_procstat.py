@@ -282,3 +282,73 @@ def test_read_process_survives_a_comm_that_is_not_utf8(tmp_path):
     assert sample is not None
     assert sample.ticks == 10
     assert sample.starttime == 3
+
+
+def write_status(proc_root: Path, pid: int, nspid: str | None, *, name: bytes = b"claude") -> None:
+    """A /proc/<pid>/status with a `Name:` line and, optionally, an `NSpid:` line."""
+    d = proc_root / str(pid)
+    d.mkdir(parents=True, exist_ok=True)
+    lines = [b"Name:\t" + name, b"State:\tS (sleeping)"]
+    if nspid is not None:
+        lines.append(b"NSpid:\t" + nspid.encode())
+    (d / "status").write_bytes(b"\n".join(lines) + b"\n")
+
+
+def test_read_nspid_is_the_innermost_namespace_pid(tmp_path):
+    """From the host, a container's process lists its host pid first and the
+    pid it sees itself as last. The agent wrote the last one into its file."""
+    write_status(tmp_path, 48213, "48213\t3679")
+
+    assert procstat.read_nspid(48213, proc_root=tmp_path) == 3679
+
+
+def test_read_nspid_without_a_nested_namespace_is_the_pid_itself(tmp_path):
+    write_status(tmp_path, 42, "42")
+
+    assert procstat.read_nspid(42, proc_root=tmp_path) == 42
+
+
+@pytest.mark.parametrize("nspid", [None, "", "abc"])
+def test_read_nspid_is_none_for_a_missing_or_garbled_line(tmp_path, nspid):
+    """A kernel older than 4.1 has no NSpid line at all."""
+    write_status(tmp_path, 42, nspid)
+
+    assert procstat.read_nspid(42, proc_root=tmp_path) is None
+
+
+def test_read_nspid_is_none_for_a_pid_that_is_gone(tmp_path):
+    assert procstat.read_nspid(42, proc_root=tmp_path) is None
+
+
+def test_read_nspid_survives_a_name_that_is_not_utf8(tmp_path):
+    write_status(tmp_path, 42, "42\t7", name=b"\xff\xfe")
+
+    assert procstat.read_nspid(42, proc_root=tmp_path) == 7
+
+
+def test_processes_exposes_the_latest_reading_from_the_first_sample(tmp_path):
+    """A state needs no rate, so the AGENT column must not wait for priming."""
+    stage_container(tmp_path, pids=[600])
+    write_stat(tmp_path / "proc", 600, comm="claude", starttime=557381979)
+    sampler = make_sampler(tmp_path, [10.0])
+
+    sampler.sample([procstat.SampleInput("gie-demo", 500, None)])
+
+    procs = sampler.processes("gie-demo")
+    assert set(procs) == {600}
+    assert procs[600].starttime == 557381979
+
+
+def test_processes_is_empty_for_a_container_the_reading_did_not_include(tmp_path):
+    sampler = make_sampler(tmp_path, [10.0])
+    sampler.sample([])
+
+    assert sampler.processes("gie-demo") == {}
+
+
+def test_sampler_nspid_reads_its_own_proc_root(tmp_path):
+    """Not the host's real /proc: a test sampler must stay on its fake tree."""
+    write_status(tmp_path / "proc", 48213, "48213\t3679")
+    sampler = make_sampler(tmp_path, [])
+
+    assert sampler.nspid(48213) == 3679
