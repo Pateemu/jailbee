@@ -33,7 +33,7 @@ def test_instance_config_has_one_deployment_per_route_plus_catch_all():
     }
     sol = models["jb-default-sol-xhigh"]
     assert sol["litellm_params"] == {"model": "chatgpt/gpt-6-sol"}
-    assert sol["model_info"] == {"mode": "responses", "max_input_tokens": 1_050_000}
+    assert sol["model_info"] == {"mode": "responses", "max_input_tokens": 922_000}
 
 
 def test_effort_is_not_put_in_litellm_params():
@@ -132,7 +132,7 @@ def test_container_payload():
                     "sonnet": "jb-default-sol-medium",
                     "haiku": "jb-default-luna-high",
                 },
-                "context_window": 1_050_000,
+                "context_window": 922_000,
             }
         },
     }
@@ -147,7 +147,7 @@ def test_payload_context_window_is_the_largest_of_the_profiles_routes():
     )
     payload = container_payload(cfg, base_url="u", key_file="k")
     assert payload["profiles"]["small"]["context_window"] == 400_000
-    assert payload["profiles"]["codex"]["context_window"] == 1_050_000
+    assert payload["profiles"]["codex"]["context_window"] == 922_000
 
 
 def test_egress_hosts_for_chatgpt():

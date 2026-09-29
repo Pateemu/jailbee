@@ -2392,8 +2392,10 @@ yet supported.
 
 Routes accept `model` (required for new routes), `effort` (fixed),
 `min_effort` (floor; mutually exclusive with `effort`), `context_window`
-(required for unknown models, default `1050000` for built-in GPT-6 models),
-and `params` (raw LiteLLM deployment parameters). Profiles also accept
+(required for unknown models, default `922000` for built-in GPT-6 models),
+and `params` (raw LiteLLM deployment parameters; keys that change the provider,
+endpoint or credential, such as `model`, `api_base`, `api_key` or `extra_headers`,
+are rejected). Profiles also accept
 `effort` as the default session effort. `jailbee litellm up` renders changes
 and restarts the instance if needed; `jailbee apply` synchronizes the gateway
 file/key into each running dev container but does not restart the proxy.

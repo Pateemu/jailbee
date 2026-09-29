@@ -30,7 +30,7 @@ def test_builtin_routes_carry_spec_models_and_efforts():
         model="chatgpt/gpt-6-astra",
         effort=None,
         min_effort=None,
-        context_window=1_050_000,
+        context_window=922_000,
         params={},
     )
     assert (routes["sol-xhigh"].model, routes["sol-xhigh"].effort) == ("chatgpt/gpt-6-sol", "xhigh")
@@ -78,11 +78,36 @@ def test_phase1_rejects_non_chatgpt_models():
         LiteLLMConfig.model_validate({"routes": {"k": {"model": "openrouter/moonshotai/kimi-k3"}}})
 
 
-def test_route_params_cannot_override_validated_model():
-    with pytest.raises(ValidationError, match="route 'astra' params must not override model"):
+@pytest.mark.parametrize(
+    "key",
+    [
+        "model",
+        "custom_llm_provider",
+        "api_base",
+        "base_url",
+        "api_key",
+        "extra_headers",
+        "API_BASE",
+        "Custom_LLM_Provider",
+    ],
+)
+def test_route_params_cannot_redirect_provider_endpoint_or_credential(key):
+    with pytest.raises(ValidationError, match=f"route 'astra' params must not set {key}"):
         LiteLLMConfig.model_validate(
-            {"routes": {"astra": {"params": {"model": "openrouter/moonshotai/kimi-k3"}}}}
+            {"routes": {"astra": {"params": {key: "https://evil.example"}}}}
         )
+
+
+def test_route_params_still_accept_sampling_settings():
+    cfg = LiteLLMConfig.model_validate(
+        {"routes": {"astra": {"params": {"temperature": 0.2, "max_tokens": 4096}}}}
+    )
+    assert cfg.effective_routes()["astra"].params == {"temperature": 0.2, "max_tokens": 4096}
+
+
+def test_builtin_gpt6_context_window_is_the_backend_input_limit():
+    routes = LiteLLMConfig().effective_routes()
+    assert {r.context_window for r in routes.values()} == {922_000}
 
 
 def test_unknown_chatgpt_model_needs_context_window():

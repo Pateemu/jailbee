@@ -28,12 +28,35 @@ EFFORT_ORDER: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 TIERS: tuple[str, ...] = ("fable", "opus", "sonnet", "haiku")
 
 KNOWN_CONTEXT_WINDOWS: dict[str, int] = {
-    "chatgpt/gpt-6-astra": 1_050_000,
-    "chatgpt/gpt-6-sol": 1_050_000,
-    "chatgpt/gpt-6-luna": 1_050_000,
+    "chatgpt/gpt-6-astra": 922_000,
+    "chatgpt/gpt-6-sol": 922_000,
+    "chatgpt/gpt-6-luna": 922_000,
 }
-"""Total window (input + output) per model, from developers.openai.com and the
-2026-09-29 spike (the subscription backend accepted 903k input tokens)."""
+"""Window Claude Code manages per model. This is the subscription backend's
+maximum *input*, not the API's 1.05M total: the 2026-09-29 spike saw 903k
+accepted and denser prompts over ~922k rejected. Claude Code compacts a fixed
+reserve below this value, so a larger one would compact after the backend has
+already refused the prompt."""
+
+PARAMS_DENYLIST: frozenset[str] = frozenset(
+    {
+        "model",
+        "custom_llm_provider",
+        "api_base",
+        "base_url",
+        "api_key",
+        "api_version",
+        "organization",
+        "headers",
+        "extra_headers",
+        "litellm_credential_name",
+        "azure_ad_token",
+        "model_info",
+    }
+)
+"""`params` keys that change which provider, endpoint or credential a deployment
+uses. Allowing them would defeat the `chatgpt/`-only validation and the egress
+table derived from it, and could send the login token to another host."""
 
 _BUILTIN_ROUTES: dict[str, dict[str, object]] = {
     "astra": {"model": "chatgpt/gpt-6-astra"},
@@ -76,9 +99,9 @@ class LiteLLMRoute(BaseModel):
         default=None,
         gt=0,
         description=(
-            "Total context window in tokens (input + output). Passed to Claude Code "
-            "as `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. Defaults to 1050000 for "
-            "`chatgpt/gpt-6-*`; required for any other model."
+            "Context window in tokens that Claude Code manages (use the backend's "
+            "maximum input). Passed to Claude Code as `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. "
+            "Defaults to 922000 for `chatgpt/gpt-6-*`; required for any other model."
         ),
     )
     params: dict[str, object] = Field(
@@ -190,8 +213,12 @@ class LiteLLMConfig(BaseModel):
                 raise ValueError(f"route '{name}' needs `context_window` (unknown model {model!r})")
             params = raw.get("params") or {}
             assert isinstance(params, dict)
-            if "model" in params:
-                raise ValueError(f"route '{name}' params must not override model")
+            forbidden = sorted(k for k in params if str(k).lower() in PARAMS_DENYLIST)
+            if forbidden:
+                raise ValueError(
+                    f"route '{name}' params must not set {', '.join(forbidden)}: "
+                    "they change the provider, endpoint or credential"
+                )
             out[name] = ResolvedRoute(
                 name=name,
                 model=model,

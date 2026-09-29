@@ -86,11 +86,13 @@ Profile selection order is `claude-jb --profile NAME`, then
 `--profile` is consumed by the wrapper, not passed to Claude Code. Use plain
 `claude` for native access, not `--profile native`.
 
-The three built-in GPT-6 models default to a **1,050,000-token total context
-window**. A new model needs an explicit `context_window`; the wrapper exports
+The three built-in GPT-6 models default to a **922,000-token context window**:
+the ChatGPT subscription backend's maximum input, not the API's 1.05M total.
+Claude Code compacts a fixed reserve below the window it is told about, so a
+larger value would compact only after the backend had refused the prompt. A new
+model needs an explicit `context_window`; the wrapper exports
 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` as the largest window among the selected
-profile's mapped routes. That value is a total window, not guaranteed usable
-input capacity on the ChatGPT subscription backend.
+profile's mapped routes.
 
 ## Security and limitations
 
