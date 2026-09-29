@@ -503,6 +503,18 @@ class ClaudeAgentConfig(AgentConfig):
             "while blocking marketplace traffic. Has no effect when `enabled` is false."
         ),
     )
+    agent_view: bool = Field(
+        default=False,
+        description=(
+            "When false (default), containers get `CLAUDE_CODE_DISABLE_AGENT_VIEW=1`, which "
+            "turns off Claude Code's agent view (`claude agents`, `--bg`, `/background`) and "
+            "the on-demand background daemon behind it. The daemon keeps its lock file in "
+            "the `~/.claude` every container of the repo shares, so daemons in two "
+            "containers take the lock from each other and background jobs die. Set to true "
+            "if you run one container of the repo at a time. Has no effect when `enabled` "
+            "is false."
+        ),
+    )
     seed_onboarding: bool = Field(
         default=True,
         description=(

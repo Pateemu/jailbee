@@ -281,6 +281,38 @@ def test_base_profile_container_env_overrides_claude_config_dir(make_cfg, tmp_pa
     assert parsed["config"]["environment.CLAUDE_CONFIG_DIR"] == "/custom/path"
 
 
+def test_base_profile_turns_claude_agent_view_off_by_default(make_cfg, tmp_path):
+    """Agent view's daemon keeps its lock in the `~/.claude` every container
+    of the repo shares; daemons in two containers take it from each other."""
+    cfg = make_cfg(tmp_path, claude={"enabled": True})
+    parsed = yaml.safe_load(base_profile_yaml(cfg))
+    assert parsed["config"]["environment.CLAUDE_CODE_DISABLE_AGENT_VIEW"] == "1"
+
+
+def test_base_profile_omits_the_agent_view_switch_when_agent_view_is_on(make_cfg, tmp_path):
+    """Omitted, never "0": whether Claude Code reads "0" as false is unverified."""
+    cfg = make_cfg(tmp_path, claude={"enabled": True, "agent_view": True})
+    parsed = yaml.safe_load(base_profile_yaml(cfg))
+    assert "environment.CLAUDE_CODE_DISABLE_AGENT_VIEW" not in parsed["config"]
+
+
+def test_base_profile_omits_the_agent_view_switch_when_claude_is_disabled(make_cfg, tmp_path):
+    cfg = make_cfg(tmp_path, claude={"enabled": False})
+    parsed = yaml.safe_load(base_profile_yaml(cfg))
+    assert "environment.CLAUDE_CODE_DISABLE_AGENT_VIEW" not in parsed["config"]
+
+
+def test_container_env_overrides_the_agent_view_switch(make_cfg, tmp_path):
+    """`container.env` is applied last and wins, as for every other key."""
+    cfg = make_cfg(
+        tmp_path,
+        claude={"enabled": True},
+        container={"env": {"CLAUDE_CODE_DISABLE_AGENT_VIEW": ""}},
+    )
+    parsed = yaml.safe_load(base_profile_yaml(cfg))
+    assert parsed["config"]["environment.CLAUDE_CODE_DISABLE_AGENT_VIEW"] == ""
+
+
 def test_base_profile_sets_securestorage_dir_for_a_group_repo(make_cfg, tmp_path):
     """The variable Claude Code resolves `.credentials.json` from. Reaching
     every `incus exec` through the profile is what makes this work on existing

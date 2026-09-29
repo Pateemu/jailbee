@@ -51,6 +51,13 @@ empty-value guard, and the `jailbee new` repair — so a rename cannot split
 The `environment.` prefix a profile key needs is added by the caller.
 """
 
+CLAUDE_DISABLE_AGENT_VIEW_ENV = "CLAUDE_CODE_DISABLE_AGENT_VIEW"
+"""Claude Code's switch for agent view and its on-demand daemon (2.1.285).
+
+Set to `1` unless `agents.claude.agent_view` is true, and then omitted: the
+daemon's `daemon.lock` sits in the config home every container shares.
+"""
+
 
 def identity_file(home: Path) -> Path:
     """The config file carrying `oauthAccount`, mirroring Claude Code's own
