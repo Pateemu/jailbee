@@ -97,3 +97,42 @@ def test_renderers_show_label_text_error_and_cursor():
     text = console.export_text()
     for expected in ("New container", "New branch", "abc", "oops", "Pick one", "Alpha"):
         assert expected in text
+
+
+def test_invalid_bytes_never_put_a_replacement_char_in_the_text():
+    for key in (b"\xff", b"\xa4", b"\xff\xfe"):
+        text, pending = ov.decode_input(b"", key)
+        assert "�" not in text
+        assert (text, pending) == ("", b"")
+
+
+def test_invalid_byte_before_a_partial_keeps_the_partial():
+    # The invalid \xff is dropped; the trailing \xc3 is held and completes to "ä".
+    text, pending = ov.decode_input(b"", b"\xff\xc3")
+    assert (text, pending) == ("", b"\xc3")
+    assert ov.decode_input(pending, b"\xa4") == ("ä", b"")
+
+
+def test_valid_prefix_is_shown_immediately_with_a_partial_tail():
+    assert ov.decode_input(b"", b"a\xc3") == ("a", b"\xc3")
+    p, _ = ov.handle_prompt_key(_prompt(), b"a\xc3")
+    assert (p.text, p.pending_utf8) == ("a", b"\xc3")
+    p, _ = ov.handle_prompt_key(p, b"\x7f")  # drops only the partial
+    assert (p.text, p.pending_utf8) == ("a", b"")
+
+
+def test_four_byte_character_reassembles_from_any_split():
+    raw = "😀".encode()
+    for cut in (1, 2, 3):
+        p, _ = ov.handle_prompt_key(_prompt(), raw[:cut])
+        assert p.text == "" and p.pending_utf8 == raw[:cut]
+        p, _ = ov.handle_prompt_key(p, raw[cut:])
+        assert (p.text, p.pending_utf8) == ("😀", b"")
+
+
+def test_pending_bytes_followed_by_ascii_do_not_wedge_the_prompt():
+    p, _ = ov.handle_prompt_key(_prompt(), b"\xc3")
+    p, _ = ov.handle_prompt_key(p, b"b")
+    assert (p.text, p.pending_utf8) == ("b", b"")
+    p, _ = ov.handle_prompt_key(p, b"c")
+    assert p.text == "bc"

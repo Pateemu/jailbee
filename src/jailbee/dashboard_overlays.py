@@ -34,18 +34,36 @@ def decode_input(pending: bytes, key: bytes) -> tuple[str, bytes]:
     """Printable text carried by ``key`` and the partial UTF-8 still pending.
 
     A multi-byte character can arrive split across two terminal reads, so an
-    incomplete tail is held back rather than decoded as a replacement char.
+    incomplete tail is held back (only the tail; the valid prefix is returned
+    at once). Invalid bytes are dropped, never turned into U+FFFD.
     Non-printable input (escape sequences, control bytes) yields no text and
     leaves ``pending`` as it was.
     """
     encoded = pending + key
-    try:
-        text = encoded.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        if exc.reason == "unexpected end of data" and exc.end == len(encoded):
-            return "", encoded
-        text = encoded.decode("utf-8", errors="replace")
-    return (text, b"") if text and text.isprintable() else ("", pending)
+    tail = _partial_tail(encoded)
+    text = encoded[: len(encoded) - len(tail)].decode("utf-8", errors="ignore")
+    if text and not text.isprintable():
+        return "", pending
+    return text, tail
+
+
+def _partial_tail(data: bytes) -> bytes:
+    """The trailing bytes of ``data`` that start a UTF-8 character not yet complete."""
+    for n in range(1, min(3, len(data)) + 1):
+        byte = data[-n]
+        if byte & 0xC0 == 0x80:  # continuation byte: keep looking for its lead
+            continue
+        need = (
+            2
+            if 0xC2 <= byte <= 0xDF
+            else 3
+            if 0xE0 <= byte <= 0xEF
+            else 4
+            if 0xF0 <= byte <= 0xF4
+            else 0
+        )
+        return data[-n:] if need > n else b""
+    return b""
 
 
 @dataclass(frozen=True)
