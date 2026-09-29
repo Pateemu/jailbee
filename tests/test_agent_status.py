@@ -146,7 +146,11 @@ def test_two_files_claiming_one_process_count_once_and_the_newest_wins():
 
 
 def test_several_agents_are_ordered_most_urgent_first():
-    sessions = [_s(1, 11, "busy", agent="codex"), _s(2, 12, "waiting"), _s(3, 13, "busy", agent="aider")]
+    sessions = [
+        _s(1, 11, "busy", agent="codex"),
+        _s(2, 12, "waiting"),
+        _s(3, 13, "busy", agent="aider"),
+    ]
     out = _match(sessions, {"a": {101: 11, 102: 12, 103: 13}}, {101: 1, 102: 2, 103: 3})
 
     assert [s.agent for s in out["a"]] == ["claude", "aider", "codex"]
@@ -188,4 +192,3 @@ def test_read_sessions_survives_an_adapter_that_raises(monkeypatch, tmp_path):
     got = agent_status.read_sessions([("broken", tmp_path), ("fine", tmp_path)])
 
     assert got == [_s(1, 11)]
-
