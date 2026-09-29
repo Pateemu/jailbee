@@ -266,3 +266,19 @@ def test_a_stopped_container_is_reported_empty(tmp_path):
 
     assert out["gie-stopped"].cpu_percent is None
     assert out["gie-stopped"].processes == ()
+
+
+def test_read_process_survives_a_comm_that_is_not_utf8(tmp_path):
+    """`comm` is whatever bytes the process set (prctl PR_SET_NAME). Decoding
+    it strictly raised UnicodeDecodeError out of the sampler, and with it the
+    dashboard's refresh tick, for every container on the screen."""
+    d = tmp_path / "7"
+    d.mkdir()
+    fields = "S 1 1 0 -1 4194304 0 0 0 0 0 5 5 0 0 20 0 1 0 3"
+    (d / "stat").write_bytes(b"7 (\xff\xfe) " + fields.encode() + b"\n")
+
+    sample = procstat.read_process(7, proc_root=tmp_path)
+
+    assert sample is not None
+    assert sample.ticks == 10
+    assert sample.starttime == 3

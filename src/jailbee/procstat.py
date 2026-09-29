@@ -64,7 +64,9 @@ def read_process(pid: int, *, proc_root: Path = PROC_ROOT) -> ProcSample | None:
     later field.
     """
     try:
-        raw = (proc_root / str(pid) / "stat").read_text()
+        # `errors="replace"`: comm is arbitrary bytes, and a strict decode
+        # raised out of the whole sample. Only comm can be non-ASCII.
+        raw = (proc_root / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
     open_at = raw.find("(")
