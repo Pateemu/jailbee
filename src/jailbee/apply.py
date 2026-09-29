@@ -317,6 +317,13 @@ def run_apply(
     from jailbee.services_acl import ensure_services_acl
 
     ensure_services_acl(incus)
+    from jailbee.litellm import reconcile_services_acl
+
+    try:
+        if reconcile_services_acl(incus):
+            info("Removed a stale LiteLLM service rule (its container no longer exists).")
+    except IncusError as e:
+        warn_plain(f"Could not reconcile the LiteLLM service rule: {e}")
     info("Checking profiles...")
     profiles_changed: list[str] = []
     # Profiles whose change a running container only picks up on restart. The

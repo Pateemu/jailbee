@@ -130,6 +130,16 @@ def _check_litellm(incus: Incus, gcfg: GlobalConfig) -> list[CheckResult]:
             rows.append(
                 CheckResult(f"{name} login", False, "not logged in — run 'jailbee litellm login'")
             )
+    missing = litellm.bridges_missing_services_acl(incus)
+    if missing:
+        rows.append(
+            CheckResult(
+                "litellm reachability",
+                False,
+                f"the services ACL is not attached to {', '.join(missing)}, so strict "
+                "containers cannot reach the proxy — run 'jailbee apply'",
+            )
+        )
     if not litellm.upstream_reachable(incus, "chatgpt.com"):
         rows.append(
             CheckResult(

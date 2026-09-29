@@ -2712,3 +2712,46 @@ def test_only_attaches_services_acl(old: str, new: str, expected: bool) -> None:
     from jailbee.apply import _only_attaches_services_acl
 
     assert _only_attaches_services_acl(old, new) is expected
+
+
+def test_run_apply_removes_a_stale_litellm_service_rule(
+    make_cfg, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+
+    cfg = make_cfg(tmp_path)
+    incus = MagicMock(spec=Incus)
+    incus.list_containers.return_value = []
+    incus.network_acl_list.return_value = []
+    incus.network_acl_exists.return_value = True
+    incus.network_get.return_value = ""
+    mocker.patch("jailbee.apply._profile_differs", return_value=False)
+    mocker.patch("jailbee.apply._acl_differs", return_value=False)
+    reconcile = mocker.patch("jailbee.litellm.reconcile_services_acl", return_value=True)
+
+    run_apply(cfg, incus, GlobalConfig(), confirm_fn=lambda _m: False)
+
+    reconcile.assert_called_once_with(incus)
+
+
+def test_run_apply_survives_a_failed_services_reconcile(
+    make_cfg, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+    from jailbee.incus import IncusError
+
+    cfg = make_cfg(tmp_path)
+    incus = MagicMock(spec=Incus)
+    incus.list_containers.return_value = []
+    incus.network_acl_list.return_value = []
+    incus.network_acl_exists.return_value = True
+    incus.network_get.return_value = ""
+    mocker.patch("jailbee.apply._profile_differs", return_value=False)
+    mocker.patch("jailbee.apply._acl_differs", return_value=False)
+    mocker.patch("jailbee.litellm.reconcile_services_acl", side_effect=IncusError("acl busy"))
+
+    result = run_apply(cfg, incus, GlobalConfig(), confirm_fn=lambda _m: False)
+
+    assert result.profiles_changed == []  # apply carried on past the failure

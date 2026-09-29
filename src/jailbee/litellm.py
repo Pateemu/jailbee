@@ -25,7 +25,7 @@ from jailbee.config import CONTAINER_USERNAME
 from jailbee.incus import IncusError
 from jailbee.litellm_render import ACCOUNT_DEFAULT, CONTAINER_STATE_DIR, egress_hosts
 from jailbee.loose_bridge import LOOSE_BRIDGE, loose_bridge_gateways, loose_bridge_host_ip
-from jailbee.network import service_container_acl_yaml
+from jailbee.network import SERVICES_ACL, service_container_acl_yaml
 from jailbee.services_acl import set_services_endpoint
 
 if TYPE_CHECKING:
@@ -549,3 +549,42 @@ def litellm_logs(incus: Incus, account: str, *, follow: bool, lines: int = 200) 
     if follow:
         cmd.append("-f")
     return incus.exec_interactive(LITELLM_CONTAINER, cmd)
+
+
+def reconcile_services_acl(incus: Incus) -> bool:
+    """Drop a services rule whose proxy container no longer exists; True if dropped.
+
+    `litellm down` clears the rule, but a container removed by hand or a
+    recreated bridge leaves `ip/32:port` allowed while its reservation is gone.
+    DHCP can then hand that address to a loose container, which strict
+    containers would be allowed to reach.
+    """
+    if not incus.network_acl_exists(SERVICES_ACL):
+        return False
+    if any(c.get("name") == LITELLM_CONTAINER for c in incus.list_containers()):
+        return False
+    raw = incus.network_acl_show(SERVICES_ACL)
+    parsed = yaml.safe_load(raw) if isinstance(raw, str) else None
+    if not isinstance(parsed, dict) or not parsed.get("egress"):
+        return False
+    set_services_endpoint(incus, None)
+    return True
+
+
+def bridges_missing_services_acl(incus: Incus) -> list[str]:
+    """Managed bridges that lack the services ACL, so strict containers cannot reach the proxy.
+
+    A bridge with no ACLs at all is not jailbee's (an unmanaged `incusbr0`),
+    and is left out. The attachment happens in `init`/`apply`, not `litellm up`.
+    """
+    from jailbee.network_generation import WORK_BRIDGE
+
+    missing: list[str] = []
+    for bridge in ("incusbr0", WORK_BRIDGE):
+        if not incus.network_exists(bridge):
+            continue
+        raw = incus.network_get(bridge, "security.acls")
+        attached = [a.strip() for a in raw.split(",") if a.strip()] if isinstance(raw, str) else []
+        if attached and SERVICES_ACL not in attached:
+            missing.append(bridge)
+    return missing

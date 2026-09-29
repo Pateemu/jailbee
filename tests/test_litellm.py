@@ -315,6 +315,62 @@ def test_up_does_not_touch_an_existing_state_mount():
     assert not any(c.args[1:2] == ("boot.autostart",) for c in incus.config_set.call_args_list)
 
 
+def _services_acl_with_rule() -> str:
+    return yaml.safe_dump(
+        {
+            "name": "jailbee-services",
+            "egress": [{"action": "allow", "destination": "10.79.115.3/32", "protocol": "tcp"}],
+        }
+    )
+
+
+def test_reconcile_drops_a_rule_whose_container_is_gone():
+    incus = _incus(present=False)
+    incus.network_acl_show.return_value = _services_acl_with_rule()
+    assert ll.reconcile_services_acl(incus) is True
+    written = incus.network_acl_set_yaml.call_args
+    assert written.args[0] == "jailbee-services"
+    assert yaml.safe_load(written.args[1])["egress"] == []
+
+
+def test_reconcile_keeps_the_rule_while_the_container_exists():
+    incus = _incus(present=True, running=False)
+    incus.network_acl_show.return_value = _services_acl_with_rule()
+    assert ll.reconcile_services_acl(incus) is False
+    incus.network_acl_set_yaml.assert_not_called()
+
+
+def test_reconcile_leaves_an_already_empty_or_missing_acl_alone():
+    incus = _incus(present=False)
+    incus.network_acl_show.return_value = yaml.safe_dump({"name": "jailbee-services", "egress": []})
+    assert ll.reconcile_services_acl(incus) is False
+    incus.network_acl_exists.return_value = False
+    assert ll.reconcile_services_acl(incus) is False
+    incus.network_acl_set_yaml.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("acls", "expected"),
+    [
+        ({"incusbr0": "r-allowlist,jailbee-services", "jailbee-work": ""}, []),
+        ({"incusbr0": "r-allowlist", "jailbee-work": "r-allowlist"}, ["incusbr0", "jailbee-work"]),
+        ({"incusbr0": "", "jailbee-work": "r-allowlist,jailbee-services"}, []),  # unmanaged
+    ],
+)
+def test_bridges_missing_services_acl(acls, expected):
+    incus = MagicMock()
+    incus.network_exists.return_value = True
+    incus.network_get.side_effect = lambda bridge, _key: acls[bridge]
+    assert ll.bridges_missing_services_acl(incus) == expected
+
+
+def test_bridges_missing_services_acl_skips_absent_bridges():
+    incus = MagicMock()
+    incus.network_exists.side_effect = lambda bridge: bridge == "incusbr0"
+    incus.network_get.return_value = "r-allowlist"
+    assert ll.bridges_missing_services_acl(incus) == ["incusbr0"]
+
+
 def test_version_mismatch_reinstalls():
     incus = _incus(present=True, installed="1.90.0")
     result = ll.litellm_up(incus, _gcfg())

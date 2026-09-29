@@ -107,6 +107,26 @@ def test_litellm_doctor_running_branches(mocker, healthy, version, login, reacha
     probe.assert_called_once_with(mocker.ANY, "chatgpt.com")
 
 
+def test_litellm_doctor_flags_a_bridge_without_the_services_acl(mocker):
+    from jailbee import litellm
+    from jailbee.doctor import _check_litellm
+
+    gcfg = GlobalConfig.model_validate({"litellm": {"enabled": True}})
+    status = litellm.LiteLLMStatus(
+        litellm.ContainerState.RUNNING,
+        "10.79.115.3",
+        "1.103.0",
+        [litellm.InstanceStatus("default", 4100, True, True, "present")],
+    )
+    mocker.patch("jailbee.litellm.litellm_status", return_value=status)
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    mocker.patch("jailbee.litellm.bridges_missing_services_acl", return_value=["jailbee-work"])
+    rows = _check_litellm(_baseline_incus(), gcfg)
+    bad = [r for r in rows if not r.ok]
+    assert len(bad) == 1
+    assert "jailbee-work" in bad[0].detail and "jailbee apply" in bad[0].detail
+
+
 def test_run_checks_includes_litellm_diagnostics(tmp_path, mocker):
     from jailbee.doctor import CheckResult
 
