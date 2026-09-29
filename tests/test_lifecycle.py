@@ -9464,3 +9464,79 @@ def test_assert_remote_may_enter(monkeypatch, marker, mode, refused):
             assert_remote_may_enter(incus, "p-box", "box")
     else:
         assert_remote_may_enter(incus, "p-box", "box")
+
+
+# ---- jb ls sampling ----
+
+
+def _ls_rows():
+    return [_running(name="myrepo-a", repo="myrepo"), _running(name="other-b", repo="other")]
+
+
+def _patch_ls_sampling(mocker):
+    activity = mocker.patch("jailbee.lifecycle.annotate_activity")
+    agents = mocker.patch("jailbee.lifecycle.annotate_agent_status")
+    sessions = mocker.patch("jailbee.agent_status.read_sessions", return_value=["S"])
+    return activity, agents, sessions
+
+
+def test_sample_ls_columns_takes_one_reading_and_no_sleep_for_agent_alone(
+    mocker, make_cfg, tmp_path
+):
+    """A state is not a rate: `--fields agent` costs one /proc reading."""
+    from jailbee.lifecycle import sample_ls_columns
+
+    activity, agents, _ = _patch_ls_sampling(mocker)
+    sleep = mocker.Mock()
+    cfg = make_cfg(tmp_path / "myrepo")  # prefix = dir name
+    rows = _ls_rows()
+
+    sample_ls_columns(cfg, rows, ["name", " agent"], sampler=mocker.Mock(), sleep=sleep)
+
+    assert activity.call_count == 1
+    sleep.assert_not_called()
+    agents.assert_called_once()
+
+
+def test_sample_ls_columns_matches_only_this_repos_rows(mocker, make_cfg, tmp_path):
+    """Under `--all`, another repo's rows are never matched against this
+    repo's sessions (see `annotate_agent_status`). They stay `—`."""
+    from jailbee.lifecycle import agent_homes, sample_ls_columns
+
+    _, agents, sessions = _patch_ls_sampling(mocker)
+    sampler = mocker.Mock()
+    cfg = make_cfg(tmp_path / "myrepo")  # prefix = dir name
+    rows = _ls_rows()
+
+    sample_ls_columns(cfg, rows, ["agent"], sampler=sampler, sleep=mocker.Mock())
+
+    sessions.assert_called_once_with(agent_homes(cfg))
+    assert agents.call_args.args == ([rows[0]], ["S"], sampler)
+
+
+def test_sample_ls_columns_shares_one_sampler_between_rates_and_agent(mocker, make_cfg, tmp_path):
+    from jailbee.lifecycle import sample_ls_columns
+
+    activity, agents, _ = _patch_ls_sampling(mocker)
+    sleep = mocker.Mock()
+    sampler = mocker.Mock()
+    cfg = make_cfg(tmp_path / "myrepo")  # prefix = dir name
+
+    sample_ls_columns(cfg, _ls_rows(), ["cpu", "agent"], sampler=sampler, sleep=sleep)
+
+    assert activity.call_count == 2  # prime, then rate
+    assert sleep.call_count == 1
+    assert agents.call_args.args[2] is sampler
+
+
+def test_sample_ls_columns_reads_nothing_for_other_columns(mocker, make_cfg, tmp_path):
+    from jailbee.lifecycle import sample_ls_columns
+
+    activity, agents, sessions = _patch_ls_sampling(mocker)
+    cfg = make_cfg(tmp_path / "myrepo")  # prefix = dir name
+
+    sample_ls_columns(cfg, _ls_rows(), ["name", "wt"], sleep=mocker.Mock())
+
+    activity.assert_not_called()
+    agents.assert_not_called()
+    sessions.assert_not_called()

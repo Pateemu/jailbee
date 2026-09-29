@@ -10422,6 +10422,31 @@ def test_ls_does_not_sample_activity_by_default(mocker, tmp_path):
     annotate.assert_not_called()
 
 
+def test_ls_takes_a_single_reading_for_the_agent_column(mocker, tmp_path):
+    """`--fields agent` reaches `sample_ls_columns` with the column named, and
+    through it costs exactly one reading: no prime, no sleep."""
+    from typer.testing import CliRunner
+
+    from jailbee.cli import app
+
+    repo = _setup_repo_with_columns(tmp_path, "")
+    mocker.patch(
+        "jailbee.cli._resolve_config_path",
+        return_value=repo / ".jailbee" / "config.yaml",
+    )
+    _one_container(mocker)
+    annotate = mocker.patch("jailbee.lifecycle.annotate_activity")
+    agents = mocker.patch("jailbee.lifecycle.annotate_agent_status")
+    mocker.patch("jailbee.agent_status.read_sessions", return_value=[])
+
+    result = CliRunner().invoke(app, ["ls", "--fields", "name,agent"], env={"COLUMNS": "200"})
+
+    assert result.exit_code == 0, result.stdout
+    assert annotate.call_count == 1
+    assert [c.name for c in agents.call_args.args[0]] == ["myrepo-feat-x"]
+    assert "AGENT" in result.stdout
+
+
 def test_ls_does_not_sample_for_a_configured_field_list_in_json_mode(mocker, tmp_path):
     """`ls: {fields: ...}` is a table preference and `emit` ignores it for
     `--format json`. Sampling there would pay for a column that is never

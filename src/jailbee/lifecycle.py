@@ -6,7 +6,7 @@ import os
 import re
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -581,6 +581,43 @@ def agent_homes(cfg: Config) -> tuple[tuple[str, Path], ...]:
     from jailbee.accounts.adapters import base
 
     return tuple((a.name, a.config_home(cfg)) for a in base.pooled_adapters(cfg))
+
+
+def sample_ls_columns(
+    cfg: Config,
+    containers: Sequence[ContainerInfo],
+    requested: Iterable[str],
+    *,
+    sampler: ActivitySampler | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Take the /proc readings the requested `jailbee ls` columns need.
+
+    `cpu` and `doing` are rates, so they cost two readings and a
+    `PRIME_INTERVAL_SECONDS` sleep. `agent` is a state and costs one reading.
+    A listing that asked for none of them reads nothing.
+
+    Only this repo's rows get an AGENT value: its sessions are matched against
+    its own config homes (see `annotate_agent_status`). Resolving every other
+    repo's homes under `--all` would mean loading their configs.
+    """
+    from jailbee import procstat
+
+    names = {name.strip() for name in requested}
+    rates = bool(names & {"cpu", "doing"})
+    agent = "agent" in names
+    if not (rates or agent):
+        return
+    if sampler is None:
+        sampler = procstat.ActivitySampler()
+    annotate_activity(containers, sampler)
+    if rates:
+        # Looked up on the module at call time so tests can zero it.
+        sleep(procstat.PRIME_INTERVAL_SECONDS)
+        annotate_activity(containers, sampler)
+    if agent:
+        own = [c for c in containers if c.repo == cfg.container_prefix]
+        annotate_agent_status(own, agent_status.read_sessions(agent_homes(cfg)), sampler)
 
 
 def container_repo_dir(cfg: Config, incus: Incus, name: str) -> str:
