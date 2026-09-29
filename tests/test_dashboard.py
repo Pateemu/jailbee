@@ -5356,6 +5356,94 @@ def test_run_new_blank_branch_is_rejected_inline_not_dispatched(mocker, tmp_path
     )
 
 
+def test_run_new_trims_answers_and_rejects_a_blank_base_inline(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "new_container_base_default", return_value="main")
+    mocker.patch.object(dashboard, "_wait_for_return")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    wipe_main = [b"\x7f"] * 4
+
+    keys = [
+        b"n",
+        *_keys("  feature  "),
+        _ENTER,
+        *wipe_main,
+        *_keys("  "),
+        _ENTER,  # a whitespace-only base: rejected inline
+        *[b"\x7f"] * 2,
+        *_keys(" dev "),
+        _ENTER,
+    ]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert any(
+        isinstance(c.kwargs.get("overlay"), dashboard.TextPrompt)
+        and c.kwargs["overlay"].error == "Base branch cannot be empty"
+        for c in render.call_args_list
+    )
+    child.assert_called_once_with(
+        ["jailbee", "new", "--", "feature", "dev"], check=False, cwd=tmp_path
+    )
+
+
+def _sigint_reader(sequence: list[bytes | type[BaseException]]):
+    """An ``os.read`` side effect raising the exception classes in ``sequence``,
+    and the list of every item it was asked for.
+
+    On a real terminal (cbreak mode, ISIG on) Ctrl-C never reaches ``os.read``
+    as a byte: it is SIGINT, i.e. ``KeyboardInterrupt`` out of the blocking
+    ``select``/``read`` pair. Trailing reads are a plain ``b"\\x03"`` byte so
+    the loop always ends.
+    """
+    items = iter(sequence)
+    reads: list[object] = []
+
+    def read(_fd, _n):
+        item = next(items, b"\x03")
+        reads.append(item)
+        if isinstance(item, type):
+            raise item()
+        return item
+
+    return read, reads
+
+
+@pytest.mark.parametrize(
+    "before",
+    [
+        pytest.param([b"n"], id="branch-step"),
+        pytest.param([b"n", *_keys("feature"), _ENTER], id="base-step"),
+        pytest.param([b"!", *_keys("ls")], id="command-line"),
+    ],
+)
+def test_run_sigint_at_a_text_input_cancels_it_and_keeps_the_dashboard(mocker, tmp_path, before):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    mocker.patch.object(dashboard, "new_container_base_default", return_value="main")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    read, reads = _sigint_reader([*before, KeyboardInterrupt, b"h", _ESC])
+    assert _drive_run_with_reader(mocker, read, [group]) == 0
+
+    child.assert_not_called()
+    overlays = [c.kwargs.get("overlay") for c in render.call_args_list]
+    assert "help" in overlays  # the dashboard outlived the Ctrl-C and took "h"
+    assert b"h" in reads
+
+
+def test_run_sigint_with_no_overlay_still_quits(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    child = mocker.patch.object(dashboard.subprocess, "run")
+
+    read, reads = _sigint_reader([KeyboardInterrupt, b"h"])
+    assert _drive_run_with_reader(mocker, read, [group]) == 0
+
+    child.assert_not_called()
+    assert reads == [KeyboardInterrupt]  # nothing was read after the interrupt
+
+
 def test_run_new_from_pr_prompts_for_a_number_and_dispatches(mocker, tmp_path):
     group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
     child = mocker.patch.object(dashboard.subprocess, "run")

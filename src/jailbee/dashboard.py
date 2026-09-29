@@ -3098,10 +3098,18 @@ def run(
                     ),
                     refresh=True,
                 )
-                ready, _, _ = select.select([sys.stdin], [], [], 0.25)
-                if not ready:
-                    continue
-                data = os.read(fd, _KEY_READ_BYTES)
+                try:
+                    ready, _, _ = select.select([sys.stdin], [], [], 0.25)
+                    if not ready:
+                        continue
+                    data = os.read(fd, _KEY_READ_BYTES)
+                except KeyboardInterrupt:
+                    # cbreak mode leaves ISIG on, so on a real terminal Ctrl-C
+                    # arrives as SIGINT here, never as a b"\x03" byte. Turn it
+                    # into that byte so the key handling below is the one place
+                    # that decides what Ctrl-C means: a text input (prompt,
+                    # command line) cancels just itself, anything else quits.
+                    data = b"\x03"
                 if isinstance(overlay, CommandState):
                     if data in (b"\x1b", b"\x03", b""):
                         overlay = None
