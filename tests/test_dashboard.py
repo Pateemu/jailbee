@@ -1120,9 +1120,9 @@ def test_repo_network_menu_is_a_submenu_and_escape_returns_to_parent():
     group = dashboard.RepoGroup("alpha", "/alpha", None, [])
     menu = dashboard.open_repo_menu([group], "alpha", frozenset())
     assert menu is not None
-    assert menu.actions[2] == dashboard.MenuGroup("Network →", (("Egress…", "net egress ls"),))
+    assert menu.actions[3] == dashboard.MenuGroup("Network →", (("Egress…", "net egress ls"),))
 
-    menu.index = 2
+    menu.index = 3
     child, verb = dashboard.enter_menu(menu)
     assert verb is None
     assert isinstance(child, dashboard.RepoMenuState)
@@ -1131,7 +1131,7 @@ def test_repo_network_menu_is_a_submenu_and_escape_returns_to_parent():
     parent = dashboard.back_menu(child)
     assert parent is not None
     assert parent.active_group is None
-    assert parent.index == 2
+    assert parent.index == 3
     assert dashboard.menu_verb(parent) is None
 
 
@@ -1321,7 +1321,16 @@ def test_repo_egress_dispatch_uses_repo_scope_and_explicit_config(mocker, tmp_pa
     child = mocker.patch.object(dashboard.subprocess, "run")
     child.return_value.returncode = 0
 
-    keys = [b"\r", b"j", b"j", b"\r", b"\r", b"a", *_keys("repo.example:443"), _ENTER, b"\x03"]
+    keys = [
+        b"\r",
+        *[b"j"] * 3,  # past New container…, New from PR…, Credential group…
+        b"\r",
+        b"\r",
+        b"a",
+        *_keys("repo.example:443"),
+        _ENTER,
+        b"\x03",
+    ]
     assert _drive_run(mocker, keys, groups=[group]) == 0
 
     prompt.assert_not_called()
@@ -1926,7 +1935,10 @@ def test_open_menu_captures_the_actions_with_the_cursor_at_the_top(tmp_path):
     assert menu is not None
     assert menu.container == "alpha-x"
     assert menu.index == 0
-    assert menu.actions == dashboard.actions_for_container([group], "alpha-x")
+    # the shared (Qt too) action list, plus the terminal-only credential group entry
+    assert [a for a in menu.actions if a[1] != "credential-group"] == (
+        dashboard.actions_for_container([group], "alpha-x")
+    )
     assert ("Attach tmux", "tmux") in menu.actions
 
 
@@ -5664,7 +5676,7 @@ def test_repo_header_enter_opens_menu_without_folding(mocker, tmp_path):
     assert [
         item.label if isinstance(item, dashboard.MenuGroup) else item[0]
         for item in menus[0].actions
-    ] == ["New container…", "New from PR…", "Network →", "Fold"]
+    ] == ["New container…", "New from PR…", "Credential group…", "Network →", "Fold"]
     save.assert_not_called()
 
 
@@ -5744,7 +5756,7 @@ def test_repo_menu_toggles_fold_and_persists_it(mocker, tmp_path, initially_fold
     assert (
         _drive_run(
             mocker,
-            [b"\r", b"j", b"j", b"j", b"\r"],
+            [b"\r", b"j", b"j", b"j", b"j", b"\r"],
             groups=[group],
             view_state=dashboard.ViewState(
                 folded=frozenset({"alpha"}) if initially_folded else frozenset(),
@@ -5756,7 +5768,7 @@ def test_repo_menu_toggles_fold_and_persists_it(mocker, tmp_path, initially_fold
     )
 
     menus = [call.kwargs["overlay"] for call in render.call_args_list if call.kwargs["overlay"]]
-    assert menus[0].actions[3][0] == ("Unfold" if initially_folded else "Fold")
+    assert menus[0].actions[4][0] == ("Unfold" if initially_folded else "Fold")
     assert save.call_count == 1
     assert save.call_args.args[1] == FRONTEND_TUI
     assert save.call_args.args[2].folded == (
@@ -5777,6 +5789,489 @@ def test_orphan_repo_menu_only_offers_folding(mocker):
     menus = [call.kwargs["overlay"] for call in render.call_args_list if call.kwargs["overlay"]]
     assert menus[0].actions == [("Fold", "fold")]
     child.assert_not_called()
+
+
+# --- Credential group… in the repo menu ------------------------------------
+
+_TEAM_ROWS = (
+    '[{"agent": "claude", "group": "team", "account": null, "state": "empty",'
+    ' "repos": [], "containers": []}]'
+)
+# repo header → Enter (menu) → past New container…, New from PR… → Enter
+_OPEN_REPO_GROUP_PICKER = [_ENTER, b"j", b"j", _ENTER]
+
+
+def _fake_account_cli(mocker, *, listing, change=None):
+    """Patch the quiet CLI runner: the group listing answers ``listing``, a change ``change``."""
+    change = change or dashboard.da.CliResult(True, "Set.")
+
+    def fake(argv, **_kwargs):
+        return listing if argv[:3] == ["account", "group", "ls"] else change
+
+    return mocker.patch.object(dashboard.da, "run_cli_quiet", side_effect=fake)
+
+
+def _groups_listing(stdout: str) -> dashboard.da.CliResult:
+    return dashboard.da.CliResult(True, "done", stdout)
+
+
+def _rendered(render, kind):
+    """Every overlay of type ``kind`` a frame drew, in order."""
+    overlays = (c.kwargs["overlay"] for c in render.call_args_list)
+    return [overlay for overlay in overlays if isinstance(overlay, kind)]
+
+
+def test_repo_menu_offers_credential_group_after_the_creation_entries():
+    group = dashboard.RepoGroup("alpha", "/alpha", None, [])
+    menu = dashboard.open_repo_menu([group], "alpha", frozenset())
+    assert menu is not None
+    assert menu.actions[2] == ("Credential group…", "credential-group")
+
+
+# (over_ssh, RemoteSSHConfig kwargs, is Credential group… offered)
+_CREDENTIAL_GROUP_POLICY_CASES = pytest.mark.parametrize(
+    ("over_ssh", "policy_kwargs", "offered"),
+    [
+        (False, None, True),
+        # a local dashboard never consults the SSH policy, however strict
+        (False, {"commands": {"mode": "disabled"}}, True),
+        (True, {"commands": {"mode": "allowlist", "allow": ["new", "tmux"]}}, False),
+        # full, but `account` writes are host commands under restrict_host
+        (True, {}, False),
+        (True, {"restrict_host": False}, True),
+    ],
+    ids=[
+        "local",
+        "local-ignores-policy",
+        "ssh-allowlist-without-it",
+        "ssh-default-restrict-host",
+        "ssh-unrestricted",
+    ],
+)
+
+
+def _ssh_policy(policy_kwargs):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    return None if policy_kwargs is None else RemoteSSHConfig.model_validate(policy_kwargs)
+
+
+@_CREDENTIAL_GROUP_POLICY_CASES
+def test_repo_menu_credential_group_follows_the_ssh_policy(over_ssh, policy_kwargs, offered):
+    group = dashboard.RepoGroup("alpha", "/alpha", None, [])
+    menu = dashboard.open_repo_menu(
+        [group], "alpha", frozenset(), ssh_policy=_ssh_policy(policy_kwargs), over_ssh=over_ssh
+    )
+    assert menu is not None
+    verbs = [item[1] for item in menu.actions if not isinstance(item, dashboard.MenuGroup)]
+    assert ("credential-group" in verbs) is offered
+
+
+def test_repo_credential_group_flow_sets_the_chosen_group(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    run = _fake_account_cli(mocker, listing=_groups_listing(_TEAM_ROWS))
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    # the picker opens on its first entry, the only group: "team"
+    assert _drive_run(mocker, [*_OPEN_REPO_GROUP_PICKER, _ENTER], [group]) == 0
+
+    assert run.call_args_list == [
+        mocker.call(dashboard.da.group_ls_argv(), cwd=tmp_path),
+        mocker.call(["account", "group", "set", "team"], cwd=tmp_path),
+    ]
+    child.assert_not_called()  # quiet: the terminal was never handed over
+    calls = render.call_args_list
+    shown = [i for i, c in enumerate(calls) if isinstance(c.kwargs["overlay"], dashboard.Picker)]
+    assert shown, "the group picker was never drawn"
+    picker = calls[shown[0]].kwargs["overlay"]
+    assert (picker.purpose, picker.target, picker.title) == (
+        "repo-group",
+        "alpha",
+        "Credential group — alpha",
+    )
+    assert calls[shown[0]].args[1] == dashboard.Row("repo", "alpha")
+    assert calls[-1].kwargs["overlay"] is None
+    assert calls[-1].kwargs["notice"] == "Set."
+
+
+def test_credential_group_picker_offers_none_and_host_default_even_with_no_groups(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
+    run = _fake_account_cli(mocker, listing=_groups_listing("[]"))
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [*_OPEN_REPO_GROUP_PICKER, _ESC], [group]) == 0
+
+    pickers = _rendered(render, dashboard.Picker)
+    assert [e.label for e in pickers[0].entries] == [
+        "none (this repo keeps its own login)",
+        "Use the host default",
+        "New group…",
+    ]
+    assert run.call_count == 1  # the listing; Esc ran nothing
+    assert render.call_args_list[-1].kwargs["overlay"] is None
+
+
+def test_credential_group_picker_lists_each_group_once_in_order(mocker, tmp_path):
+    rows = (
+        '[{"agent": "claude", "group": "team", "account": "a", "state": "live",'
+        ' "repos": [], "containers": []},'
+        ' {"agent": "codex", "group": "team", "account": null, "state": "empty",'
+        ' "repos": [], "containers": []},'
+        ' {"agent": "claude", "group": "solo", "account": null, "state": "empty",'
+        ' "repos": [], "containers": []},'
+        ' {"agent": "claude", "group": null, "account": "b", "state": "parked",'
+        ' "repos": [], "containers": []}]'
+    )
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
+    _fake_account_cli(mocker, listing=_groups_listing(rows))
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [*_OPEN_REPO_GROUP_PICKER, _ESC], [group]) == 0
+
+    entries = _rendered(render, dashboard.Picker)[0].entries
+    assert [(e.label, e.value) for e in entries[:2]] == [("solo", "solo"), ("team", "team")]
+    assert len(entries) == 5
+
+
+@pytest.mark.parametrize(
+    ("downs", "argv"),
+    [
+        (0, ["account", "group", "set", "none"]),
+        (1, ["account", "group", "unset"]),
+    ],
+    ids=["none", "host-default"],
+)
+def test_credential_group_picker_non_group_choices_run_their_command(mocker, tmp_path, downs, argv):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
+    run = _fake_account_cli(mocker, listing=_groups_listing("[]"))
+
+    keys = [*_OPEN_REPO_GROUP_PICKER, *[b"j"] * downs, _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert run.call_args_list[-1] == mocker.call(argv, cwd=tmp_path)
+    assert run.call_count == 2
+
+
+@pytest.mark.parametrize(
+    ("listing", "reason"),
+    [
+        (dashboard.da.CliResult(False, "error: boom"), "boom"),
+        (dashboard.da.CliResult(True, "done", "not json"), "unexpected output"),
+    ],
+    ids=["command-failed", "garbled-output"],
+)
+def test_credential_group_listing_failure_is_a_notice_not_a_traceback(
+    mocker, tmp_path, listing, reason
+):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
+    run = _fake_account_cli(mocker, listing=listing)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, _OPEN_REPO_GROUP_PICKER, [group]) == 0
+
+    assert run.call_count == 1
+    assert not _rendered(render, dashboard.Picker)
+    last = render.call_args_list[-1].kwargs
+    assert last["overlay"] is None
+    assert "could not list credential groups" in last["notice"]
+    assert reason in last["notice"]
+
+
+def test_new_group_name_prompt_esc_runs_nothing(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
+    run = _fake_account_cli(mocker, listing=_groups_listing(_TEAM_ROWS))
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    # team, none, host default, New group…
+    keys = [*_OPEN_REPO_GROUP_PICKER, *[b"j"] * 3, _ENTER, *_keys("fresh"), _ESC]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    prompts = _rendered(render, dashboard.TextPrompt)
+    assert prompts and prompts[0].purpose == "repo-group-name"
+    assert prompts[-1].text == "fresh"
+    assert run.call_count == 1  # only the listing
+    last = render.call_args_list[-1].kwargs
+    assert last["overlay"] is None
+    assert last["notice"] == "Cancelled"
+
+
+def test_new_group_name_prompt_sets_the_typed_group(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
+    run = _fake_account_cli(mocker, listing=_groups_listing("[]"))
+
+    keys = [*_OPEN_REPO_GROUP_PICKER, *[b"j"] * 2, _ENTER, *_keys("fresh"), _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert run.call_args_list[-1] == mocker.call(["account", "group", "set", "fresh"], cwd=tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("change", "stays_up"),
+    [
+        (dashboard.da.CliResult(False, "an agent is running; pass --force"), True),
+        (dashboard.da.CliResult(True, "This repo now uses group `team`."), False),
+    ],
+    ids=["failure", "success"],
+)
+def test_account_command_failure_shows_a_long_notice(mocker, tmp_path, change, stays_up):
+    """A refusal outlives the ordinary 2.5 s notice; a success does not."""
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
+    _fake_account_cli(mocker, listing=_groups_listing(_TEAM_ROWS), change=change)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    clock = [1000.0]
+    mocker.patch.object(dashboard.time, "monotonic", side_effect=lambda: clock[0])
+    assert dashboard.parse_key(b"z") == ""  # an unbound key: one more frame, nothing else
+    script = iter([*_OPEN_REPO_GROUP_PICKER, _ENTER, "advance", b"z"])
+
+    def read(_fd, _n):
+        item = next(script, b"\x03")
+        if item == "advance":
+            clock[0] += 5.0
+            return b"z"
+        return item
+
+    _mock_terminal(mocker)
+    mocker.patch.object(dashboard, "gather_live", return_value=[group])
+    mocker.patch.object(dashboard.select, "select", return_value=([True], [], []))
+    mocker.patch.object(dashboard.os, "read", side_effect=read)
+
+    assert dashboard.run(mocker.Mock(), None, interval=0.5, git_interval=1.0, no_git=True) == 0
+
+    notices = [c.kwargs["notice"] for c in render.call_args_list]
+    assert change.message in notices  # shown right after the command
+    # the frame drawn 5 s later, and the dashboard still running to draw it
+    assert (notices[-1] == change.message) is stays_up
+
+
+@pytest.mark.parametrize("over_ssh", [False, True], ids=["local", "over-ssh"])
+def test_repo_credential_group_config_flag_is_local_only(mocker, tmp_path, over_ssh):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    config_path = tmp_path / ".jailbee" / "config.yaml"
+    group = dashboard.RepoGroup("alpha", str(tmp_path), config_path, [])
+    run = _fake_account_cli(mocker, listing=_groups_listing(_TEAM_ROWS))
+
+    assert (
+        _drive_run(
+            mocker,
+            [*_OPEN_REPO_GROUP_PICKER, _ENTER],
+            [group],
+            remote=over_ssh,
+            over_ssh=over_ssh,
+            ssh_policy=RemoteSSHConfig(restrict_host=False) if over_ssh else None,
+        )
+        == 0
+    )
+
+    flags = [] if over_ssh else ["--config", str(config_path)]
+    assert [c.args[0] for c in run.call_args_list] == [
+        [*dashboard.da.group_ls_argv(), *flags],
+        ["account", "group", "set", "team", *flags],
+    ]
+
+
+# --- Credential group… in the container menu --------------------------------
+
+_CREDENTIAL_GROUP_LEAF = ("Credential group…", "credential-group")
+
+
+def _open_container_group_picker(group: dashboard.RepoGroup, **menu_kwargs) -> list[bytes]:
+    """Keys that open the first container's credential-group picker.
+
+    ``menu_kwargs`` must match the ``run()`` call, as in ``_container_egress_keys``.
+    """
+    menu = dashboard.open_menu([group], group.containers[0].name, **menu_kwargs)
+    assert menu is not None
+    at = list(dashboard._menu_entries(menu)).index(_CREDENTIAL_GROUP_LEAF)
+    return [b"j", _ENTER, *[b"j"] * at, _ENTER]
+
+
+def test_container_menu_offers_credential_group_just_before_network_and_lifecycle(tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    menu = dashboard.open_menu([group], "alpha-x")
+    assert menu is not None
+    verbs = [verb for _label, verb in menu.actions]
+    at = verbs.index("credential-group")
+    assert verbs[at + 1].startswith("net ")
+    assert not any(v.startswith("net ") for v in verbs[:at])
+    assert at < verbs.index("restart")
+    # in the drawn menu it sits right above the Network → group
+    entries = list(dashboard._menu_entries(menu))
+    after = entries[entries.index(_CREDENTIAL_GROUP_LEAF) + 1]
+    assert isinstance(after, dashboard.MenuGroup) and after.label == "Network →"
+
+
+def test_stopped_container_menu_offers_credential_group_before_egress(tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha", "Stopped")])
+    menu = dashboard.open_menu([group], "alpha-x")
+    assert menu is not None
+    verbs = [verb for _label, verb in menu.actions]
+    assert verbs[verbs.index("credential-group") + 1] == "net egress ls"
+
+
+@pytest.mark.parametrize(
+    ("verbs", "expected"),
+    [
+        (["tmux", "restart", "stop", "destroy"], ["tmux", "credential-group", "restart"]),
+        (["destroy"], ["credential-group", "destroy"]),
+        (["tmux"], ["tmux", "credential-group"]),
+    ],
+    ids=["lifecycle-without-network", "destroy-only", "neither"],
+)
+def test_credential_group_falls_back_to_before_lifecycle_or_last(verbs, expected):
+    actions = [(verb.title(), verb) for verb in verbs]
+    placed = [verb for _label, verb in dashboard._with_credential_group(actions)]
+    assert placed[: len(expected)] == expected
+    assert placed.count("credential-group") == 1
+
+
+def test_shared_action_list_stays_free_of_the_terminal_only_entry(tmp_path):
+    """The Qt dashboard reads `actions_for_container`; it has no handler for the verb."""
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    assert "credential-group" not in {
+        v for _l, v in dashboard.actions_for_container([group], "alpha-x")
+    }
+
+
+@_CREDENTIAL_GROUP_POLICY_CASES
+def test_container_menu_credential_group_follows_the_ssh_policy(
+    tmp_path, over_ssh, policy_kwargs, offered
+):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    menu = dashboard.open_menu(
+        [group],
+        "alpha-x",
+        remote=over_ssh,
+        over_ssh=over_ssh,
+        ssh_policy=_ssh_policy(policy_kwargs),
+    )
+    assert menu is not None
+    assert (_CREDENTIAL_GROUP_LEAF in menu.actions) is offered
+
+
+@pytest.mark.parametrize(
+    ("downs", "argv"),
+    [
+        (0, ["account", "group", "use", "team", "alpha-x"]),
+        (1, ["account", "group", "use", "none", "alpha-x"]),
+        (2, ["account", "group", "reset", "alpha-x"]),
+    ],
+    ids=["team", "none", "follow-the-repo"],
+)
+def test_container_credential_group_flow_uses_the_container_and_reset(
+    mocker, tmp_path, downs, argv
+):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    run = _fake_account_cli(mocker, listing=_groups_listing(_TEAM_ROWS))
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_open_container_group_picker(group), *[b"j"] * downs, _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert run.call_args_list == [
+        mocker.call(dashboard.da.group_ls_argv(), cwd=tmp_path),
+        mocker.call(argv, cwd=tmp_path),
+    ]
+    child.assert_not_called()  # never dispatched to the CLI as a menu verb
+    calls = render.call_args_list
+    shown = [i for i, c in enumerate(calls) if isinstance(c.kwargs["overlay"], dashboard.Picker)]
+    picker = calls[shown[0]].kwargs["overlay"]
+    assert (picker.purpose, picker.target) == ("container-group", "alpha-x")
+    assert [e.label for e in picker.entries] == [
+        "team",
+        "none (this container keeps its own login)",
+        "Follow the repo's group",
+        "New group…",
+    ]
+    # the cursor stays on the container while the picker is open
+    assert {calls[i].args[1] for i in shown} == {dashboard.Row("container", "alpha-x")}
+    assert calls[-1].kwargs["overlay"] is None
+
+
+@pytest.mark.parametrize("over_ssh", [False, True], ids=["local", "over-ssh"])
+def test_container_credential_group_config_flag_is_local_only(mocker, tmp_path, over_ssh):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    config_path = tmp_path / ".jailbee" / "config.yaml"
+    group = dashboard.RepoGroup("alpha", str(tmp_path), config_path, [_ci("alpha-x", "alpha")])
+    run = _fake_account_cli(mocker, listing=_groups_listing(_TEAM_ROWS))
+    policy = RemoteSSHConfig(restrict_host=False) if over_ssh else None
+    menu_kwargs = {"remote": over_ssh, "over_ssh": over_ssh, "ssh_policy": policy}
+
+    keys = [*_open_container_group_picker(group, **menu_kwargs), _ENTER]
+    assert _drive_run(mocker, keys, [group], **menu_kwargs) == 0
+
+    flags = [] if over_ssh else ["--config", str(config_path)]
+    assert [c.args[0] for c in run.call_args_list] == [
+        [*dashboard.da.group_ls_argv(), *flags],
+        ["account", "group", "use", "team", "alpha-x", *flags],
+    ]
+
+
+def test_container_new_group_name_prompt_uses_the_typed_group(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    run = _fake_account_cli(mocker, listing=_groups_listing("[]"))
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    # none, Follow the repo's group, New group…
+    keys = [*_open_container_group_picker(group), *[b"j"] * 2, _ENTER, *_keys("fresh"), _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    prompts = _rendered(render, dashboard.TextPrompt)
+    assert {(p.purpose, p.target) for p in prompts} == {("container-group-name", "alpha-x")}
+    assert run.call_args_list[-1] == mocker.call(
+        ["account", "group", "use", "fresh", "alpha-x"], cwd=tmp_path
+    )
+    prompt_frames = [
+        c for c in render.call_args_list if isinstance(c.kwargs["overlay"], dashboard.TextPrompt)
+    ]
+    assert {c.args[1] for c in prompt_frames} == {dashboard.Row("container", "alpha-x")}
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [[_ESC], [*[b"j"] * 2, _ENTER, *_keys("fresh"), _ESC]],
+    ids=["esc-at-picker", "esc-at-name-prompt"],
+)
+def test_container_credential_group_esc_runs_nothing(mocker, tmp_path, tail):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    run = _fake_account_cli(mocker, listing=_groups_listing("[]"))
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [*_open_container_group_picker(group), *tail], [group]) == 0
+
+    assert run.call_args_list == [mocker.call(dashboard.da.group_ls_argv(), cwd=tmp_path)]
+    child.assert_not_called()
+    assert _rendered(render, dashboard.Picker)
+    assert render.call_args_list[-1].kwargs["overlay"] is None
+
+
+@pytest.mark.parametrize("when", ["frame-before-enter", "same-read-as-enter"])
+def test_container_vanishing_while_the_group_picker_is_open_runs_nothing(mocker, tmp_path, when):
+    """Closed by the loop-top guard, or refused by the submit's own re-resolve."""
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    run = _fake_account_cli(mocker, listing=_groups_listing(_TEAM_ROWS))
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    vanish = [*_open_container_group_picker(group), "vanish"]
+    script = iter([*vanish, _ENTER] if when == "frame-before-enter" else vanish)
+
+    def read(_fd, _n):
+        item = next(script, b"\x03")
+        if item == "vanish":
+            group.containers.clear()
+            return b"z" if when == "frame-before-enter" else _ENTER
+        return item
+
+    assert _drive_run_with_reader(mocker, read, [group]) == 0
+
+    assert run.call_args_list == [mocker.call(dashboard.da.group_ls_argv(), cwd=tmp_path)]
+    child.assert_not_called()
+    notices = " ".join(str(c.kwargs["notice"]) for c in render.call_args_list)
+    assert "'alpha-x' is gone" in notices
 
 
 def test_run_reports_a_vanished_repo_root_instead_of_crashing(mocker, tmp_path):

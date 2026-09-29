@@ -71,6 +71,18 @@ def test_account_ls_argv_asks_for_the_parsed_fields() -> None:
     ]
 
 
+def test_group_ls_argv_asks_the_group_listing_for_the_same_fields() -> None:
+    assert da.group_ls_argv() == [
+        "account",
+        "group",
+        "ls",
+        "-o",
+        "json",
+        "--fields",
+        "agent,group,account,state,repos,containers",
+    ]
+
+
 def test_argv_builders_keep_special_slot_names_as_single_elements() -> None:
     assert da.use_argv("claude", "team", "b@x.io#org12345~2") == [
         "account",

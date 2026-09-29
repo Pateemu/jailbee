@@ -22,6 +22,7 @@ from jailbee.dashboard_settings import CURSOR_STYLE
 if TYPE_CHECKING:
     from rich.console import RenderableType
 
+    from jailbee.dashboard_accounts import AccountsState
     from jailbee.dashboard_egress import EgressState
 
 PromptOutcome = Literal["editing", "submit", "cancel"]
@@ -85,7 +86,7 @@ class TextPrompt:
     carry: tuple[str, ...] = ()
     error: str | None = None
     pending_utf8: bytes = b""
-    back: EgressState | None = None
+    back: EgressState | AccountsState | None = None
 
 
 def parse_pr_number(text: str) -> int | None:
@@ -166,7 +167,7 @@ class Picker:
     index: int = 0
     target: str = ""
     carry: tuple[str, ...] = ()
-    back: EgressState | None = None
+    back: EgressState | AccountsState | None = None
 
 
 def move_picker(picker: Picker, delta: int) -> Picker:

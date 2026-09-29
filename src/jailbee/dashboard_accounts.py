@@ -76,6 +76,11 @@ def account_ls_argv() -> list[str]:
     return ["account", "ls", "-o", "json", "--fields", ACCOUNT_LS_FIELDS]
 
 
+def group_ls_argv() -> list[str]:
+    """`account group ls`: the same row shape as `account ls`, groups only."""
+    return ["account", "group", "ls", "-o", "json", "--fields", ACCOUNT_LS_FIELDS]
+
+
 def _bad_output() -> AccountLoadError:
     return AccountLoadError("unexpected output from 'jailbee account ls'")
 
