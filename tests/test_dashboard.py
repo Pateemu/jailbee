@@ -3527,25 +3527,31 @@ def test_render_subtitle_is_empty_without_a_notice(tmp_path):
     assert "refreshed" not in out
 
 
-def test_render_long_notice_keeps_its_start_and_ellipsizes_the_end(tmp_path):
-    """A long CLI message is cut on the right; its verdict stays readable."""
+def test_render_long_notice_wraps_below_the_table_instead_of_the_border(tmp_path):
+    """A long CLI message is shown whole, not cut on the bottom border."""
     g = dashboard.RepoGroup(
         "alpha", "/repos/alpha", tmp_path / "a.yaml", [_ci("alpha-one", "alpha")]
     )
-    notice = "✗ invalid credential group name 'Bad Name': " + "lowercase letters " * 12
-    out = _render_text(
-        dashboard.render(
-            [g],
-            selected=None,
-            now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
-            git_enabled=True,
-            notice=notice,
-        ),
-        width=100,
+    notice = "✗ invalid credential group name 'Bad Name': " + "lowercase letters " * 12 + "END"
+    lines = (
+        _render_text(
+            dashboard.render(
+                [g],
+                selected=None,
+                now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
+                git_enabled=True,
+                notice=notice,
+            ),
+            width=100,
+        )
+        .rstrip()
+        .splitlines()
     )
-    bottom = out.rstrip().splitlines()[-1]
-    assert "✗ invalid credential group name 'Bad Name'" in bottom
-    assert "…" in bottom
+    table_row = next(i for i, ln in enumerate(lines) if "Running" in ln)
+    first = next(i for i, ln in enumerate(lines) if "✗ invalid credential group name" in ln)
+    assert first > table_row
+    assert "END" in "".join(lines[first:-1])
+    assert "✗" not in lines[-1] and "…" not in lines[-1]
 
 
 def test_render_notice_with_square_brackets_is_not_markup(tmp_path):
@@ -5387,7 +5393,7 @@ def test_run_new_prompt_is_drawn_in_the_frame_and_keeps_the_table(mocker, tmp_pa
     ]
     assert prompts[-1].label == "New branch"
     assert prompts[-1].text == "fe"
-    # the table is still drawn behind the prompt, with the repo row pinned
+    # the table is still drawn behind the prompt, the cursor where `n` was pressed
     last = next(
         c for c in reversed(render.call_args_list) if c.kwargs.get("overlay") is prompts[-1]
     )
@@ -6043,6 +6049,29 @@ def test_credential_group_picker_lists_each_group_once_in_order(mocker, tmp_path
     assert len(entries) == 5
 
 
+def test_credential_group_picker_hides_a_legacy_group_named_none(mocker, tmp_path):
+    """`none` spells "no group"; a legacy group of that name must not be offered twice."""
+    rows = (
+        '[{"agent": "claude", "group": "none", "account": null, "state": "empty",'
+        ' "repos": [], "containers": []},'
+        ' {"agent": "claude", "group": "team", "account": null, "state": "empty",'
+        ' "repos": [], "containers": []}]'
+    )
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
+    _fake_account_cli(mocker, listing=_groups_listing(rows))
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [*_OPEN_REPO_GROUP_PICKER, _ESC], [group]) == 0
+
+    entries = _rendered(render, dashboard.Picker)[0].entries
+    assert [(e.label, e.value) for e in entries] == [
+        ("team", "team"),
+        ("none (this repo keeps its own login)", "none"),
+        ("Use the host default", "__unset__"),
+        ("New group…", "__new__"),
+    ]
+
+
 @pytest.mark.parametrize(
     ("downs", "argv"),
     [
@@ -6386,6 +6415,47 @@ def test_container_vanishing_while_the_group_picker_is_open_runs_nothing(mocker,
     child.assert_not_called()
     notices = " ".join(str(c.kwargs["notice"]) for c in render.call_args_list)
     assert "'alpha-x' is gone" in notices
+
+
+def test_container_group_flow_is_not_misdirected_by_a_repo_of_the_same_name(mocker, tmp_path):
+    """Container `alpha-x` of repo `alpha` beside a repo whose prefix is `alpha-x`."""
+    alpha_root, other_root = tmp_path / "alpha", tmp_path / "other"
+    group = dashboard.RepoGroup("alpha", str(alpha_root), None, [_ci("alpha-x", "alpha")])
+    namesake = dashboard.RepoGroup(
+        "alpha-x", str(other_root), None, [_ci("alpha-x-one", "alpha-x")]
+    )
+    run = _fake_account_cli(mocker, listing=_groups_listing(_TEAM_ROWS))
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_open_container_group_picker(group), _ENTER]  # "team"
+    assert _drive_run(mocker, keys, [group, namesake]) == 0
+
+    assert run.call_args_list == [
+        mocker.call(dashboard.da.group_ls_argv(), cwd=alpha_root),
+        mocker.call(["account", "group", "use", "team", "alpha-x"], cwd=alpha_root),
+    ]
+    picker_frames = [
+        c for c in render.call_args_list if isinstance(c.kwargs["overlay"], dashboard.Picker)
+    ]
+    assert picker_frames
+    assert {c.args[1] for c in picker_frames} == {dashboard.Row("container", "alpha-x")}
+
+
+def test_new_from_a_container_row_leaves_the_cursor_there_after_esc(mocker, tmp_path):
+    group = dashboard.RepoGroup(
+        "alpha", str(tmp_path), None, [_ci("alpha-x", "alpha"), _ci("alpha-y", "alpha")]
+    )
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    mocker.patch.object(dashboard, "new_container_base_default", return_value="main")
+
+    assert _drive_run(mocker, [b"j", b"j", b"n", *_keys("fe"), _ESC], [group]) == 0
+
+    calls = render.call_args_list
+    prompt_frames = [c for c in calls if isinstance(c.kwargs["overlay"], dashboard.TextPrompt)]
+    assert prompt_frames
+    assert {c.args[1] for c in prompt_frames} == {dashboard.Row("container", "alpha-y")}
+    assert calls[-1].kwargs["overlay"] is None
+    assert calls[-1].args[1] == dashboard.Row("container", "alpha-y")
 
 
 def test_run_reports_a_vanished_repo_root_instead_of_crashing(mocker, tmp_path):
@@ -7295,11 +7365,51 @@ def test_accounts_cancel_at_every_question_returns_to_the_panel(
     after = calls[asked_at + 1].kwargs["overlay"]
     assert after is question.back
     assert isinstance(after, dashboard.da.AccountsState)
+    assert calls[asked_at + 1].kwargs["notice"] == "Cancelled"  # Esc says so, like Ctrl-C
     moved = calls[asked_at + 2].kwargs["overlay"]
     assert isinstance(moved, dashboard.da.AccountsState)
     assert moved.index == min(after.index + 1, len(after.rows) - 1)
     assert run.call_args_list == [mocker.call(_ACCOUNT_LS, cwd=tmp_path)]
     child.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "keys",
+    [
+        [b"A", _ENTER],
+        [b"A", _ENTER, _ENTER],
+        [b"A", b"j", _ENTER, _ENTER],
+        _OPEN_DELETE_CONFIRM,
+    ],
+    ids=["actions", "use", "use-in", "confirm-delete"],
+)
+def test_q_at_an_accounts_picker_steps_back_one_level_like_esc(mocker, tmp_path, keys):
+    """`q` in a nested picker must not close the whole Accounts panel."""
+    run = _fake_accounts_cli(mocker)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [*keys, b"q"], [_alpha(tmp_path)]) == 0
+
+    calls = render.call_args_list
+    asked_at = max(
+        i for i, c in enumerate(calls) if isinstance(c.kwargs["overlay"], dashboard.Picker)
+    )
+    after = calls[asked_at + 1].kwargs
+    assert after["overlay"] is calls[asked_at].kwargs["overlay"].back
+    assert isinstance(after["overlay"], dashboard.da.AccountsState)
+    assert after["notice"] == "Cancelled"
+    assert run.call_args_list == [mocker.call(_ACCOUNT_LS, cwd=tmp_path)]
+
+
+def test_esc_at_a_top_level_picker_closes_it_with_a_cancelled_notice(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
+    _fake_account_cli(mocker, listing=_groups_listing("[]"))
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [*_OPEN_REPO_GROUP_PICKER, _ESC], [group]) == 0
+
+    last = render.call_args_list[-1].kwargs
+    assert (last["overlay"], last["notice"]) == (None, "Cancelled")
 
 
 @pytest.mark.parametrize("cancel", [_ESC, b"q"], ids=["esc", "q"])

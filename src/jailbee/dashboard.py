@@ -35,6 +35,7 @@ from rich.text import Text
 
 from jailbee import dashboard_accounts as da
 from jailbee import table_format
+from jailbee.accounts.groups import RESERVED_GROUP_NAMES
 from jailbee.config import (
     DASHBOARD_DEFAULT_HIDE,
     ColumnConfig,
@@ -1075,6 +1076,7 @@ def visible_fields(
 _KEY_READ_BYTES = 8  # covers all standard arrow/function-key CSI sequences
 _NOTICE_SECONDS = 2.5  # how long a transient subtitle message stays up
 _FAILURE_NOTICE_SECONDS = 8.0  # a refused account command's reason, long enough to read
+_INLINE_NOTICE_MAX = 80  # longer notices wrap below the table instead of the border
 
 
 @dataclass(frozen=True)
@@ -1109,7 +1111,9 @@ KEY_BINDINGS: tuple[KeyBinding, ...] = (
     KeyBinding(
         "enter", (b"\r", b"\n"), "Enter", "open a container or repo menu (fold there)", "Navigate"
     ),
-    KeyBinding("cancel", (b"\x1b",), "Esc", "close the menu or help", "Navigate"),
+    KeyBinding(
+        "cancel", (b"\x1b",), "Esc", "close a menu, panel or help; cancel a question", "Navigate"
+    ),
     KeyBinding(
         "space",
         (b" ",),
@@ -1805,11 +1809,12 @@ def render(
     The selected row, heading or container, is marked by its
     :data:`CURSOR_STYLE` highlight alone. Wrapped in a rounded Panel whose
     left-aligned title carries the summary and the clock; the subtitle carries
-    a transient notice and nothing else.
+    a short transient notice and nothing else.
 
     ``overlay`` is an open action menu or the keybinding help, drawn *below*
     the table so the dashboard it acts on stays on screen. ``notice`` is a
-    transient message (a rejected key, a view-only row) shown in the subtitle.
+    transient message (a rejected key, a view-only row) shown in the subtitle,
+    or — longer than :data:`_INLINE_NOTICE_MAX` — wrapped right below the table.
     """
     all_containers = [c for g in groups for c in g.containers]
     visible = [c for g in groups if g.prefix not in folded for c in g.containers]
@@ -1830,6 +1835,13 @@ def render(
             hide_first=hide_first,
         ),
     ]
+    # A notice too long for the bottom border is drawn whole, wrapped, right
+    # below the table: a CLI refusal ends in its remedy ("… pass --force"),
+    # which an ellipsis on the border would cut. A plain `Text`, not markup: a
+    # CLI message may contain `[...]`.
+    inline_notice = notice if notice and len(notice) > _INLINE_NOTICE_MAX else None
+    if inline_notice is not None:
+        body.append(Text(inline_notice, style="yellow"))
     if overlay is not None:
         if isinstance(overlay, EgressState):
             panel = render_egress(
@@ -1865,11 +1877,14 @@ def render(
         f"[bold]jailbee dashboard[/]  ·  [dim]h/? help[/]  ·  {n_repos} repos · {n_ctr} containers"
         f"{folded_note}{git_note}  ·  {now:%H:%M:%S}"
     )
-    # Subtitle is notice-only: a transient message on the bottom border cannot
-    # push the table around.
-    # A plain `Text`, not markup: a CLI message may contain `[...]`, and a long
-    # one is cut on the right with an ellipsis so its start (the verdict) stays.
-    subtitle = Text(notice, style="yellow", no_wrap=True, overflow="ellipsis") if notice else None
+    # Subtitle is notice-only: a short transient message on the bottom border
+    # cannot push the table around. Should the terminal still be narrower than
+    # a short notice, it is cut on the right so its start (the verdict) stays.
+    subtitle = (
+        Text(notice, style="yellow", no_wrap=True, overflow="ellipsis")
+        if notice and inline_notice is None
+        else None
+    )
     return Panel(
         Group(*body),
         title=title,
@@ -1900,6 +1915,26 @@ def _find_group(groups: list[RepoGroup], name: str | None) -> RepoGroup | None:
             if c.name == name:
                 return g
     return None
+
+
+def prompt_target_kind(purpose: str) -> Literal["repo", "container"]:
+    """What a prompt's or picker's ``target`` names, read from its ``purpose``.
+
+    Only the ``container-*`` questions are about a container; every other one
+    targets a repo prefix. A container may share its name with another repo's
+    prefix (container ``alpha-x`` of repo ``alpha`` beside repo ``alpha-x``),
+    so a target is never looked up as both.
+    """
+    return "container" if purpose.startswith("container-") else "repo"
+
+
+def target_group(
+    groups: list[RepoGroup], target: str, kind: Literal["repo", "container"]
+) -> RepoGroup | None:
+    """The listed repo that ``target`` — a prefix or a container name — belongs to."""
+    if kind == "container":
+        return _find_group(groups, target)
+    return next((g for g in groups if g.prefix == target), None)
 
 
 _TERMINAL_TITLE_FALLBACK = "🐝 jailbee"
@@ -2806,7 +2841,6 @@ def run(
                     "Add egress override",
                     "Destination (host, host:port, IPv4 or CIDR)",
                     target=state.prefix,
-                    carry=(state.container or "",),
                     back=state,
                 )
 
@@ -2932,11 +2966,11 @@ def run(
                     set_notice(f"'jailbee new' exited {rc}")
                 force.set()  # the new container should appear on the next frame
 
-            def repo_for(target: str) -> RepoTarget | None:
-                """The repo a prefix or a container name belongs to, as listed right now."""
-                group = next((g for g in groups if g.prefix == target), None) or _find_group(
-                    groups, target
-                )
+            def repo_for(
+                target: str, kind: Literal["repo", "container"] = "repo"
+            ) -> RepoTarget | None:
+                """The listed repo of a prefix, or of a container name with ``kind``."""
+                group = target_group(groups, target, kind)
                 return RepoTarget.of(group) if group is not None else None
 
             def run_account_cli(repo: RepoTarget, argv: list[str]) -> bool:
@@ -2989,7 +3023,9 @@ def run(
                 """The groups to choose from, plus the choices that are not a group.
 
                 Those are always offered, so a host with no group yet can
-                still opt out or create the first one.
+                still opt out or create the first one. A legacy group named
+                like a reserved word (`none`) is left out: choosing it would
+                send the very word that means "no group".
                 """
                 owner = "repo" if purpose == "repo-group" else "container"
                 fallback = (
@@ -2998,7 +3034,11 @@ def run(
                     else PickerEntry("Follow the repo's group", "__reset__")
                 )
                 entries = (
-                    *(PickerEntry(name, name) for name in da.group_names(rows)),
+                    *(
+                        PickerEntry(name, name)
+                        for name in da.group_names(rows)
+                        if name not in RESERVED_GROUP_NAMES
+                    ),
                     PickerEntry(f"none (this {owner} keeps its own login)", "none"),
                     fallback,
                     PickerEntry("New group…", "__new__"),
@@ -3009,16 +3049,17 @@ def run(
                 purpose: Literal["repo-group", "container-group"], target: str
             ) -> Picker | None:
                 """List the groups for ``target``'s repo and offer them, or notice why not."""
-                repo = repo_for(target)
+                repo = repo_for(target, prompt_target_kind(purpose))
                 if repo is None:
                     set_notice(f"'{target}' is no longer listed")
                     return None
                 rows = load_group_rows(repo)
                 return group_picker(purpose, target, rows) if rows is not None else None
 
-            def change_group(target: str, argv: list[str]) -> None:
-                """Re-resolve ``target`` (it may have vanished) and run one group change."""
-                repo = repo_for(target)
+            def change_group(overlay: TextPrompt | Picker, argv: list[str]) -> None:
+                """Re-resolve the overlay's target (it may have vanished) and run one change."""
+                target = overlay.target
+                repo = repo_for(target, prompt_target_kind(overlay.purpose))
                 if repo is None:
                     set_notice(f"'{target}' is gone")
                     return
@@ -3202,10 +3243,10 @@ def run(
                     assert isinstance(prompt.back, EgressState)
                     return mutate_egress(prompt.back, "add", answer)
                 if prompt.purpose == "repo-group-name":
-                    change_group(prompt.target, da.repo_group_set_argv(answer))
+                    change_group(prompt, da.repo_group_set_argv(answer))
                     return None
                 if prompt.purpose == "container-group-name":
-                    change_group(prompt.target, da.container_group_use_argv(answer, prompt.target))
+                    change_group(prompt, da.container_group_use_argv(answer, prompt.target))
                     return None
                 if prompt.purpose == "acct-group-new":
                     # asked only from the Accounts panel, which it returns to
@@ -3224,7 +3265,7 @@ def run(
                             "repo-group-name", picker.title, "Group name", target=picker.target
                         )
                     change_group(
-                        picker.target,
+                        picker,
                         da.repo_group_unset_argv()
                         if entry.value == "__unset__"
                         else da.repo_group_set_argv(entry.value),
@@ -3239,7 +3280,7 @@ def run(
                             target=picker.target,
                         )
                     change_group(
-                        picker.target,
+                        picker,
                         da.container_group_reset_argv(picker.target)
                         if entry.value == "__reset__"
                         else da.container_group_use_argv(entry.value, picker.target),
@@ -3378,29 +3419,38 @@ def run(
                 if (
                     isinstance(overlay, (TextPrompt, Picker))
                     and overlay.target
-                    and not any(g.prefix == overlay.target for g in groups)
-                    and not any(c.name == overlay.target for g in groups for c in g.containers)
+                    and target_group(groups, overlay.target, prompt_target_kind(overlay.purpose))
+                    is None
                 ):
                     # The prompt's repo or container vanished while it was
                     # open — close rather than ask a question about nothing.
                     set_notice(f"'{overlay.target}' is gone — prompt closed")
                     overlay = None
+                # The Egress panel on screen, itself or behind its question.
+                egress_panel = (
+                    overlay
+                    if isinstance(overlay, EgressState)
+                    else overlay.back
+                    if isinstance(overlay, (TextPrompt, Picker))
+                    and isinstance(overlay.back, EgressState)
+                    else None
+                )
+                if egress_panel is None:
+                    # The menu an Egress panel's Esc returns to outlives the
+                    # panel only while it (or its question) is open — however
+                    # it closed: a vanished target, a failed change, `q`.
+                    egress_parent = None
                 if isinstance(overlay, MenuState):
                     selected = Row("container", overlay.container)  # pinned while the menu is open
                 elif isinstance(overlay, RepoMenuState):
                     selected = Row("repo", overlay.repo)
-                elif isinstance(overlay, EgressState) or (
-                    isinstance(overlay, (TextPrompt, Picker))
-                    and isinstance(overlay.back, EgressState)
-                ):
+                elif egress_panel is not None:
                     # A question asked from the Egress panel keeps the panel's
                     # row, so the cursor does not jump to the repo header.
-                    panel = overlay if isinstance(overlay, EgressState) else overlay.back
-                    assert isinstance(panel, EgressState)
                     selected = (
-                        Row("container", panel.container)
-                        if panel.container is not None
-                        else Row("repo", panel.prefix)
+                        Row("container", egress_panel.container)
+                        if egress_panel.container is not None
+                        else Row("repo", egress_panel.prefix)
                     )
                 elif isinstance(overlay, da.AccountsState) or (
                     isinstance(overlay, (TextPrompt, Picker))
@@ -3410,15 +3460,17 @@ def run(
                     # CLI there, so the cursor stays where `A` was pressed
                     # instead of jumping to that repo's header.
                     selected = reconcile_selection(rows, selected, sel_index)
-                elif isinstance(overlay, (TextPrompt, Picker)) and overlay.target in {
-                    g.prefix for g in groups
-                }:
-                    selected = Row("repo", overlay.target)
-                elif isinstance(overlay, (TextPrompt, Picker)) and overlay.target in {
-                    c.name for g in groups for c in g.containers
-                }:
-                    # A question about one container keeps its row, like its menu does.
-                    selected = Row("container", overlay.target)
+                elif (
+                    isinstance(overlay, (TextPrompt, Picker))
+                    and not overlay.purpose.startswith("new-")
+                    and target_group(groups, overlay.target, prompt_target_kind(overlay.purpose))
+                    is not None
+                ):
+                    # A question about one repo or container keeps its row,
+                    # like its menu does. `n`'s questions are left out: they
+                    # ask about the highlighted row's repo, and pinning its
+                    # header would strand the cursor there after Esc.
+                    selected = Row(prompt_target_kind(overlay.purpose), overlay.target)
                 else:
                     selected = reconcile_selection(rows, selected, sel_index)
                 if selected in rows:
@@ -3521,11 +3573,14 @@ def run(
                     else:
                         overlay = prompt
                     continue
-                if isinstance(overlay, Picker) and data == b"\x03":
+                if isinstance(overlay, Picker) and (
+                    data == b"\x03" or parse_key(data) in ("cancel", "quit")
+                ):
                     # A picker is one step of a question flow, like the prompt
-                    # it can lead to: Ctrl-C cancels the step, not the
-                    # dashboard. EOF (b"") still quits — a closed stdin must
-                    # not spin here.
+                    # it can lead to: Ctrl-C, Esc and `q` all cancel the step
+                    # — a nested picker returns to the panel it was opened
+                    # from — never the dashboard. EOF (b"") still quits — a
+                    # closed stdin must not spin here.
                     overlay = overlay.back
                     set_notice("Cancelled")
                     continue
@@ -3541,8 +3596,6 @@ def run(
                         elif isinstance(overlay, EgressState):
                             overlay = egress_parent
                             egress_parent = None
-                        elif isinstance(overlay, Picker):
-                            overlay = overlay.back
                         else:
                             overlay = None
                     elif key == "help":

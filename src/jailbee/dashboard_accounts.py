@@ -250,7 +250,7 @@ def account_actions(row: AccountRow, rows: Sequence[AccountRow]) -> tuple[tuple[
         actions.append(("Use a stored login…", "use"))
     if row.state == "live":
         actions.append(("Park the live login", "park"))
-    elif row.state == "empty" or (not row.repos and not row.containers):
+    elif row.state == "empty":
         actions.append(("Remove this group", "group-rm"))
     return tuple(actions)
 

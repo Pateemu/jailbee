@@ -588,8 +588,8 @@ force refresh, `h`/`?` keybinding
 help, `q`/`Ctrl-C` quit. The action menu opens *inline below the table* — the
 dashboard stays visible and keeps refreshing behind it; `↑/↓` then move the
 menu cursor, `Enter` runs the entry, `Esc`/`q` closes it (`Ctrl-C` quits from
-the plain view and menus; at an inline prompt or picker it cancels just that
-question).
+the plain view, menus and panels; at an inline prompt or picker it cancels just
+that question).
 
 Container actions group network mode switches and `Egress…` under `Network →`;
 stopped containers retain the read-only Egress view even though they have no
@@ -615,13 +615,16 @@ in the selected row's repo; a refusal (for example a running agent) is shown
 as a notice — use `!` with `--force` to override. `Esc` backs out of each
 question to the overlay, and closes the overlay itself.
 
-The menu, in order: `job clear`, `job log`, `pr --open`, `pr`, `git push`,
-`git push --pr`, `git pull`, `git diff`, then tmux/shell, then one "Launch
-`<name>`" entry per app the repo's GUI registry declares (browsers, the
-JetBrains IDE, and any `apps:` entries, in that order — empty repos get
-none), then `Network →` with available mode switches and `Egress…`, then restart/stop/destroy for Running
-(start/destroy for Stopped). Each entry appears only when it would do
-something:
+The menu, in order: pending outbox applies first (`review apply` "Apply N PR
+action(s)", `issue apply` "Apply N issue action(s)"), then tmux/shell, then
+`Launch →` with one "Launch `<name>`" entry per app the repo's GUI registry
+declares (browsers, the JetBrains IDE, and any `apps:` entries, in that order —
+empty repos get none), then `job clear`, `job log`, then `Git →` (`merge`,
+`git pull`, `git push`, `git push --pr`, `git diff`), then `PR →`
+(`pr --open`, `pr`), then `Credential group…`, then `Network →` with available
+mode switches and `Egress…`, then restart/stop/destroy for Running (a Stopped
+container leads with start and ends with destroy). Each entry appears only
+when it would do something:
 
 - `job clear`/`job log` need a background-job row (`job log` follows a live
   worker's log and prints a finished one once);

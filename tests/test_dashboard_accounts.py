@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from pytest_mock import MockerFixture
 from rich.console import Console
 
+from jailbee import dashboard
 from jailbee import dashboard_accounts as da
 
 ROWS = json.dumps(
@@ -139,6 +141,12 @@ def test_actions_omit_use_when_nothing_is_parked_and_group_rm_when_in_use() -> N
 def test_live_login_never_offers_group_rm_even_when_unused() -> None:
     live = da.AccountRow("claude", "team", "a@x.io", "live", (), ())
     assert [a for _label, a in da.account_actions(live, [live])] == ["park"]
+
+
+def test_a_group_row_in_an_unknown_state_is_never_offered_for_removal() -> None:
+    """Only an `empty` group is removable; an unforeseen state is not guessed at."""
+    odd = da.AccountRow("claude", "team", None, "unknown", (), ())
+    assert "group-rm" not in [a for _label, a in da.account_actions(odd, [odd])]
 
 
 def test_ungrouped_live_row_has_no_actions() -> None:
@@ -306,3 +314,52 @@ def test_verdict_marker_beats_an_earlier_warning_and_stops_at_the_next_verdict(
     run.return_value.stdout = ""
     run.return_value.stderr = "⚠ something odd\n✗ first\nmore\n✗ second\n"
     assert da.run_cli_quiet(["x"], cwd=Path("/r")).message == "✗ first more"
+
+
+def _frame(tmp_path: Path, notice: str, width: int = 100) -> list[str]:
+    group = dashboard.RepoGroup("alpha", "/repos/alpha", tmp_path / "a.yaml", [])
+    console = Console(record=True, width=width)
+    console.print(
+        dashboard.render(
+            [group],
+            selected=None,
+            now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
+            git_enabled=True,
+            notice=notice,
+        )
+    )
+    return console.export_text().rstrip().splitlines()
+
+
+def _flat(lines: list[str]) -> str:
+    """The frame's text with borders and line breaks collapsed to single spaces."""
+    return " ".join(" ".join(ln.strip(" │╭╮╰╯─") for ln in lines).split())
+
+
+def test_a_long_refusal_is_shown_whole_below_the_table_with_its_remedy(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """The refusal's remedy (`pass --force`) sits past any border-width cut."""
+    run = mocker.patch.object(da.subprocess, "run")
+    run.return_value.returncode = 2
+    run.return_value.stdout = ""
+    run.return_value.stderr = _REFUSAL
+    message = da.run_cli_quiet(["account", "group", "set", "beta"], cwd=Path("/r")).message
+    assert len(message) > 200
+
+    lines = _frame(tmp_path, message)
+
+    assert "pass --force if you are sure." in _flat(lines)
+    assert "pass --force" not in lines[-1]  # not squeezed into the bottom border
+    assert "…" not in "\n".join(lines)
+
+
+def test_a_short_notice_stays_on_the_bottom_border(tmp_path: Path) -> None:
+    lines = _frame(tmp_path, "✓ Set group beta")
+    assert "✓ Set group beta" in lines[-1]
+    assert sum("✓ Set group beta" in ln for ln in lines) == 1
+
+
+def test_a_long_notice_with_markup_characters_renders_literally(tmp_path: Path) -> None:
+    notice = "✗ bad [/x] value [bold]not bold[/bold] " + "and more words " * 10
+    assert "[/x] value [bold]not bold[/bold]" in _flat(_frame(tmp_path, notice))
