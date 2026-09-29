@@ -34,6 +34,7 @@ from rich.table import Table
 from rich.text import Text
 
 from jailbee import dashboard_accounts as da
+from jailbee import dashboard_actions as dact
 from jailbee import table_format
 from jailbee.accounts.groups import RESERVED_GROUP_NAMES
 from jailbee.config import (
@@ -2429,6 +2430,51 @@ def _dispatch_action(
             except _PagerUnavailableError as exc:
                 log.debug("pager %s failed: %s", pager, exc)
     rc = subprocess.run(argv, check=False, cwd=target.cwd()).returncode
+    if style != "plain":
+        _wait_for_return()
+    return rc
+
+
+def _run_cli_foreground(
+    target: RepoTarget,
+    argv: list[str],
+    *,
+    style: DispatchStyle,
+    remote: bool = False,
+    over_ssh: bool = False,
+    ssh_policy: RemoteSSHConfig | None = None,
+) -> int:
+    """Run a dashboard-built ``jailbee <argv>`` against ``target``; return its exit code.
+
+    The counterpart of :func:`_dispatch_action` for entries that are not
+    ``<verb> <container>``: repo-level commands (``apply``, ``doctor``) and argv
+    carrying a ``--``-guarded answer (``snapshot create -- NAME TAG``).
+    ``_dispatch_action`` is deliberately not rebuilt on top of this. Its argv
+    order (``--force`` before ``--config``) is pinned by many tests, and nothing
+    would change for the user.
+
+    ``argv`` is checked exactly as given, then addressed: ``--config`` goes
+    before any ``--``, and nothing is added over SSH (`dashboard_actions.addressed`).
+    ``style`` works as in :func:`_dispatch_action`. A remote session never gets
+    a pager, because a pager can run host commands, so it gets the pause. A
+    pager that cannot start also degrades to the pause.
+
+    Raises :class:`RouteError` before anything runs when the policy refuses
+    ``argv``, and ``OSError`` when ``target.cwd()`` has vanished (the caller
+    turns that into a notice).
+    """
+    check_dashboard_command(argv, ssh_policy, over_ssh=over_ssh)
+    full = ["jailbee", *dact.addressed(argv, target.flags(), over_ssh=over_ssh)]
+    if style == "paged" and remote:
+        style = "output"
+    if style == "paged":
+        pager = pager_argv()
+        if pager is not None:
+            try:
+                return _run_paged(full, pager, target.cwd())
+            except _PagerUnavailableError as exc:
+                log.debug("pager %s failed: %s", pager, exc)
+    rc = subprocess.run(full, check=False, cwd=target.cwd()).returncode
     if style != "plain":
         _wait_for_return()
     return rc

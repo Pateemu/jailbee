@@ -7479,3 +7479,138 @@ def test_accounts_repo_vanishing_while_a_question_is_open_runs_nothing(
     child.assert_not_called()
     notices = " ".join(str(c.kwargs["notice"]) for c in render.call_args_list)
     assert "'alpha' is gone" in notices
+
+
+# --- _run_cli_foreground: dashboard-built argv in the real terminal -----------
+
+
+def _target(tmp_path: Path) -> dashboard.RepoTarget:
+    return dashboard.RepoTarget(tmp_path, tmp_path / "c.yaml")
+
+
+def test_run_cli_foreground_inserts_config_before_the_separator_and_pauses(mocker, tmp_path):
+    run = mocker.patch.object(dashboard.subprocess, "run")
+    run.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+
+    rc = dashboard._run_cli_foreground(
+        _target(tmp_path), ["snapshot", "create", "--", "alpha-x", "t"], style="output"
+    )
+
+    assert rc == 0
+    run.assert_called_once_with(
+        [
+            "jailbee",
+            "snapshot",
+            "create",
+            "--config",
+            str(tmp_path / "c.yaml"),
+            "--",
+            "alpha-x",
+            "t",
+        ],
+        check=False,
+        cwd=tmp_path,
+    )
+    wait.assert_called_once()
+
+
+def test_run_cli_foreground_over_ssh_sends_no_config_flag(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    run = mocker.patch.object(dashboard.subprocess, "run")
+    run.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+
+    dashboard._run_cli_foreground(
+        _target(tmp_path),
+        ["disk-usage"],
+        style="output",
+        remote=True,
+        over_ssh=True,
+        ssh_policy=RemoteSSHConfig(),
+    )
+
+    run.assert_called_once_with(["jailbee", "disk-usage"], check=False, cwd=tmp_path)
+
+
+def test_run_cli_foreground_refuses_before_spawning(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+    from jailbee.remote_ssh.router import RouteError
+
+    run = mocker.patch.object(dashboard.subprocess, "run")
+    paged = mocker.patch.object(dashboard, "_run_paged")
+
+    with pytest.raises(RouteError):
+        dashboard._run_cli_foreground(
+            _target(tmp_path),
+            ["apply"],
+            style="paged",
+            remote=True,
+            over_ssh=True,
+            ssh_policy=RemoteSSHConfig(),
+        )
+
+    run.assert_not_called()
+    paged.assert_not_called()
+
+
+def test_run_cli_foreground_pages_locally(mocker, tmp_path):
+    mocker.patch.object(dashboard, "pager_argv", return_value=["less", "-R"])
+    paged = mocker.patch.object(dashboard, "_run_paged", return_value=3)
+    run = mocker.patch.object(dashboard.subprocess, "run")
+
+    rc = dashboard._run_cli_foreground(_target(tmp_path), ["doctor"], style="paged")
+
+    assert rc == 3
+    paged.assert_called_once_with(
+        ["jailbee", "doctor", "--config", str(tmp_path / "c.yaml")], ["less", "-R"], tmp_path
+    )
+    run.assert_not_called()
+
+
+def test_run_cli_foreground_never_pages_a_remote_session(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    mocker.patch.object(dashboard, "pager_argv", return_value=["less", "-R"])
+    paged = mocker.patch.object(dashboard, "_run_paged")
+    run = mocker.patch.object(dashboard.subprocess, "run")
+    run.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+
+    dashboard._run_cli_foreground(
+        _target(tmp_path),
+        ["doctor"],
+        style="paged",
+        remote=True,
+        over_ssh=True,
+        ssh_policy=RemoteSSHConfig(),
+    )
+
+    paged.assert_not_called()
+    run.assert_called_once_with(["jailbee", "doctor"], check=False, cwd=tmp_path)
+    wait.assert_called_once()
+
+
+def test_run_cli_foreground_falls_back_to_a_pause_when_the_pager_fails(mocker, tmp_path):
+    mocker.patch.object(dashboard, "pager_argv", return_value=["less", "-R"])
+    mocker.patch.object(
+        dashboard, "_run_paged", side_effect=dashboard._PagerUnavailableError("gone")
+    )
+    run = mocker.patch.object(dashboard.subprocess, "run")
+    run.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+
+    assert dashboard._run_cli_foreground(_target(tmp_path), ["doctor"], style="paged") == 0
+    run.assert_called_once()
+    wait.assert_called_once()
+
+
+def test_run_cli_foreground_plain_does_not_pause(mocker, tmp_path):
+    run = mocker.patch.object(dashboard.subprocess, "run")
+    run.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+
+    dashboard._run_cli_foreground(_target(tmp_path), ["disk-usage"], style="plain")
+
+    wait.assert_not_called()
