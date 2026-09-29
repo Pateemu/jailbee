@@ -116,18 +116,19 @@ class Incus:
         capture_output: bool = True,
         check: bool = True,
         timeout: int | None = None,
+        input_text: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         cmd = [self.binary, *args]
         if self.dry_run:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        # stdin=DEVNULL so non-interactive `incus exec` (and any other
-        # incus subcommand) cannot drain the parent terminal's input
-        # buffer. Without this, characters the user typed while a `jailbee`
-        # command was still running — intending them for the *next*
-        # shell command — got forwarded into the container by
-        # `incus exec`'s default stdin-forwarding behavior and lost.
+        # Non-interactive calls use DEVNULL; the explicit-input path uses
+        # subprocess.run(input=...), which supplies a pipe without ever
+        # inheriting or draining the parent's terminal stdin.
         # The interactive shell path (exec_interactive) is a separate
         # method and still inherits stdin so tmux/bash get keypresses.
+        stdin_kwargs: dict[str, Any] = (
+            {"stdin": subprocess.DEVNULL} if input_text is None else {"input": input_text}
+        )
         try:
             result = subprocess.run(
                 cmd,
@@ -144,7 +145,7 @@ class Incus:
                 errors="replace",
                 check=False,
                 timeout=timeout,
-                stdin=subprocess.DEVNULL,
+                **stdin_kwargs,
             )
         except FileNotFoundError as e:
             raise _missing_binary_error(self.binary) from e
@@ -421,6 +422,13 @@ class Incus:
         )
         result = self._run(args, timeout=timeout)
         return result.stdout
+
+    def exec_with_input(
+        self, name: str, cmd: list[str], input_text: str, *, timeout: int | None = None
+    ) -> str:
+        """Run inside a container with explicit stdin; never put input in argv."""
+        args = self._exec_args(name, cmd, uid=None, gid=None, cwd=None, env=None, init_groups=False)
+        return self._run(args, timeout=timeout, input_text=input_text).stdout
 
     # How long `exec_lines` lets an abandoned command act on SIGTERM before
     # killing it.

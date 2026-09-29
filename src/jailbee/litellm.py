@@ -389,11 +389,13 @@ def sync_container(incus: Incus, name: str, payload: dict[str, object] | None) -
     """Install both files in a running dev container, or retire stale settings."""
     if payload is None:
         script = f"rm -f {CONTAINER_FILE} {CONTAINER_KEY_FILE}"
-    else:
-        body = json.dumps(payload["json"], indent=2)
-        key = Path(str(payload["key_path"])).read_text().strip()
-        assert "'" not in key
-        script = f"""\
+        incus.exec(name, ["bash", "-c", script], timeout=30)
+        return
+
+    body = json.dumps(payload["json"], indent=2)
+    key = Path(str(payload["key_path"])).read_text().strip()
+    assert "'" not in key
+    script = f"""\
 set -euo pipefail
 mkdir -p /etc/jailbee
 tmp=$(mktemp)
@@ -403,9 +405,9 @@ JB_EOF
 chmod 0644 "$tmp"; mv "$tmp" {CONTAINER_FILE}
 tmp=$(mktemp)
 printf '%s\\n' '{key}' > "$tmp"
-chmod 0640 "$tmp"; chgrp {CONTAINER_USERNAME} "$tmp"; mv "$tmp" {CONTAINER_KEY_FILE}
+chmod 0640 "$tmp"; chown root:{CONTAINER_USERNAME} "$tmp"; mv "$tmp" {CONTAINER_KEY_FILE}
 """
-    incus.exec(name, ["bash", "-c", script], timeout=30)
+    incus.exec_with_input(name, ["bash", "-s"], script, timeout=30)
 
 
 def upstream_reachable(incus: Incus, host: str) -> bool:

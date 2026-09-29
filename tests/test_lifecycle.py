@@ -1330,7 +1330,7 @@ def test_new_container_syncs_litellm_only_when_payload_supplied(tmp_path, mocker
 
     new_container(cfg, incus, opts)
 
-    scripts = [str(c.args[1][-1]) for c in incus.exec.call_args_list]
+    scripts = [str(c.args[2]) for c in incus.exec_with_input.call_args_list]
     assert any("/etc/jailbee/litellm.json" in s for s in scripts) is with_payload
 
 

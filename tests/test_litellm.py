@@ -550,14 +550,15 @@ def test_sync_container_writes_json_and_key():
     incus = _incus(present=True)
     ll.litellm_up(incus, _gcfg())
     payload = ll.container_sync_payload(incus, _gcfg())
-    incus.exec.reset_mock()
+    incus.exec_with_input.reset_mock()
     ll.sync_container(incus, "repo-branch", payload)
-    name, cmd = incus.exec.call_args.args[:2]
-    script = cmd[-1]
+    name, cmd, script = incus.exec_with_input.call_args.args
     assert name == "repo-branch"
+    assert cmd == ["bash", "-s"]
+    assert "sk-jb-" not in repr(cmd)
     assert ll.CONTAINER_FILE in script and ll.CONTAINER_KEY_FILE in script
     assert "chmod 0644" in script
-    assert "chmod 0640" in script and "chgrp dev" in script
+    assert "chmod 0640" in script and "chown root:dev" in script
     assert "sk-jb-" in script
 
 
@@ -566,6 +567,7 @@ def test_sync_container_removes_when_none():
     ll.sync_container(incus, "repo-branch", None)
     script = incus.exec.call_args.args[1][-1]
     assert f"rm -f {ll.CONTAINER_FILE} {ll.CONTAINER_KEY_FILE}" in script
+    incus.exec_with_input.assert_not_called()
 
 
 def test_upstream_reachable_checks_proxy_container_only():

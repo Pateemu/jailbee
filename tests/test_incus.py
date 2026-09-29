@@ -128,6 +128,55 @@ def test_exec_runs_command_in_container(incus, mocker):
     assert out.strip() == "hello"
 
 
+@pytest.mark.parametrize("secret", ["sk-jb-secret\n", ""])
+def test_exec_with_input_uses_private_stdin_not_argv_or_terminal(incus, mocker, secret):
+    run = _mock_run(mocker, stdout="done\n")
+
+    assert incus.exec_with_input("feat-foo", ["bash", "-s"], secret, timeout=30) == "done\n"
+
+    args = run.call_args.args[0]
+    assert args == ["incus", "exec", "feat-foo", "--", "bash", "-s"]
+    assert secret not in args
+    assert run.call_args.kwargs["input"] == secret
+    assert "stdin" not in run.call_args.kwargs  # input= creates a pipe; no terminal inherit
+    assert run.call_args.kwargs["timeout"] == 30
+
+
+@pytest.mark.parametrize("failure", ["exit", "timeout"])
+def test_exec_with_input_error_never_renders_secret(incus, mocker, failure):
+    secret = "sk-jb-private-master-key"
+    if failure == "exit":
+        run = _mock_run(mocker, returncode=1, stderr="permission denied")
+    else:
+        run = mocker.patch(
+            "jailbee.incus.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=["incus", "exec"], timeout=30),
+        )
+
+    with pytest.raises(IncusError) as exc:
+        incus.exec_with_input("feat-foo", ["bash", "-s"], secret, timeout=30)
+
+    assert secret not in str(exc.value)
+    assert secret not in " ".join(run.call_args.args[0])
+    assert run.call_args.kwargs["input"] == secret
+
+
+def test_litellm_sync_key_never_in_incus_argv_or_error(tmp_path, mocker):
+    from jailbee.litellm import sync_container
+
+    secret = "sk-jb-very-private"
+    key = tmp_path / "master.key"
+    key.write_text(secret + "\n")
+    run = _mock_run(mocker, returncode=1, stderr="permission denied")
+
+    with pytest.raises(IncusError) as exc:
+        sync_container(Incus(), "feat-foo", {"json": {"version": 1}, "key_path": str(key)})
+
+    assert secret not in repr(run.call_args.args[0])
+    assert secret not in str(exc.value)
+    assert secret in run.call_args.kwargs["input"]
+
+
 def test_run_tolerates_non_utf8_output(incus):
     """`_run` must not crash when a subprocess emits non-UTF-8 bytes.
 
