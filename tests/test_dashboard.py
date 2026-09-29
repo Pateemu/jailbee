@@ -8197,28 +8197,6 @@ def test_repo_vanishing_while_the_apply_picker_is_open_runs_nothing(mocker, tmp_
     assert "'alpha' is gone" in " ".join(str(n) for n in _notices(render))
 
 
-@pytest.mark.parametrize("verb", ["mount-add", "mount-remove"])
-def test_unbuilt_container_entries_are_inert(mocker, tmp_path, verb):
-    """A menu verb the dashboard has no handler for must never reach the CLI dispatcher."""
-    group = _cfg_group(tmp_path, (_autostart_ci(),))
-    group.optional_mounts = ("aws", "gcloud")
-    group.containers[0] = dataclasses.replace(group.containers[0], optional_mounts=("gcloud",))
-    menu = dashboard.open_menu([group], "alpha-x")
-    assert menu is not None
-    assert verb in [v for _label, v in menu.actions]
-    child = mocker.patch.object(dashboard.subprocess, "run")
-    dispatch = mocker.patch.object(dashboard, "_dispatch_action")
-    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
-
-    assert _drive_run(mocker, _container_menu_keys(group, verb), [group]) == 0
-
-    child.assert_not_called()
-    dispatch.assert_not_called()
-    # `dispatch`'s own guard would answer a fall-through with this notice
-    assert not [n for n in _notices(render) if "no longer available" in str(n)]
-    assert render.call_args_list[-1].kwargs["overlay"] is None
-
-
 def test_stale_menu_refused_by_the_policy_at_submit_spawns_nothing(mocker, tmp_path):
     group = _cfg_group(tmp_path, (_autostart_ci(),))
     child = mocker.patch.object(dashboard.subprocess, "run")
@@ -8791,3 +8769,293 @@ def test_an_unknown_snapshot_action_spawns_nothing(mocker, tmp_path):
     assert _drive_run(mocker, keys, [group]) == 0
 
     child.assert_not_called()
+
+
+# --- Mount… / Unmount… -------------------------------------------------------
+
+
+def _mount_group(tmp_path: Path) -> dashboard.RepoGroup:
+    """Kinds aws + gcloud configured; gcloud attached to alpha-x."""
+    group = _cfg_group(
+        tmp_path, (dataclasses.replace(_ci("alpha-x", "alpha"), optional_mounts=("gcloud",)),)
+    )
+    group.optional_mounts = ("aws", "gcloud")
+    return group
+
+
+@pytest.mark.parametrize(
+    ("over_ssh", "policy_kwargs", "expected"),
+    [
+        (False, None, {"mount-add", "mount-remove"}),
+        (False, {"commands": {"mode": "disabled"}}, {"mount-add", "mount-remove"}),
+        (True, {}, {"mount-remove"}),
+        (True, {"commands": {"mode": "allowlist", "allow": ["shell", "mount"]}}, set()),
+        (
+            True,
+            {
+                "commands": {"mode": "allowlist", "allow": ["shell", "mount"]},
+                "restrict_host": False,
+            },
+            {"mount-add"},
+        ),
+        (
+            True,
+            {"commands": {"mode": "allowlist", "allow": ["shell", "unmount"]}},
+            {"mount-remove"},
+        ),
+        (True, {"commands": {"mode": "allowlist", "allow": ["shell"]}}, set()),
+        (True, {"excluded_repos": ["other"]}, set()),
+    ],
+    ids=[
+        "local",
+        "local-ignores-policy",
+        "ssh-default",
+        "ssh-allowlist-mount-restricted",
+        "ssh-allowlist-mount-unrestricted",
+        "ssh-allowlist-unmount",
+        "ssh-allowlist-without",
+        "ssh-excluded-repos",
+    ],
+)
+def test_container_menu_mount_entries_follow_the_ssh_policy(
+    tmp_path, over_ssh, policy_kwargs, expected
+):
+    menu = dashboard.open_menu(
+        [_mount_group(tmp_path)],
+        "alpha-x",
+        remote=over_ssh,
+        over_ssh=over_ssh,
+        ssh_policy=_ssh_policy(policy_kwargs),
+    )
+    assert menu is not None
+    assert {verb for _label, verb in menu.actions} & {"mount-add", "mount-remove"} == expected
+
+
+def test_mount_offers_the_unattached_kinds_and_runs_quietly(mocker, tmp_path):
+    group = _mount_group(tmp_path)
+    quiet = mocker.patch.object(
+        dashboard.da,
+        "run_cli_quiet",
+        return_value=dashboard.da.CliResult(True, "✓ Mounted 'aws' in container 'x'"),
+    )
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_menu_keys(group, "mount-add"), _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert [e.value for e in _rendered(render, dashboard.Picker)[0].entries] == ["aws"]
+    quiet.assert_called_once_with(
+        ["mount", "--config", str(group.config_path), "--", "aws", "alpha-x"], cwd=tmp_path
+    )
+    child.assert_not_called()  # quiet: the screen never blanked
+    assert "✓ Mounted 'aws' in container 'x'" in _notices(render)
+
+
+def test_unmount_offers_the_attached_kinds(mocker, tmp_path):
+    group = _mount_group(tmp_path)
+    quiet = mocker.patch.object(
+        dashboard.da, "run_cli_quiet", return_value=dashboard.da.CliResult(True, "done")
+    )
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_menu_keys(group, "mount-remove"), _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert [e.value for e in _rendered(render, dashboard.Picker)[0].entries] == ["gcloud"]
+    quiet.assert_called_once_with(
+        ["unmount", "--config", str(group.config_path), "--", "gcloud", "alpha-x"], cwd=tmp_path
+    )
+
+
+def test_unmount_over_ssh_offers_the_attached_kinds_without_config(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _mount_group(tmp_path)
+    policy = RemoteSSHConfig()
+    quiet = mocker.patch.object(
+        dashboard.da, "run_cli_quiet", return_value=dashboard.da.CliResult(True, "done")
+    )
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    kwargs = {"remote": True, "over_ssh": True, "ssh_policy": policy}
+
+    keys = [*_container_menu_keys(group, "mount-remove", **kwargs), _ENTER]
+    assert _drive_run(mocker, keys, [group], **kwargs) == 0
+
+    assert [e.value for e in _rendered(render, dashboard.Picker)[0].entries] == ["gcloud"]
+    quiet.assert_called_once_with(["unmount", "--", "gcloud", "alpha-x"], cwd=tmp_path)
+
+
+def test_a_refused_mount_is_a_long_notice(mocker, tmp_path):
+    group = _mount_group(tmp_path)
+    mocker.patch.object(
+        dashboard.da,
+        "run_cli_quiet",
+        return_value=dashboard.da.CliResult(False, "error: Unknown optional mount 'aws'"),
+    )
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_menu_keys(group, "mount-add"), _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    # the CLI's own verdict, shown whole; the dashboard is still running (rc 0)
+    assert "error: Unknown optional mount 'aws'" in _notices(render)
+    child.assert_not_called()
+
+
+def test_mount_picker_escape_runs_nothing(mocker, tmp_path):
+    group = _mount_group(tmp_path)
+    quiet = mocker.patch.object(dashboard.da, "run_cli_quiet")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_menu_keys(group, "mount-add"), _ESC]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert _rendered(render, dashboard.Picker)  # it did open
+    quiet.assert_not_called()
+
+
+@pytest.mark.parametrize("verb", ["mount-add", "mount-remove"])
+def test_a_kind_spelled_like_an_option_stays_positional(mocker, tmp_path, verb):
+    group = _mount_group(tmp_path)
+    group.optional_mounts = ("--yes", "gcloud")
+    quiet = mocker.patch.object(
+        dashboard.da, "run_cli_quiet", return_value=dashboard.da.CliResult(True, "done")
+    )
+    if verb == "mount-remove":
+        group.containers[0] = dataclasses.replace(
+            group.containers[0], optional_mounts=("--yes", "gcloud")
+        )
+
+    keys = [*_container_menu_keys(group, verb), _ENTER]  # the first entry: "--yes"
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    verb_word = "unmount" if verb == "mount-remove" else "mount"
+    quiet.assert_called_once_with(
+        [verb_word, "--config", str(group.config_path), "--", "--yes", "alpha-x"], cwd=tmp_path
+    )
+
+
+def test_kinds_missing_from_the_config_are_not_offered_to_unmount(mocker, tmp_path):
+    group = _mount_group(tmp_path)
+    group.containers[0] = dataclasses.replace(
+        group.containers[0], optional_mounts=("gcloud", "retired")
+    )
+    mocker.patch.object(
+        dashboard.da, "run_cli_quiet", return_value=dashboard.da.CliResult(True, "done")
+    )
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_menu_keys(group, "mount-remove"), _ESC]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert [e.value for e in _rendered(render, dashboard.Picker)[0].entries] == ["gcloud"]
+
+
+def _drive_mount_menu_then(mocker, group, verb, change, *, same_read: bool = False) -> None:
+    """Open the container menu on ``verb``, run ``change()``, then press Enter on it.
+
+    The menu overlay keeps the entries it opened with, so this is a stale menu.
+    With ``same_read`` the change lands on the very read that delivers Enter, so
+    no frame sees it first.
+    """
+    keys = _container_menu_keys(group, verb)
+    script = iter([*keys[:-1], "change", *([] if same_read else [keys[-1]])])
+
+    def read(_fd, _n):
+        item = next(script, b"\x03")
+        if item == "change":
+            change()
+            return keys[-1] if same_read else b"z"
+        return item
+
+    assert _drive_run_with_reader(mocker, read, [group]) == 0
+
+
+def test_mount_with_nothing_left_to_add_notices_instead_of_opening(mocker, tmp_path):
+    group = _mount_group(tmp_path)
+    quiet = mocker.patch.object(dashboard.da, "run_cli_quiet")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    def attach_everything():
+        group.containers[0] = dataclasses.replace(
+            group.containers[0], optional_mounts=("aws", "gcloud")
+        )
+
+    _drive_mount_menu_then(mocker, group, "mount-add", attach_everything)
+
+    assert not _rendered(render, dashboard.Picker)
+    assert "No optional mount to add" in _notices(render)
+    quiet.assert_not_called()
+
+
+def test_unmount_with_nothing_attached_notices_instead_of_opening(mocker, tmp_path):
+    group = _mount_group(tmp_path)
+    quiet = mocker.patch.object(dashboard.da, "run_cli_quiet")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    def detach_everything():
+        group.containers[0] = dataclasses.replace(group.containers[0], optional_mounts=())
+
+    _drive_mount_menu_then(mocker, group, "mount-remove", detach_everything)
+
+    assert not _rendered(render, dashboard.Picker)
+    assert "No optional mount to remove" in _notices(render)
+    quiet.assert_not_called()
+
+
+@pytest.mark.parametrize("verb", ["mount-add", "mount-remove"])
+def test_container_vanishing_on_the_read_that_opens_the_mount_picker_runs_nothing(
+    mocker, tmp_path, verb
+):
+    group = _mount_group(tmp_path)
+    quiet = mocker.patch.object(dashboard.da, "run_cli_quiet")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    _drive_mount_menu_then(mocker, group, verb, group.containers.clear, same_read=True)
+
+    assert not _rendered(render, dashboard.Picker)
+    quiet.assert_not_called()
+    assert "'alpha-x' is gone" in " ".join(str(n) for n in _notices(render))
+
+
+def test_stale_mount_menu_refused_by_the_policy_at_submit_runs_nothing(mocker, tmp_path):
+    group = _mount_group(tmp_path)
+    quiet = mocker.patch.object(dashboard.da, "run_cli_quiet")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    real_check = dashboard.check_dashboard_command
+
+    def refuse(argv, policy, *, over_ssh):
+        if argv[:1] == ["mount"]:
+            raise dashboard.RouteError("mount is not permitted")
+        return real_check(argv, policy, over_ssh=over_ssh)
+
+    mocker.patch.object(dashboard, "check_dashboard_command", side_effect=refuse)
+
+    keys = [*_container_menu_keys(group, "mount-add"), _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert _rendered(render, dashboard.Picker)
+    quiet.assert_not_called()
+    assert "mount is not permitted" in _notices(render)
+
+
+@_VANISH_WHEN
+@pytest.mark.parametrize("verb", ["mount-add", "mount-remove"])
+def test_container_vanishing_while_the_mount_picker_is_open_runs_nothing(
+    mocker, tmp_path, when, verb
+):
+    group = _mount_group(tmp_path)
+    quiet = mocker.patch.object(dashboard.da, "run_cli_quiet")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = _container_menu_keys(group, verb)
+    assert _drive_with_vanish(mocker, keys, [group], group.containers.clear, when=when) == 0
+
+    purpose = "container-mount-remove" if verb == "mount-remove" else "container-mount-add"
+    assert {p.purpose for p in _rendered(render, dashboard.Picker)} == {purpose}
+    quiet.assert_not_called()
+    child.assert_not_called()
+    assert "'alpha-x' is gone" in " ".join(str(n) for n in _notices(render))

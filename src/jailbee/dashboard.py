@@ -3111,7 +3111,28 @@ def run(
                     return dact.autostart_cancel_picker(container)
                 if verb == dact.SNAPSHOTS:
                     return open_snapshots(container)
+                if verb in (dact.MOUNT_ADD, dact.MOUNT_REMOVE):
+                    return open_mount_picker(container, remove=verb == dact.MOUNT_REMOVE)
                 return None
+
+            def open_mount_picker(container: str, *, remove: bool) -> Picker | None:
+                """The kinds Mount… (Unmount…) can act on right now, or a notice."""
+                group = _find_group(groups, container)
+                info = (
+                    next((c for c in group.containers if c.name == container), None)
+                    if group is not None
+                    else None
+                )
+                if group is None or info is None:
+                    set_notice(f"'{container}' is gone")
+                    return None
+                kinds = dact.mount_choices(info, group.optional_mounts, remove=remove)
+                if not kinds:
+                    set_notice(
+                        "No optional mount to remove" if remove else "No optional mount to add"
+                    )
+                    return None
+                return dact.mount_picker(container, kinds, remove=remove)
 
             def open_snapshots(container: str) -> Picker | None:
                 """List the container's snapshots quietly and offer them, or notice why not.
@@ -3213,8 +3234,10 @@ def run(
                 group = target_group(groups, target, kind)
                 return RepoTarget.of(group) if group is not None else None
 
-            def run_account_cli(repo: RepoTarget, argv: list[str]) -> bool:
-                """Run one `jailbee account …` change off-screen; report it as a notice.
+            def run_quiet_cli(repo: RepoTarget, argv: list[str]) -> bool:
+                """Run one short `jailbee` change off-screen (an account or a mount).
+
+                The outcome is reported as a notice.
 
                 Quiet rather than `foreground`: the command asks nothing, so
                 handing it the terminal would only blank the dashboard. A
@@ -3222,7 +3245,7 @@ def run(
                 own message answers with `--force` — stays up long enough to
                 read. There is no automatic retry with `--force`.
                 """
-                full = [*argv, *(repo.flags() if not over_ssh else [])]
+                full = dact.addressed(argv, repo.flags(), over_ssh=over_ssh)
                 try:
                     check_dashboard_command(full, ssh_policy, over_ssh=over_ssh)
                 except RouteError as exc:
@@ -3233,7 +3256,7 @@ def run(
                     result.message,
                     seconds=_NOTICE_SECONDS if result.ok else _FAILURE_NOTICE_SECONDS,
                 )
-                force.set()  # a group change re-renders the containers' profiles
+                force.set()  # a group or mount change shows in the next gather
                 return result.ok
 
             def load_listing(
@@ -3303,7 +3326,7 @@ def run(
                 if repo is None:
                     set_notice(f"'{target}' is gone")
                     return
-                run_account_cli(repo, argv)
+                run_quiet_cli(repo, argv)
 
             def accounts_target() -> str | None:
                 """The repo prefix the Accounts panel runs its `jailbee account …` in.
@@ -3370,7 +3393,7 @@ def run(
                 if repo is None:
                     set_notice(f"'{state.prefix}' is gone", seconds=_FAILURE_NOTICE_SECONDS)
                     return None
-                if not run_account_cli(repo, argv):
+                if not run_quiet_cli(repo, argv):
                     return state
                 return load_accounts(state.prefix, state.index) or state
 
@@ -3548,6 +3571,18 @@ def run(
                     return None
                 if picker.purpose.startswith("container-snapshot"):
                     return submit_snapshot_picker(picker, entry)
+                if picker.purpose in ("container-mount-add", "container-mount-remove"):
+                    build = (
+                        dact.unmount_argv
+                        if picker.purpose == "container-mount-remove"
+                        else dact.mount_argv
+                    )
+                    repo = repo_for(picker.target, "container")
+                    if repo is None:
+                        set_notice(f"'{picker.target}' is gone")
+                    else:
+                        run_quiet_cli(repo, build(entry.value, picker.target))
+                    return None
                 if picker.purpose.startswith("acct-"):
                     # every account picker is opened from the Accounts panel
                     assert isinstance(picker.back, da.AccountsState)
