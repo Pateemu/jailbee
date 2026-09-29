@@ -50,6 +50,7 @@ from jailbee.dashboard_commands import (
     completion_candidates,
     dashboard_action_argv,
     insert_options_before_separator,
+    permitted,
 )
 from jailbee.dashboard_egress import (
     EgressState,
@@ -1319,7 +1320,7 @@ def open_menu(
     if name is None or not actions:
         return None
     # Probed with placeholders: the policy judges the command, not its values.
-    if _permitted(["account", "group", "use", "x", "y"], ssh_policy, over_ssh):
+    if permitted(["account", "group", "use", "x", "y"], ssh_policy, over_ssh=over_ssh):
         actions = _with_credential_group(actions)
     return MenuState(name, actions)
 
@@ -1366,21 +1367,12 @@ def open_repo_menu(
         actions.append(("New container…", "new"))
         actions.append(("New from PR…", "new-pr"))
         # Probed with a placeholder group: the policy judges the command, not its value.
-        if _permitted(["account", "group", "set", "x"], ssh_policy, over_ssh):
+        if permitted(["account", "group", "set", "x"], ssh_policy, over_ssh=over_ssh):
             actions.append(("Credential group…", "credential-group"))
-        if _permitted(["net", "egress", "ls", "--repo"], ssh_policy, over_ssh):
+        if permitted(["net", "egress", "ls", "--repo"], ssh_policy, over_ssh=over_ssh):
             actions.append(MenuGroup("Network →", (("Egress…", "net egress ls"),)))
     actions.append(("Unfold" if prefix in folded else "Fold", "fold"))
     return RepoMenuState(prefix, actions)
-
-
-def _permitted(argv: list[str], ssh_policy: RemoteSSHConfig | None, over_ssh: bool) -> bool:
-    """Whether the dashboard may run ``jailbee <argv>`` under the session's SSH policy."""
-    try:
-        check_dashboard_command(argv, ssh_policy, over_ssh=over_ssh)
-    except RouteError:
-        return False
-    return True
 
 
 def _menu_entries(menu: MenuState | RepoMenuState) -> Sequence[MenuItem]:

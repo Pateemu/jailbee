@@ -11,6 +11,7 @@ from jailbee.dashboard_commands import (
     command_argv,
     completion_candidates,
     insert_options_before_separator,
+    permitted,
 )
 from jailbee.remote_ssh.router import RouteError
 from jailbee.remote_ssh.session import SSH_EXCLUDED_REPOS_ENV, SSH_SESSION_ENV
@@ -226,3 +227,29 @@ def test_remote_completion_hides_options_and_containers_for_disallowed_leaf() ->
     allowed = frozenset({"git pull"})
     assert "--into" not in completion_candidates("merge --in", ("alpha",), allowed)
     assert "alpha" not in completion_candidates("merge al", ("alpha",), allowed)
+
+
+@pytest.mark.parametrize(
+    ("argv", "over_ssh", "policy", "expected"),
+    [
+        (["apply"], False, None, True),
+        (["apply"], True, RemoteSSHConfig(), False),
+        (["doctor"], True, RemoteSSHConfig(), True),
+        (
+            ["doctor"],
+            True,
+            RemoteSSHConfig(commands=RemoteCommandPolicy(mode="allowlist", allow=["shell"])),
+            False,
+        ),
+        (["doctor"], True, None, False),
+    ],
+    ids=[
+        "local",
+        "ssh-host-command",
+        "ssh-container-command",
+        "ssh-allowlist-without",
+        "no-policy",
+    ],
+)
+def test_permitted_mirrors_check_dashboard_command(argv, over_ssh, policy, expected) -> None:
+    assert permitted(argv, policy, over_ssh=over_ssh) is expected

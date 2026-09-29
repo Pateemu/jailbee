@@ -48,6 +48,20 @@ def check_dashboard_command(
     )
 
 
+def permitted(argv: Sequence[str], policy: RemoteSSHConfig | None, *, over_ssh: bool) -> bool:
+    """Whether the dashboard may run ``jailbee <argv>`` under the session's SSH policy.
+
+    The visibility twin of :func:`check_dashboard_command`: a dashboard entry
+    is offered exactly when its command would pass, so a session never sees an
+    entry that can only fail. Always true locally (``over_ssh`` false).
+    """
+    try:
+        check_dashboard_command(argv, policy, over_ssh=over_ssh)
+    except RouteError:
+        return False
+    return True
+
+
 def command_argv(text: str, selected_container: str | None) -> list[str]:
     """Parse command text as argv and fill a safe omitted container positional."""
     try:
