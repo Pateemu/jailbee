@@ -473,6 +473,7 @@ plus Claude-only fields for its deeper integration (AI-generated PR
 descriptions, plugin marketplace egress, onboarding seeding):
 
 - `plugins_enabled`
+- `agent_view`
 - `ai_pr_description`
 - `ai_pr_branch`
 - `pr_prompt`
@@ -483,6 +484,35 @@ Full field-by-field descriptions for these live in the
 [`claude` section of Configuration reference](config.md#claude) — that
 section stays the authoritative reference for the Claude-only fields; this
 page covers the generic `agents:` mechanism they sit on top of.
+
+### What the containers of a repo share
+
+Every container of a repo mounts the same `<shared_dir>/claude` as
+`~/.claude`, so memory (`projects/<path>/memory/`), transcripts and
+`/resume` across containers, settings, `CLAUDE.md`, skills and plugins are
+shared. Three subdirectories are **per container**, mounted over the shared
+ones from `<shared_dir>/.private/<container>/claude/`:
+
+- `sessions/` — Claude Code's registry of running sessions, which peer
+  messaging and the dashboard's AGENT column read;
+- `daemon/`, `jobs/` — the agent-view daemon's roster, dispatch queue and
+  background-job state.
+
+Shared, these let one container's daemon adopt, run twice or declare dead
+another container's jobs. The daemon's top-level `daemon.lock` cannot be made
+per container (it is a file), so **agent view is off by default**:
+containers get `CLAUDE_CODE_DISABLE_AGENT_VIEW=1`, which turns off
+`claude agents`, `--bg`, `/background` and the daemon. Set
+`agents.claude.agent_view: true` to keep it; daemons in two running
+containers of the repo will still contend for the lock, and `claude
+--continue` in one container may pick a session running in the background in
+another.
+
+The per-container mounts land when a container starts, so restart running
+containers after upgrading. The old shared `sessions/`, `daemon/`, `jobs/`
+and `daemon.*` files under `<shared_dir>/claude/` are left in place — a
+container not yet restarted still uses them — and can be deleted once every
+container of the repo has been restarted.
 
 ### Shared credential groups (`credentials`)
 
@@ -542,8 +572,8 @@ documented by Anthropic:
   authentication, and jailbee does not correct it — only the credential
   in `CLAUDE_SECURESTORAGE_CONFIG_DIR` authenticates.
 - Only the credential is shared. Each repo keeps its own `~/.claude`, so
-  project history, MCP config, sessions and onboarding state never cross
-  repos.
+  project history, MCP config and onboarding state never cross repos, and
+  running-session state does not cross containers either (see above).
 
 ## 10. The bundled jailbee skills
 

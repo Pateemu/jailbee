@@ -235,6 +235,17 @@ UPGRADE_NOTES: tuple[UpgradeNote, ...] = (
             "legacy containers remain on legacy networking"
         ),
     ),
+    UpgradeNote(
+        version=(1, 7, 0),
+        actions=frozenset({"apply"}),
+        reason=(
+            "Claude Code's agent view and its background daemon are off in "
+            "containers by default (`agents.claude.agent_view`), and its session "
+            "registry, daemon and job state move to a per-container directory; "
+            "restart each running container after `jailbee apply` so the new "
+            "mounts land"
+        ),
+    ),
 )
 """What each release requires, ascending by version. Maintained by hand.
 

@@ -167,6 +167,19 @@ before editing `## Unreleased`.
 
 ### Fixed
 
+- **Claude Code's session registry and background daemon no longer mix
+  between containers.** Every container of a repo shares `~/.claude`, and
+  Claude Code keeps per-process state there: its live-session registry
+  (`sessions/`) and the agent-view daemon's roster, dispatch queue and job
+  state (`daemon/`, `jobs/`, `daemon.lock`). Daemons in two containers took
+  each other's lock, ran one background job twice and declared the other
+  container's jobs dead. `sessions/`, `daemon/` and `jobs/` are now per
+  container, and agent view (`claude agents`, `--bg`, `/background`) is off
+  by default together with its daemon, whose lock file cannot be made per
+  container. Set `agents.claude.agent_view: true` to keep it if you run one
+  container of a repo at a time. Memory, settings, skills, plugins and
+  `/resume` across containers are shared as before. Run `jailbee apply` and
+  restart running containers.
 - **`jailbee ls` AHEAD no longer goes stale after `jailbee checkout`.**
   Checking a container's branch out onto the host left its AHEAD ±/↑ — and
   that of every other container based on the same branch — counting against
