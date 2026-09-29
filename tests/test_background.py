@@ -487,6 +487,7 @@ def test_op_to_job_round_trip_preserves_assume_yes():
 def test_op_to_job_round_trip_preserves_every_field():
     """Structural guard: no NewContainerOptions field may be dropped."""
     import dataclasses
+    import json
     from pathlib import Path
 
     from jailbee.background import job_to_opts, op_to_job
@@ -503,6 +504,7 @@ def test_op_to_job_round_trip_preserves_every_field():
         autostart=False,
         mirror_endpoint=("10.0.0.1", 5000),
         mirror_ca_path=Path("/tmp/ca.crt"),
+        litellm_payload={"json": {"version": 1}, "key_path": "/host/default/master.key"},
         base="main",
         mount=False,
         base_branch_label="main",
@@ -518,6 +520,8 @@ def test_op_to_job_round_trip_preserves_every_field():
     )
 
     job = op_to_job(opts, container_name="p-feature", log_path="/tmp/l.log")
+    assert job["opts"]["litellm_payload"]["key_path"] == "/host/default/master.key"
+    assert "sk-jb-" not in json.dumps(job)
     restored, _name, _log = job_to_opts(job)
 
     for f in dataclasses.fields(NewContainerOptions):
@@ -543,6 +547,7 @@ def test_job_to_opts_tolerates_a_job_file_without_assume_yes():
     del job["opts"]["approved_autostart_ref"]
     del job["opts"]["untrusted_head"]
     del job["opts"]["autofetch_done"]
+    del job["opts"]["litellm_payload"]
 
     restored, _name, _log = job_to_opts(job)
 

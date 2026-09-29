@@ -8,17 +8,20 @@ Host-side authentication and configuration survive container deletion.
 from __future__ import annotations
 
 import os
+import json
 import shlex
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib import resources
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import yaml
 
 from jailbee import litellm_state
+from jailbee.config import CONTAINER_USERNAME
 from jailbee.incus import IncusError
 from jailbee.litellm_render import ACCOUNT_DEFAULT, CONTAINER_STATE_DIR, egress_hosts
 from jailbee.loose_bridge import LOOSE_BRIDGE, loose_bridge_host_ip
@@ -38,6 +41,8 @@ _IMAGE = "images:ubuntu/26.04/cloud"
 _IP_INDEX = 1
 _WAIT_SECONDS = 60
 _PY = "/opt/litellm/bin/python"
+CONTAINER_FILE = "/etc/jailbee/litellm.json"
+CONTAINER_KEY_FILE = "/etc/jailbee/litellm-default.key"
 
 
 def unit(account: str) -> str:
@@ -359,6 +364,57 @@ def endpoint(incus: Incus) -> tuple[str, int] | None:
     if ip is None:
         return None
     return ip, litellm_state.port_for(ACCOUNT_DEFAULT)
+
+
+def container_sync_payload(incus: Incus, gcfg: GlobalConfig) -> dict[str, object] | None:
+    """Resolve the dev-container settings without putting a key in a background job."""
+    from jailbee.litellm_render import container_payload
+
+    if not gcfg.litellm.enabled:
+        return None
+    ep = endpoint(incus)
+    key_path = litellm_state.state_dir() / ACCOUNT_DEFAULT / "master.key"
+    if ep is None or not key_path.exists():
+        return None
+    ip, port = ep
+    return {
+        "json": container_payload(
+            gcfg.litellm, base_url=f"http://{ip}:{port}", key_file=CONTAINER_KEY_FILE
+        ),
+        "key_path": str(key_path),
+    }
+
+
+def sync_container(incus: Incus, name: str, payload: dict[str, object] | None) -> None:
+    """Install both files in a running dev container, or retire stale settings."""
+    if payload is None:
+        script = f"rm -f {CONTAINER_FILE} {CONTAINER_KEY_FILE}"
+    else:
+        body = json.dumps(payload["json"], indent=2)
+        key = Path(str(payload["key_path"])).read_text().strip()
+        assert "'" not in key
+        script = f"""\
+set -euo pipefail
+mkdir -p /etc/jailbee
+tmp=$(mktemp)
+cat > "$tmp" <<'JB_EOF'
+{body}
+JB_EOF
+chmod 0644 "$tmp"; mv "$tmp" {CONTAINER_FILE}
+tmp=$(mktemp)
+printf '%s\\n' '{key}' > "$tmp"
+chmod 0640 "$tmp"; chgrp {CONTAINER_USERNAME} "$tmp"; mv "$tmp" {CONTAINER_KEY_FILE}
+"""
+    incus.exec(name, ["bash", "-c", script], timeout=30)
+
+
+def upstream_reachable(incus: Incus, host: str) -> bool:
+    """Probe provider TCP reachability from inside the restricted proxy."""
+    probe = f"import socket; socket.create_connection(({host!r}, 443), 5); print('ok')"
+    try:
+        return incus.exec(LITELLM_CONTAINER, [_PY, "-c", probe], timeout=15).strip() == "ok"
+    except IncusError:
+        return False
 
 
 def litellm_status(incus: Incus) -> LiteLLMStatus:

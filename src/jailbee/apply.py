@@ -18,7 +18,7 @@ from jailbee.config import Config
 from jailbee.db import get_engine
 from jailbee.egress_pool import refresh_pool, register_repo
 from jailbee.global_config import GlobalConfig
-from jailbee.incus import Incus
+from jailbee.incus import Incus, IncusError
 from jailbee.profiles import (
     base_profile_yaml,
     binds_profile_yaml,
@@ -170,6 +170,7 @@ def run_apply(
     info("Refreshing egress pool + ACL + /etc/hosts...")
     mirror_endpoint = _mirror_endpoint_or_warn(cfg, incus, gcfg)
     mirror_ca_pem = _read_mirror_ca_or_warn(gcfg) if mirror_endpoint else None
+    litellm_payload = _litellm_payload_or_warn(incus, gcfg)
 
     # Before `refresh_pool`, which writes the ACL with `incus network acl
     # edit` and fails against a name nobody created. `jailbee init` is where a
@@ -205,8 +206,6 @@ def run_apply(
             Exception(refresh_result.error or "DNS failure"),
         )
     if refresh_result.status == "acl_error":
-        from jailbee.incus import IncusError
-
         raise IncusError(refresh_result.error or "ACL write failed")
     if refresh_result.status == "partial":
         warn(f"Some hostnames failed to resolve: {refresh_result.error}")
@@ -424,6 +423,13 @@ def run_apply(
             if apply_docker_proxy(incus, ci.name, mirror_ca_pem, mirror_port):
                 docker_stale.append(ci.name)
 
+        from jailbee.litellm import sync_container
+
+        try:
+            sync_container(incus, ci.name, litellm_payload)
+        except (IncusError, OSError) as e:
+            warn(f"Could not update LiteLLM settings on {short}: {e}; run `jailbee apply` to retry.")
+
     orphans = _sweep_orphan_extra_acls(cfg, incus)
     if orphans:
         info(f"Removed {len(orphans)} orphan egress ACL(s): {', '.join(orphans)}")
@@ -593,6 +599,17 @@ def _ensure_acl_attached_to_bridge(cfg: Config, incus: Incus) -> None:
     from jailbee.init_command import ensure_acl_attached_to_bridge
 
     ensure_acl_attached_to_bridge(cfg, incus)
+
+
+def _litellm_payload_or_warn(incus: Incus, gcfg: GlobalConfig) -> dict[str, object] | None:
+    from jailbee.litellm import container_sync_payload
+    from jailbee.tui import warn
+
+    try:
+        return container_sync_payload(incus, gcfg)
+    except IncusError as e:
+        warn(f"Could not resolve LiteLLM settings: {e}; removing stale settings from containers.")
+        return None
 
 
 def _mirror_endpoint_or_warn(

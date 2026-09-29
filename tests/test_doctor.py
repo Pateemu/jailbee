@@ -51,6 +51,65 @@ def _baseline_incus():
     return incus
 
 
+@pytest.mark.parametrize(
+    "state,expected",
+    [("missing", "status: missing"), ("stopped", "status: stopped")],
+)
+def test_litellm_doctor_reports_absent_proxy(mocker, state, expected):
+    from jailbee import litellm
+    from jailbee.doctor import _check_litellm
+
+    gcfg = GlobalConfig.model_validate({"litellm": {"enabled": True}})
+    status = litellm.LiteLLMStatus(litellm.ContainerState(state), None, None, [])
+    mocker.patch("jailbee.litellm.litellm_status", return_value=status)
+    rows = _check_litellm(_baseline_incus(), gcfg)
+    assert len(rows) == 1 and not rows[0].ok
+    assert expected in rows[0].detail and "jailbee litellm up" in rows[0].detail
+
+
+def test_litellm_doctor_disabled_does_not_probe(mocker):
+    from jailbee.doctor import _check_litellm
+
+    status = mocker.patch("jailbee.litellm.litellm_status")
+    assert _check_litellm(_baseline_incus(), GlobalConfig())[0].detail == "not enabled"
+    status.assert_not_called()
+
+
+@pytest.mark.parametrize("healthy,version,login,reachable,expected", [
+    (True, "1.103.0", "present", True, "running on 10.79.115.3:4100"),
+    (False, "1.103.0", "present", True, "unhealthy"),
+    (True, "0.1.0", "present", True, "installed 0.1.0"),
+    (True, "1.103.0", "missing", True, "not logged in"),
+    (True, "1.103.0", "present", False, "cannot reach chatgpt.com:443"),
+])
+def test_litellm_doctor_running_branches(mocker, healthy, version, login, reachable, expected):
+    from jailbee import litellm
+    from jailbee.doctor import _check_litellm
+
+    gcfg = GlobalConfig.model_validate({"litellm": {"enabled": True}})
+    status = litellm.LiteLLMStatus(
+        litellm.ContainerState.RUNNING, "10.79.115.3", version,
+        [litellm.InstanceStatus("default", 4100, True, healthy, login)],
+    )
+    mocker.patch("jailbee.litellm.litellm_status", return_value=status)
+    probe = mocker.patch("jailbee.litellm.upstream_reachable", return_value=reachable)
+    rows = _check_litellm(_baseline_incus(), gcfg)
+    assert any(expected in r.detail for r in rows)
+    if expected == "running on 10.79.115.3:4100":
+        assert all(r.ok for r in rows)
+    else:
+        assert any(not r.ok and expected in r.detail for r in rows)
+    probe.assert_called_once_with(mocker.ANY, "chatgpt.com")
+
+
+def test_run_checks_includes_litellm_diagnostics(tmp_path, mocker):
+    from jailbee.doctor import CheckResult
+
+    check = mocker.patch("jailbee.doctor._check_litellm", return_value=[CheckResult("litellm", True, "ok")])
+    run_checks(_cfg(tmp_path), _baseline_incus())
+    check.assert_called_once()
+
+
 def test_doctor_reports_loose_bridge_present_when_exists(tmp_path):
     cfg = _cfg(tmp_path)
     incus = _baseline_incus()

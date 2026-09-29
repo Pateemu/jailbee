@@ -733,6 +733,8 @@ class NewContainerOptions:
     autostart: bool = True
     mirror_endpoint: tuple[str, int] | None = None
     mirror_ca_path: Path | None = None
+    # Computed by the CLI like mirror_endpoint; None writes nothing.
+    litellm_payload: dict[str, object] | None = None
     base: str | None = None
     mount: bool = False
     base_branch_label: str | None = None
@@ -1533,6 +1535,14 @@ def new_container(
             from jailbee.docker_daemon import restart_dockerd
 
             restart_dockerd(incus, name)
+
+    if opts.litellm_payload is not None:
+        from jailbee.litellm import sync_container
+
+        try:
+            sync_container(incus, name, opts.litellm_payload)
+        except (IncusError, OSError) as e:
+            warn(f"Could not write the LiteLLM settings: {e}; run `jailbee apply` to retry.")
 
     if opts.clone:
         assert source_branch is not None

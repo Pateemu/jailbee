@@ -527,3 +527,54 @@ def test_stopped_container_failed_acl_restore_force_stops_before_start():
     incus.start.assert_not_called()
     incus.config_set.assert_any_call(ll.LITELLM_CONTAINER, "boot.autostart", "false")
     incus.stop.assert_called_once_with(ll.LITELLM_CONTAINER, force=True)
+
+
+def test_sync_payload_none_when_disabled_absent_or_without_key():
+    assert ll.container_sync_payload(_incus(present=True), _gcfg(enabled=False)) is None
+    assert ll.container_sync_payload(_incus(present=False), _gcfg()) is None
+    assert ll.container_sync_payload(_incus(present=True), _gcfg()) is None
+
+
+def test_sync_payload_after_up():
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    payload = ll.container_sync_payload(incus, _gcfg())
+    assert payload is not None
+    assert payload["json"]["profiles"]["codex"]["base_url"] == "http://10.79.115.3:4100"
+    assert payload["json"]["profiles"]["codex"]["key_file"] == ll.CONTAINER_KEY_FILE
+    assert str(payload["key_path"]).endswith("default/master.key")
+    assert "sk-jb-" not in repr(payload)
+
+
+def test_sync_container_writes_json_and_key():
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    payload = ll.container_sync_payload(incus, _gcfg())
+    incus.exec.reset_mock()
+    ll.sync_container(incus, "repo-branch", payload)
+    name, cmd = incus.exec.call_args.args[:2]
+    script = cmd[-1]
+    assert name == "repo-branch"
+    assert ll.CONTAINER_FILE in script and ll.CONTAINER_KEY_FILE in script
+    assert "chmod 0644" in script
+    assert "chmod 0640" in script and "chgrp dev" in script
+    assert "sk-jb-" in script
+
+
+def test_sync_container_removes_when_none():
+    incus = _incus(present=True)
+    ll.sync_container(incus, "repo-branch", None)
+    script = incus.exec.call_args.args[1][-1]
+    assert f"rm -f {ll.CONTAINER_FILE} {ll.CONTAINER_KEY_FILE}" in script
+
+
+def test_upstream_reachable_checks_proxy_container_only():
+    incus = _incus(present=True)
+    incus.exec.side_effect = None
+    incus.exec.return_value = "ok\n"
+    assert ll.upstream_reachable(incus, "chatgpt.com")
+    assert incus.exec.call_args.args[0] == ll.LITELLM_CONTAINER
+    assert "chatgpt.com" in incus.exec.call_args.args[1][-1]
+    assert "443" in incus.exec.call_args.args[1][-1]
+    incus.exec.side_effect = IncusError("blocked")
+    assert not ll.upstream_reachable(incus, "chatgpt.com")

@@ -819,6 +819,53 @@ def test_run_apply_reapplies_docker_proxy_when_mirror_enabled(
     assert result.docker_restarted == []
 
 
+@pytest.mark.parametrize("payload,failure", [
+    (None, None),
+    ({"json": {"version": 1}, "key_path": "/host/key"}, None),
+    ({"json": {"version": 1}, "key_path": "/host/key"}, FileNotFoundError("key removed")),
+])
+def test_run_apply_syncs_or_removes_litellm_for_running_containers(
+    make_cfg, tmp_path: Path, mocker: MockerFixture, payload, failure
+) -> None:
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+    from jailbee.lifecycle import ContainerInfo
+
+    cfg = make_cfg(tmp_path)
+    incus = MagicMock(spec=Incus)
+    incus.list_containers.return_value = []
+    incus.network_acl_list.return_value = []
+    incus.network_get.return_value = ""
+    mocker.patch("jailbee.apply._profile_differs", return_value=False)
+    mocker.patch("jailbee.apply._acl_differs", return_value=False)
+    mocker.patch("jailbee.apply._litellm_payload_or_warn", return_value=payload)
+    mocker.patch("jailbee.apply._list_containers", return_value=[
+        ContainerInfo("a", "Running", "strict", "10.0.0.1", "16GiB", repo=tmp_path.name),
+        ContainerInfo("b", "Stopped", "loose", "10.0.0.2", "16GiB", repo=tmp_path.name),
+    ])
+    mocker.patch("jailbee.hosts.apply_hosts")
+    sync = mocker.patch("jailbee.litellm.sync_container", side_effect=failure)
+    warn = mocker.patch("jailbee.tui.warn")
+
+    run_apply(cfg, incus, GlobalConfig(), no_restart=True)
+
+    sync.assert_called_once_with(incus, "a", payload)
+    if failure is not None:
+        assert "jailbee apply" in warn.call_args.args[0]
+
+
+def test_litellm_payload_lookup_failure_warns_and_removes_stale_settings(mocker):
+    from jailbee.apply import _litellm_payload_or_warn
+    from jailbee.global_config import GlobalConfig
+    from jailbee.incus import IncusError
+
+    incus = MagicMock(spec=Incus)
+    mocker.patch("jailbee.litellm.container_sync_payload", side_effect=IncusError("offline"))
+    warn = mocker.patch("jailbee.tui.warn")
+    assert _litellm_payload_or_warn(incus, GlobalConfig()) is None
+    assert "offline" in warn.call_args.args[0]
+
+
 def _mirror_fleet(make_cfg, tmp_path: Path, mocker: MockerFixture, *, proxy_results):
     """Two running containers, `a` and `b`, with the registry mirror wired up.
 

@@ -1315,6 +1315,44 @@ def test_new_container_calls_init_assign_set_start(tmp_path, mocker):
     incus.start.assert_called_once_with("repo-feat-x")
 
 
+@pytest.mark.parametrize("with_payload", [True, False])
+def test_new_container_syncs_litellm_only_when_payload_supplied(tmp_path, mocker, with_payload):
+    cfg = _cfg_for_new(tmp_path)
+    incus = MagicMock()
+    incus.exists.return_value = False
+    mocker.patch("jailbee.lifecycle.branch_exists_locally", return_value=True)
+    key = tmp_path / "master.key"
+    key.write_text("sk-jb-demo\n")
+    opts = NewContainerOptions(
+        "feat/x", None, "strict", "8GiB", 4, "base", True, autostart=False,
+        litellm_payload={"json": {"version": 1}, "key_path": str(key)} if with_payload else None,
+    )
+
+    new_container(cfg, incus, opts)
+
+    scripts = [str(c.args[1][-1]) for c in incus.exec.call_args_list]
+    assert any("/etc/jailbee/litellm.json" in s for s in scripts) is with_payload
+
+
+@pytest.mark.parametrize("failure", [IncusError("write failed"), FileNotFoundError("key removed")])
+def test_new_container_litellm_write_failure_warns_without_aborting(tmp_path, mocker, failure):
+    cfg = _cfg_for_new(tmp_path)
+    incus = MagicMock()
+    incus.exists.return_value = False
+    mocker.patch("jailbee.lifecycle.branch_exists_locally", return_value=True)
+    mocker.patch("jailbee.litellm.sync_container", side_effect=failure)
+    warn = mocker.patch("jailbee.lifecycle.warn")
+    opts = NewContainerOptions(
+        "feat/x", None, "strict", "8GiB", 4, "base", True, autostart=False,
+        litellm_payload={"json": {}, "key_path": "/host/key"},
+    )
+
+    new_container(cfg, incus, opts)
+
+    assert "jailbee apply" in warn.call_args.args[0]
+    incus.start.assert_called_once_with("repo-feat-x")
+
+
 def _select_work_generation(mocker, db_session):
     from jailbee.db.models import HostNetworkDefault
 

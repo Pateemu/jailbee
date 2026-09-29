@@ -90,6 +90,54 @@ def _version_detail(incus: Incus) -> str:
     return "client " + ".".join(str(part) for part in version)
 
 
+def _check_litellm(incus: Incus, gcfg: GlobalConfig) -> list[CheckResult]:
+    """Present proxy health, pinned version, login and provider reachability."""
+    from jailbee import litellm
+
+    if not gcfg.litellm.enabled:
+        return [CheckResult("litellm", True, "not enabled")]
+    try:
+        status = litellm.litellm_status(incus)
+    except IncusError as e:
+        return [CheckResult("litellm", False, f"error querying: {e} — run 'jailbee litellm up'")]
+    if status.container != litellm.ContainerState.RUNNING:
+        return [
+            CheckResult("litellm", False, f"status: {status.container} — run 'jailbee litellm up'")
+        ]
+
+    rows: list[CheckResult] = []
+    for instance in status.instances:
+        name = f"litellm {instance.account}"
+        address = f"{status.ip}:{instance.port}"
+        if instance.active and instance.healthy:
+            rows.append(CheckResult(name, True, f"running on {address}, LiteLLM {status.version}"))
+        else:
+            rows.append(
+                CheckResult(name, False, f"running on {address}, unhealthy — see 'jailbee litellm logs'")
+            )
+        if status.version != gcfg.litellm.effective_version():
+            rows.append(
+                CheckResult(
+                    f"{name} version", False,
+                    f"installed {status.version}, configured {gcfg.litellm.effective_version()} "
+                    "— run 'jailbee litellm up'",
+                )
+            )
+        if instance.login == "missing":
+            rows.append(
+                CheckResult(f"{name} login", False, "not logged in — run 'jailbee litellm login'")
+            )
+    if not litellm.upstream_reachable(incus, "chatgpt.com"):
+        rows.append(
+            CheckResult(
+                "litellm upstream", False,
+                "cannot reach chatgpt.com:443 from the proxy (its address may have changed) "
+                "— run 'jailbee litellm up' to re-resolve the egress allowlist",
+            )
+        )
+    return rows
+
+
 def _upstream_remote_check(cfg: Config) -> CheckResult:
     """Report which remote jailbee resolved as the upstream, and which branch.
 
@@ -1020,6 +1068,9 @@ def run_checks(cfg: Config, incus: Incus, *, gcfg: GlobalConfig | None = None) -
                         "status: missing — run 'jailbee registry up'",
                     )
                 )
+
+    if incus_available:
+        results.extend(_check_litellm(incus, gcfg))
 
     # 7b. Legacy host-Docker mirror left over from installs that predate
     # the Incus-hosted registry mirror.

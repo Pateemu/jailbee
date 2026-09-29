@@ -31,6 +31,7 @@ def _stage(name: str):
 def _setup_new(tmp_path: Path, mocker):
     """A `jailbee new --mount` run with everything but the autostart wiring stubbed."""
     from jailbee.egress_pool import RefreshResult
+    from jailbee.global_config import DockerRegistryMirror, GlobalConfig
 
     repo = tmp_path / "myrepo"
     repo.mkdir()
@@ -41,7 +42,7 @@ def _setup_new(tmp_path: Path, mocker):
     mocker.patch("jailbee.cli._resolve_config_path_or_none", return_value=None)
     mocker.patch(
         "jailbee.cli._load_global",
-        return_value=mocker.Mock(docker_registry_mirror=mocker.Mock(enabled=False)),
+        return_value=GlobalConfig(docker_registry_mirror=DockerRegistryMirror(enabled=False)),
     )
     mocker.patch("jailbee.incus.Incus", return_value=mocker.MagicMock())
     mocker.patch("jailbee.egress_pool.register_repo")

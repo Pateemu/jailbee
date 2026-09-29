@@ -1989,7 +1989,7 @@ def new_cmd(
     from jailbee.autostart import AutostartStepError
     from jailbee.docker_daemon import mirror_wanted
     from jailbee.git import get_current_branch
-    from jailbee.incus import Incus
+    from jailbee.incus import Incus, IncusError
     from jailbee.lifecycle import (
         NewContainerOptions,
         derive_container_name,
@@ -2319,6 +2319,14 @@ def new_cmd(
                 f"'jailbee registry up && jailbee apply'."
             )
 
+    from jailbee import litellm
+
+    try:
+        litellm_payload = litellm.container_sync_payload(incus, gcfg)
+    except IncusError as e:
+        warn(f"Could not resolve LiteLLM settings: {e}; run `jailbee apply` to retry.")
+        litellm_payload = None
+
     if credential_group is not None and claude_group is not None:
         error(
             "--credential-group and --claude-group are the same option, "
@@ -2367,6 +2375,7 @@ def new_cmd(
             autostart=not no_autostart,
             mirror_endpoint=mirror_endpoint,
             mirror_ca_path=mirror_ca_path,
+            litellm_payload=litellm_payload,
             base=None,
             mount=True,
             assume_yes=yes,
@@ -2385,6 +2394,7 @@ def new_cmd(
             autostart=not no_autostart,
             mirror_endpoint=mirror_endpoint,
             mirror_ca_path=mirror_ca_path,
+            litellm_payload=litellm_payload,
             base=base,
             base_branch_label=pr_info.base_ref if pr is not None else None,
             pr=pr,
