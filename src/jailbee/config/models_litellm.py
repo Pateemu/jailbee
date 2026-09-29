@@ -32,7 +32,6 @@ PINNED_LITELLM_VERSION = "1.103.0"
 """The version `provision/litellm/requirements.lock` was compiled for."""
 
 EffortLevel = Literal["low", "medium", "high", "xhigh", "max"]
-EFFORT_ORDER: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 TIERS: tuple[str, ...] = ("fable", "opus", "sonnet", "haiku")
 
 DEFAULT_ACCOUNT = "default"
