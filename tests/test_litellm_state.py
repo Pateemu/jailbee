@@ -153,3 +153,65 @@ def test_auth_state_present_with_refresh_token_only() -> None:
         json.dumps({"refresh_token": "r"})
     )
     assert st.auth_state("default") == "present"
+
+
+@pytest.mark.parametrize("name", ["../x", "a/b", "", "Default", "-x", "a" * 33, "x y", ".hidden"])
+def test_account_names_cannot_leave_the_state_dir(name: str) -> None:
+    with pytest.raises(ValueError, match="invalid LiteLLM account name"):
+        st.port_for(name)
+    with pytest.raises(ValueError, match="invalid LiteLLM account name"):
+        st.master_key(name)
+    with pytest.raises(ValueError, match="invalid LiteLLM account name"):
+        st.auth_state(name)
+    with pytest.raises(ValueError, match="invalid LiteLLM account name"):
+        st.logout(name)
+    with pytest.raises(ValueError, match="invalid LiteLLM account name"):
+        st.write_instance_files(LiteLLMConfig(), name)
+    assert not (st.state_dir().parent / "x").exists()
+
+
+@pytest.mark.parametrize("name", ["default", "work-2", "a_b", "0"])
+def test_ordinary_account_names_are_accepted(name: str) -> None:
+    assert st.port_for(name) >= st.BASE_PORT
+
+
+def test_every_state_directory_is_private_even_when_created_looser() -> None:
+    (st.state_dir() / "default").mkdir(parents=True, mode=0o755)
+    (st.state_dir() / "default").chmod(0o755)
+    st.state_dir().chmod(0o755)
+    st.write_instance_files(LiteLLMConfig(), "default")
+    for path in (
+        st.state_dir(),
+        st.state_dir() / "default",
+        st.state_dir() / "default" / "auth",
+        st.state_dir() / "callback",
+    ):
+        assert _mode(path) == 0o700, path
+
+
+def test_write_private_replaces_atomically_and_leaves_no_temp_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    st.write_instance_files(LiteLLMConfig(), "default")
+    target = st.state_dir() / "default" / "instance.env"
+    before = target.read_text()
+
+    def crash(*_a: object, **_k: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(st.os, "replace", crash)
+    changed = LiteLLMConfig.model_validate({"routes": {"sol-xhigh": {"effort": "max"}}})
+    with pytest.raises(OSError, match="disk full"):
+        st.write_instance_files(changed, "default")
+    assert target.read_text() == before  # never truncated
+    assert not [p for p in target.parent.iterdir() if p.name.startswith(".")]
+
+
+def test_corrupt_ports_file_names_the_file() -> None:
+    st.state_dir().mkdir(parents=True)
+    (st.state_dir() / "ports.json").write_text("{not json")
+    with pytest.raises(RuntimeError, match="ports.json is not valid JSON"):
+        st.port_for("default")
+    (st.state_dir() / "ports.json").write_text("[1, 2]")
+    with pytest.raises(RuntimeError, match="must hold a JSON object"):
+        st.port_for("default")

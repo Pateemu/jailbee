@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import tempfile
 from collections.abc import Iterator
@@ -43,37 +44,61 @@ if TYPE_CHECKING:
     from jailbee.config.models_litellm import LiteLLMConfig
 
 BASE_PORT = 4100
+_ACCOUNT_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 
 
 def state_dir() -> Path:
     return xdg_data_home() / "jailbee" / "litellm"
 
 
-def _account_dir(account: str) -> Path:
-    path = state_dir() / account
-    path.mkdir(parents=True, exist_ok=True)
+def _private_dir(path: Path) -> Path:
+    """Create `path` 0700 (and repair it if it already exists looser)."""
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.chmod(0o700)
     return path
 
 
+def _checked(account: str) -> str:
+    """An account name becomes a path component, so it must not be able to leave the state dir."""
+    if not _ACCOUNT_NAME.fullmatch(account):
+        raise ValueError(
+            f"invalid LiteLLM account name {account!r}: use 1-32 lowercase letters, digits, "
+            "'-' or '_', starting with a letter or digit"
+        )
+    return account
+
+
+def _account_dir(account: str) -> Path:
+    return _private_dir(state_dir() / _checked(account))
+
+
 def _write_private(path: Path, text: str) -> bool:
-    """Write `text` 0600; return whether its bytes changed."""
+    """Write `text` 0600 atomically; return whether its bytes changed.
+
+    Replaced through a temp file so a crash never leaves a truncated file that a
+    restarting unit would then read.
+    """
     payload = text.encode()
     before = path.read_bytes() if path.exists() else None
     if before == payload:
         path.chmod(0o600)
         return False
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as file:
-        file.write(payload)
-    path.chmod(0o600)
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as file:
+            file.write(payload)
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return True
 
 
 @contextmanager
 def _state_lock() -> Iterator[None]:
     """Serialize account creation across CLI processes (and threads)."""
-    base = state_dir()
-    base.mkdir(parents=True, exist_ok=True)
+    base = _private_dir(state_dir())
     fd = os.open(base / ".allocation.lock", os.O_RDWR | os.O_CREAT, 0o600)
     try:
         flock(fd, LOCK_EX)
@@ -83,10 +108,26 @@ def _state_lock() -> Iterator[None]:
         os.close(fd)
 
 
+def _read_ports(path: Path) -> dict[str, int]:
+    if not path.exists():
+        return {}
+    try:
+        ports = json.loads(path.read_text())
+    except ValueError as error:
+        raise RuntimeError(
+            f"{path} is not valid JSON ({error}); fix or delete it, then re-run "
+            "(deleting it reassigns the accounts' ports)."
+        ) from error
+    if not isinstance(ports, dict):
+        raise RuntimeError(f"{path} must hold a JSON object of account -> port.")
+    return ports
+
+
 def port_for(account: str) -> int:
+    _checked(account)
     path = state_dir() / "ports.json"
     with _state_lock():
-        ports: dict[str, int] = json.loads(path.read_text()) if path.exists() else {}
+        ports = _read_ports(path)
         if account not in ports:
             ports[account] = max(ports.values(), default=BASE_PORT - 1) + 1
             with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as file:
@@ -121,11 +162,8 @@ class WriteResult:
 
 def write_instance_files(cfg: LiteLLMConfig, account: str) -> WriteResult:
     base = _account_dir(account)
-    auth = base / "auth"
-    auth.mkdir(exist_ok=True)
-    auth.chmod(0o700)
-    callback_dir = state_dir() / "callback"
-    callback_dir.mkdir(exist_ok=True)
+    _private_dir(base / "auth")
+    callback_dir = _private_dir(state_dir() / "callback")
     source = (
         resources.files("jailbee.provision").joinpath("litellm").joinpath("jailbee_callback.py")
     ).read_text()
@@ -149,7 +187,7 @@ def write_instance_files(cfg: LiteLLMConfig, account: str) -> WriteResult:
 
 def config_digest(account: str) -> str:
     """Digest of every file the proxy unit reads from the state directory."""
-    base = state_dir() / account
+    base = state_dir() / _checked(account)
     sha = hashlib.sha256()
     for path in (
         state_dir() / "callback" / "jailbee_callback.py",
@@ -170,7 +208,7 @@ def config_applied(account: str) -> bool:
     restarts. A missing stamp counts as not applied.
     """
     try:
-        stamp = (state_dir() / account / "applied.sha256").read_text().strip()
+        stamp = (state_dir() / _checked(account) / "applied.sha256").read_text().strip()
     except OSError:
         return False
     return stamp == config_digest(account)
@@ -181,12 +219,13 @@ def record_applied(account: str) -> None:
 
 
 def _auth_file(account: str) -> Path:
-    return state_dir() / account / "auth" / "auth.json"
+    return state_dir() / _checked(account) / "auth" / "auth.json"
 
 
 def auth_state(account: str) -> Literal["missing", "present"]:
+    path = _auth_file(account)  # outside the try: a bad name is a caller bug, not "missing"
     try:
-        data = json.loads(_auth_file(account).read_text())
+        data = json.loads(path.read_text())
     except (OSError, ValueError):
         return "missing"
     if isinstance(data, dict) and any(
