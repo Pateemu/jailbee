@@ -4927,6 +4927,28 @@ def _drive_run(
     )
 
 
+def _drive_run_with_reader(mocker, read, groups: list[dashboard.RepoGroup]) -> int:
+    """``_drive_run`` with a caller-supplied ``os.read`` side effect.
+
+    ``gather_live`` returns the ``groups`` list object itself, so a reader
+    that mutates it changes what the key loop sees on its next iteration.
+    """
+    _mock_terminal(mocker)
+    mocker.patch.object(dashboard, "gather_live", return_value=groups)
+    mocker.patch.object(dashboard.select, "select", return_value=([True], [], []))
+    mocker.patch.object(dashboard.os, "read", side_effect=read)
+    return dashboard.run(mocker.Mock(), None, interval=0.5, git_interval=1.0, no_git=True)
+
+
+def _keys(text: str) -> list[bytes]:
+    """One terminal read per character — how a typist feeds the prompt."""
+    return [ch.encode() for ch in text]
+
+
+_ENTER = b"\r"
+_ESC = b"\x1b"
+
+
 def test_run_enters_pr_submenu_and_dispatches_leaf(mocker, tmp_path):
     group = dashboard.RepoGroup(
         "alpha", str(tmp_path), None, [_ci("alpha-x", "alpha", pr_number=7)]
@@ -5013,28 +5035,49 @@ def test_ssh_disabled_policy_rejects_new_before_prompt_or_spawn(mocker, tmp_path
     render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
     policy = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="disabled"))
 
-    _drive_run(mocker, [b"n"], groups=[group], remote=True, over_ssh=True, ssh_policy=policy)
+    _drive_run(
+        mocker,
+        [b"n", *_keys("feature"), _ENTER, _ENTER],
+        groups=[group],
+        remote=True,
+        over_ssh=True,
+        ssh_policy=policy,
+    )
 
     prompt.assert_not_called()
     child.assert_not_called()
     assert any("disabled" in str(call.kwargs.get("notice")) for call in render.call_args_list)
+    # rejected before the first question: no prompt was ever drawn
+    assert not any(
+        isinstance(call.kwargs.get("overlay"), dashboard.TextPrompt)
+        for call in render.call_args_list
+    )
 
 
 def test_ssh_allowlisted_new_prompts_then_spawns_final_argv(mocker, tmp_path):
     from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
 
     group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
-    prompt = mocker.patch("typer.prompt", side_effect=["feature", "main"])
+    prompt = mocker.patch("typer.prompt")
     child = mocker.patch.object(dashboard.subprocess, "run")
     child.return_value.returncode = 0
     mocker.patch.object(dashboard, "new_container_base_default", return_value="main")
     mocker.patch.object(dashboard, "_wait_for_return")
     policy = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="allowlist", allow=["new"]))
 
-    _drive_run(mocker, [b"n"], groups=[group], remote=True, over_ssh=True, ssh_policy=policy)
+    _drive_run(
+        mocker,
+        [b"n", *_keys("feature"), _ENTER, _ENTER],
+        groups=[group],
+        remote=True,
+        over_ssh=True,
+        ssh_policy=policy,
+    )
 
-    assert prompt.call_count == 2
-    child.assert_any_call(["jailbee", "new", "--", "feature", "main"], check=False, cwd=tmp_path)
+    prompt.assert_not_called()
+    child.assert_called_once_with(
+        ["jailbee", "new", "--", "feature", "main"], check=False, cwd=tmp_path
+    )
 
 
 def test_ssh_inline_shell_works_when_exec_entrypoint_is_disabled(mocker, tmp_path):
@@ -5239,29 +5282,156 @@ def test_run_visibility_tab_uses_raw_prefixes_and_persists_complete_state(mocker
 
 def test_run_new_from_empty_repo_header_dispatches_to_repo_root(mocker, tmp_path):
     group = dashboard.RepoGroup("empty", str(tmp_path), None, [])
-    prompt = mocker.patch("typer.prompt", side_effect=["feature", "main"])
+    prompt = mocker.patch("typer.prompt")
     child = mocker.patch.object(dashboard.subprocess, "run")
     child.return_value.returncode = 0
     mocker.patch.object(dashboard, "new_container_base_default", return_value="main")
     mocker.patch.object(dashboard, "_wait_for_return")
 
-    assert _drive_run(mocker, [b"n"], [group]) == 0
+    keys = [b"n", *_keys("feature"), _ENTER, _ENTER]  # base prefilled with "main"
+    assert _drive_run(mocker, keys, [group]) == 0
 
-    assert prompt.call_count == 2
+    prompt.assert_not_called()  # the terminal is never handed over for a question
     child.assert_called_once_with(
         ["jailbee", "new", "--", "feature", "main"], check=False, cwd=tmp_path
     )
 
 
+def test_run_new_prompt_is_drawn_in_the_frame_and_keeps_the_table(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    mocker.patch.object(dashboard, "new_container_base_default", return_value="main")
+
+    _drive_run(mocker, [b"n", *_keys("fe")], [group])
+
+    prompts = [
+        c.kwargs["overlay"]
+        for c in render.call_args_list
+        if isinstance(c.kwargs.get("overlay"), dashboard.TextPrompt)
+    ]
+    assert prompts[-1].label == "New branch"
+    assert prompts[-1].text == "fe"
+    # the table is still drawn behind the prompt, with the repo row pinned
+    last = next(
+        c for c in reversed(render.call_args_list) if c.kwargs.get("overlay") is prompts[-1]
+    )
+    assert last.args[0] == [group]
+    assert last.args[1] == dashboard.Row("repo", "alpha")
+
+
+def test_run_new_escape_at_either_step_spawns_nothing_and_keeps_the_dashboard(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    mocker.patch.object(dashboard, "new_container_base_default", return_value="main")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    for keys in (
+        [b"n", _ESC],
+        [b"n", *_keys("feature"), _ENTER, _ESC],
+        [b"n", *_keys("feature"), _ENTER, b"\x03"],  # Ctrl-C answers the prompt only
+    ):
+        child.reset_mock()
+        render.reset_mock()
+        assert _drive_run(mocker, [*keys, b"h", _ESC], [group]) == 0
+        child.assert_not_called()
+        # after cancelling, the dashboard still handled a later key (help opened)
+        overlays = [c.kwargs.get("overlay") for c in render.call_args_list]
+        assert "help" in overlays
+        assert any("Cancelled" in str(c.kwargs.get("notice")) for c in render.call_args_list)
+
+
+def test_run_new_blank_branch_is_rejected_inline_not_dispatched(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    mocker.patch.object(dashboard, "new_container_base_default", return_value="main")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    _drive_run(mocker, [b"n", *_keys("  "), _ENTER], [group])
+
+    child.assert_not_called()
+    assert any(
+        isinstance(c.kwargs.get("overlay"), dashboard.TextPrompt)
+        and c.kwargs["overlay"].error == "New branch cannot be empty"
+        for c in render.call_args_list
+    )
+
+
+def test_run_new_from_pr_prompts_for_a_number_and_dispatches(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+
+    # repo header → Enter opens the repo menu → Down to "New from PR…" → Enter
+    keys = [_ENTER, b"\x1b[B", _ENTER, *_keys("123"), _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    child.assert_called_once_with(["jailbee", "new", "--pr", "123"], check=False, cwd=tmp_path)
+
+
+def test_run_new_prompt_whose_repo_vanishes_dispatches_nothing(mocker, tmp_path):
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    live: list[dashboard.RepoGroup] = [group]
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    mocker.patch.object(dashboard, "new_container_base_default", return_value="main")
+    mocker.patch.object(dashboard, "_wait_for_return")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    # branch, Enter (repo vanishes here), then Enter to confirm the base
+    typed = iter([b"n", *_keys("feature"), _ENTER, _ENTER])
+
+    def read(_fd, _n):
+        key = next(typed, b"\x03")
+        if key == _ENTER and live:
+            live.clear()
+        return key
+
+    assert _drive_run_with_reader(mocker, read, live) == 0
+
+    child.assert_not_called()
+    # either the loop-top guard or the submit-time lookup explains it
+    notices = [str(c.kwargs.get("notice")) for c in render.call_args_list]
+    assert any("prompt closed" in n or "no longer listed" in n for n in notices)
+
+
+def test_run_open_prompt_closes_when_its_repo_vanishes_before_any_submit(mocker, tmp_path):
+    """The loop-top guard alone: the repo goes while the user is still typing."""
+    group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
+    live: list[dashboard.RepoGroup] = [group]
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    mocker.patch.object(dashboard, "new_container_base_default", return_value="main")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    typed = iter([b"n", b"f", b"x"])  # no Enter: nothing is ever submitted
+
+    def read(_fd, _n):
+        key = next(typed, b"\x03")
+        if key == b"x":
+            live.clear()  # vanishes after "f" was typed, before the next frame
+        return key
+
+    assert _drive_run_with_reader(mocker, read, live) == 0
+
+    child.assert_not_called()
+    overlays = [c.kwargs.get("overlay") for c in render.call_args_list]
+    prompts = [o for o in overlays if isinstance(o, dashboard.TextPrompt)]
+    # the last frame with the prompt showed "f"; "x" was typed, then the repo went
+    assert prompts[-1].text == "f"
+    closed_at = overlays.index(prompts[-1]) + 1
+    assert overlays[closed_at] is None
+    assert "'alpha' is gone — prompt closed" in str(
+        render.call_args_list[closed_at].kwargs.get("notice")
+    )
+
+
 def test_run_empty_repo_header_menu_creates_container(mocker, tmp_path):
     group = dashboard.RepoGroup("empty", str(tmp_path), None, [])
-    mocker.patch("typer.prompt", side_effect=["feature", "main"])
     mocker.patch.object(dashboard, "new_container_base_default", return_value="main")
     mocker.patch.object(dashboard, "_wait_for_return")
     child = mocker.patch.object(dashboard.subprocess, "run")
     child.return_value.returncode = 0
 
-    assert _drive_run(mocker, [b"\r", b"\r"], [group]) == 0
+    # Enter opens the repo menu, Enter picks "New container…", then the two answers
+    keys = [_ENTER, _ENTER, *_keys("feature"), _ENTER, _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
 
     child.assert_called_once_with(
         ["jailbee", "new", "--", "feature", "main"], check=False, cwd=tmp_path
@@ -5345,13 +5515,13 @@ def test_settings_key_switches_from_another_overlay_instead_of_closing(mocker):
     save.assert_called_once()
 
 
-def test_run_dispatches_n_to_create_container(mocker):
+def test_run_dispatches_n_to_start_new_container(mocker):
     """Drive the `n` key through `run()`'s real dispatch (``elif key ==
-    "new": create_container()``), not just `parse_key`/the binding shape in
+    "new": overlay = start_new_container()``), not just `parse_key`/the binding shape in
     isolation — a typo in that `elif` arm would be caught by nothing else.
 
     ``_drive_run``'s ``gather_live`` returns no containers, so nothing is
-    selected and ``create_container`` takes its notice path (`new_container_
+    selected and ``start_new_container`` takes its notice path (`new_container_
     reject_note` returning "Select a repo or a container first") without
     prompting or spawning anything. `render` is wrapped rather than replaced
     so `Live` still gets a real renderable; its calls are inspected for the
@@ -5385,13 +5555,14 @@ def test_repo_header_enter_opens_menu_without_folding(mocker, tmp_path):
 
 def test_repo_menu_new_runs_the_existing_creation_flow(mocker, tmp_path):
     group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
-    mocker.patch("typer.prompt", side_effect=["feature", "main"])
-    mocker.patch.object(dashboard, "new_container_base_default", return_value="main")
+    mocker.patch.object(dashboard, "new_container_base_default", return_value="develop")
     mocker.patch.object(dashboard, "_wait_for_return")
     child = mocker.patch.object(dashboard.subprocess, "run")
     child.return_value.returncode = 0
 
-    assert _drive_run(mocker, [b"\r", b"\r"], groups=[group]) == 0
+    # the base field is prefilled with "develop": erase it and type another base
+    keys = [_ENTER, _ENTER, *_keys("feature"), _ENTER, *[b"\x7f"] * 7, *_keys("main"), _ENTER]
+    assert _drive_run(mocker, keys, groups=[group]) == 0
 
     child.assert_called_once_with(
         ["jailbee", "new", "--", "feature", "main"], check=False, cwd=tmp_path
@@ -5400,28 +5571,51 @@ def test_repo_menu_new_runs_the_existing_creation_flow(mocker, tmp_path):
 
 def test_repo_menu_new_from_pr_runs_review_creation_in_repo(mocker, tmp_path):
     group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
-    mocker.patch("typer.prompt", return_value="123")
     mocker.patch.object(dashboard, "_wait_for_return")
     child = mocker.patch.object(dashboard.subprocess, "run")
     child.return_value.returncode = 0
 
-    assert _drive_run(mocker, [b"\r", b"j", b"\r"], groups=[group]) == 0
+    keys = [_ENTER, b"j", _ENTER, *_keys("123"), _ENTER]
+    assert _drive_run(mocker, keys, groups=[group]) == 0
 
     child.assert_called_once_with(["jailbee", "new", "--pr", "123"], check=False, cwd=tmp_path)
 
 
+_NOT_A_PR = "PR number must be a positive whole number"
+
+
 @pytest.mark.parametrize(
-    "answer", ["0", "-2", "abc", "--yes", "  ", pytest.param("9" * 5000, id="oversized")]
+    ("answer", "error"),
+    [
+        ("0", _NOT_A_PR),
+        ("-2", _NOT_A_PR),
+        ("abc", _NOT_A_PR),
+        ("--yes", _NOT_A_PR),
+        ("  ", "PR number cannot be empty"),
+        pytest.param("9" * 5000, _NOT_A_PR, id="oversized"),
+    ],
 )
-def test_repo_menu_new_from_pr_rejects_nonpositive_or_non_numeric_input(mocker, tmp_path, answer):
+def test_repo_menu_new_from_pr_rejects_nonpositive_or_non_numeric_input(
+    mocker, tmp_path, answer, error
+):
     group = dashboard.RepoGroup("alpha", str(tmp_path), None, [])
-    mocker.patch("typer.prompt", return_value=answer)
     mocker.patch.object(dashboard, "_wait_for_return")
     child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
 
-    assert _drive_run(mocker, [b"\r", b"j", b"\r"], groups=[group]) == 0
+    # the answer arrives as one read (a paste), so the oversized case stays one frame
+    keys = [_ENTER, b"j", _ENTER, answer.encode(), _ENTER]
+    assert _drive_run(mocker, keys, groups=[group]) == 0
 
     child.assert_not_called()
+    prompts = [
+        c.kwargs["overlay"]
+        for c in render.call_args_list
+        if isinstance(c.kwargs.get("overlay"), dashboard.TextPrompt)
+    ]
+    assert prompts[-1].purpose == "new-pr"
+    assert prompts[-1].text == answer
+    assert prompts[-1].error == error
 
 
 @pytest.mark.parametrize("initially_folded", [False, True])
@@ -5485,7 +5679,7 @@ def test_run_reports_a_vanished_repo_root_instead_of_crashing(mocker, tmp_path):
 
     # "j" moves the highlight off the repo header onto the container row;
     # "t" (tmux) is offered for a Running container and dispatches through
-    # `run`'s real `dispatch`, not `create_container`'s separate path.
+    # `run`'s real `dispatch`, not `run_new_container`'s separate path.
     rc = _drive_run(mocker, [b"j", b"t"], groups=[group])
 
     assert rc == 0  # run() returned normally — the OSError did not propagate
@@ -5607,27 +5801,28 @@ def test_q_inside_inline_editor_is_text_and_does_not_quit(mocker):
     )
 
 
-def test_create_container_reports_a_vanished_repo_root_instead_of_crashing(mocker, tmp_path):
+def test_new_container_reports_a_vanished_repo_root_instead_of_crashing(mocker, tmp_path):
     """The identical failure as the test above, reached through a different
-    keypress: `create_container`'s own `subprocess.run(new_container_argv(...),
-    cwd=repo.cwd())` raises the same uncaught `OSError` if the repo root
-    disappeared between a refresh and "n". Exercises `_report_vanished_repo`'s
-    other call site (shared with `dispatch`) rather than assuming the fix
-    generalizes.
+    keypress: once both inline answers are in, `run_new_container`'s own
+    `subprocess.run(new_container_argv(...), cwd=repo.cwd())` raises the same
+    uncaught `OSError` if the repo root disappeared between a refresh and the
+    final Enter. Exercises `_report_vanished_repo`'s other call site (shared
+    with `dispatch`) rather than assuming the fix generalizes.
     """
     group = dashboard.RepoGroup("alpha", str(tmp_path), None, [_ci("alpha-x", "alpha")])
     # Patches the same `subprocess.run` `new_container_base_default` calls
     # through `git.get_current_branch` — that call already tolerates OSError
-    # and returns None, so this only affects the `ask_and_run` subprocess.run
-    # below (see git.get_current_branch's own try/except).
+    # and returns None (so the base field opens empty), so this only affects
+    # `run_new_container`'s subprocess.run (see git.get_current_branch's own
+    # try/except).
     mocker.patch.object(dashboard.subprocess, "run", side_effect=OSError("gone"))
-    mocker.patch("typer.prompt", side_effect=["work", "main"])
     render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
 
     # The repo header row is selected by default (no navigation needed): "n"
-    # asks for a branch and a base (both mocked above) and then runs
-    # `jailbee new` through `create_container`'s own dispatch, not `dispatch`.
-    rc = _drive_run(mocker, [b"n"], groups=[group])
+    # opens the branch prompt, then the base prompt, and the final Enter runs
+    # `jailbee new` through `run_new_container`, not `dispatch`.
+    keys = [b"n", *_keys("work"), _ENTER, *_keys("main"), _ENTER]
+    rc = _drive_run(mocker, keys, groups=[group])
 
     assert rc == 0  # run() returned normally — the OSError did not propagate
     notices = [call.kwargs.get("notice") for call in render.call_args_list]
@@ -5680,7 +5875,7 @@ def test_remote_run_never_opens_the_config_editor(mocker, tmp_path):
 
 def test_edit_config_reports_a_vanished_repo_root_instead_of_crashing(mocker, tmp_path):
     """The identical failure as ``test_run_reports_a_vanished_repo_root_instead_
-    of_crashing`` and ``test_create_container_reports_a_vanished_repo_root_
+    of_crashing`` and ``test_new_container_reports_a_vanished_repo_root_
     instead_of_crashing``, reached through the config-edit keypress:
     `edit_config`'s own ``subprocess.run(argv, cwd=repo.cwd())`` raises the
     same uncaught `OSError` if the repo root disappeared between a refresh

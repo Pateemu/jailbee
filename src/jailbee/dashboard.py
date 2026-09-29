@@ -58,7 +58,20 @@ from jailbee.dashboard_egress import (
     replace_egress_rows,
 )
 from jailbee.dashboard_egress_data import load_egress_rows
-from jailbee.dashboard_overlays import decode_input
+from jailbee.dashboard_overlays import (
+    PICKER_HINT,
+    PROMPT_HINT,
+    Picker,
+    PickerEntry,
+    TextPrompt,
+    decode_input,
+    handle_prompt_key,
+    move_picker,
+    parse_pr_number,
+    picked,
+    render_picker,
+    render_prompt,
+)
 from jailbee.dashboard_settings import (
     CURSOR_STYLE,
     SettingsState,
@@ -1253,7 +1266,16 @@ def edit_command(state: CommandState, key: bytes) -> CommandState:
     return replace(state, text=state.text + appended, index=-1, pending_utf8=pending)
 
 
-Overlay = MenuState | RepoMenuState | EgressState | SettingsState | CommandState | Literal["help"]
+Overlay = (
+    MenuState
+    | RepoMenuState
+    | EgressState
+    | SettingsState
+    | CommandState
+    | TextPrompt
+    | Picker
+    | Literal["help"]
+)
 
 
 def open_menu(
@@ -1487,6 +1509,10 @@ def _hint_line(overlay: Overlay | None) -> str:
         )
     if isinstance(overlay, CommandState):
         return "[bold]Enter[/bold] run  ·  [bold]Tab[/bold] complete  ·  [bold]Esc[/bold] cancel"
+    if isinstance(overlay, TextPrompt):
+        return PROMPT_HINT
+    if isinstance(overlay, Picker):
+        return PICKER_HINT
     if overlay is not None:  # "help"
         return "[bold]Esc[/bold] / [bold]h[/bold] close"
     return ""
@@ -1766,6 +1792,10 @@ def render(
             panel = Panel("\n".join(lines), title="command", box=box.ROUNDED, expand=False)
         elif isinstance(overlay, SettingsState):
             panel = render_settings(overlay, dynamic=dynamic_column_names())
+        elif isinstance(overlay, TextPrompt):
+            panel = render_prompt(overlay)
+        elif isinstance(overlay, Picker):
+            panel = render_picker(overlay)
         else:
             panel = _render_help()
         body += ["", panel, _hint_line(overlay)]
@@ -2590,7 +2620,7 @@ def run(
             def _report_vanished_repo(repo: RepoTarget) -> None:
                 """Notice-and-refresh for an `OSError` from a repo-rooted dispatch.
 
-                Shared by `dispatch` and `create_container`: both hand a real
+                Shared by `dispatch` and `run_new_container`: both hand a real
                 repo root to a child process as `cwd`, and both can have that
                 directory vanish between a refresh and the keypress that
                 dispatches — `subprocess`/`Popen` raise, not exit non-zero,
@@ -2785,92 +2815,116 @@ def run(
                     return state
                 return replace_egress_rows(state, rows)
 
-            def create_container(*, from_pr: bool = False) -> None:
-                """Ask for a branch and base, or a PR number, then run `jailbee new`.
+            def start_new_container(*, from_pr: bool = False) -> TextPrompt | None:
+                """Open the first question of `jailbee new`, or explain why not.
 
-                The terminal is handed over rather than the command dispatched
-                detached, because `jailbee new` asks its own questions:
-                confirming reuse of an existing branch, and the branch-autostart
-                escalation gate. `--background` does not avoid that — the
-                escalation question is asked by the foreground parent before it
-                detaches (`lifecycle._autostart_approved`). The only other
-                option is `--yes`, i.e. accepting a network-widening branch
-                config unseen.
+                The questions are inline overlays; only the final `jailbee new`
+                gets the real terminal, via `foreground` — it asks its own
+                questions: confirming reuse of an existing branch, and the
+                branch-autostart escalation gate. `--background` does not avoid
+                that — the escalation question is asked by the foreground parent
+                before it detaches (`lifecycle._autostart_approved`). The only
+                other option is `--yes`, i.e. accepting a network-widening
+                branch config unseen.
                 """
                 try:
                     check_dashboard_command(["new"], ssh_policy, over_ssh=over_ssh)
                 except RouteError as exc:
                     set_notice(str(exc))
-                    return
+                    return None
                 note = new_container_reject_note(groups, selected)
                 if note is not None:
                     set_notice(note)
-                    return
+                    return None
                 group = new_container_target(groups, selected)
                 assert group is not None  # guaranteed by the note being None
-                repo = RepoTarget.of(group)
-                assert repo is not None  # ditto: new_container_target rejects rootless groups
-                base_default = None if from_pr else new_container_base_default(group.repo_root)
+                if from_pr:
+                    return TextPrompt(
+                        "new-pr", "New container from a PR", "PR number", target=group.prefix
+                    )
+                base_default = new_container_base_default(group.repo_root)
+                return TextPrompt(
+                    "new-branch",
+                    "New container",
+                    "New branch",
+                    target=group.prefix,
+                    carry=(base_default or "",),
+                )
 
-                def ask_and_run() -> int:
-                    import typer
+            def run_new_container(
+                prefix: str, build_argv: Callable[[RepoTarget], list[str]]
+            ) -> None:
+                """Re-resolve the repo (it may have vanished while the prompt was open) and run."""
+                group = next((g for g in groups if g.prefix == prefix), None)
+                repo = RepoTarget.of(group) if group is not None else None
+                if repo is None:
+                    set_notice(f"'{prefix}' is no longer listed")
+                    return
+                argv = build_argv(repo)
+                try:
+                    check_dashboard_command(argv[1:], ssh_policy, over_ssh=over_ssh)
+                except RouteError as exc:
+                    set_notice(str(exc))
+                    return
 
-                    try:
-                        if from_pr:
-                            answer = typer.prompt("PR number").strip()
-                            try:
-                                number = (
-                                    int(answer) if answer.isascii() and answer.isdecimal() else 0
-                                )
-                            except ValueError:
-                                number = 0  # Python refuses excessively long integer strings
-                            if number < 1:
-                                console.print(
-                                    "\n[yellow]No container created — invalid PR number.[/yellow]"
-                                )
-                                _wait_for_return()
-                                return 0
-                            argv = new_pr_container_argv(repo, number)
-                        else:
-                            branch = typer.prompt("New branch").strip()
-                            base = typer.prompt("Base branch", default=base_default or "").strip()
-                            if not branch or not base:
-                                empty = "branch" if not branch else "base branch"
-                                console.print(
-                                    f"\n[yellow]No container created — {empty} was empty.[/yellow]"
-                                )
-                                _wait_for_return()
-                                return 0
-                            argv = new_container_argv(repo, branch, base)
-                    except (typer.Abort, EOFError, KeyboardInterrupt):
-                        # Ctrl-C answers the prompt, not the dashboard: `run`'s
-                        # own KeyboardInterrupt handler would quit outright.
-                        return 0
-                    if over_ssh:
-                        # Remote sessions address their selected repo by cwd,
-                        # not by an explicit host config path.
-                        argv = (
-                            ["jailbee", "new", "--pr", str(number)]
-                            if from_pr
-                            else ["jailbee", "new", "--", branch, base]
-                        )
-                    try:
-                        check_dashboard_command(argv[1:], ssh_policy, over_ssh=over_ssh)
-                    except RouteError as exc:
-                        set_notice(str(exc))
-                        return 0
+                def spawn() -> int:
                     rc = subprocess.run(argv, check=False, cwd=repo.cwd()).returncode
                     _wait_for_return()
                     return rc
 
                 try:
-                    rc = foreground(ask_and_run)
+                    rc = foreground(spawn)
                 except OSError:
                     _report_vanished_repo(repo)
                     return
                 if rc != 0:
                     set_notice(f"'jailbee new' exited {rc}")
                 force.set()  # the new container should appear on the next frame
+
+            def submit_prompt(prompt: TextPrompt) -> Overlay | None:
+                """Act on a confirmed answer; return the overlay to show next.
+
+                None closes the overlay. Every purpose returns explicitly: the
+                caller shows exactly what this returns, with no fallback.
+                """
+                answer = prompt.text.strip()
+                if prompt.purpose == "new-pr":
+                    number = parse_pr_number(answer)
+                    assert number is not None  # validate_answer guaranteed it
+
+                    def pr_argv(repo: RepoTarget) -> list[str]:
+                        if over_ssh:
+                            # Remote sessions address their selected repo by
+                            # cwd, not by an explicit host config path.
+                            return ["jailbee", "new", "--pr", str(number)]
+                        return new_pr_container_argv(repo, number)
+
+                    run_new_container(prompt.target, pr_argv)
+                    return None
+                if prompt.purpose == "new-branch":
+                    return TextPrompt(
+                        "new-base",
+                        prompt.title,
+                        "Base branch",
+                        text=prompt.carry[0],
+                        target=prompt.target,
+                        carry=(answer,),
+                    )
+                if prompt.purpose == "new-base":
+                    branch = prompt.carry[0]
+
+                    def branch_argv(repo: RepoTarget) -> list[str]:
+                        if over_ssh:
+                            return ["jailbee", "new", "--", branch, answer]
+                        return new_container_argv(repo, branch, answer)
+
+                    run_new_container(prompt.target, branch_argv)
+                    return None
+                return None
+
+            def submit_picker(picker: Picker, entry: PickerEntry) -> Overlay | None:
+                """Act on a chosen entry; return the overlay to show next."""
+                return picker.back
 
             def edit_config(*, global_layer: bool) -> None:
                 """Hand the terminal to `jailbee config edit` for the selected repo.
@@ -2991,6 +3045,16 @@ def run(
                 ):
                     set_notice("Egress target is gone — panel closed")
                     overlay = None
+                if (
+                    isinstance(overlay, (TextPrompt, Picker))
+                    and overlay.target
+                    and not any(g.prefix == overlay.target for g in groups)
+                    and not any(c.name == overlay.target for g in groups for c in g.containers)
+                ):
+                    # The prompt's repo or container vanished while it was
+                    # open — close rather than ask a question about nothing.
+                    set_notice(f"'{overlay.target}' is gone — prompt closed")
+                    overlay = None
                 if isinstance(overlay, MenuState):
                     selected = Row("container", overlay.container)  # pinned while the menu is open
                 elif isinstance(overlay, RepoMenuState):
@@ -3001,6 +3065,10 @@ def run(
                         if overlay.container is not None
                         else Row("repo", overlay.prefix)
                     )
+                elif isinstance(overlay, (TextPrompt, Picker)) and overlay.target in {
+                    g.prefix for g in groups
+                }:
+                    selected = Row("repo", overlay.target)
                 else:
                     selected = reconcile_selection(rows, selected, sel_index)
                 if selected in rows:
@@ -3078,6 +3146,19 @@ def run(
                         )
                         overlay = edit_command(replace(overlay, suggestions=candidates), data)
                     continue
+                if isinstance(overlay, TextPrompt):
+                    # Raw bytes, like the command line: every key is text
+                    # here, so none of the table's shortcuts may fire.
+                    prompt, outcome = handle_prompt_key(overlay, data)
+                    if outcome == "cancel":
+                        # Esc/Ctrl-C answer the prompt, never the dashboard.
+                        overlay = prompt.back
+                        set_notice("Cancelled")
+                    elif outcome == "submit":
+                        overlay = submit_prompt(prompt)
+                    else:
+                        overlay = prompt
+                    continue
                 key = parse_key(data)
                 if key == "interrupt":
                     break
@@ -3090,6 +3171,8 @@ def run(
                         elif isinstance(overlay, EgressState):
                             overlay = egress_parent
                             egress_parent = None
+                        elif isinstance(overlay, Picker):
+                            overlay = overlay.back
                         else:
                             overlay = None
                     elif key == "help":
@@ -3126,6 +3209,15 @@ def run(
                             overlay = mutate_egress(overlay, "add")
                         elif data == b"r":
                             overlay = mutate_egress(overlay, "rm")
+                    elif isinstance(overlay, Picker):
+                        if key in ("up", "down"):
+                            overlay = move_picker(overlay, -1 if key == "up" else 1)
+                        elif key == "enter":
+                            done = overlay
+                            chosen = picked(done)
+                            overlay = done.back
+                            if chosen is not None:
+                                overlay = submit_picker(done, chosen)
                     elif isinstance(overlay, (MenuState, RepoMenuState)):
                         if key in ("up", "down"):
                             overlay = move_menu(overlay, -1 if key == "up" else 1)
@@ -3139,9 +3231,9 @@ def run(
                                 repo_parent = next_menu
                                 overlay = None
                                 if verb == "new":
-                                    create_container()
+                                    overlay = start_new_container()
                                 elif verb == "new-pr":
-                                    create_container(from_pr=True)
+                                    overlay = start_new_container(from_pr=True)
                                 elif verb == "fold":
                                     folded = toggle_folded(folded, target)
                                     persist_view_state(
@@ -3219,7 +3311,7 @@ def run(
                             )
                         )
                 elif key == "new":
-                    create_container()
+                    overlay = start_new_container()
                 elif key in ("config-edit", "config-edit-global") and remote:
                     set_notice(REMOTE_CONFIG_EDIT_NOTE)
                 elif key in ("config-edit", "config-edit-global"):
