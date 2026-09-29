@@ -1131,6 +1131,78 @@ def test_up_retires_the_unit_of_a_removed_account():
     ]
 
 
+def _last_acl(incus: MagicMock, name: str) -> dict:
+    writes = [c for c in incus.network_acl_set_yaml.call_args_list if c.args[0] == name]
+    return yaml.safe_load(writes[-1].args[1])
+
+
+def test_a_removed_accounts_port_leaves_both_acls():
+    """`ports.json` keeps the removed account's port; neither ACL may still open it."""
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg(**_TWO))
+    assert ll.litellm_state.known_port("work") == 4101
+    incus.network_acl_set_yaml.reset_mock()
+    ll.litellm_up(incus, _gcfg(accounts=["personal"], profiles={"codex": {"account": "personal"}}))
+    services = _last_acl(incus, "jailbee-services")
+    assert {r["destination_port"] for r in services["egress"]} == {"4100"}
+    listen = {r.get("destination_port") for r in _last_acl(incus, ll.EGRESS_ACL)["ingress"]}
+    assert "4100" in listen and "4101" not in listen
+
+
+def test_reinstall_retires_the_enabled_unit_of_a_removed_account():
+    """A reinstall keeps the rootfs, and with it the removed account's enabled symlink."""
+    incus = _incus(present=True)
+    healthy = incus.exec.side_effect
+
+    def exec_(name, cmd, **kw):
+        if "list-units" in " ".join(cmd):
+            return "jailbee-litellm@default.service\njailbee-litellm@old.service\n"
+        return healthy(name, cmd, **kw)
+
+    incus.exec.side_effect = exec_
+    result = ll.litellm_up(incus, _gcfg(), reinstall=True)
+    assert result.installed is True
+    assert result.retired == ["old"]
+    assert "systemctl disable --now jailbee-litellm@old.service" in _execs(incus)
+
+
+def test_an_unhealthy_restart_records_no_stamp_and_the_next_up_restarts(
+    xdg: Path, monkeypatch: pytest.MonkeyPatch
+):
+    incus = _incus(present=True)
+    wait_healthy = ll._wait_healthy
+
+    def never_healthy(*_args, **_kw):
+        raise RuntimeError("did not become healthy")
+
+    monkeypatch.setattr(ll, "_wait_healthy", never_healthy)
+    with pytest.raises(RuntimeError, match="did not become healthy"):
+        ll.litellm_up(incus, _gcfg())
+    assert not (xdg / "jailbee" / "litellm" / "default" / "applied.sha256").exists()
+
+    monkeypatch.setattr(ll, "_wait_healthy", wait_healthy)
+    incus.exec.reset_mock()
+    assert ll.litellm_up(incus, _gcfg()).restarted == ["default"]
+    assert "systemctl restart jailbee-litellm@default.service" in _execs(incus)
+
+
+def test_resumed_up_pushes_the_state_only_after_reattaching_the_volume():
+    """Installed, but a run was cut off before the attach: the `not needs_install` path."""
+    incus = _incus(present=True)
+    incus.config_show.return_value = yaml.safe_dump({"devices": {}})
+    result = ll.litellm_up(incus, _gcfg())
+    assert result.installed is False
+    calls = incus.mock_calls
+    mount = next(
+        i for i, c in enumerate(calls) if c[0] == "config_device_add" and c.args[1] == "state"
+    )
+    # min: the FIRST push must already follow the attach.
+    push = min(
+        i for i, c in enumerate(calls) if c[0] == "exec_with_input" and "base64 -d" in c.args[2]
+    )
+    assert mount < push
+
+
 def test_up_refuses_a_missing_secret_before_touching_incus():
     from jailbee.litellm_inputs import LiteLLMInputError
 
