@@ -151,6 +151,43 @@ JAILBEE_LITELLM_UNLOCKED_VERSION={unlocked} /root/install.sh
     incus.exec(LITELLM_CONTAINER, ["bash", "-c", script], timeout=900)
 
 
+def _secure_failed_install(incus: Incus, ip: str, error: BaseException) -> None:
+    """Reattach default-deny egress or stop the unprotected container.
+
+    Do not resolve providers on this error path: DNS can also be broken during
+    provisioning, so a DHCP/DNS-only ACL is safer and reliably renderable.
+    Keep the original install exception and annotate any cleanup failure.
+    """
+    try:
+        if not incus.network_acl_exists(EGRESS_ACL):
+            incus.network_acl_create(EGRESS_ACL)
+        incus.network_acl_set_yaml(
+            EGRESS_ACL, service_container_acl_yaml(EGRESS_ACL, [], listen_ports=[])
+        )
+        _set_profile(incus, ip, with_acl=True)
+    except Exception as restore_error:
+        details = [f"Failed to restore restrictive LiteLLM NIC ACL: {restore_error}"]
+        try:
+            incus.stop(LITELLM_CONTAINER, force=True)
+            details.append("container force-stopped")
+        except Exception as stop_error:
+            details.append(f"Failed to force-stop unrestricted LiteLLM container: {stop_error}")
+            try:
+                incus.delete(LITELLM_CONTAINER, force=True)
+                details.append("container force-deleted")
+            except Exception as delete_error:
+                details.append(
+                    "SECURITY: LiteLLM container may still be running without an egress ACL; "
+                    f"force-delete failed: {delete_error}"
+                )
+        recovery = "; ".join(details)
+        error.add_note(recovery)
+        # The CLI prints str(IncusError), not traceback notes. Keep the
+        # original exception object/traceback and make the recovery visible.
+        if isinstance(error, IncusError):
+            error.args = (f"{error}; {recovery}",)
+
+
 def _active(incus: Incus, account: str) -> bool:
     try:
         return incus.exec(
@@ -232,19 +269,24 @@ def litellm_up(
     if not needs_install and _installed_version(incus) != version:
         needs_install = True
 
-    if needs_install:
-        _set_profile(incus, ip, with_acl=False)  # install needs apt + PyPI
-        on_step(f"installing LiteLLM {version} (up to 15 min)")
-        _provision(incus, version, pinned)
+    try:
+        if needs_install:
+            _set_profile(incus, ip, with_acl=False)  # install needs apt + PyPI
+            on_step(f"installing LiteLLM {version} (up to 15 min)")
+            _provision(incus, version, pinned)
 
-    on_step("writing the proxy's egress allowlist")
-    acl_yaml = service_container_acl_yaml(
-        EGRESS_ACL, _resolve_egress(egress_hosts(cfg)), listen_ports=[port]
-    )
-    if not incus.network_acl_exists(EGRESS_ACL):
-        incus.network_acl_create(EGRESS_ACL)
-    incus.network_acl_set_yaml(EGRESS_ACL, acl_yaml)
-    _set_profile(incus, ip, with_acl=True)
+        on_step("writing the proxy's egress allowlist")
+        acl_yaml = service_container_acl_yaml(
+            EGRESS_ACL, _resolve_egress(egress_hosts(cfg)), listen_ports=[port]
+        )
+        if not incus.network_acl_exists(EGRESS_ACL):
+            incus.network_acl_create(EGRESS_ACL)
+        incus.network_acl_set_yaml(EGRESS_ACL, acl_yaml)
+        _set_profile(incus, ip, with_acl=True)
+    except BaseException as error:
+        if needs_install:
+            _secure_failed_install(incus, ip, error)
+        raise
 
     restart = needs_install or written.changed or not _active(incus, account)
     if restart:

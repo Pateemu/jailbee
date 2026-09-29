@@ -185,6 +185,109 @@ def test_up_fails_closed_to_dev_containers_on_install_error():
     assert all(c.args[0] != "jailbee-services" for c in incus.network_acl_set_yaml.call_args_list)
 
 
+@pytest.mark.parametrize("present,reinstall", [(False, False), (True, True)])
+def test_failed_install_restores_restrictive_nic_acl(present: bool, reinstall: bool):
+    incus = _incus(present=present)
+    incus.network_acl_exists.return_value = False
+    install_error = IncusError("apt unavailable")
+    ordinary_exec = incus.exec.side_effect
+
+    def failing_install(name, cmd, **kwargs):
+        if "/root/install.sh" in " ".join(cmd):
+            raise install_error
+        return ordinary_exec(name, cmd, **kwargs)
+
+    incus.exec.side_effect = failing_install
+    with pytest.raises(IncusError) as caught:
+        ll.litellm_up(incus, _gcfg(), reinstall=reinstall)
+    assert caught.value is install_error
+    acl_calls = [
+        call for call in incus.network_acl_set_yaml.call_args_list
+        if call.args[0] == ll.EGRESS_ACL
+    ]
+    assert len(acl_calls) == 1
+    acl = yaml.safe_load(acl_calls[0].args[1])
+    assert all(rule["destination_port"] in {"67", "547", "53"} for rule in acl["egress"])
+    profile = yaml.safe_load(incus.profile_set_yaml.call_args.args[1])["devices"]["eth0"]
+    assert profile["security.acls"] == ll.EGRESS_ACL
+    assert profile["security.acls.default.egress.action"] == "reject"
+    assert profile["security.acls.default.ingress.action"] == "reject"
+    assert all(
+        call.args[0] != "jailbee-services" for call in incus.network_acl_set_yaml.call_args_list
+    )
+    incus.stop.assert_not_called()
+
+
+def test_failed_acl_restore_force_stops_container_without_masking_install_error():
+    incus = _incus(present=True)
+    install_error = IncusError("apt unavailable")
+    incus.exec.side_effect = install_error
+    incus.network_acl_set_yaml.side_effect = IncusError("ACL edit unavailable")
+    with pytest.raises(IncusError) as caught:
+        ll.litellm_up(incus, _gcfg(), reinstall=True)
+    assert caught.value is install_error
+    assert any("ACL edit unavailable" in note for note in caught.value.__notes__)
+    assert "ACL edit unavailable" in str(caught.value)
+    assert "force-stopped" in str(caught.value)
+    incus.stop.assert_called_once_with(ll.LITELLM_CONTAINER, force=True)
+
+
+def test_failed_acl_restore_deletes_container_if_force_stop_fails():
+    incus = _incus(present=False)
+    install_error = IncusError("apt unavailable")
+    incus.exec.side_effect = install_error
+    incus.network_acl_set_yaml.side_effect = IncusError("ACL edit unavailable")
+    incus.stop.side_effect = IncusError("stop unavailable")
+    with pytest.raises(IncusError) as caught:
+        ll.litellm_up(incus, _gcfg())
+    assert caught.value is install_error
+    incus.delete.assert_called_once_with(ll.LITELLM_CONTAINER, force=True)
+
+
+def test_failed_acl_restore_reports_if_even_delete_fails():
+    incus = _incus(present=True)
+    install_error = IncusError("apt unavailable")
+    incus.exec.side_effect = install_error
+    incus.network_acl_set_yaml.side_effect = IncusError("ACL edit unavailable")
+    incus.stop.side_effect = IncusError("stop unavailable")
+    incus.delete.side_effect = IncusError("delete unavailable")
+    with pytest.raises(IncusError) as caught:
+        ll.litellm_up(incus, _gcfg(), reinstall=True)
+    assert caught.value is install_error
+    assert "stop unavailable" in str(caught.value.__notes__)
+    assert "delete unavailable" in str(caught.value.__notes__)
+    assert "SECURITY" in str(caught.value)
+    assert "delete unavailable" in str(caught.value)
+
+
+def test_failed_acl_resolution_after_install_restricts_container(monkeypatch: pytest.MonkeyPatch):
+    incus = _incus(present=False)
+
+    def unavailable(_hosts):
+        raise OSError("DNS unavailable")
+
+    monkeypatch.setattr(ll, "_resolve_egress", unavailable)
+    with pytest.raises(OSError, match="DNS unavailable"):
+        ll.litellm_up(incus, _gcfg())
+    acl = yaml.safe_load(incus.network_acl_set_yaml.call_args.args[1])
+    assert all(rule["destination_port"] in {"67", "547", "53"} for rule in acl["egress"])
+    profile = yaml.safe_load(incus.profile_set_yaml.call_args.args[1])["devices"]["eth0"]
+    assert profile["security.acls"] == ll.EGRESS_ACL
+    assert all(c.args[0] != "jailbee-services" for c in incus.network_acl_set_yaml.call_args_list)
+
+
+def test_failed_acl_write_after_install_retries_restrictive_acl():
+    incus = _incus(present=False)
+    error = IncusError("ACL write unavailable")
+    incus.network_acl_set_yaml.side_effect = [error, None]
+    with pytest.raises(IncusError) as caught:
+        ll.litellm_up(incus, _gcfg())
+    assert caught.value is error
+    assert incus.network_acl_set_yaml.call_count == 2
+    profile = yaml.safe_load(incus.profile_set_yaml.call_args.args[1])["devices"]["eth0"]
+    assert profile["security.acls"] == ll.EGRESS_ACL
+
+
 def test_up_requires_static_bridge_address():
     incus = _incus(present=False)
     incus.network_get.return_value = "none"
