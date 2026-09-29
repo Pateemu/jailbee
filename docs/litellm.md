@@ -295,7 +295,7 @@ On the host, `jailbee litellm up`, `login` and `jailbee apply` can report:
 
 | Error | Remedy |
 |---|---|
-| `... does not define NAME`, `... does not exist` or `... has insecure permissions` (about `secrets.env`) | Add `NAME=value` to `~/.config/jailbee/litellm/secrets.env`, `chmod 600` it, run `jailbee litellm up`. When a repo override's route names the secret, the message adds `(named by .../repos/<prefix>.yaml)`; a missing secret there still blocks `up` and the proxy update in `apply` for every repo, since the proxy is shared. |
+| `... does not define NAME`, `... does not exist` or `... has insecure permissions` (about `secrets.env`) | Add `NAME=value` to `~/.config/jailbee/litellm/secrets.env`, `chmod 600` it, run `jailbee litellm up`. When a repo override adds a route or changes a route's `api_key` to the missing secret, the message adds `(named by .../repos/<prefix>.yaml)`; a secret named only in `global.yaml` is not attributed to any repo file. A missing secret there still blocks `up` and the proxy update in `apply` for every repo, since the proxy is shared. |
 | `cannot read ...` (about `secrets.env` or the `extra` file) | Make the file readable by your user and plain UTF-8 text, then run `jailbee litellm up`. |
 | `Several LiteLLM accounts are configured` | Name the account: `jailbee litellm login work`. |
 | `profile(s) ... have no proxy instance yet` (from `jailbee apply` or `jailbee new`) | Run `jailbee litellm up`, then `jailbee apply`. |

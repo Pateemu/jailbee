@@ -172,14 +172,26 @@ def _parse(path: Path) -> dict[str, str]:
 
 
 def _referenced_by(
-    names: Iterable[str], scopes: Sequence[LiteLLMConfig], labels: Sequence[str]
+    names: Iterable[str],
+    host: LiteLLMConfig,
+    scopes: Sequence[LiteLLMConfig],
+    labels: Sequence[str],
 ) -> str:
-    """` (named by <file>, ...)` for the repo overrides whose routes use `names`."""
+    """` (named by <file>, ...)` for the repo overrides that introduce a use of `names`.
+
+    A scope is the host config merged with one repo file, so a route that only
+    `global.yaml` sets shows up in every scope. A file is blamed only for a
+    route whose `api_key` it changes or adds relative to the host's.
+    """
     wanted = set(names)
+    host_keys = {n: r.api_key for n, r in host.effective_routes().items()}
     files = sorted(
         label
         for label, scope in zip(labels, scopes, strict=False)
-        if any(r.api_key in wanted for r in scope.effective_routes().values())
+        if any(
+            r.api_key in wanted and host_keys.get(n) != r.api_key
+            for n, r in scope.effective_routes().items()
+        )
     )
     return f" (named by {', '.join(files)})" if files else ""
 
@@ -206,7 +218,7 @@ def load_secrets(
         raise LiteLLMInputError(
             f"routes name {', '.join(names)} but {path} does not exist: create it with "
             "NAME=value lines and `chmod 600` it"
-            f"{_referenced_by(names, scopes, scope_labels)}"
+            f"{_referenced_by(names, cfg, scopes, scope_labels)}"
         )
     mode = stat.S_IMODE(path.stat().st_mode)
     if mode & 0o077:
@@ -218,7 +230,7 @@ def load_secrets(
     if missing:
         raise LiteLLMInputError(
             f"{path} does not define {', '.join(missing)}"
-            f"{_referenced_by(missing, scopes, scope_labels)}"
+            f"{_referenced_by(missing, cfg, scopes, scope_labels)}"
         )
     return {n: values[n] for n in names}
 
