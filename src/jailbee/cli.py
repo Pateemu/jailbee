@@ -10661,7 +10661,9 @@ def litellm_down_cmd(
         bool,
         typer.Option(
             "--purge",
-            help="Also delete the state volume: every login, the rendered configs and their secrets.",
+            help=(
+                "Also delete the state volume: every login, the rendered configs and their secrets."
+            ),
         ),
     ] = False,
 ) -> None:
