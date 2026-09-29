@@ -185,6 +185,98 @@ def test_up_fails_closed_to_dev_containers_on_install_error():
     assert all(c.args[0] != "jailbee-services" for c in incus.network_acl_set_yaml.call_args_list)
 
 
+@pytest.mark.parametrize(
+    "operation",
+    ["init", "profile_assign", "config_device_add", "start"],
+)
+def test_new_container_setup_failure_deletes_possible_unrestricted_instance(operation: str):
+    incus = _incus(present=False)
+    startup_error = IncusError(f"{operation} reported failure")
+    getattr(incus, operation).side_effect = startup_error
+    with pytest.raises(IncusError) as caught:
+        ll.litellm_up(incus, _gcfg())
+    assert caught.value is startup_error
+    # `init`/`start` can report an error after taking effect. Never infer
+    # absence from the error or an out-of-date container listing.
+    incus.delete.assert_called_once_with(ll.LITELLM_CONTAINER, force=True)
+    assert all(c.args[0] != "jailbee-services" for c in incus.network_acl_set_yaml.call_args_list)
+
+
+def test_ambiguous_start_failure_does_not_leave_autostarting_container():
+    incus = _incus(present=False)
+    start_error = IncusError("start timed out after instance reached Running")
+
+    def start_then_fail(_name):
+        incus.list_containers.return_value = [{"name": ll.LITELLM_CONTAINER, "status": "Running"}]
+        raise start_error
+
+    def delete_instance(_name, *, force):
+        assert force
+        incus.list_containers.return_value = []
+
+    incus.start.side_effect = start_then_fail
+    incus.delete.side_effect = delete_instance
+    with pytest.raises(IncusError) as caught:
+        ll.litellm_up(incus, _gcfg())
+    assert caught.value is start_error
+    incus.delete.assert_called_once_with(ll.LITELLM_CONTAINER, force=True)
+    assert incus.list_containers() == []
+
+
+def test_new_container_autostart_is_enabled_only_after_acl_is_attached():
+    incus = _incus(present=False)
+    ll.litellm_up(incus, _gcfg())
+    restricted = [
+        idx for idx, call in enumerate(incus.mock_calls)
+        if call[0] == "profile_set_yaml"
+        and yaml.safe_load(call.args[1])["devices"]["eth0"].get("security.acls") == ll.EGRESS_ACL
+    ]
+    autostart = [
+        idx for idx, call in enumerate(incus.mock_calls)
+        if call[0] == "config_set" and call.args[1:] == ("boot.autostart", "true")
+    ]
+    assert len(autostart) == 1
+    assert restricted and restricted[-1] < autostart[0]
+
+
+def test_ambiguous_autostart_failure_leaves_restrictive_acl_attached():
+    incus = _incus(present=False)
+    error = IncusError("config_set timed out after enabling autostart")
+    incus.config_set.side_effect = error
+    with pytest.raises(IncusError) as caught:
+        ll.litellm_up(incus, _gcfg())
+    assert caught.value is error
+    profile = yaml.safe_load(incus.profile_set_yaml.call_args.args[1])["devices"]["eth0"]
+    assert profile["security.acls"] == ll.EGRESS_ACL
+    assert profile["security.acls.default.egress.action"] == "reject"
+
+
+def test_failed_new_container_delete_disables_autostart_before_force_stop():
+    incus = _incus(present=False)
+    startup_error = IncusError("start timed out")
+    incus.start.side_effect = startup_error
+    incus.delete.side_effect = IncusError("delete failed")
+    with pytest.raises(IncusError) as caught:
+        ll.litellm_up(incus, _gcfg())
+    assert caught.value is startup_error
+    incus.config_set.assert_any_call(ll.LITELLM_CONTAINER, "boot.autostart", "false")
+    incus.stop.assert_called_once_with(ll.LITELLM_CONTAINER, force=True)
+    assert "delete failed" in str(caught.value)
+
+
+def test_failed_new_container_cleanup_reports_unrestricted_instance():
+    incus = _incus(present=False)
+    startup_error = IncusError("start timed out")
+    incus.start.side_effect = startup_error
+    incus.delete.side_effect = IncusError("delete failed")
+    incus.stop.side_effect = IncusError("stop failed")
+    with pytest.raises(IncusError) as caught:
+        ll.litellm_up(incus, _gcfg())
+    assert caught.value is startup_error
+    assert "SECURITY" in str(caught.value)
+    assert "stop failed" in str(caught.value)
+
+
 @pytest.mark.parametrize("present,reinstall", [(False, False), (True, True)])
 def test_failed_install_restores_restrictive_nic_acl(present: bool, reinstall: bool):
     incus = _incus(present=present)
@@ -230,6 +322,19 @@ def test_failed_acl_restore_force_stops_container_without_masking_install_error(
     assert "ACL edit unavailable" in str(caught.value)
     assert "force-stopped" in str(caught.value)
     incus.stop.assert_called_once_with(ll.LITELLM_CONTAINER, force=True)
+    incus.config_set.assert_any_call(ll.LITELLM_CONTAINER, "boot.autostart", "false")
+
+
+def test_failed_acl_restore_deletes_if_autostart_cannot_be_disabled():
+    incus = _incus(present=True)
+    install_error = IncusError("apt unavailable")
+    incus.exec.side_effect = install_error
+    incus.network_acl_set_yaml.side_effect = IncusError("ACL edit unavailable")
+    incus.config_set.side_effect = IncusError("autostart disable unavailable")
+    with pytest.raises(IncusError) as caught:
+        ll.litellm_up(incus, _gcfg(), reinstall=True)
+    assert caught.value is install_error
+    incus.delete.assert_called_once_with(ll.LITELLM_CONTAINER, force=True)
 
 
 def test_failed_acl_restore_deletes_container_if_force_stop_fails():

@@ -151,8 +151,53 @@ JAILBEE_LITELLM_UNLOCKED_VERSION={unlocked} /root/install.sh
     incus.exec(LITELLM_CONTAINER, ["bash", "-c", script], timeout=900)
 
 
+def _annotate_recovery(error: BaseException, details: list[str]) -> None:
+    recovery = "; ".join(details)
+    error.add_note(recovery)
+    # The CLI prints str(IncusError), not traceback notes. Keep the original
+    # exception object/traceback and make any failed recovery visible.
+    if isinstance(error, IncusError):
+        error.args = (f"{error}; {recovery}",)
+
+
+def _stop_unrestricted_container(incus: Incus, details: list[str]) -> None:
+    """Disable autostart and stop; delete if either protection fails."""
+    disabled = stopped = True
+    try:
+        incus.config_set(LITELLM_CONTAINER, "boot.autostart", "false")
+    except Exception as disable_error:
+        disabled = False
+        details.append(f"Failed to disable LiteLLM autostart: {disable_error}")
+    try:
+        incus.stop(LITELLM_CONTAINER, force=True)
+        details.append("container force-stopped")
+    except Exception as stop_error:
+        stopped = False
+        details.append(f"Failed to force-stop unrestricted LiteLLM container: {stop_error}")
+    if disabled and stopped:
+        return
+    try:
+        incus.delete(LITELLM_CONTAINER, force=True)
+        details.append("container force-deleted")
+    except Exception as delete_error:
+        details.append(
+            "SECURITY: LiteLLM container may still run or autostart without an egress ACL; "
+            f"force-delete failed: {delete_error}"
+        )
+
+
+def _secure_failed_create(incus: Incus, error: BaseException) -> None:
+    """Discard a partial instance even if `init`/`start` reported an error."""
+    try:
+        incus.delete(LITELLM_CONTAINER, force=True)
+    except Exception as delete_error:
+        details = [f"Failed to delete partial LiteLLM container: {delete_error}"]
+        _stop_unrestricted_container(incus, details)
+        _annotate_recovery(error, details)
+
+
 def _secure_failed_install(incus: Incus, ip: str, error: BaseException) -> None:
-    """Reattach default-deny egress or stop the unprotected container.
+    """Reattach default-deny egress or retire the unprotected container.
 
     Do not resolve providers on this error path: DNS can also be broken during
     provisioning, so a DHCP/DNS-only ACL is safer and reliably renderable.
@@ -167,25 +212,8 @@ def _secure_failed_install(incus: Incus, ip: str, error: BaseException) -> None:
         _set_profile(incus, ip, with_acl=True)
     except Exception as restore_error:
         details = [f"Failed to restore restrictive LiteLLM NIC ACL: {restore_error}"]
-        try:
-            incus.stop(LITELLM_CONTAINER, force=True)
-            details.append("container force-stopped")
-        except Exception as stop_error:
-            details.append(f"Failed to force-stop unrestricted LiteLLM container: {stop_error}")
-            try:
-                incus.delete(LITELLM_CONTAINER, force=True)
-                details.append("container force-deleted")
-            except Exception as delete_error:
-                details.append(
-                    "SECURITY: LiteLLM container may still be running without an egress ACL; "
-                    f"force-delete failed: {delete_error}"
-                )
-        recovery = "; ".join(details)
-        error.add_note(recovery)
-        # The CLI prints str(IncusError), not traceback notes. Keep the
-        # original exception object/traceback and make the recovery visible.
-        if isinstance(error, IncusError):
-            error.args = (f"{error}; {recovery}",)
+        _stop_unrestricted_container(incus, details)
+        _annotate_recovery(error, details)
 
 
 def _active(incus: Incus, account: str) -> bool:
@@ -254,16 +282,19 @@ def litellm_up(
     if info is None:
         _set_profile(incus, ip, with_acl=False)
         on_step(f"creating {LITELLM_CONTAINER} from {_IMAGE}")
-        incus.init(_IMAGE, LITELLM_CONTAINER)
-        incus.profile_assign(LITELLM_CONTAINER, ["default", LITELLM_PROFILE])
-        incus.config_set(LITELLM_CONTAINER, "boot.autostart", "true")
-        incus.config_device_add(
-            LITELLM_CONTAINER,
-            "state",
-            "disk",
-            {"source": str(litellm_state.state_dir()), "path": CONTAINER_STATE_DIR},
-        )
-        incus.start(LITELLM_CONTAINER)
+        try:
+            incus.init(_IMAGE, LITELLM_CONTAINER)
+            incus.profile_assign(LITELLM_CONTAINER, ["default", LITELLM_PROFILE])
+            incus.config_device_add(
+                LITELLM_CONTAINER,
+                "state",
+                "disk",
+                {"source": str(litellm_state.state_dir()), "path": CONTAINER_STATE_DIR},
+            )
+            incus.start(LITELLM_CONTAINER)
+        except BaseException as error:
+            _secure_failed_create(incus, error)
+            raise
     elif info.get("status") != "Running":
         incus.start(LITELLM_CONTAINER)
     if not needs_install and _installed_version(incus) != version:
@@ -287,6 +318,10 @@ def litellm_up(
         if needs_install:
             _secure_failed_install(incus, ip, error)
         raise
+
+    if info is None:
+        # An unfinished or interrupted install must not autoboot ACL-free.
+        incus.config_set(LITELLM_CONTAINER, "boot.autostart", "true")
 
     restart = needs_install or written.changed or not _active(incus, account)
     if restart:
