@@ -18,10 +18,18 @@ from jailbee.incus import IncusError
 @pytest.fixture(autouse=True)
 def xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    monkeypatch.setattr(ll, "_resolve_egress", lambda hosts: [
-        EgressEntry(destinations=["192.0.2.1"], port=int(h.rsplit(":", 1)[1]) if ":" in h else 443,
-                    description=h if ":" in h else f"{h}:443") for h in hosts
-    ])  # no DNS in tests
+    monkeypatch.setattr(
+        ll,
+        "_resolve_egress",
+        lambda hosts: [
+            EgressEntry(
+                destinations=["192.0.2.1"],
+                port=int(h.rsplit(":", 1)[1]) if ":" in h else 443,
+                description=h if ":" in h else f"{h}:443",
+            )
+            for h in hosts
+        ],
+    )  # no DNS in tests
     monkeypatch.setattr(ll.time, "sleep", lambda _s: None)
     return tmp_path
 
@@ -36,9 +44,9 @@ def _incus(*, present: bool, running: bool = True, installed: str | None = "1.10
     incus.network_exists.return_value = True
     incus.profile_exists.return_value = True
     incus.network_acl_exists.return_value = True
-    incus.config_show.return_value = yaml.safe_dump({"devices": {
-        "state": {"type": "disk", "path": ll.CONTAINER_STATE_DIR}
-    }})
+    incus.config_show.return_value = yaml.safe_dump(
+        {"devices": {"state": {"type": "disk", "path": ll.CONTAINER_STATE_DIR}}}
+    )
     incus.list_containers.return_value = (
         [{"name": ll.LITELLM_CONTAINER, "status": "Running" if running else "Stopped"}]
         if present
@@ -92,12 +100,15 @@ def test_install_is_package_restricted_and_auth_mount_is_added_after_install():
     assert install < mount
     before = [c for c in calls[:install] if c[0] == "network_acl_set_yaml"]
     assert before
-    assert {r.get("description", "").removeprefix("allowlisted: ")
-            for r in yaml.safe_load(before[-1].args[1])["egress"]} >= {
-        "pypi.org:443", "files.pythonhosted.org:443", "archive.ubuntu.com:80"
-    }
-    assert all("security.acls" in yaml.safe_load(c.args[1])["devices"]["eth0"]
-               for c in calls if c[0] == "profile_set_yaml")
+    assert {
+        r.get("description", "").removeprefix("allowlisted: ")
+        for r in yaml.safe_load(before[-1].args[1])["egress"]
+    } >= {"pypi.org:443", "files.pythonhosted.org:443", "archive.ubuntu.com:80"}
+    assert all(
+        "security.acls" in yaml.safe_load(c.args[1])["devices"]["eth0"]
+        for c in calls
+        if c[0] == "profile_set_yaml"
+    )
     final = yaml.safe_load(incus.profile_set_yaml.call_args.args[1])["devices"]["eth0"]
     assert final["ipv4.address"] == "10.79.115.3"
 
@@ -118,7 +129,10 @@ def test_provision_streams_real_lock_at_subprocess_boundary(mocker):
 def test_provision_failure_does_not_echo_install_script_in_error(mocker):
     from jailbee.incus import Incus
 
-    mocker.patch("jailbee.incus.subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "apt failed"))
+    mocker.patch(
+        "jailbee.incus.subprocess.run",
+        return_value=subprocess.CompletedProcess([], 1, "", "apt failed"),
+    )
     with pytest.raises(IncusError) as caught:
         ll._provision(Incus(), "1.103.0", True)
     assert "apt failed" in str(caught.value)
@@ -136,8 +150,9 @@ def test_reinstall_detaches_auth_before_package_egress_and_reattaches_after():
     mount = next(i for i, c in enumerate(calls) if c[0] == "config_device_add")
     assert stopped < removed < package < install < mount
     assert calls[removed].kwargs == {}
-    assert any(c[0] == "config_set" and c.args[1:] == ("boot.autostart", "false")
-               for c in calls[:package])
+    assert any(
+        c[0] == "config_set" and c.args[1:] == ("boot.autostart", "false") for c in calls[:package]
+    )
 
 
 def test_install_failure_never_reattaches_auth_or_opens_services():
@@ -159,15 +174,17 @@ def test_reinstall_aborts_before_package_egress_if_state_cannot_be_detached():
     incus.exec_with_input.assert_not_called()
     incus.config_device_add.assert_not_called()
     # Recovery uses DHCP/DNS-only egress, never a package-host ACL.
-    assert all(r.get("destination_port") in {"67", "547", "53"}
-               for c in incus.network_acl_set_yaml.call_args_list
-               for r in yaml.safe_load(c.args[1])["egress"])
+    assert all(
+        r.get("destination_port") in {"67", "547", "53"}
+        for c in incus.network_acl_set_yaml.call_args_list
+        for r in yaml.safe_load(c.args[1])["egress"]
+    )
 
 
 def test_bridge_lease_collision_rejected_before_instance_changes():
     incus = _incus(present=False)
     incus.network_leases.return_value = [{"address": "10.79.115.3", "hostname": "other"}]
-    with pytest.raises(RuntimeError, match="10.79.115.3.*other.*jailbee-loose"):
+    with pytest.raises(RuntimeError, match=r"10\.79\.115\.3.*other.*jailbee-loose"):
         ll.litellm_up(incus, _gcfg())
     incus.init.assert_not_called()
 
@@ -175,31 +192,44 @@ def test_bridge_lease_collision_rejected_before_instance_changes():
 def test_bridge_static_nic_collision_rejected_even_without_lease():
     incus = _incus(present=False)
     incus.list_containers.return_value = [{"name": "other", "status": "Stopped"}]
-    incus.config_show.return_value = yaml.safe_dump({"devices": {"eth0": {
-        "type": "nic", "network": "jailbee-loose", "ipv4.address": "10.79.115.3"
-    }}})
-    with pytest.raises(RuntimeError, match="10.79.115.3.*other"):
+    incus.config_show.return_value = yaml.safe_dump(
+        {
+            "devices": {
+                "eth0": {"type": "nic", "network": "jailbee-loose", "ipv4.address": "10.79.115.3"}
+            }
+        }
+    )
+    with pytest.raises(RuntimeError, match=r"10\.79\.115\.3.*other"):
         ll.litellm_up(incus, _gcfg())
 
 
 def test_bridge_self_lease_and_static_nic_are_allowed():
     incus = _incus(present=True)
-    incus.network_leases.return_value = [{"address": "10.79.115.3", "hostname": ll.LITELLM_CONTAINER}]
-    incus.config_show.return_value = yaml.safe_dump({"devices": {"eth0": {
-        "type": "nic", "network": "jailbee-loose", "ipv4.address": "10.79.115.3"
-    }}})
+    incus.network_leases.return_value = [
+        {"address": "10.79.115.3", "hostname": ll.LITELLM_CONTAINER}
+    ]
+    incus.config_show.return_value = yaml.safe_dump(
+        {
+            "devices": {
+                "eth0": {"type": "nic", "network": "jailbee-loose", "ipv4.address": "10.79.115.3"}
+            }
+        }
+    )
     assert ll.litellm_up(incus, _gcfg()).ip == "10.79.115.3"
 
 
 def test_bridge_self_lease_can_be_identified_by_nic_mac_without_hostname():
     incus = _incus(present=True)
-    incus.list_containers.return_value = [{
-        "name": ll.LITELLM_CONTAINER, "status": "Running",
-        "config": {"volatile.eth0.hwaddr": "00:16:3e:01:02:03"},
-    }]
-    incus.network_leases.return_value = [{
-        "address": "10.79.115.3", "hostname": "", "hwaddr": "00:16:3e:01:02:03"
-    }]
+    incus.list_containers.return_value = [
+        {
+            "name": ll.LITELLM_CONTAINER,
+            "status": "Running",
+            "config": {"volatile.eth0.hwaddr": "00:16:3e:01:02:03"},
+        }
+    ]
+    incus.network_leases.return_value = [
+        {"address": "10.79.115.3", "hostname": "", "hwaddr": "00:16:3e:01:02:03"}
+    ]
     assert ll.litellm_up(incus, _gcfg()).ip == "10.79.115.3"
 
 
@@ -208,8 +238,8 @@ def test_sync_publishes_json_only_after_private_key():
     ll.litellm_up(incus, _gcfg())
     ll.sync_container(incus, "repo-branch", ll.container_sync_payload(incus, _gcfg()))
     script = incus.exec_with_input.call_args.args[2]
-    assert script.index("mv \"$tmp\" " + ll.CONTAINER_KEY_FILE) < script.index(
-        "mv \"$tmp\" " + ll.CONTAINER_FILE
+    assert script.index('mv "$tmp" ' + ll.CONTAINER_KEY_FILE) < script.index(
+        'mv "$tmp" ' + ll.CONTAINER_FILE
     )
 
 

@@ -42,10 +42,14 @@ _IP_INDEX = 1
 _WAIT_SECONDS = 60
 _PY = "/opt/litellm/bin/python"
 _PACKAGE_ENDPOINTS = (
-    "pypi.org:443", "files.pythonhosted.org:443",
-    "archive.ubuntu.com:80", "archive.ubuntu.com:443",
-    "security.ubuntu.com:80", "security.ubuntu.com:443",
-    "ports.ubuntu.com:80", "ports.ubuntu.com:443",
+    "pypi.org:443",
+    "files.pythonhosted.org:443",
+    "archive.ubuntu.com:80",
+    "archive.ubuntu.com:443",
+    "security.ubuntu.com:80",
+    "security.ubuntu.com:443",
+    "ports.ubuntu.com:80",
+    "ports.ubuntu.com:443",
 )
 CONTAINER_FILE = "/etc/jailbee/litellm.json"
 CONTAINER_KEY_FILE = "/etc/jailbee/litellm-default.key"
@@ -398,7 +402,9 @@ def litellm_up(
         _set_profile(incus, ip, with_acl=True)
         if needs_install:
             incus.config_device_add(
-                LITELLM_CONTAINER, "state", "disk",
+                LITELLM_CONTAINER,
+                "state",
+                "disk",
                 {"source": str(litellm_state.state_dir()), "path": CONTAINER_STATE_DIR},
             )
     except BaseException as error:

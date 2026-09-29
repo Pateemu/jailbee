@@ -20,8 +20,8 @@ import json
 import os
 import secrets
 import tempfile
-from contextlib import contextmanager
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from fcntl import LOCK_EX, LOCK_UN, flock
 from importlib import resources
