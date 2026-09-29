@@ -33,7 +33,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from jailbee import table_format
+from jailbee import agent_status, table_format
 from jailbee.config import (
     DASHBOARD_DEFAULT_HIDE,
     ColumnConfig,
@@ -77,7 +77,9 @@ from jailbee.global_config import (
 )
 from jailbee.lifecycle import (
     ContainerInfo,
+    agent_homes,
     annotate_activity,
+    annotate_agent_status,
     format_duration_short,
     list_containers,
     ls_field_specs,
@@ -193,7 +195,10 @@ class RepoGroup:
     ``push_action_default``/``push_source_default`` mirror the repo's effective
     ``push.default_action``/``default_source``, so a front-end can tell whether
     `jailbee git push` would stop to ask a question its own child process
-    cannot answer. Orphan groups keep ``PushConfig``'s defaults."""
+    cannot answer. Orphan groups keep ``PushConfig``'s defaults.
+    ``agent_homes`` are ``(agent, config home)`` for the repo's pooled agents,
+    where their session files live; `sample_activity` matches this group's
+    containers against them and nothing else. Orphan groups keep ``()``."""
 
     prefix: str
     repo_root: str | None
@@ -204,6 +209,7 @@ class RepoGroup:
     push_action_default: str = "ask"
     push_source_default: str = "base"
     column_notice: str | None = None
+    agent_homes: tuple[tuple[str, Path], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -488,6 +494,7 @@ def gather_rows(
                     warning for warning in cfg.column_warnings() if "ahead_diff" in warning
                 )
                 or None,
+                agent_homes=agent_homes(cfg),
             )
         )
 
@@ -575,15 +582,22 @@ def carry_forward_git_status(new_groups: list[RepoGroup], prev_groups: list[Repo
 
 
 def sample_activity(groups: list[RepoGroup], sampler: ActivitySampler) -> None:
-    """Fill every container's CPU/DOING fields from one sampler reading.
+    """Fill every container's CPU/DOING/AGENT fields from one sampler reading.
 
     One reading per screen, not one per repo group: the sampler stamps the
     elapsed time itself, so splitting a frame across several calls would
     measure several different windows.
 
+    AGENT is then matched per group, against that group's own config homes,
+    from the same reading. Matching against every group's homes at once
+    would let two repos' containers take each other's session; see
+    `lifecycle.annotate_agent_status`.
+
     Shared with the Qt worker, which owns its own sampler.
     """
     annotate_activity([c for g in groups for c in g.containers], sampler)
+    for g in groups:
+        annotate_agent_status(g.containers, agent_status.read_sessions(g.agent_homes), sampler)
 
 
 @dataclass(frozen=True)
@@ -1615,6 +1629,7 @@ _AUTO_HIDE_ORDER = (
     "ttl",
     "mode",
     "ahead_count",
+    "agent",
     "wt",
     "conflict",
     "job",

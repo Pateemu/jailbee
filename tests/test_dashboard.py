@@ -406,6 +406,29 @@ def test_gather_rows_loose_ttl_default_is_none_when_policy_disabled(tmp_path, mo
     assert groups[0].loose_ttl_default is None
 
 
+def test_gather_rows_carries_the_repos_agent_homes(tmp_path, mocker, make_cfg):
+    from tests.conftest import with_agent
+
+    cfg = with_agent(
+        make_cfg(tmp_path / "alpha", shared_dir=tmp_path / "shared"), "claude", enabled=True
+    )
+    root = tmp_path / "alpha"
+    mocker.patch.object(dashboard, "load_repo_config", return_value=cfg)
+
+    def fake_list(c, incus, *, all_repos, with_git_status, with_background):
+        return [_ci("orphan-x", "orphan")] if all_repos else [_ci("alpha-one", "alpha")]
+
+    mocker.patch.object(dashboard, "list_containers", side_effect=fake_list)
+
+    groups = dashboard.gather_rows(mocker.MagicMock(), [root], cwd_root=root, with_git=False)
+
+    by_prefix = {g.prefix: g for g in groups}
+    assert by_prefix[cfg.container_prefix].agent_homes == (
+        ("claude", tmp_path / "shared" / "claude"),
+    )
+    assert by_prefix["orphan"].agent_homes == ()
+
+
 def test_gather_rows_records_the_repos_push_defaults(tmp_path, mocker, make_cfg):
     """The Qt dashboard asks the merge/rebase question itself, and only when
     the repo left it unanswered — so the group has to carry the answer."""
@@ -5895,6 +5918,63 @@ def test_sample_activity_flattens_every_group(mocker):
     dashboard.sample_activity(groups, sampler)
 
     annotate.assert_called_once_with([a, b], sampler)
+
+
+def test_sample_activity_matches_agents_per_group_never_across_repos(mocker):
+    """Each group is matched against its own config homes only. The union
+    would let two repos' containers take each other's session."""
+    mocker.patch.object(dashboard, "annotate_activity")
+    agents = mocker.patch.object(dashboard, "annotate_agent_status")
+    by_homes = {
+        (("claude", Path("/s/p/claude")),): ["p-session"],
+        (("claude", Path("/s/q/claude")),): ["q-session"],
+    }
+    mocker.patch("jailbee.agent_status.read_sessions", side_effect=lambda h: by_homes[tuple(h)])
+    a, b = _ci("p-a", "p"), _ci("q-b", "q")
+    groups = [
+        dashboard.RepoGroup("p", "/p", None, [a], agent_homes=(("claude", Path("/s/p/claude")),)),
+        dashboard.RepoGroup("q", "/q", None, [b], agent_homes=(("claude", Path("/s/q/claude")),)),
+    ]
+    sampler = mocker.Mock()
+
+    dashboard.sample_activity(groups, sampler)
+
+    assert [c.args for c in agents.call_args_list] == [
+        ([a], ["p-session"], sampler),
+        ([b], ["q-session"], sampler),
+    ]
+
+
+def test_sample_activity_reads_the_agent_state_after_the_activity_reading(mocker):
+    """AGENT uses the reading `annotate_activity` just took."""
+    order: list[str] = []
+    mocker.patch.object(
+        dashboard, "annotate_activity", side_effect=lambda *a: order.append("activity")
+    )
+    mocker.patch.object(
+        dashboard, "annotate_agent_status", side_effect=lambda *a: order.append("agent")
+    )
+    groups = [dashboard.RepoGroup("p", "/p", None, [_ci("p-a", "p")])]
+
+    dashboard.sample_activity(groups, mocker.Mock())
+
+    assert order == ["activity", "agent"]
+
+
+def test_every_column_has_an_auto_hide_priority():
+    """`_fit_dashboard_fields` ranks an unlisted column `len(order)`, so it is
+    auto-hidden only after everything else — beside NAME. For a new column
+    that is a silent wrong priority."""
+    from jailbee.lifecycle import ls_field_specs
+
+    names = {f.name for f in ls_field_specs(now=datetime.now(UTC))}
+    assert names - set(dashboard._AUTO_HIDE_ORDER) == set()
+
+
+def test_agent_outlives_every_column_but_the_core_ones():
+    """It is the reason for the column to exist: hidden just before WT."""
+    order = dashboard._AUTO_HIDE_ORDER
+    assert order.index("agent") == order.index("wt") - 1
 
 
 def test_remote_action_menu_never_opens_the_pr_in_a_host_browser():
