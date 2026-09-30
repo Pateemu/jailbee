@@ -1,0 +1,257 @@
+"""Inspection must not mistake missing or malformed evidence for unpublished work."""
+
+import json
+from dataclasses import FrozenInstanceError
+
+import pytest
+
+from jailbee.outbox.inspect import build_views, detail_json, overview_json, safe_text
+from jailbee.outbox.models import ContainerView, OutboxError, ProposalId
+from jailbee.outbox_io import JournalStore, journal_key, proposal_digest
+from tests.outbox_support import IDENTITY, issue_files, pr_files, store
+
+
+def test_same_filename_is_two_proposals(tmp_path):
+    views = build_views(
+        IDENTITY,
+        (store("pr", pr_files()), store("issue", issue_files())),
+        journal_store=JournalStore(tmp_path / "journals"),
+    )
+    assert {str(v.id) for v in views} == {"pr/001.json", "issue/001.json"}
+    review = next(v for v in views if v.id.kind == "pr")
+    assert [(c.index, c.text) for c in review.actions[0].comments] == [(0, "First"), (1, "Second")]
+    assert review.state == "pending"
+    assert not (tmp_path / "journals").exists()
+    with pytest.raises(FrozenInstanceError):
+        review.state = "applied"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "001.json",
+        "other/001.json",
+        "pr/../x.json",
+        "pr/a/b.json",
+        "issue/",
+        "pr/a.progress.json",
+        "pr/a\\b.json",
+    ],
+)
+def test_proposal_id_rejects_unsafe_names(value):
+    with pytest.raises(OutboxError):
+        ProposalId.parse(value)
+
+
+def test_proposal_id_roundtrip():
+    assert str(ProposalId.parse("issue/001.json")) == "issue/001.json"
+
+
+def test_invalid_json_keeps_raw_and_progress_revision(tmp_path):
+    journals = JournalStore(tmp_path / "journals")
+    first = build_views(IDENTITY, (store("pr", {"001.json": "{bad"}),), journal_store=journals)[0]
+    second = build_views(
+        IDENTITY,
+        (store("pr", {"001.json": "{bad"}, rejected=("001.json.progress.json",)),),
+        journal_store=journals,
+    )[0]
+    assert first.state == "invalid"
+    assert first.raw_text == "{bad"
+    assert first.error
+    assert first.revision != second.revision
+    assert second.edit_block
+
+
+@pytest.mark.parametrize("old_count", [1, 3, 9])
+def test_empty_old_journal_is_editable(tmp_path, old_count):
+    journals = JournalStore(tmp_path / "journals")
+    journals.create(journal_key(IDENTITY, "001.json"), "b" * 64, old_count)
+    view = build_views(IDENTITY, (store("issue", issue_files()),), journal_store=journals)[0]
+    assert view.state == "pending"
+    assert view.edit_block is None
+
+
+def test_prepared_issue_is_uncertain_and_receipt_indices_preserved(tmp_path):
+    files = issue_files()
+    journals = JournalStore(tmp_path / "journals")
+    key = journal_key(IDENTITY, "001.json")
+    journals.create(
+        key, proposal_digest("001.json", files["001.json"], {"body.md": files["body.md"]}), 3
+    )
+    journals.mark_prepared(key, 2, repo="acme/repo")
+    view = build_views(IDENTITY, (store("issue", files),), journal_store=journals)[0]
+    assert view.state == "uncertain"
+    assert [a.state for a in view.actions] == ["pending", "pending", "uncertain"]
+    assert view.edit_block
+
+
+@pytest.mark.parametrize("change", ["digest", "count"])
+def test_nonempty_mismatched_journal_blocks_receipts(tmp_path, change):
+    files = issue_files()
+    journals = JournalStore(tmp_path / "journals")
+    key = journal_key(IDENTITY, "001.json")
+    digest = proposal_digest("001.json", files["001.json"], {"body.md": files["body.md"]})
+    journals.create(key, "b" * 64 if change == "digest" else digest, 4 if change == "count" else 3)
+    journals.mark_prepared(key, 0, repo="acme/repo")
+    view = build_views(IDENTITY, (store("issue", files),), journal_store=journals)[0]
+    assert view.state == "uncertain"
+    assert view.error and view.edit_block
+    assert all(a.state == "pending" for a in view.actions)
+
+
+@pytest.mark.parametrize(
+    "sidecar",
+    [
+        "{bad",
+        '{"applied":[true],"urls":{}}',
+        '{"applied":[99],"urls":{}}',
+        '{"applied":[0,0],"urls":{}}',
+    ],
+)
+def test_bad_pr_sidecar_is_unknown_not_empty(tmp_path, sidecar):
+    files = pr_files() | {"001.json.progress.json": sidecar}
+    view = build_views(IDENTITY, (store("pr", files),), journal_store=JournalStore(tmp_path))[0]
+    assert view.state == "uncertain"
+    assert view.error and view.edit_block
+
+
+def test_pr_progress_and_exact_log_name(tmp_path):
+    journals = JournalStore(tmp_path)
+    unrelated = pr_files() | {
+        "applied.log": "2026-09-30T00:00:00Z x001.json pr=42 actions=1 urls=x\n"
+    }
+    view = build_views(IDENTITY, (store("pr", unrelated),), journal_store=journals)[0]
+    assert view.edit_block is None
+    files = pr_files() | {
+        "001.json.progress.json": json.dumps(
+            {"applied": [0], "urls": {"0": "https://example/receipt"}}
+        )
+    }
+    applied = build_views(IDENTITY, (store("pr", files),), journal_store=journals)[0]
+    assert applied.state == "applied"
+    assert applied.actions[0].receipt == "https://example/receipt"
+    logged = build_views(
+        IDENTITY,
+        (
+            store(
+                "pr",
+                unrelated
+                | {"applied.log": unrelated["applied.log"].replace("x001.json", "001.json")},
+            ),
+        ),
+        journal_store=journals,
+    )[0]
+    assert logged.edit_block
+    assert logged.state == "uncertain"
+
+
+@pytest.mark.parametrize("rejected", [("applied.log",), ("001.json.progress.json",)])
+def test_rejected_progress_is_unknown(tmp_path, rejected):
+    view = build_views(
+        IDENTITY,
+        (store("pr", pr_files(), rejected=rejected),),
+        journal_store=JournalStore(tmp_path),
+    )[0]
+    assert view.state == "uncertain"
+    assert view.edit_block
+
+
+def test_missing_body_and_nested_body_revision(tmp_path):
+    journals = JournalStore(tmp_path)
+    invalid = build_views(
+        IDENTITY, (store("issue", {"001.json": issue_files()["001.json"]}),), journal_store=journals
+    )[0]
+    assert invalid.state == "invalid"
+    payload = json.loads(pr_files()["001.json"])
+    payload["actions"][0]["comments"][0].pop("body")
+    payload["actions"][0]["comments"][0]["body_file"] = "nested.md"
+    files = {"001.json": json.dumps(payload), "nested.md": "First"}
+    first = build_views(IDENTITY, (store("pr", files),), journal_store=journals)[0]
+    second = build_views(
+        IDENTITY, (store("pr", files | {"nested.md": "Changed"}),), journal_store=journals
+    )[0]
+    assert first.actions[0].comments[0].text == "First"
+    assert first.revision != second.revision
+
+
+def test_safe_text_and_explicit_json_keep_literal_text(tmp_path):
+    raw = "[red]x[/red]\x1b]52;c;secret\x07"
+    assert "[red]x[/red]" in safe_text(raw)
+    assert "\x1b" not in safe_text(raw) and "\x07" not in safe_text(raw)
+    view = build_views(
+        IDENTITY, (store("pr", {"001.json": raw}),), journal_store=JournalStore(tmp_path)
+    )[0]
+    container = ContainerView(IDENTITY, IDENTITY.full_name, True, None, (), (view,))
+    detail = detail_json(container, view)
+    assert detail["schema"] == 1
+    assert detail["proposal"]["raw_text"] == raw
+    assert detail["proposal"]["revision"] == view.revision
+    overview = overview_json(
+        (container, ContainerView(None, "offline", False, "unavailable", (), ()))
+    )
+    assert overview["schema"] == 1
+    assert overview["containers"][1]["available"] is False
+    assert overview["containers"][0]["counts"]["invalid"] == 1
+    assert "\\u001b" in json.dumps(detail)
+
+
+def test_issue_partial_receipt_and_revision(tmp_path):
+    files = issue_files()
+    journals = JournalStore(tmp_path / "journals")
+    key = journal_key(IDENTITY, "001.json")
+    digest = proposal_digest("001.json", files["001.json"], {"body.md": files["body.md"]})
+    before = build_views(IDENTITY, (store("issue", files),), journal_store=journals)[0]
+    journals.create(key, digest, 3)
+    journals.mark_prepared(key, 0, repo="acme/repo")
+    journals.mark_applied(
+        key, 0, repo="acme/repo", url="https://github.com/acme/repo/issues/17", issue=17
+    )
+    after = build_views(IDENTITY, (store("issue", files),), journal_store=journals)[0]
+    assert after.state == "partial"
+    assert after.actions[0].receipt == "https://github.com/acme/repo/issues/17"
+    assert after.actions[0].state == "applied"
+    assert after.revision != before.revision
+    assert after.revision != digest
+
+
+@pytest.mark.parametrize("corruption", ["json", "index", "duplicate"])
+def test_corrupt_issue_journal_blocks_inspection(tmp_path, corruption):
+    files = issue_files()
+    journals = JournalStore(tmp_path / "journals")
+    key = journal_key(IDENTITY, "001.json")
+    journals.create(
+        key, proposal_digest("001.json", files["001.json"], {"body.md": files["body.md"]}), 3
+    )
+    journals.mark_prepared(key, 0, repo="acme/repo")
+    path = journals._path(key)
+    data = json.loads(path.read_text())
+    if corruption == "index":
+        data["actions"][0]["index"] = 3
+    elif corruption == "duplicate":
+        data["actions"].append(data["actions"][0])
+    path.write_text("{bad" if corruption == "json" else json.dumps(data))
+    view = build_views(IDENTITY, (store("issue", files),), journal_store=journals)[0]
+    assert view.state == "uncertain"
+    assert view.error and view.edit_block
+    assert all(a.state == "pending" for a in view.actions)
+
+
+def test_inspection_never_resolves_remote_targets(tmp_path, mocker):
+    mocker.patch("jailbee.pr.resolve_pr", side_effect=AssertionError("network"))
+    for helper in ("current_login", "list_labels", "get_issue"):
+        mocker.patch(f"jailbee.issue_github.{helper}", side_effect=AssertionError("network"))
+    payload = json.loads(pr_files()["001.json"])
+    payload.pop("pr")
+    payload["actions"] = [{"type": "description", "body": "Draft description"}]
+    files = {"001.json": json.dumps(payload)}
+    journals = JournalStore(tmp_path)
+    awaiting = build_views(IDENTITY, (store("pr", files),), journal_store=journals)[0]
+    recorded = build_views(
+        IDENTITY,
+        (store("pr", files), store("issue", issue_files())),
+        journal_store=journals,
+        recorded_pr=42,
+    )
+    assert awaiting.state == "awaiting-pr"
+    assert recorded[0].state == "pending"
+    assert recorded[0].actions[0].target == "42"
