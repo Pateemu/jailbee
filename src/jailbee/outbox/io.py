@@ -23,7 +23,7 @@ _METADATA = ".jailbee-snapshot"
 # Copy into a private staging directory before archiving. Never follow links or
 # block on a raced FIFO; recheck identity/link count after copying. Metadata is a
 # versioned NUL-delimited record, so arbitrary rejected names need no JSON tools.
-_READ_SCRIPT = r'''
+_READ_SCRIPT = r"""
 set -euo pipefail
 export LC_ALL=C
 store=$1
@@ -37,7 +37,9 @@ check_path() {
     local path=/ component
     IFS=/ read -ra components <<< "${store#/}"
     for component in "${components[@]}"; do
-        [[ -x "$path" && -d "$path" && ! -L "$path" ]] || { echo 'inaccessible ancestor' >&2; exit 1; }
+        [[ -x "$path" && -d "$path" && ! -L "$path" ]] || {
+            echo 'inaccessible ancestor' >&2; exit 1;
+        }
         path="${path%/}/$component"
         [[ ! -L "$path" ]] || { echo 'symlink ancestor' >&2; exit 1; }
         if [[ ! -e "$path" ]]; then
@@ -84,18 +86,21 @@ if check_path; then
         (( $(stat -c %s -- "$meta") <= limit )) || { echo 'metadata overflow' >&2; exit 1; }
     done
     check_path || { echo 'store changed while reading' >&2; exit 1; }
-    [[ "$(stat -c '%d:%i' -- "$store")" == "$store_identity" ]] || { echo 'store replaced' >&2; exit 1; }
+    [[ "$(stat -c '%d:%i' -- "$store")" == "$store_identity" ]] || {
+        echo 'store replaced' >&2; exit 1;
+    }
 else
     printf 'v1\0missing\0' > "$meta"
 fi
 # The extra byte detects overflow rather than silently accepting truncation.
 # pipefail preserves tar failures, including SIGPIPE when the bound is reached.
-if ! tar -C "$tmp/files" --format=ustar -cf - -- . | base64 -w0 | head -c "$((cap + 1))" > "$tmp/encoded"; then
+if ! tar -C "$tmp/files" --format=ustar -cf - -- . | base64 -w0 |
+    head -c "$((cap + 1))" > "$tmp/encoded"; then
     echo 'snapshot overflow or archive failure' >&2; exit 1
 fi
 (( $(stat -c %s "$tmp/encoded") <= cap )) || { echo 'snapshot overflow' >&2; exit 1; }
 cat "$tmp/encoded"
-'''
+"""
 
 
 def store_directory(kind: Kind) -> str:

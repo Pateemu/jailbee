@@ -14,8 +14,10 @@ from jailbee.outbox.models import OutboxExecutionError
 
 
 def encoded_snapshot(files, *, rejected=(), metadata=None):
-    record = metadata if metadata is not None else b"v1\0present\0" + b"".join(
-        b"R\0" + name.encode() + b"\0" for name in rejected
+    record = (
+        metadata
+        if metadata is not None
+        else b"v1\0present\0" + b"".join(b"R\0" + name.encode() + b"\0" for name in rejected)
     )
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode="w") as archive:
@@ -46,7 +48,9 @@ def test_execution_failure_is_not_empty(mocker, failure):
         read_store(incus, "c", "issue", uid=None)
 
 
-@pytest.mark.parametrize("metadata", [b"", b"v2\0present\0", b"v1\0present\0X\0x\0", b"v1\0missing\0R\0x\0"])
+@pytest.mark.parametrize(
+    "metadata", [b"", b"v2\0present\0", b"v1\0present\0X\0x\0", b"v1\0missing\0R\0x\0"]
+)
 def test_metadata_fails_closed(mocker, metadata):
     incus = mocker.Mock()
     incus.exec.return_value = encoded_snapshot({}, metadata=metadata)
@@ -54,7 +58,9 @@ def test_metadata_fails_closed(mocker, metadata):
         read_store(incus, "c", "pr", uid=None)
 
 
-@pytest.mark.parametrize("content", [b"\xff", b"x" * (256 * 1024 + 1)], ids=["non_utf8", "oversized"])
+@pytest.mark.parametrize(
+    "content", [b"\xff", b"x" * (256 * 1024 + 1)], ids=["non_utf8", "oversized"]
+)
 def test_rejected_sidecars_are_retained(mocker, content):
     incus = mocker.Mock()
     incus.exec.return_value = encoded_snapshot({"001.json.progress.json": content})
@@ -86,7 +92,10 @@ def test_local_missing_and_regular_files(mocker, tmp_path):
     directory.mkdir(parents=True)
     (directory / "001.json").write_text("{}")
     (directory / "body.md").write_text("body")
-    assert dict(read_store(incus, "c", "pr", uid=None).files) == {"001.json": "{}", "body.md": "body"}
+    assert dict(read_store(incus, "c", "pr", uid=None).files) == {
+        "001.json": "{}",
+        "body.md": "body",
+    }
 
 
 @pytest.mark.parametrize("special", ["symlink", "fifo", "hardlink", "directory"])
@@ -143,7 +152,9 @@ def test_local_aggregate_overflow(mocker, tmp_path):
         read_store(incus, "c", "pr", uid=None)
 
 
-@pytest.mark.parametrize("content", [b"\xff", b"x" * (256 * 1024 + 1)], ids=["non_utf8", "oversized"])
+@pytest.mark.parametrize(
+    "content", [b"\xff", b"x" * (256 * 1024 + 1)], ids=["non_utf8", "oversized"]
+)
 def test_local_invalid_sidecars_and_log(mocker, tmp_path, content):
     incus, directory = local_reader(mocker, tmp_path)
     directory.mkdir(parents=True)
@@ -154,7 +165,9 @@ def test_local_invalid_sidecars_and_log(mocker, tmp_path, content):
     assert got.files == ()
 
 
-@pytest.mark.parametrize("raw", ["", "not base64!", base64.b64encode(b"not tar").decode(), "A" * (8 * 1024 * 1024 + 1)])
+@pytest.mark.parametrize(
+    "raw", ["", "not base64!", base64.b64encode(b"not tar").decode(), "A" * (8 * 1024 * 1024 + 1)]
+)
 def test_invalid_transport_fails_closed(mocker, raw):
     incus = mocker.Mock()
     incus.exec.return_value = raw

@@ -424,9 +424,17 @@ class Incus:
         return result.stdout
 
     def exec_with_input(
-        self, name: str, cmd: list[str], input_text: str, *, timeout: int | None = None,
-        uid: int | None = None, gid: int | None = None, cwd: str | None = None,
-        env: dict[str, str] | None = None, init_groups: bool = False,
+        self,
+        name: str,
+        cmd: list[str],
+        input_text: str,
+        *,
+        timeout: int | None = None,
+        uid: int | None = None,
+        gid: int | None = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        init_groups: bool = False,
     ) -> str:
         """Run with private stdin and the same user options as ``exec``; return stdout."""
         args = self._exec_args(
