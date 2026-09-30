@@ -3021,12 +3021,22 @@ def test_drop_refuses_identityless_preview(mocker):
 
 def _description_source_setup(mocker, make_cfg, tmp_path):
     from jailbee.outbox.models import StoreSnapshot
+
     cfg = make_cfg(tmp_path)
     _host_repo(mocker)
     incus = mocker.MagicMock()
     incus.list_containers.return_value = [{"name": "c", "created_at": "original"}]
-    raw = _description_manifest(pr=123, head_sha="abc123", actions=[{"type": "comment", "body_file": "other.md"}, {"type": "description", "body_file": "body.md", "title": "Title"}])
-    store = StoreSnapshot("pr", (("one.json", raw), ("body.md", "Body"), ("other.md", "Other")), (), ())
+    raw = _description_manifest(
+        pr=123,
+        head_sha="abc123",
+        actions=[
+            {"type": "comment", "body_file": "other.md"},
+            {"type": "description", "body_file": "body.md", "title": "Title"},
+        ],
+    )
+    store = StoreSnapshot(
+        "pr", (("one.json", raw), ("body.md", "Body"), ("other.md", "Other")), (), ()
+    )
     reader = mocker.patch("jailbee.outbox.io.read_store", return_value=store)
     incus.exec.return_value = _archive({n: v.encode() for n, v in store.files})
     source = _pending_pr_text(cfg, incus, for_pr=123)
@@ -3035,6 +3045,7 @@ def _description_source_setup(mocker, make_cfg, tmp_path):
 
 def test_description_source_carries_exact_evidence(mocker, make_cfg, tmp_path):
     from jailbee.outbox_io import ContainerIdentity
+
     _, _, store, _, source = _description_source_setup(mocker, make_cfg, tmp_path)
     assert source is not None
     assert source.identity == ContainerIdentity("c", "original")
@@ -3044,11 +3055,27 @@ def test_description_source_carries_exact_evidence(mocker, make_cfg, tmp_path):
     assert isinstance(source.digest, str) and len(source.digest) == 64
 
 
-@pytest.mark.parametrize("change", ["unchanged", "body", "other-body", "identity", "insert", "consumed", "progress", "receipt", "malformed", "rejected"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "unchanged",
+        "body",
+        "other-body",
+        "identity",
+        "insert",
+        "consumed",
+        "progress",
+        "receipt",
+        "malformed",
+        "rejected",
+    ],
+)
 def test_description_source_validation(mocker, make_cfg, tmp_path, change):
     from dataclasses import replace
+
     from jailbee import pr_flow
     from jailbee.pr_outbox import OutboxChanged
+
     cfg, incus, store, reader, source = _description_source_setup(mocker, make_cfg, tmp_path)
     assert source is not None
     files = store.as_dict()
@@ -3061,8 +3088,17 @@ def test_description_source_validation(mocker, make_cfg, tmp_path, change):
         payload["actions"].insert(0, {"type": "comment", "body": "Inserted"})
         files["one.json"] = json.dumps(payload)
     elif change in ("consumed", "progress", "receipt", "malformed"):
-        files["one.json.progress.json"] = {"consumed": '{"applied": [1], "urls": {}}', "progress": '{"applied": [0], "urls": {}}', "receipt": '{"applied": [0], "urls": {"0": "url"}}', "malformed": '{'}[change]
-    reader.return_value = replace(store, files=tuple(sorted(files.items())), rejected=("applied.log",) if change == "rejected" else ())
+        files["one.json.progress.json"] = {
+            "consumed": '{"applied": [1], "urls": {}}',
+            "progress": '{"applied": [0], "urls": {}}',
+            "receipt": '{"applied": [0], "urls": {"0": "url"}}',
+            "malformed": "{",
+        }[change]
+    reader.return_value = replace(
+        store,
+        files=tuple(sorted(files.items())),
+        rejected=("applied.log",) if change == "rejected" else (),
+    )
     picker = mocker.patch("jailbee.pr_flow._pick_outbox_manifest")
     if change == "unchanged":
         pr_flow.validate_outbox_source(cfg, incus, "c", source)
@@ -3075,22 +3111,29 @@ def test_description_source_validation(mocker, make_cfg, tmp_path, change):
 @pytest.mark.parametrize("evidence", ["sidecar", "log", "rejected"])
 def test_description_selection_refuses_unusable_progress(mocker, make_cfg, tmp_path, evidence):
     from dataclasses import replace
+
     cfg, incus, store, reader, _ = _description_source_setup(mocker, make_cfg, tmp_path)
     files = store.as_dict()
     if evidence == "sidecar":
         files["one.json.progress.json"] = "broken"
     elif evidence == "log":
         files["applied.log"] = "now one.json broken"
-    reader.return_value = replace(store, files=tuple(sorted(files.items())), rejected=("one.json.progress.json",) if evidence == "rejected" else ())
+    reader.return_value = replace(
+        store,
+        files=tuple(sorted(files.items())),
+        rejected=("one.json.progress.json",) if evidence == "rejected" else (),
+    )
     assert _pending_pr_text(cfg, incus, for_pr=123) is None
 
 
 @pytest.mark.parametrize("change", ["receipt", "log", "unreadable", "text", "index", "name"])
 def test_description_validation_binds_existing_progress(mocker, make_cfg, tmp_path, change):
     from dataclasses import replace
+
     from jailbee.outbox.models import OutboxExecutionError
     from jailbee.pr_flow import validate_outbox_source
     from jailbee.pr_outbox import OutboxChanged
+
     cfg, incus, store, reader, _ = _description_source_setup(mocker, make_cfg, tmp_path)
     files = store.as_dict()
     files["one.json.progress.json"] = '{"applied": [0], "urls": {"0": "old-url"}}'

@@ -1784,6 +1784,7 @@ def test_unresolvable_parent_pr_exits_1(tmp_path, mocker):
 
 def test_validate_missing_outbox_source_does_not_read(mocker, make_cfg, tmp_path):
     from jailbee.pr_flow import validate_outbox_source
+
     incus = mocker.MagicMock()
     reader = mocker.patch("jailbee.pr_outbox.read_outbox")
     validate_outbox_source(make_cfg(tmp_path), incus, "c", None)
@@ -1794,7 +1795,8 @@ def test_validate_missing_outbox_source_does_not_read(mocker, make_cfg, tmp_path
 def test_validate_synthetic_outbox_source_requires_revision(mocker, make_cfg, tmp_path):
     from jailbee.pr_flow import validate_outbox_source
     from jailbee.pr_outbox import OutboxChanged
+
     incus = mocker.MagicMock()
-    with pytest.raises(OutboxChanged, match="revision evidence.*refresh"):
+    with pytest.raises(OutboxChanged, match=r"revision evidence.*refresh"):
         validate_outbox_source(make_cfg(tmp_path), incus, "c", _outbox_source())
     assert incus.mock_calls == []

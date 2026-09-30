@@ -1422,6 +1422,7 @@ class OutboxPrText:
 def description_source_digest(outbox: Outbox, name: str, index: int, text: PrText) -> str:
     """Bind a selected description to strict proposal and publication evidence."""
     from dataclasses import asdict
+
     from jailbee.outbox.inspect import pr_progress_evidence
     from jailbee.outbox_io import proposal_digest
 
@@ -1434,13 +1435,21 @@ def description_source_digest(outbox: Outbox, name: str, index: int, text: PrTex
     manifest = parse_manifest(name, raw, outbox.files)
     store = StoreSnapshot("pr", tuple(sorted(outbox.files.items())), outbox.rejected, ())
     progress = pr_progress_evidence(store, name, len(manifest.actions))
-    if progress.error or index not in pending_indices(manifest, Progress(progress.applied, {str(i): u for i, u in progress.receipts})):
+    if progress.error or index not in pending_indices(
+        manifest, Progress(progress.applied, {str(i): u for i, u in progress.receipts})
+    ):
         raise OutboxChanged("description progress changed or unavailable; refresh required")
     if not isinstance(manifest.actions[index], DescriptionAction):
         raise OutboxChanged("description index changed; refresh required")
     evidence = asdict(progress) | {"applied": sorted(progress.applied)}
-    payload = {"identity": asdict(outbox.identity), "proposal": proposal_digest(name, raw, bodies),
-               "index": index, "text": asdict(text), "progress": evidence, "rejected": sorted(outbox.rejected)}
+    payload = {
+        "identity": asdict(outbox.identity),
+        "proposal": proposal_digest(name, raw, bodies),
+        "index": index,
+        "text": asdict(text),
+        "progress": evidence,
+        "rejected": sorted(outbox.rejected),
+    }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
@@ -1661,10 +1670,10 @@ def pending_pr_text(
     # and the source branch agree.
     fallback_branch = source_branch or ""
     text = PrText(
-            title=_description_title(action, fallback_branch or container),
-            body=action.body,
-            branch=_outbox_branch(action, fallback_branch, name),
-        )
+        title=_description_title(action, fallback_branch or container),
+        body=action.body,
+        branch=_outbox_branch(action, fallback_branch, name),
+    )
     try:
         digest = description_source_digest(outbox, name, index, text) if outbox.identity else None
         bodies = tuple(sorted((n, outbox.files[n]) for n in _body_references(outbox.files[name])))
