@@ -272,13 +272,14 @@ class AccountAdapter(Protocol):
         """
         ...
 
-    def read_sessions(self, config_home: Path) -> list[AgentSession]:
-        """Every session this agent has recorded under one config home.
+    def read_sessions(self, home: Path) -> list[AgentSession]:
+        """Every session this agent has recorded under one session home.
 
-        The input to the dashboard's AGENT column. `agent_status` decides
-        which of these are live and whose they are, so an implementation
-        reports what the agent wrote and nothing more. A file left behind by
-        a dead process is returned like any other.
+        `home` is a `session_home` — one container's, never a repo's shared
+        config home. The input to the AGENT column. `agent_status` decides
+        which of these are live, so an implementation reports what the agent
+        wrote and nothing more. A file left behind by a dead process is
+        returned like any other.
 
         **Never raises.** A missing directory is `[]`. Each unreadable,
         non-JSON or wrongly typed file is skipped on its own, so one torn file
@@ -290,6 +291,16 @@ class AccountAdapter(Protocol):
         Distinct from `sessions`: "any file counts" is right for a warning and
         wrong for a status column. An agent that records no sessions returns
         `[]`.
+        """
+        ...
+
+    def session_home(self, cfg: Config, container: str) -> Path:
+        """Where `container` records this agent's sessions, on the host.
+
+        Per container, not per repo: a registry every container of a repo
+        writes lets one container's agent see, adopt or forge another's
+        sessions. What `read_sessions` is given. An agent that records no
+        sessions may return any path; its `read_sessions` answers `[]`.
         """
         ...
 

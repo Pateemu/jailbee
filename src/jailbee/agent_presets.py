@@ -249,7 +249,19 @@ def claude_preset() -> dict[str, object]:
         "install": "__bundled__:ensure-claude.sh",
         "update": "__bundled__:ensure-claude.sh",
         "shared": [
-            {"subpath": "claude", "path": "~/.claude"},
+            # Claude Code keeps per-process runtime state inside its config
+            # home: the live-session registry (`sessions/`) and the background
+            # daemon's roster, dispatch queue and job state (`daemon/`,
+            # `jobs/`). Shared across containers, one container's daemon
+            # adopted, ran twice or declared dead another container's jobs.
+            # The top-level `daemon.lock` cannot be carved out (a file), which
+            # is why `agents.claude.agent_view` defaults to off. See
+            # docs/agents.md.
+            {
+                "subpath": "claude",
+                "path": "~/.claude",
+                "private": ["sessions", "daemon", "jobs"],
+            },
             {"subpath": "claude-install", "path": "~/.local/share/claude"},
         ],
         # Where Claude Code reads user-level skills; inside the `~/.claude`

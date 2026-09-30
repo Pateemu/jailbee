@@ -12,6 +12,9 @@ from jailbee.accounts.adapters import base
 from jailbee.accounts.adapters.claude import CLAUDE_CREDS_DEVICE as CLAUDE_CREDS_DEVICE
 from jailbee.accounts.adapters.claude import CLAUDE_CREDS_DIRNAME as CLAUDE_CREDS_DIRNAME
 from jailbee.accounts.adapters.claude import (
+    CLAUDE_DISABLE_AGENT_VIEW_ENV as CLAUDE_DISABLE_AGENT_VIEW_ENV,
+)
+from jailbee.accounts.adapters.claude import (
     CLAUDE_SECURESTORAGE_ENV as CLAUDE_SECURESTORAGE_ENV,
 )
 from jailbee.config import CONTAINER_USERNAME, NET_DESCRIPTIONS, Config
@@ -235,6 +238,11 @@ def base_profile_yaml(cfg: Config) -> str:
         # containers via `jailbee apply` with no image rebuild required.
         key, value = claude_config_dir_env(cfg)
         profile_config[key] = value
+        if not cfg.claude.agent_view:
+            # Omitted, never "0", when agent view is wanted: whether Claude
+            # Code reads "0" as false is unverified. `container.env` below
+            # still wins.
+            profile_config[f"environment.{CLAUDE_DISABLE_AGENT_VIEW_ENV}"] = "1"
 
     # A shared credential has no `profile.d` half at all: its value is
     # per-repo, so the golden image cannot carry it. The profile route covers

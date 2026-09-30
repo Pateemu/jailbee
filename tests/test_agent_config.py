@@ -283,6 +283,19 @@ def test_codex_preset_keeps_the_app_server_dirs_per_container():
     assert shared[0]["private"] == ["app-server-control", "app-server-daemon"]
 
 
+def test_claude_preset_keeps_its_runtime_state_per_container():
+    """`sessions/` is Claude Code's live-session registry; `daemon/` and `jobs/`
+    are the background daemon's roster, dispatch queue and job state. Shared,
+    a daemon in one container adopts, runs twice or declares dead another
+    container's jobs."""
+    from jailbee.agent_presets import claude_preset
+
+    shared = claude_preset()["shared"]
+    assert isinstance(shared, list)
+    assert shared[0]["subpath"] == "claude"
+    assert shared[0]["private"] == ["sessions", "daemon", "jobs"]
+
+
 def _run_opencode_step(which, tmp_path, *, installer_body, curl_exit=0):
     """Run the opencode preset's install/update line in a real bash.
 

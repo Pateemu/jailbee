@@ -239,6 +239,17 @@ UPGRADE_NOTES: tuple[UpgradeNote, ...] = (
         version=(1, 7, 0),
         actions=frozenset({"apply"}),
         reason=(
+            "Claude Code's agent view and its background daemon are off in "
+            "containers by default (`agents.claude.agent_view`), and its session "
+            "registry, daemon and job state move to a per-container directory; "
+            "restart each running container after `jailbee apply` so the new "
+            "mounts land"
+        ),
+    ),
+    UpgradeNote(
+        version=(1, 7, 0),
+        actions=frozenset({"apply"}),
+        reason=(
             "strict network profiles list the new host-wide `jailbee-services` ACL, "
             "through which containers reach `jailbee litellm`"
         ),
@@ -379,7 +390,7 @@ def pending(
     return Pending(tuple(owed))
 
 
-MAX_REASONS = 3
+MAX_REASONS = 4
 """Reasons shown per action before collapsing into "... and N more".
 
 A user who skipped several releases should get a readable hint, not a wall.

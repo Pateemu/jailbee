@@ -1,12 +1,13 @@
-"""Which agent sessions are live, and whose: the input to the AGENT column.
+"""Which agent sessions are live: the input to the AGENT column.
 
 An agent's session files say what state a session is in. They do not say
-whether it is still running, nor which container it runs in. A repo's config
-home is shared by every container of the repo, and a killed session leaves
+whether it is still running. Each container records its sessions in its own
+private overlay (`AccountAdapter.session_home`), and a killed session leaves
 its file behind: one real `sessions/` directory held 79 files, 3 of them live.
-A file is therefore believed only when a process of the container matches it
-on both its innermost namespace pid and its start time. That one check
-rejects a stale file, a recycled pid and another container's session alike.
+A file is therefore believed only when a process of *that* container matches
+it on both its innermost namespace pid and its start time, which rejects a
+stale file and a recycled pid alike. Another container's files are never
+consulted, so its sessions cannot be mistaken for, or forged as, this one's.
 
 The matching half is pure and imports nothing from jailbee but the models, so
 it is tested without a /proc. `read_sessions` is the one function that
@@ -95,23 +96,26 @@ def summarize(live: Iterable[AgentSession]) -> tuple[AgentSummary, ...]:
 
 
 def match_sessions(
-    sessions: Sequence[AgentSession],
+    sessions: Mapping[str, Sequence[AgentSession]],
     processes: Mapping[str, Mapping[int, int]],
     nspid: Callable[[int], int | None],
 ) -> dict[str, tuple[AgentSummary, ...]]:
     """Container name → its live agents, most urgent first.
 
-    `processes` maps each container to its host pids and their start times
+    `sessions` maps each container to what its own session homes recorded;
+    a container is matched against its own sessions only. `processes` maps
+    each container to its host pids and their start times
     (`procstat.ProcSample.starttime`). `nspid` turns a host pid into the pid
-    the process has in its own namespace. `nspid` is called only for a process
-    whose start time some session claims: about one read per live session,
-    not one per process. Every container in `processes` gets an entry.
+    the process has in its own namespace, and is called only for a process
+    whose start time one of the container's sessions claims: about one read
+    per live session, not one per process. Every container in `processes`
+    gets an entry.
     """
-    by_start: dict[int, list[AgentSession]] = {}
-    for session in _one_per_process(sessions):
-        by_start.setdefault(session.proc_start, []).append(session)
     out: dict[str, tuple[AgentSummary, ...]] = {}
     for name, procs in processes.items():
+        by_start: dict[int, list[AgentSession]] = {}
+        for session in _one_per_process(sessions.get(name, ())):
+            by_start.setdefault(session.proc_start, []).append(session)
         live: dict[tuple[int, int], AgentSession] = {}
         for host_pid, start in procs.items():
             claims = by_start.get(start)
@@ -125,24 +129,28 @@ def match_sessions(
     return out
 
 
-def read_sessions(homes: Iterable[tuple[str, Path]]) -> list[AgentSession]:
-    """Every session recorded under `homes`, as `(agent name, config home)` pairs.
+def read_sessions(homes: Iterable[tuple[str, str, Path]]) -> dict[str, list[AgentSession]]:
+    """Each container's recorded sessions, from `(container, agent, session home)`.
 
-    Each distinct pair is read once. An agent with no adapter contributes
-    nothing. An adapter that raises contributes nothing either: its contract
-    says it never does, but it parses an undocumented format, and a bug there
-    must not end the dashboard's refresh tick.
+    Each distinct triple is read once. Only containers with at least one
+    session appear. An agent with no adapter contributes nothing. An adapter
+    that raises contributes nothing either: its contract says it never does,
+    but it parses an undocumented format, and a bug there must not end the
+    dashboard's refresh tick.
     """
     from jailbee.accounts.adapters import base
 
-    sessions: list[AgentSession] = []
-    for name, home in dict.fromkeys(homes):
+    by_container: dict[str, list[AgentSession]] = {}
+    for container, name, home in dict.fromkeys(homes):
         try:
             adapter = base.get_adapter(name)
         except KeyError:
             continue
         try:
-            sessions.extend(adapter.read_sessions(home))
+            found = adapter.read_sessions(home)
         except Exception:  # see the docstring: never fail the tick over this
             log.debug("reading %s sessions under %s failed", name, home, exc_info=True)
-    return sessions
+            continue
+        if found:
+            by_container.setdefault(container, []).extend(found)
+    return by_container

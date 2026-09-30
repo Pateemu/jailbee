@@ -4964,7 +4964,15 @@ prompt — the row reads `claude: waiting …` in yellow. `kill -9` it inside
 the container (with no other session running in that container) — the file stays behind, and the row returns to `—` on the
 next tick.
 
-Known limitation (shared sessions directory): start two containers of one
-repo and run a session in each at the same in-container pid. Both write
-`sessions/<pid>.json` in the one shared directory, so the files collide and
-one of the two containers shows `—`.
+Per-container session state (nested rig or host): with two running
+containers of one repo, each restarted after `jailbee apply`,
+`findmnt ~/.claude/sessions ~/.claude/daemon ~/.claude/jobs` inside each
+shows three mounts sourced from `<shared_dir>/.private/<container>/claude/`;
+`ls ~/.claude/sessions` shows only that container's sessions;
+`echo $CLAUDE_CODE_DISABLE_AGENT_VIEW` prints `1` and the left arrow in
+Claude Code does not open agent view; `/resume` in the second container lists
+a session made in the first. Start a session in each at the same
+in-container pid if you can arrange it: both rows show their own state.
+Then, with `agents.claude.agent_view: true` (apply, restart), a `claude --bg`
+job runs to completion — this guards against a rename across the new
+`daemon/` and `jobs/` mount boundaries.

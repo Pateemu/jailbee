@@ -19,6 +19,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from jailbee import agent_private
 from jailbee.accounts import engine
 from jailbee.accounts.adapters import base
 from jailbee.accounts.models import AgentSession, Identity, LiveAccount, slug_for
@@ -49,6 +50,13 @@ Every reader and writer imports this one name — the profile render, its
 empty-value guard, and the `jailbee new` repair — so a rename cannot split
 `ClaudeAdapter.wiring` from the profile that mirrors it (carryover item 3).
 The `environment.` prefix a profile key needs is added by the caller.
+"""
+
+CLAUDE_DISABLE_AGENT_VIEW_ENV = "CLAUDE_CODE_DISABLE_AGENT_VIEW"
+"""Claude Code's switch for agent view and its on-demand daemon (2.1.285).
+
+Set to `1` unless `agents.claude.agent_view` is true, and then omitted: the
+daemon's `daemon.lock` sits in the config home every container shares.
 """
 
 
@@ -324,14 +332,39 @@ def _member_account(
 SESSIONS_DIRNAME = "sessions"
 """Where Claude Code writes `<pid>.json` per session, inside a config home."""
 
+CONFIG_HOME_SUBPATH = "claude"
+"""The `claude` shared mount's subpath: the config home is `<shared_dir>/claude`.
+
+Also the subpath its private overlay mirrors under
+`<shared_dir>/.private/<container>/`. The preset in `agent_presets.py` spells
+the same literal; `test_session_home_is_where_the_preset_mounts_sessions`
+pins the two together.
+"""
+
+
+def _session_dirs(member: Member) -> list[Path]:
+    """Every `sessions/` a member repo's containers may be writing.
+
+    Each container's overlay under `<shared_dir>/.private/*/claude/`, plus the
+    shared config home's own `sessions/`, which a container not restarted
+    since the overlays shipped still writes. `shared_dir` is
+    `config_home.parent` because `ClaudeAdapter.config_home` is always
+    `<shared_dir>/claude`.
+    """
+    overlays = agent_private.private_tree(member.config_home.parent).glob(
+        f"*/{CONFIG_HOME_SUBPATH}/{SESSIONS_DIRNAME}"
+    )
+    return [member.config_home / SESSIONS_DIRNAME, *overlays]
+
 
 def live_session_prefixes(found: Sequence[Member]) -> list[str]:
     """Members that look like they have a Claude Code session running.
 
-    Claude Code writes `<config home>/sessions/<pid>.json` per session, which
-    is why this lives here and not in the engine: the layout is Claude's, and
-    another agent records a running session somewhere else or not at all. The
-    engine only ever asks `AccountAdapter.sessions`.
+    Claude Code writes `sessions/<pid>.json` per session, into each container's
+    private overlay (see `_session_dirs`), which is why this lives here and not
+    in the engine: the layout is Claude's, and another agent records a running
+    session somewhere else or not at all. The engine only ever asks
+    `AccountAdapter.sessions`.
 
     The PIDs belong to container namespaces the host cannot check, so a
     leftover file reads as live — this is a warning input, never a refusal.
@@ -339,7 +372,7 @@ def live_session_prefixes(found: Sequence[Member]) -> list[str]:
     busy: list[str] = []
     for member in found:
         try:
-            if any((member.config_home / SESSIONS_DIRNAME).glob("*.json")):
+            if any(any(d.glob("*.json")) for d in _session_dirs(member)):
                 busy.append(member.container_prefix)
         except OSError:
             continue
@@ -861,7 +894,7 @@ class ClaudeAdapter:
     def config_home(self, cfg: Config) -> Path:
         """This repo's Claude config home on the host — never shared."""
         assert cfg.shared_dir is not None  # set by load_config
-        return cfg.shared_dir / "claude"
+        return cfg.shared_dir / CONFIG_HOME_SUBPATH
 
     def holder_override(self, cfg: Config) -> Path | None:
         # Falsy, not `is None`: an empty group name would resolve the holder to
@@ -921,8 +954,17 @@ class ClaudeAdapter:
     def sessions(self, found: Sequence[Member]) -> list[str]:
         return live_session_prefixes(found)
 
-    def read_sessions(self, config_home: Path) -> list[AgentSession]:
-        return read_session_files(config_home)
+    def read_sessions(self, home: Path) -> list[AgentSession]:
+        return read_session_files(home)
+
+    def session_home(self, cfg: Config, container: str) -> Path:
+        """The container's private overlay of `~/.claude` (see `agent_private`).
+
+        `sessions` is one of the preset's `private` subpaths, so what the
+        container writes to `~/.claude/sessions/` lands here, never in the
+        shared config home.
+        """
+        return agent_private.private_root(cfg, container) / CONFIG_HOME_SUBPATH
 
     def blockers(self, cfg: Config, incus: Incus, containers: Sequence[str]) -> list[str]:
         """Claude never blocks a switch: it re-reads the credential itself."""

@@ -38,38 +38,61 @@ def _match(sessions, processes, nspids):
     return agent_status.match_sessions(sessions, processes, nspids.get)
 
 
-def test_two_containers_sharing_one_home_each_get_their_own_session():
-    """The repo's config home holds every container's files. The process
-    match, not the file, says whose a session is."""
-    sessions = [_s(10, 500, "waiting"), _s(20, 600, "busy")]
+def test_each_container_is_matched_against_its_own_sessions():
+    sessions = {"a": [_s(10, 500, "waiting")], "b": [_s(20, 600, "busy")]}
     out = _match(sessions, {"a": {1010: 500}, "b": {2020: 600}}, {1010: 10, 2020: 20})
 
     assert [s.state for s in out["a"]] == ["waiting"]
     assert [s.state for s in out["b"]] == ["busy"]
 
 
+def test_another_containers_identical_session_is_never_matched():
+    """Same namespace pid, same start time, two containers. `a` recorded
+    nothing, so `b`'s file must not light up `a`'s process — the collision a
+    shared registry allowed, and the forgery it made possible."""
+    out = _match(
+        {"b": [_s(10, 500, "busy")]},
+        {"a": {1010: 500}, "b": {2020: 500}},
+        {1010: 10, 2020: 10},
+    )
+
+    assert out["a"] == ()
+    assert [s.state for s in out["b"]] == ["busy"]
+
+
+def test_identical_sessions_in_two_containers_keep_their_own_state():
+    out = _match(
+        {"a": [_s(10, 500, "waiting")], "b": [_s(10, 500, "busy")]},
+        {"a": {1010: 500}, "b": {2020: 500}},
+        {1010: 10, 2020: 10},
+    )
+
+    assert [(s.state, s.count) for s in out["a"]] == [("waiting", 1)]
+    assert [(s.state, s.count) for s in out["b"]] == [("busy", 1)]
+
+
 def test_a_stale_file_is_not_live():
     """No process has its start time: the session's process is gone."""
-    out = _match([_s(10, 500)], {"a": {1010: 999}}, {1010: 10})
+    out = _match({"a": [_s(10, 500)]}, {"a": {1010: 999}}, {1010: 10})
 
     assert out == {"a": ()}
 
 
 def test_a_recycled_pid_is_not_live():
     """Same namespace pid, different start time: a different process."""
-    out = _match([_s(10, 500)], {"a": {1010: 501}}, {1010: 10})
+    out = _match({"a": [_s(10, 500)]}, {"a": {1010: 501}}, {1010: 10})
 
     assert out["a"] == ()
 
 
 def test_same_start_time_but_another_namespace_pid_is_not_live():
-    out = _match([_s(10, 500)], {"a": {1010: 500}}, {1010: 11})
+    out = _match({"a": [_s(10, 500)]}, {"a": {1010: 500}}, {1010: 11})
 
     assert out["a"] == ()
 
 
 def test_an_unreadable_nspid_is_not_live():
-    out = _match([_s(10, 500)], {"a": {1010: 500}}, {})
+    out = _match({"a": [_s(10, 500)]}, {"a": {1010: 500}}, {})
 
     assert out["a"] == ()
 
@@ -82,14 +105,14 @@ def test_nspid_is_read_only_for_start_time_candidates():
         asked.append(pid)
         return 10
 
-    agent_status.match_sessions([_s(10, 500)], {"a": {1: 500, 2: 999, 3: 777}}, nspid)
+    agent_status.match_sessions({"a": [_s(10, 500)]}, {"a": {1: 500, 2: 999, 3: 777}}, nspid)
 
     assert asked == [1]
 
 
 def test_no_sessions_reads_no_nspid_at_all():
     asked: list[int] = []
-    out = agent_status.match_sessions([], {"a": {1: 500}}, lambda p: asked.append(p) or None)
+    out = agent_status.match_sessions({}, {"a": {1: 500}}, lambda p: asked.append(p) or None)
 
     assert out == {"a": ()}
     assert asked == []
@@ -97,7 +120,7 @@ def test_no_sessions_reads_no_nspid_at_all():
 
 def test_the_most_urgent_session_speaks_for_the_agent_and_all_are_counted():
     sessions = [_s(1, 11, "idle"), _s(2, 12, "waiting", waiting_for="input needed"), _s(3, 13)]
-    out = _match(sessions, {"a": {101: 11, 102: 12, 103: 13}}, {101: 1, 102: 2, 103: 3})
+    out = _match({"a": sessions}, {"a": {101: 11, 102: 12, 103: 13}}, {101: 1, 102: 2, 103: 3})
 
     assert out["a"] == (
         agent_status.AgentSummary(
@@ -109,27 +132,27 @@ def test_the_most_urgent_session_speaks_for_the_agent_and_all_are_counted():
 def test_among_equals_the_longest_wait_wins():
     early, late = T0, T0 + timedelta(minutes=5)
     sessions = [_s(1, 11, "waiting", since=late), _s(2, 12, "waiting", since=early)]
-    out = _match(sessions, {"a": {101: 11, 102: 12}}, {101: 1, 102: 2})
+    out = _match({"a": sessions}, {"a": {101: 11, 102: 12}}, {101: 1, 102: 2})
 
     assert out["a"][0].since == early
 
 
 def test_an_undated_session_ranks_after_a_dated_one_of_the_same_state():
     sessions = [_s(1, 11, "busy", since=None), _s(2, 12, "busy", since=T0)]
-    out = _match(sessions, {"a": {101: 11, 102: 12}}, {101: 1, 102: 2})
+    out = _match({"a": sessions}, {"a": {101: 11, 102: 12}}, {101: 1, 102: 2})
 
     assert out["a"][0].since == T0
 
 
 def test_an_unknown_state_ranks_after_idle():
     sessions = [_s(1, 11, "compacting"), _s(2, 12, "idle")]
-    out = _match(sessions, {"a": {101: 11, 102: 12}}, {101: 1, 102: 2})
+    out = _match({"a": sessions}, {"a": {101: 11, 102: 12}}, {101: 1, 102: 2})
 
     assert out["a"][0].state == "idle"
 
 
 def test_an_unknown_state_alone_is_shown_raw():
-    out = _match([_s(1, 11, "compacting")], {"a": {101: 11}}, {101: 1})
+    out = _match({"a": [_s(1, 11, "compacting")]}, {"a": {101: 11}}, {101: 1})
 
     assert out["a"][0].state == "compacting"
 
@@ -140,7 +163,7 @@ def test_two_files_claiming_one_process_count_once_and_the_newest_wins():
         _s(1, 11, "waiting", updated_at=200),
         _s(1, 11, "idle", updated_at=None),
     ]
-    out = _match(sessions, {"a": {101: 11}}, {101: 1})
+    out = _match({"a": sessions}, {"a": {101: 11}}, {101: 1})
 
     assert [(s.state, s.count) for s in out["a"]] == [("waiting", 1)]
 
@@ -151,7 +174,7 @@ def test_several_agents_are_ordered_most_urgent_first():
         _s(2, 12, "waiting"),
         _s(3, 13, "busy", agent="aider"),
     ]
-    out = _match(sessions, {"a": {101: 11, 102: 12, 103: 13}}, {101: 1, 102: 2, 103: 3})
+    out = _match({"a": sessions}, {"a": {101: 11, 102: 12, 103: 13}}, {101: 1, 102: 2, 103: 3})
 
     assert [s.agent for s in out["a"]] == ["claude", "aider", "codex"]
 
@@ -162,25 +185,34 @@ class _SessionsAdapter:
         self.boom = boom
         self.asked: list[Path] = []
 
-    def read_sessions(self, config_home: Path) -> list[AgentSession]:
-        self.asked.append(config_home)
+    def read_sessions(self, home: Path) -> list[AgentSession]:
+        self.asked.append(home)
         if self.boom:
             raise RuntimeError("parser bug")
-        return self.by_home.get(config_home, [])
+        return self.by_home.get(home, [])
 
 
-def test_read_sessions_reads_each_distinct_home_once(monkeypatch, tmp_path):
-    adapter = _SessionsAdapter({tmp_path: [_s(1, 11)]})
+def test_read_sessions_groups_by_container_and_reads_each_home_once(monkeypatch, tmp_path):
+    a_home, b_home = tmp_path / "a", tmp_path / "b"
+    adapter = _SessionsAdapter({a_home: [_s(1, 11)], b_home: [_s(2, 22)]})
     monkeypatch.setitem(base.ADAPTERS, "fakeagent", adapter)
 
-    got = agent_status.read_sessions([("fakeagent", tmp_path), ("fakeagent", tmp_path)])
+    got = agent_status.read_sessions(
+        [("a", "fakeagent", a_home), ("a", "fakeagent", a_home), ("b", "fakeagent", b_home)]
+    )
 
-    assert got == [_s(1, 11)]
-    assert adapter.asked == [tmp_path]
+    assert got == {"a": [_s(1, 11)], "b": [_s(2, 22)]}
+    assert adapter.asked == [a_home, b_home]
+
+
+def test_read_sessions_leaves_out_a_container_with_nothing_recorded(monkeypatch, tmp_path):
+    monkeypatch.setitem(base.ADAPTERS, "fakeagent", _SessionsAdapter({}))
+
+    assert agent_status.read_sessions([("a", "fakeagent", tmp_path)]) == {}
 
 
 def test_read_sessions_skips_an_agent_with_no_adapter(tmp_path):
-    assert agent_status.read_sessions([("no-such-agent", tmp_path)]) == []
+    assert agent_status.read_sessions([("a", "no-such-agent", tmp_path)]) == {}
 
 
 def test_read_sessions_survives_an_adapter_that_raises(monkeypatch, tmp_path):
@@ -189,15 +221,15 @@ def test_read_sessions_survives_an_adapter_that_raises(monkeypatch, tmp_path):
     monkeypatch.setitem(base.ADAPTERS, "broken", _SessionsAdapter({}, boom=True))
     monkeypatch.setitem(base.ADAPTERS, "fine", _SessionsAdapter({tmp_path: [_s(1, 11)]}))
 
-    got = agent_status.read_sessions([("broken", tmp_path), ("fine", tmp_path)])
+    got = agent_status.read_sessions([("a", "broken", tmp_path), ("a", "fine", tmp_path)])
 
-    assert got == [_s(1, 11)]
+    assert got == {"a": [_s(1, 11)]}
 
 
 def test_the_same_namespace_pid_in_two_containers_keeps_both_sessions():
     """Inner pids are namespace-local, so two containers routinely share one.
     Only the start time tells the sessions apart."""
-    sessions = [_s(10, 500, "waiting"), _s(10, 600, "busy")]
+    sessions = {"a": [_s(10, 500, "waiting")], "b": [_s(10, 600, "busy")]}
     out = _match(sessions, {"a": {1010: 500}, "b": {2020: 600}}, {1010: 10, 2020: 10})
 
     assert [(s.state, s.count) for s in out["a"]] == [("waiting", 1)]
@@ -206,19 +238,19 @@ def test_the_same_namespace_pid_in_two_containers_keeps_both_sessions():
 
 def test_two_sessions_with_one_start_time_are_told_apart_by_pid():
     sessions = [_s(10, 500, "waiting"), _s(11, 500, "busy")]
-    out = _match(sessions, {"a": {1010: 500}}, {1010: 11})
+    out = _match({"a": sessions}, {"a": {1010: 500}}, {1010: 11})
 
     assert [(s.state, s.count) for s in out["a"]] == [("busy", 1)]
 
 
 def test_no_containers_is_an_empty_result():
-    assert _match([_s(10, 500)], {}, {}) == {}
+    assert _match({"a": [_s(10, 500)]}, {}, {}) == {}
 
 
 def test_live_sessions_are_keyed_by_pid_and_start_together():
     """Within one container a pid is unique in practice, but the key must not
     rely on it: distinct (pid, start) pairs are distinct sessions."""
     sessions = [_s(10, 500, "waiting"), _s(10, 600, "busy")]
-    out = _match(sessions, {"a": {1: 500, 2: 600}}, {1: 10, 2: 10})
+    out = _match({"a": sessions}, {"a": {1: 500, 2: 600}}, {1: 10, 2: 10})
 
     assert [s.count for s in out["a"]] == [2]
