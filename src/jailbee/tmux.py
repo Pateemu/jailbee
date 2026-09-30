@@ -117,11 +117,17 @@ def ensure_session(incus: Incus, container: str, start_dir: str | None = None) -
 
 
 def kill_window(incus: Incus, container: str, window: str) -> None:
-    """Kill a window by name. Ignores 'no such window' errors."""
+    """Kill a window by name. Ignores 'no such window' errors.
+
+    Every window target in this module is `<session>:=<name>`: the `=` makes
+    tmux match the name exactly. A bare name falls back to a prefix match, so
+    with no `claude` window yet, `kill-window -t autostart:claude` killed a
+    running `claude-jb` (agent windows are named after the agent).
+    """
     try:
         incus.exec(
             container,
-            _runuser(f"tmux kill-window -t {SESSION_NAME}:{window}"),
+            _runuser(f"tmux kill-window -t {SESSION_NAME}:={window}"),
         )
     except IncusError:
         pass  # window didn't exist — fine
@@ -138,7 +144,7 @@ def select_window(incus: Incus, container: str, window: str) -> bool:
     try:
         incus.exec(
             container,
-            _runuser(f"tmux select-window -t {SESSION_NAME}:{window}"),
+            _runuser(f"tmux select-window -t {SESSION_NAME}:={window}"),
         )
     except IncusError:
         return False
@@ -212,7 +218,7 @@ def _new_window(incus: Incus, container: str, window: str, shell_cmd: str, env_f
         f"tmux new-window -d -t {SESSION_NAME}: -n {window} {env_flags} {shlex.quote(inner)}"
     )
     set_remain = (
-        f"tmux set-option -w -t {SESSION_NAME}:{window} remain-on-exit {STEP_REMAIN_ON_EXIT}"
+        f"tmux set-option -w -t {SESSION_NAME}:={window} remain-on-exit {STEP_REMAIN_ON_EXIT}"
     )
     incus.exec(container, _runuser(f"{new_window} && ({set_remain} || true)"))
 
@@ -443,7 +449,7 @@ def interrupt_window(incus: Incus, container: str, window: str) -> None:
     try:
         incus.exec(
             container,
-            _runuser(f"tmux send-keys -t {SESSION_NAME}:{window} C-c"),
+            _runuser(f"tmux send-keys -t {SESSION_NAME}:={window} C-c"),
         )
     except IncusError:
         pass

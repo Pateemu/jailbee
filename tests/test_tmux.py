@@ -105,7 +105,9 @@ def test_kill_window_calls_tmux():
     kill_window(incus, "c1", "frontend")
     args = " ".join(incus.exec.call_args.args[1])
     assert "kill-window" in args
-    assert "autostart:frontend" in args
+    # `=` is an exact match: a bare name is a prefix match, so `claude` would
+    # kill a live `claude-jb` window.
+    assert "autostart:=frontend" in args
 
 
 def test_kill_window_ignores_missing_window():
@@ -125,7 +127,7 @@ def test_select_window_returns_true_on_success():
     assert select_window(incus, "c1", "claude") is True
     args = " ".join(incus.exec.call_args.args[1])
     assert "select-window" in args
-    assert "autostart:claude" in args
+    assert "autostart:=claude" in args
 
 
 def test_select_window_returns_false_on_missing():
@@ -652,7 +654,7 @@ def test_step_window_keeps_only_a_failed_exit_on_screen(mocker):
         timeout=60,
     )
     joined = " ".join(incus.exec.call_args_list[1].args[1])
-    assert f"set-option -w -t {SESSION_NAME}:build remain-on-exit failed" in joined
+    assert f"set-option -w -t {SESSION_NAME}:=build remain-on-exit failed" in joined
     # Creating the window and scoping the option is one exec, not two.
     assert incus.exec.call_count == 5
 
@@ -692,7 +694,7 @@ def test_launch_step_scopes_remain_on_exit_to_its_window(mocker):
         timeout=60,
     )
     joined = " ".join(incus.exec.call_args_list[1].args[1])
-    assert f"set-option -w -t {SESSION_NAME}:uv-sync remain-on-exit failed" in joined
+    assert f"set-option -w -t {SESSION_NAME}:=uv-sync remain-on-exit failed" in joined
 
 
 def test_ensure_session_leaves_remain_on_exit_at_its_default(mocker):
@@ -721,3 +723,20 @@ def test_ensure_session_resets_a_stale_global_remain_on_exit(mocker):
     assert "has-session" in joined
     assert "set-option -gu remain-on-exit" in joined
     assert joined.rstrip("'").endswith("|| true)")
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda i: tmux.kill_window(i, "c1", "claude"),
+        lambda i: tmux.select_window(i, "c1", "claude"),
+        lambda i: tmux.interrupt_window(i, "c1", "claude"),
+    ],
+)
+def test_window_targets_match_the_name_exactly(call):
+    """`claude` is a prefix of `claude-jb`; a bare target would hit both."""
+    incus = MagicMock()
+    incus.exec.return_value = ""
+    call(incus)
+    cmd = " ".join(incus.exec.call_args.args[1])
+    assert f"{SESSION_NAME}:=claude" in cmd

@@ -1586,7 +1586,7 @@ def test_tmux_command_focuses_claude_window_on_the_first_attach(mocker):
 
     assert result.exit_code == 0, result.stdout
     exec_calls = [" ".join(c.args[1]) for c in incus.exec.call_args_list]
-    assert any("select-window" in c and "autostart:claude" in c for c in exec_calls)
+    assert any("select-window" in c and "autostart:=claude" in c for c in exec_calls)
 
 
 def test_tmux_command_keeps_the_window_you_detached_from(mocker):
