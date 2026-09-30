@@ -219,3 +219,76 @@ def test_profile_devices_expand_tilde(homes, make_cfg, tmp_path):
 def test_profile_devices_empty_when_opted_out(homes, claude_cfg):
     claude_cfg._agent_instructions = False
     assert ai.profile_devices(claude_cfg) == {}
+
+
+@pytest.mark.parametrize("destination", ["/etc/claude-code", "/etc", "/etc/claude-code/managed-settings.json", "/etc//claude-code/../claude-code/"])
+def test_instruction_mount_rejects_overlapping_host_policy(claude_cfg, destination):
+    from jailbee.config import ConfigError, HostMount
+    from jailbee.profiles import binds_profile_yaml
+
+    cfg = claude_cfg.model_copy(update={"host_mounts": [HostMount(host="/policy", container=destination)]})
+    with pytest.raises(ConfigError, match="host.*policy.*agent_instructions: false"):
+        binds_profile_yaml(cfg)
+    cfg._agent_instructions = False
+    assert "agent-instructions-claude" not in binds_profile_yaml(cfg)
+
+
+def test_instruction_mount_rejects_normalized_shared_overlap(claude_cfg):
+    from jailbee.config import ConfigError, SharedCache
+
+    cfg = with_agent(claude_cfg, "other", enabled=True, command="other", global_instructions={"dir": "~/.policy", "file": "AGENTS.md"})
+    cfg = cfg.model_copy(update={"shared_caches": [SharedCache(name="policy-state", host_subpath="policy", container_path="/home/dev//.policy/state")]})
+    with pytest.raises(ConfigError, match="shared-policy-state"):
+        ai.profile_devices(cfg)
+
+
+def test_instruction_mount_rejects_other_instruction_overlap(claude_cfg):
+    from jailbee.config import ConfigError
+
+    cfg = with_agent(claude_cfg, "other", enabled=True, command="other", global_instructions={"dir": "/etc/claude-code/nested", "file": "AGENTS.md"})
+    with pytest.raises(ConfigError, match="agent-instructions-other.*agent-instructions-claude"):
+        ai.profile_devices(cfg)
+
+
+def test_instruction_mount_accepts_segment_distinct_policy(claude_cfg):
+    from jailbee.config import HostMount
+
+    cfg = claude_cfg.model_copy(update={"host_mounts": [HostMount(host="/policy", container="/etc/claude-code-other")]})
+    assert "agent-instructions-claude" in ai.profile_devices(cfg)
+
+
+@pytest.mark.parametrize("remove", [False, True])
+def test_sync_refreshes_all_same_agent_repo_filenames(homes, claude_cfg, remove):
+    source, data_home = homes
+    other = with_agent(claude_cfg, "claude", global_instructions={"dir": "/etc/claude-code", "file": "OTHER.md"})
+    source.write_bytes(b"old")
+    ai.sync_global_instructions(claude_cfg)
+    ai.sync_global_instructions(other)
+    if remove:
+        source.unlink()
+    else:
+        source.write_bytes(b"new\r\n\xff")
+    ai.sync_global_instructions(other)
+    for target in (staged(data_home), staged(data_home).with_name("OTHER.md")):
+        if remove:
+            assert not target.exists()
+        else:
+            assert target.read_bytes().split(b"\n", 1)[1] == b"new\r\n\xff"
+
+
+def test_filename_rename_refreshes_owned_copies_retains_unknown(homes, claude_cfg):
+    source, data_home = homes
+    source.write_bytes(b"old")
+    ai.sync_global_instructions(claude_cfg)
+    unknown = staged(data_home).with_name("managed-settings.json")
+    unknown.write_bytes(b"unrelated")
+    renamed = with_agent(claude_cfg, "claude", global_instructions={"dir": "/etc/claude-code", "file": "NEW.md"})
+    source.write_bytes(b"new")
+    ai.sync_global_instructions(renamed)
+    assert staged(data_home).read_bytes().endswith(b"\nnew")
+    assert unknown.read_bytes() == b"unrelated"
+    source.unlink()
+    ai.sync_global_instructions(renamed)
+    assert not staged(data_home).exists()
+    assert not staged(data_home).with_name("NEW.md").exists()
+    assert unknown.read_bytes() == b"unrelated"

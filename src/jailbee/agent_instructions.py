@@ -8,6 +8,7 @@ reach existing containers without exposing the host config tree.
 from __future__ import annotations
 
 import os
+import posixpath
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -98,15 +99,26 @@ def sync_global_instructions(cfg: Config) -> None:
             target.parent.mkdir(parents=True, exist_ok=True)
             if not content_known:
                 continue
-            if content is None:
-                target.unlink(missing_ok=True)
-                continue
-            try:
-                current = target.read_bytes()
-            except FileNotFoundError:
-                current = None
-            if current != content:
-                _write_atomically(target, content)
+            # Recognize existing generated copies, including filenames chosen by
+            # other repos. Unknown siblings (notably managed settings) are not ours.
+            marker = MARKER_TEMPLATE.format(source=display_path(source)).encode() + b"\n"
+            targets = {target}
+            for sibling in target.parent.iterdir():
+                if sibling.is_symlink() or not sibling.is_file():
+                    continue
+                with sibling.open("rb") as fh:
+                    if fh.read(len(marker)) == marker:
+                        targets.add(sibling)
+            for owned in sorted(targets):
+                if content is None:
+                    owned.unlink(missing_ok=True)
+                    continue
+                try:
+                    current = owned.read_bytes()
+                except FileNotFoundError:
+                    current = None
+                if current != content:
+                    _write_atomically(owned, content)
         except OSError as exc:
             warn_plain(
                 f"cannot update agent instructions for {name} in {target.parent}: {exc}",
@@ -133,4 +145,34 @@ def profile_devices(cfg: Config) -> dict[str, dict[str, str]]:
             "path": path,
             "readonly": "true",
         }
+    _validate_mount_destinations(cfg, devices)
     return devices
+
+
+def _container_path_parts(path: str) -> tuple[str, ...]:
+    home = f"/home/{CONTAINER_USERNAME}"
+    if path == "~":
+        path = home
+    elif path.startswith("~/"):
+        path = f"{home}/{path[2:]}"
+    return Path(posixpath.normpath("/" + path.lstrip("/"))).parts
+
+
+def _validate_mount_destinations(cfg: Config, devices: dict[str, dict[str, str]]) -> None:
+    from jailbee.config import ConfigError
+
+    mounts = [(f"host mount {mount.host}", mount.container) for mount in cfg.effective_host_mounts()]
+    mounts.extend(
+        (f"shared-{cache.name}", cache.container_path) for cache in cfg.effective_shared_caches()
+    )
+    for name, device in devices.items():
+        target = _container_path_parts(device["path"])
+        for mount_name, mount_path in mounts:
+            other = _container_path_parts(mount_path)
+            if target[: len(other)] == other or other[: len(target)] == target:
+                raise ConfigError(
+                    f"{name} at {device['path']!r} overlaps {mount_name} at {mount_path!r}; "
+                    "set agent_instructions: false in global.yaml or remap the conflicting "
+                    "mount/global_instructions.dir to disjoint destinations"
+                )
+        mounts.append((name, device["path"]))

@@ -159,6 +159,20 @@ def test_global_config_agent_instructions_defaults_true():
     assert GlobalConfig().agent_instructions is True
 
 
+@pytest.mark.parametrize("value", ["false", "true", 0, 1])
+def test_agent_instructions_requires_yaml_bool_in_both_loaders(tmp_path, mocker, value):
+    from jailbee.config.loader import load_config_from_layers
+
+    path = tmp_path / "global.yaml"
+    path.write_text(yaml.safe_dump({"agent_instructions": value}))
+    with pytest.raises(ConfigError, match="agent_instructions"):
+        load_global_config(path)
+    mocker.patch("jailbee.config.loader.detect_upstream_remote", return_value="origin")
+    mocker.patch("jailbee.config.loader.detect_default_branch", return_value="main")
+    with pytest.raises(ConfigError, match="agent_instructions"):
+        load_config_from_layers({"agent_instructions": value}, {}, tmp_path / ".jailbee/config.yaml", origin=str(path))
+
+
 def test_docker_registry_mirror_defaults_to_port_3128():
     gcfg = GlobalConfig()
     assert gcfg.docker_registry_mirror.port == 3128

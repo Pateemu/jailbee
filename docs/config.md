@@ -2352,7 +2352,16 @@ model-policy enforcement; they do not configure the agent running on the host.
   A session reads it when it starts, so an edit reaches the next agent session,
   not one already running. No `jailbee apply` needed after the first.
 - **No file:** the mount is an empty directory; nothing is loaded. Removing
-  the source removes the staged file on the next refresh, not the directory.
+  the source removes all recognized generated copies for the enabled agent on
+  the next refresh, not the directory. If repos choose different filenames for
+  the same agent, every generated copy is refreshed together; unrelated files
+  are retained.
+- **Mount conflicts:** instruction destinations must be disjoint from effective
+  host/shared mounts and other instruction destinations (including parent/child
+  paths). An existing policy mount at `/etc/claude-code`, for example, is not
+  silently replaced: profile generation reports the conflicting mount. Keep
+  that policy mount by setting `agent_instructions: false` in `global.yaml`, or
+  remap the mount or `global_instructions.dir` to a disjoint destination.
 - **Opting out:** `agent_instructions: false` in `global.yaml` skips updates
   and omits the mount. Run `jailbee apply` in each repo and restart its running
   containers to remove existing mounts. Host staging is retained, not deleted.
