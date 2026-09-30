@@ -191,6 +191,35 @@ def test_start_skips_apply_hosts_for_loose_container(mocker):
     apply.assert_not_called()
 
 
+def test_start_pins_only_the_mirror_for_a_loose_container(mocker):
+    """A loose work container asks jailbee-work's dnsmasq, which has no
+    record for the mirror on jailbee-loose: the mirror row must survive."""
+    incus = mocker.MagicMock()
+    mocker.patch("jailbee.cli._resolve_existing", return_value=(incus, "myrepo-feat-x"))
+    mocker.patch("jailbee.runtime_mounts.attach_runtime_devices")
+    mocker.patch("jailbee.runtime_mounts.detach_runtime_devices")
+    mocker.patch("jailbee.lifecycle.current_network_mode", return_value="loose")
+    mocker.patch("jailbee.cli._mirror_endpoint_or_none", return_value=("10.42.0.7", 3128))
+    mocker.patch("jailbee.autostart.inject_github_token")
+    apply = mocker.patch("jailbee.hosts.apply_hosts")
+
+    result = runner.invoke(
+        app,
+        [
+            "start",
+            "myrepo-feat-x",
+            "--no-autostart",
+            "--config",
+            str(FIXTURES / "full_config.yaml"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    apply.assert_called_once_with(
+        mocker.ANY, incus, "myrepo-feat-x", entries=[], mirror_endpoint=("10.42.0.7", 3128)
+    )
+
+
 def test_start_skips_apply_hosts_when_no_recognised_profile(mocker):
     mocker.patch(
         "jailbee.cli._resolve_existing",

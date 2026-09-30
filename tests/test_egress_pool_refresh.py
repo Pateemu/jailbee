@@ -37,7 +37,7 @@ def incus(mocker: MockerFixture) -> Any:
     i.list_containers.return_value = []
     # Real Incus.config_get returns None for an unset key; a bare Mock
     # would return a truthy Mock instance instead, which
-    # `egress_scope.container_extras` (now on the `_update_strict_container_hosts`
+    # `egress_scope.container_extras` (now on the `_update_container_hosts`
     # path too) would try to json.loads() and blow up on.
     i.config_get.return_value = None
     return i
@@ -58,7 +58,7 @@ def test_refresh_pool_records_ok_status(
         return_value=({"github.com": ["1.1.1.1"]}, {}),
     )
     mocker.patch.object(egress_pool, "_write_acl", autospec=True)
-    mocker.patch.object(egress_pool, "_update_strict_container_hosts", autospec=True)
+    mocker.patch.object(egress_pool, "_update_container_hosts", autospec=True)
     mocker.patch.object(egress_pool, "_compute_mirror_endpoint", return_value=None)
 
     result = egress_pool.refresh_pool(
@@ -111,7 +111,7 @@ def test_refresh_pool_dns_total_failure_preserves_pool(
         return_value=({}, {"github.com": "getaddrinfo: -3"}),
     )
     mocker.patch.object(egress_pool, "_write_acl", autospec=True)
-    mocker.patch.object(egress_pool, "_update_strict_container_hosts", autospec=True)
+    mocker.patch.object(egress_pool, "_update_container_hosts", autospec=True)
     mocker.patch.object(egress_pool, "_compute_mirror_endpoint", return_value=None)
 
     result = egress_pool.refresh_pool(
@@ -148,7 +148,7 @@ def test_refresh_pool_partial_dns_failure(
         return_value=({"github.com": ["1.1.1.1"]}, {"api.bad": "down"}),
     )
     mocker.patch.object(egress_pool, "_write_acl", autospec=True)
-    mocker.patch.object(egress_pool, "_update_strict_container_hosts", autospec=True)
+    mocker.patch.object(egress_pool, "_update_container_hosts", autospec=True)
     mocker.patch.object(egress_pool, "_compute_mirror_endpoint", return_value=None)
 
     result = egress_pool.refresh_pool(
@@ -209,7 +209,7 @@ def test_write_acl_uses_pool_union(
         side_effect=capture_yaml,
     )
     mocker.patch.object(egress_pool, "_compute_mirror_endpoint", return_value=None)
-    mocker.patch.object(egress_pool, "_update_strict_container_hosts")
+    mocker.patch.object(egress_pool, "_update_container_hosts")
 
     egress_pool.refresh_pool(cfg, gcfg, incus, db_session, now=frozen_now)
 
@@ -236,7 +236,7 @@ def test_write_acl_failure_records_acl_error(
         return_value=({"github.com": ["1.1.1.1"]}, {}),
     )
     mocker.patch.object(egress_pool, "_compute_mirror_endpoint", return_value=None)
-    mocker.patch.object(egress_pool, "_update_strict_container_hosts")
+    mocker.patch.object(egress_pool, "_update_container_hosts")
     mocker.patch(
         "jailbee.network.allowlist_acl_yaml",
         return_value="EGRESS_YAML",
@@ -293,6 +293,38 @@ def test_hosts_updated_for_running_strict_containers_only(
     assert apply_hosts_mock.call_count == 1
     name = apply_hosts_mock.call_args.args[2]
     assert name == "X-foo"
+
+
+def test_update_hosts_pins_the_mirror_on_running_loose_containers(
+    db_session: Session,
+    cfg: Any,
+    gcfg: Any,
+    incus: Any,
+    frozen_now: datetime,
+    mocker: MockerFixture,
+) -> None:
+    """Loose containers get the mirror row (and only it) re-pinned too, so a
+    recreated mirror's new IP reaches a loose work container."""
+    from jailbee import egress_pool
+
+    mocker.patch(
+        "jailbee.egress_pool.resolve_with_status",
+        return_value=({"github.com": ["1.1.1.1"]}, {}),
+    )
+    mocker.patch.object(egress_pool, "_compute_mirror_endpoint", return_value=("10.42.0.7", 3128))
+    mocker.patch.object(egress_pool, "_write_acl")
+    loose = mocker.Mock(state="Running", network="loose")
+    loose.name = "X-bar"
+    loose_stopped = mocker.Mock(state="Stopped", network="loose")
+    loose_stopped.name = "X-baz"
+    mocker.patch("jailbee.egress_pool._list_containers", return_value=[loose, loose_stopped])
+    apply_hosts_mock = mocker.patch("jailbee.hosts.apply_hosts")
+
+    egress_pool.refresh_pool(cfg, gcfg, incus, db_session, now=frozen_now)
+
+    apply_hosts_mock.assert_called_once_with(
+        cfg, incus, "X-bar", entries=[], mirror_endpoint=("10.42.0.7", 3128)
+    )
 
 
 def test_hosts_update_failure_is_nonfatal(
@@ -391,7 +423,7 @@ def test_hosts_merges_container_extras_with_repo_entries(
 
     apply_hosts_mock = mocker.patch("jailbee.hosts.apply_hosts")
 
-    egress_pool._update_strict_container_hosts(cfg, db_session, incus, mirror_endpoint=None)
+    egress_pool._update_container_hosts(cfg, db_session, incus, mirror_endpoint=None)
 
     assert apply_hosts_mock.call_count == 2
     calls = {c.args[2]: c.kwargs["entries"] for c in apply_hosts_mock.call_args_list}
@@ -1233,7 +1265,7 @@ def test_refresh_pool_pins_container_extras_on_first_tick(
     """I5: a container's own extras must reach `/etc/hosts` on the SAME
     refresh cycle they are first resolved, not the one after.
 
-    Before this fix, `_update_strict_container_hosts` ran BEFORE
+    Before this fix, `_update_container_hosts` ran BEFORE
     `_refresh_container_extras` and built its `ct_entries` from the `ct:`
     pool key phase B had not populated yet. So the cycle where a fresh
     `jailbee net egress add` host is first resolved would still pin
@@ -1314,7 +1346,7 @@ def test_refresh_pool_creates_the_repo_acl_when_absent(
         return_value=({"github.com": ["1.1.1.1"]}, {}),
     )
     mocker.patch("jailbee.egress_pool._compute_mirror_endpoint", return_value=None)
-    mocker.patch("jailbee.egress_pool._update_strict_container_hosts")
+    mocker.patch("jailbee.egress_pool._update_container_hosts")
     mocker.patch("jailbee.egress_pool._list_containers", return_value=[])
     incus = mocker.MagicMock()
     incus.network_acl_exists.return_value = False
@@ -1346,7 +1378,7 @@ def test_refresh_pool_does_not_recreate_an_existing_repo_acl(
         return_value=({"github.com": ["1.1.1.1"]}, {}),
     )
     mocker.patch("jailbee.egress_pool._compute_mirror_endpoint", return_value=None)
-    mocker.patch("jailbee.egress_pool._update_strict_container_hosts")
+    mocker.patch("jailbee.egress_pool._update_container_hosts")
     mocker.patch("jailbee.egress_pool._list_containers", return_value=[])
     incus = mocker.MagicMock()
     incus.network_acl_exists.return_value = True
@@ -1418,7 +1450,7 @@ def test_refresh_pool_reconciles_shared_acl_on_both_bridges_after_db_default_los
         ],
     )
     mocker.patch("jailbee.egress_pool._compute_mirror_endpoint", return_value=None)
-    mocker.patch("jailbee.egress_pool._update_strict_container_hosts")
+    mocker.patch("jailbee.egress_pool._update_container_hosts")
     mocker.patch(
         "jailbee.egress_pool._list_containers",
         return_value=[

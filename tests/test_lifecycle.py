@@ -4129,6 +4129,36 @@ def test_new_container_skips_apply_hosts_for_loose(tmp_path, mocker):
     apply.assert_not_called()
 
 
+def test_new_container_pins_only_the_mirror_for_loose(tmp_path, mocker):
+    """The mirror lives on jailbee-loose; a loose container on any other
+    bridge (the work bridge) cannot resolve it through its own dnsmasq."""
+    cfg = _cfg_for_new(tmp_path)
+    apply = mocker.patch("jailbee.hosts.apply_hosts")
+    mocker.patch("jailbee.docker_daemon.apply_docker_proxy")
+    incus = MagicMock()
+    incus.exists.return_value = False
+    ca_path = tmp_path / "ca.crt"
+    ca_path.write_text("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n")
+
+    opts = NewContainerOptions(
+        container_branch="feat/x",
+        name=None,
+        network="loose",
+        memory="8GiB",
+        cpu=4,
+        from_base="gisgro-base",
+        clone=False,
+        autostart=False,
+        mirror_endpoint=("10.234.216.1", 3128),
+        mirror_ca_path=ca_path,
+    )
+    new_container(cfg, incus, opts)
+
+    apply.assert_called_once_with(
+        cfg, incus, "repo-feat-x", entries=[], mirror_endpoint=("10.234.216.1", 3128)
+    )
+
+
 def test_new_container_persists_user_gie_mode_clone(tmp_path):
     """Every new container is tagged with user.jailbee.mode = clone."""
     cfg = _cfg_for_new(tmp_path)
@@ -5342,6 +5372,29 @@ def test_switch_network_calls_clear_hosts_when_switching_to_loose(
 
     clear.assert_called_once_with(cfg, incus, "myrepo-x")
     apply.assert_not_called()
+
+
+def test_switch_network_to_loose_keeps_the_mirror_row(make_cfg, tmp_path, mocker):
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    cfg = make_cfg(repo)
+    apply = mocker.patch("jailbee.hosts.apply_hosts")
+    clear = mocker.patch("jailbee.hosts.clear_hosts")
+    mocker.patch("jailbee.egress_scope.apply_container_acl")
+    incus = MagicMock()
+    incus.list_containers.return_value = [
+        {
+            "name": "myrepo-x",
+            "status": "Running",
+            "profiles": ["default", "myrepo-base", "myrepo-binds", "myrepo-net-strict"],
+        }
+    ]
+    switch_network(cfg, incus, "myrepo-x", "loose", mirror_endpoint=("10.42.0.7", 3128))
+
+    apply.assert_called_once_with(
+        cfg, incus, "myrepo-x", entries=[], mirror_endpoint=("10.42.0.7", 3128)
+    )
+    clear.assert_not_called()
 
 
 def test_work_switch_loose_grants_before_removing_nic_acl(make_cfg, tmp_path, mocker):

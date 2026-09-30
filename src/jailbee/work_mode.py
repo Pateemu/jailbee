@@ -106,9 +106,6 @@ def switch_work_network(
             incus.profile_assign(name, profiles)
             work_acl.revoke_work_loose(cfg, incus, name)
 
-    from jailbee.hosts import apply_hosts, clear_hosts
+    from jailbee.hosts import sync_hosts
 
-    if mode == "strict":
-        apply_hosts(cfg, incus, name, mirror_endpoint=mirror_endpoint)
-    else:
-        clear_hosts(cfg, incus, name)
+    sync_hosts(cfg, incus, name, mode, mirror_endpoint=mirror_endpoint)

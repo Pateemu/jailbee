@@ -14,6 +14,7 @@ from jailbee.hosts import (
     apply_hosts,
     clear_hosts,
     render_hosts_block,
+    sync_hosts,
 )
 
 
@@ -393,3 +394,48 @@ def test_clear_hosts_strips_the_managed_block():
     script = incus.exec.call_args.args[1][2]
     assert "^# BEGIN jailbee-managed allowlist" in script
     assert "^# END jailbee-managed allowlist" in script
+
+
+# ---- sync_hosts -------------------------------------------------------------
+
+
+def test_sync_hosts_strict_pins_allowlist_and_mirror():
+    cfg = _make_cfg(["github.com"])
+    incus = MagicMock()
+    incus.network_acl_show.return_value = _acl_yaml(_allowlisted("github.com", ["140.82.121.4"]))
+
+    sync_hosts(cfg, incus, "myrepo-feat-x", "strict", mirror_endpoint=("10.42.0.7", 3128))
+
+    script = incus.exec.call_args.args[1][2]
+    assert "140.82.121.4 github.com" in script
+    assert f"10.42.0.7 {MIRROR_DNS_NAME}" in script
+
+
+def test_sync_hosts_loose_keeps_only_the_mirror_row():
+    """A loose container may sit on a bridge whose dnsmasq has no record for
+    the mirror (the work bridge), so the mirror row survives loose; the
+    allowlist rows do not, and the live ACL is not even read."""
+    cfg = _make_cfg(["github.com"])
+    incus = MagicMock()
+    incus.network_acl_show.return_value = _acl_yaml(_allowlisted("github.com", ["140.82.121.4"]))
+
+    sync_hosts(cfg, incus, "myrepo-feat-x", "loose", mirror_endpoint=("10.42.0.7", 3128))
+
+    assert incus.exec.call_count == 1
+    script = incus.exec.call_args.args[1][2]
+    assert f"10.42.0.7 {MIRROR_DNS_NAME}" in script
+    assert "github.com" not in script
+    assert "^# BEGIN jailbee-managed allowlist" in script  # old block stripped first
+    incus.network_acl_show.assert_not_called()
+
+
+def test_sync_hosts_loose_without_mirror_clears_the_block():
+    incus = MagicMock()
+
+    sync_hosts(_make_cfg(["github.com"]), incus, "myrepo-feat-x", "loose", mirror_endpoint=None)
+
+    assert incus.exec.call_count == 1
+    script = incus.exec.call_args.args[1][2]
+    assert "^# BEGIN jailbee-managed allowlist" in script
+    assert "JAILBEE_HOSTS_EOF" not in script
+    assert MIRROR_DNS_NAME not in script

@@ -134,6 +134,33 @@ mv "$tmp" /etc/hosts
     incus.exec(name, ["bash", "-c", script])
 
 
+def sync_hosts(
+    cfg: Config,
+    incus: Incus,
+    name: str,
+    mode: str | None,
+    *,
+    mirror_endpoint: tuple[str, int] | None,
+) -> None:
+    """Bring the jailbee-managed /etc/hosts block in line with `mode`.
+
+    Strict pins the allowlisted hostnames (see `apply_hosts`). Loose drops
+    them so normal DNS applies again — but keeps the registry mirror row when
+    a mirror is in use: the mirror sits on `jailbee-loose`, and a container on
+    any other bridge (the work bridge, `incusbr0`) asks a dnsmasq that has no
+    record for `jailbee-registry-mirror.incus`, so dockerd's `HTTPS_PROXY`
+    would fail to resolve. An unknown (`None`) mode gets the loose treatment:
+    pinning an allowlist the container is not known to enforce would be
+    wrong, the mirror row never is.
+    """
+    if mode == "strict":
+        apply_hosts(cfg, incus, name, mirror_endpoint=mirror_endpoint)
+    elif mirror_endpoint is not None:
+        apply_hosts(cfg, incus, name, entries=[], mirror_endpoint=mirror_endpoint)
+    else:
+        clear_hosts(cfg, incus, name)
+
+
 def clear_hosts(cfg: Config, incus: Incus, name: str) -> None:
     """Remove the jailbee-managed block from /etc/hosts.
 

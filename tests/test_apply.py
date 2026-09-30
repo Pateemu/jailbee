@@ -726,6 +726,49 @@ def test_run_apply_passes_mirror_endpoint_to_apply_hosts_for_strict(
     assert apply_hosts.call_args.kwargs["mirror_endpoint"] == ("10.0.0.99", 3128)
 
 
+def test_run_apply_pins_only_the_mirror_on_a_running_loose_container(
+    make_cfg, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """Loose containers off `jailbee-loose` (the work bridge) cannot resolve
+    the mirror through their dnsmasq, so apply pins its row there too — and
+    nothing else."""
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+    from jailbee.lifecycle import ContainerInfo
+
+    cfg = make_cfg(tmp_path)
+    incus = MagicMock(spec=Incus)
+    incus.list_containers.return_value = []
+    incus.network_acl_list.return_value = []
+    incus.network_get.return_value = ""
+    mocker.patch("jailbee.apply._profile_differs", return_value=False)
+    mocker.patch("jailbee.apply._acl_differs", return_value=False)
+    mocker.patch("jailbee.apply._mirror_endpoint_or_warn", return_value=("10.0.0.99", 3128))
+    mocker.patch("jailbee.apply._read_mirror_ca_or_warn", return_value="CA")
+    mocker.patch(
+        "jailbee.apply._list_containers",
+        return_value=[
+            ContainerInfo(
+                name="b",
+                state="Running",
+                network="loose",
+                ip="10.0.0.2",
+                memory_limit="16GiB",
+                repo=tmp_path.name,
+            ),
+        ],
+    )
+    apply_hosts = mocker.patch("jailbee.hosts.apply_hosts")
+    mocker.patch("jailbee.docker_daemon.apply_docker_proxy")
+
+    result = run_apply(cfg, incus, GlobalConfig(), confirm_fn=lambda _m: False)
+
+    assert result.hosts_repinned == ["b"]
+    apply_hosts.assert_called_once_with(
+        cfg, incus, "b", entries=[], mirror_endpoint=("10.0.0.99", 3128)
+    )
+
+
 def test_run_apply_passes_none_mirror_endpoint_to_apply_hosts_when_mirror_disabled(
     make_cfg, tmp_path: Path, mocker: MockerFixture
 ) -> None:

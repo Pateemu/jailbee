@@ -466,11 +466,13 @@ def run_apply(
             from jailbee.device_groups import ensure_device_groups
 
             ensure_device_groups(cfg, incus, ci.name)
-        if ci.network == "strict":
+        # A loose container has a block too when a mirror is in use: only the
+        # mirror row, which no dnsmasq off `jailbee-loose` can answer for.
+        if ci.network == "strict" or mirror_endpoint is not None:
             info(f"  Re-pinning /etc/hosts on {short}...")
-            from jailbee.hosts import apply_hosts
+            from jailbee.hosts import sync_hosts
 
-            apply_hosts(cfg, incus, ci.name, mirror_endpoint=mirror_endpoint)
+            sync_hosts(cfg, incus, ci.name, ci.network, mirror_endpoint=mirror_endpoint)
             hosts_repinned.append(ci.name)
         if mirror_endpoint is not None and mirror_ca_pem is not None and mirror_port is not None:
             from jailbee.docker_daemon import apply_docker_proxy
@@ -792,7 +794,7 @@ def _restart_one(
         inject_github_token,
         run_autostart,
     )
-    from jailbee.hosts import apply_hosts
+    from jailbee.hosts import sync_hosts
     from jailbee.lifecycle import (
         boot_container,
         container_repo_dir,
@@ -800,8 +802,9 @@ def _restart_one(
     )
 
     boot_container(cfg, incus, name, restart=True)
-    if current_network_mode(cfg, incus, name) == "strict":
-        apply_hosts(cfg, incus, name, mirror_endpoint=mirror_endpoint)
+    sync_hosts(
+        cfg, incus, name, current_network_mode(cfg, incus, name), mirror_endpoint=mirror_endpoint
+    )
     repo_dir = container_repo_dir(cfg, incus, name)
     # Re-inject GH_TOKEN (infrastructure, not a user autostart step) so a
     # rotated PAT is picked up on `jailbee apply`.

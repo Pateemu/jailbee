@@ -260,7 +260,7 @@ def refresh_pool(
     not undo or overshadow what was already written (or about to be written)
     around it.
 
-    Phase B runs BEFORE step 7's `_update_strict_container_hosts`, not
+    Phase B runs BEFORE step 7's `_update_container_hosts`, not
     after: that helper reads each container's extras back out of the same
     `ct:` pool key phase B just populated, to fold them into the
     `/etc/hosts` pin. Running phase B later left a freshly-added
@@ -340,7 +340,7 @@ def refresh_pool(
                 error=str(e),
             )
 
-        _update_strict_container_hosts(
+        _update_container_hosts(
             cfg,
             session,
             incus,
@@ -470,7 +470,7 @@ def container_pool_key(name: str) -> str:
 def _entries_from_pool(session: Session, key: str, raw_entries: list[str]) -> list[EgressEntry]:
     """Build `EgressEntry` list for `raw_entries` from pool key `key`.
 
-    Shared by the repo scope (`_write_acl`, `_update_strict_container_hosts`)
+    Shared by the repo scope (`_write_acl`, `_update_container_hosts`)
     and the container scope (`_refresh_container_extras`) so both agree on
     one literal-vs-hostname rule.
     """
@@ -611,21 +611,23 @@ def _prune_container_pools(incus: Incus, session: Session) -> list[str]:
     return sorted(dropped)
 
 
-def _update_strict_container_hosts(
+def _update_container_hosts(
     cfg: Config,
     session: Session,
     incus: Incus,
     *,
     mirror_endpoint: tuple[str, int] | None,
 ) -> None:
-    """Re-pin /etc/hosts on every running strict container of this repo.
+    """Re-pin /etc/hosts on every running container of this repo.
 
+    Strict containers get the allowlist and the mirror row; loose ones only
+    the mirror row, and only when a mirror is in use (`hosts.sync_hosts`).
     Per-container ``IncusError`` is caught and logged; failure on one
     container does not abort the cycle.
     """
     from jailbee import egress_scope
     from jailbee.egress_scope import effective_repo_entries
-    from jailbee.hosts import apply_hosts
+    from jailbee.hosts import apply_hosts, sync_hosts
     from jailbee.incus import IncusError
 
     prefix = cfg.container_prefix
@@ -633,7 +635,17 @@ def _update_strict_container_hosts(
     entries = _entries_from_pool(session, prefix, raw_entries)
 
     for container in _list_containers(cfg, incus):
-        if container.state != "Running" or container.network != "strict":
+        if container.state != "Running":
+            continue
+        if container.network != "strict":
+            if mirror_endpoint is None:
+                continue
+            try:
+                sync_hosts(
+                    cfg, incus, container.name, container.network, mirror_endpoint=mirror_endpoint
+                )
+            except IncusError as e:
+                log.warning("refresh_pool: /etc/hosts update failed for %s: %s", container.name, e)
             continue
         try:
             ct_entries = _entries_from_pool(

@@ -4029,13 +4029,13 @@ def _post_start_actions(
         inject_github_token,
         run_autostart,
     )
+    from jailbee.hosts import sync_hosts
     from jailbee.lifecycle import container_repo_dir, current_network_mode
 
     mirror_endpoint = _mirror_endpoint_or_none(cfg, incus)
-    if current_network_mode(cfg, incus, name) == "strict":
-        from jailbee.hosts import apply_hosts
-
-        apply_hosts(cfg, incus, name, mirror_endpoint=mirror_endpoint)
+    sync_hosts(
+        cfg, incus, name, current_network_mode(cfg, incus, name), mirror_endpoint=mirror_endpoint
+    )
 
     repo_dir = container_repo_dir(cfg, incus, name)
 
