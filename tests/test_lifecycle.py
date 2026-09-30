@@ -297,6 +297,42 @@ def test_list_containers_extracts_network_mode(make_cfg, tmp_path):
     assert by_name["myrepo-b"].network == "loose"
 
 
+def test_list_containers_extracts_work_generation_network_mode(make_cfg, tmp_path):
+    """Work-generation containers carry a `<repo>-net-work-<mode>` marker profile."""
+    from jailbee.network import acl_name
+
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    cfg = make_cfg(repo)
+
+    def work(name, prefix, mode, acls):
+        raw = _container(
+            name=name,
+            profiles=["default", f"{prefix}-base", f"{prefix}-binds", f"{prefix}-net-work-{mode}"],
+        )
+        raw["devices"] = {
+            "eth0": {
+                "type": "nic",
+                "network": "jailbee-work",
+                "security.ipv4_filtering": "true",
+                "ipv4.address": "10.0.0.2",
+                "security.acls": acls,
+            }
+        }
+        return raw
+
+    incus = MagicMock()
+    incus.list_containers.return_value = [
+        work("myrepo-a", "myrepo", "strict", acl_name(cfg)),
+        work("myrepo-b", "myrepo", "loose", ""),
+        work("other-c", "other", "loose", ""),
+    ]
+    by_name = {c.name: c for c in list_containers(cfg, incus, all_repos=True)}
+    assert by_name["myrepo-a"].network == "strict"
+    assert by_name["myrepo-b"].network == "loose"
+    assert by_name["other-c"].network == "loose"
+
+
 def test_list_containers_extracts_ip_for_running(make_cfg, tmp_path):
     repo = tmp_path / "myrepo"
     repo.mkdir()
