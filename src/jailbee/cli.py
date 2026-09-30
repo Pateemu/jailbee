@@ -2007,7 +2007,6 @@ def new_cmd(
     )
 
     cfg = _load_or_exit(config)
-    _sync_agent_instructions(cfg)
 
     if cfg.is_synthetic():
         # `new_cmd` uses the local name `hint` below for an unrelated string,
@@ -4370,7 +4369,11 @@ def start(
     # boot_container also re-attaches the /run/user/<uid>/* GUI sockets,
     # detaching first so a stale device from a previous boot can't error
     # the attach out. See runtime_mounts.
-    boot_container(cfg, incus, name, restart=False)
+    try:
+        boot_container(cfg, incus, name, restart=False)
+    except ValueError as e:
+        error_plain(str(e))
+        raise typer.Exit(1) from e
     success(f"Started: {short_name(cfg, name)}")
 
     _post_start_actions(
@@ -4491,7 +4494,11 @@ def restart(
             override=autostart_override,
         )
         return
-    boot_container(cfg, incus, name, restart=True)
+    try:
+        boot_container(cfg, incus, name, restart=True)
+    except ValueError as e:
+        error_plain(str(e))
+        raise typer.Exit(1) from e
     success(f"Restarted: {short_name(cfg, name)}")
     _post_start_actions(
         cfg,
@@ -14353,12 +14360,18 @@ def _reapply_binds_profile(config: Path | None) -> None:
     reached, so this must not create the directory itself.
     """
     from jailbee.accounts.adapters import base
+    from jailbee.config import ConfigError
     from jailbee.incus import Incus
     from jailbee.profiles import binds_profile_yaml, profile_names
 
     cfg = _load_or_exit(config)  # reloaded, so it sees the new group
     base.prepare_config_homes(cfg)
-    Incus().profile_set_yaml(profile_names(cfg).binds, binds_profile_yaml(cfg))
+    try:
+        yaml_text = binds_profile_yaml(cfg)
+    except ConfigError as e:
+        error_plain(str(e))
+        raise typer.Exit(1) from e
+    Incus().profile_set_yaml(profile_names(cfg).binds, yaml_text)
 
 
 def _write_repo_group(config: Path | None, value: object) -> None:

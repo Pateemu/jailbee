@@ -5,6 +5,7 @@ subclass), plus the GitHub CLI integration and the top-level autostart block.
 
 from __future__ import annotations
 
+import posixpath
 import re
 from pathlib import PurePosixPath
 from typing import Literal, Self
@@ -16,9 +17,10 @@ from jailbee.config.models_net import _reject_offline
 
 # An agent name becomes a tmux window name and a `jailbee doctor` label —
 # kept to the safest common subset of what both accept. It does *not* reach
-# any Incus device name: those derive from each `shared[].subpath` via
+# any shared-mount device name: those derive from each `shared[].subpath` via
 # `device_name()`. The two only coincide because every shipped preset happens
-# to name its subpath after the agent.
+# to name its subpath after the agent. (The host-wide instructions mount is the
+# exception: its device is `agent-instructions-<device_name(agent)>`.)
 _AGENT_NAME_RE = re.compile(r"[a-z0-9-]+")
 
 
@@ -361,7 +363,9 @@ class AgentGlobalInstructions(BaseModel):
         description=(
             "Container-side directory (absolute or `~`-relative) jailbee mounts "
             "read-only with the host-wide instructions; Claude's preset uses "
-            "`/etc/claude-code`. Must not lie inside one of the agent's `shared` mounts."
+            "`/etc/claude-code`. Must not overlap one of the agent's `shared` mounts, "
+            "and must be a dedicated directory (not `/`, `/etc`, `/usr`, `/home` "
+            "or the home directory)."
         ),
     )
     file: str = Field(
@@ -376,6 +380,8 @@ class AgentGlobalInstructions(BaseModel):
         segments = v.split("/")
         if not (v.startswith("/") or v == "~" or v.startswith("~/")):
             raise ValueError(f"global_instructions.dir {v!r} must be absolute or start with '~/'")
+        if "\x00" in v:
+            raise ValueError("global_instructions.dir must not contain a NUL byte")
         if "." in segments or ".." in segments:
             raise ValueError(f"global_instructions.dir {v!r} must not contain '.' / '..' segments")
         return v
@@ -383,7 +389,7 @@ class AgentGlobalInstructions(BaseModel):
     @field_validator("file")
     @classmethod
     def _file_is_bare_name(cls, v: str) -> str:
-        if not v or v in (".", "..") or "/" in v:
+        if not v or v in (".", "..") or "/" in v or "\x00" in v:
             raise ValueError(f"global_instructions.file {v!r} must be a bare file name")
         return v
 
@@ -525,23 +531,28 @@ class AgentConfig(BaseModel):
             return self
 
         home = f"/home/{CONTAINER_USERNAME}"
-        target_path = self.global_instructions.dir
-        if target_path == "~":
-            target_path = home
-        elif target_path.startswith("~/"):
-            target_path = f"{home}/{target_path[2:]}"
-        target = PurePosixPath(target_path).parts
 
+        def parts(path: str) -> tuple[str, ...]:
+            if path == "~":
+                path = home
+            elif path.startswith("~/"):
+                path = f"{home}/{path[2:]}"
+            return PurePosixPath(posixpath.normpath(path)).parts
+
+        target = parts(self.global_instructions.dir)
+        # The mount hides whatever lies under it, so a system directory or the
+        # home directory itself is never a sensible destination.
+        if target in {("/",), ("/", "etc"), ("/", "usr"), ("/", "home"), parts("~")}:
+            raise ValueError(
+                f"global_instructions.dir {self.global_instructions.dir!r} is too broad; "
+                "choose a dedicated directory such as `/etc/claude-code`"
+            )
         for mount in self.shared:
-            mount_path = mount.path
-            if mount_path == "~":
-                mount_path = home
-            elif mount_path.startswith("~/"):
-                mount_path = f"{home}/{mount_path[2:]}"
-            base = PurePosixPath(mount_path).parts
-            if target[: len(base)] == base:
+            base = parts(mount.path)
+            # Either direction: inside a shared mount, or containing one.
+            if target[: len(base)] == base or base[: len(target)] == target:
                 raise ValueError(
-                    f"global_instructions.dir {self.global_instructions.dir!r} lies inside "
+                    f"global_instructions.dir {self.global_instructions.dir!r} overlaps "
                     f"the shared mount {mount.path!r}; choose a directory jailbee owns outright"
                 )
         return self

@@ -548,7 +548,15 @@ def test_binds_profile_mounts_agent_instructions_for_claude(make_cfg, tmp_path, 
     devices = yaml.safe_load(binds_profile_yaml(cfg))["devices"]
     assert devices["agent-instructions-claude"] == {
         "type": "disk",
-        "source": str(tmp_path / "data" / "jailbee" / "agent-instructions" / "claude"),
+        "source": str(
+            tmp_path
+            / "data"
+            / "jailbee"
+            / "agent-instructions"
+            / "claude"
+            / "by-file"
+            / "CLAUDE.md"
+        ),
         "path": "/etc/claude-code",
         "readonly": "true",
     }

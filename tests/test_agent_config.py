@@ -126,13 +126,15 @@ def test_global_instructions_defaults_to_none():
     assert AgentConfig(command="x").global_instructions is None
 
 
-@pytest.mark.parametrize("bad_dir", ["", "relative/dir", "/etc/../root", "/etc/./x", "~/../x"])
+@pytest.mark.parametrize(
+    "bad_dir", ["", "relative/dir", "/etc/../root", "/etc/./x", "~/../x", "/etc/a\x00b"]
+)
 def test_global_instructions_rejects_bad_dir(bad_dir):
     with pytest.raises(ValidationError):
         AgentGlobalInstructions(dir=bad_dir, file="CLAUDE.md")
 
 
-@pytest.mark.parametrize("bad_file", ["", ".", "..", "a/b", "/CLAUDE.md"])
+@pytest.mark.parametrize("bad_file", ["", ".", "..", "a/b", "/CLAUDE.md", "a\x00b"])
 def test_global_instructions_rejects_non_bare_file(bad_file):
     with pytest.raises(ValidationError):
         AgentGlobalInstructions(dir="/etc/claude-code", file=bad_file)
@@ -150,6 +152,24 @@ def test_global_instructions_dir_may_not_sit_in_a_shared_mount(bad_dir):
             command="claude",
             shared=[{"subpath": "claude", "path": "~/.claude"}],
             global_instructions={"dir": bad_dir, "file": "CLAUDE.md"},
+        )
+
+
+@pytest.mark.parametrize("bad_dir", ["/", "/etc", "/etc/", "/usr", "/home", "~", "/home/dev"])
+def test_global_instructions_dir_may_not_be_a_system_or_home_directory(bad_dir):
+    with pytest.raises(ValidationError, match="too broad"):
+        AgentConfig(
+            command="claude",
+            global_instructions={"dir": bad_dir, "file": "CLAUDE.md"},
+        )
+
+
+def test_global_instructions_dir_may_not_contain_a_shared_mount():
+    with pytest.raises(ValidationError, match="overlaps the shared mount"):
+        AgentConfig(
+            command="claude",
+            shared=[{"subpath": "state", "path": "/opt/agent/state"}],
+            global_instructions={"dir": "/opt/agent", "file": "CLAUDE.md"},
         )
 
 

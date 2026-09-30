@@ -307,7 +307,7 @@ def _check_agent_instructions(cfg: Config) -> CheckResult:
         return CheckResult(name, False, f"cannot read {display_path(source)}: {exc}")
     stale: list[str] = []
     for agent, gi in agents:
-        target = staging_dir(agent) / gi.file
+        target = staging_dir(agent, gi.file) / gi.file
         try:
             current = target.read_bytes()
         except FileNotFoundError:
@@ -320,7 +320,8 @@ def _check_agent_instructions(cfg: Config) -> CheckResult:
         return CheckResult(
             name,
             False,
-            f"staged copy out of date for {', '.join(stale)} — run any `jailbee ls` to refresh",
+            f"staged copy out of date for {', '.join(stale)} — "
+            "run any `jb` command (e.g. `jb ls`) to refresh",
         )
     if content is None:
         return CheckResult(name, True, f"none (no {display_path(source)})")

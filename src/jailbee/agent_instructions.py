@@ -1,14 +1,12 @@
 """Stage host-wide agent instructions for read-only container mounts.
 
-The host source is copied per agent to a host-level staging directory, under
-that agent's expected filename. Directory mounts let atomic replacements
+The host source is copied per agent and file name to a host-level staging
+directory, under that agent's expected filename. Directory mounts let atomic replacements
 reach existing containers without exposing the host config tree.
 """
 
 from __future__ import annotations
 
-import fcntl
-import json
 import os
 import posixpath
 import tempfile
@@ -39,9 +37,15 @@ def staging_root() -> Path:
     return xdg_data_home() / "jailbee" / "agent-instructions"
 
 
-def staging_dir(agent: str) -> Path:
-    """Return one agent's host-level instruction staging directory."""
-    return staging_root() / agent
+def staging_dir(agent: str, filename: str) -> Path:
+    """Return the host-level staging directory holding one agent's one file.
+
+    One directory per (agent, file name), and that directory is what a
+    container mounts. A repo that configures an unusual `global_instructions.file`
+    therefore only ever puts that file into its own containers, never into those
+    of another repo that mounts a different file name for the same agent.
+    """
+    return staging_root() / agent / "by-file" / filename
 
 
 def instruction_agents(cfg: Config) -> list[tuple[str, AgentGlobalInstructions]]:
@@ -96,99 +100,34 @@ def sync_global_instructions(cfg: Config) -> None:
         content_known = True
 
     for name, gi in agents:
-        target = staging_dir(name) / gi.file
+        directory = staging_dir(name, gi.file)
+        target = directory / gi.file
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
+            directory.mkdir(parents=True, exist_ok=True)
             if not content_known:
                 continue
-            # Keep metadata and its stable lock inode outside the mounted directory.
-            registry = staging_root().parent / "agent-instructions-ownership" / f"{name}.json"
-            registry.parent.mkdir(parents=True, exist_ok=True)
-            with registry.with_suffix(".lock").open("a") as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX)
-                try:
-                    owned_names = _read_ownership(registry)
-                    owned_names.add(gi.file)
-                    _adopt_marked_copies(target.parent, source, owned_names)
-                    # Persist before creating copies, including when the source
-                    # is absent, so failed writes never leave unrecorded copies.
-                    recorded = (json.dumps(sorted(owned_names)) + "\n").encode()
-                    _write_atomically(registry, recorded)
-                    for filename in sorted(owned_names):
-                        owned = target.parent / filename
-                        try:
-                            if content is None:
-                                owned.unlink(missing_ok=True)
-                                continue
-                            try:
-                                current = owned.read_bytes()
-                            except FileNotFoundError:
-                                current = None
-                            if current != content:
-                                _write_atomically(owned, content)
-                        except OSError as exc:
-                            warn_plain(
-                                f"cannot update agent instructions at {owned}: {exc}", stderr=True
-                            )
-                finally:
-                    fcntl.flock(lock, fcntl.LOCK_UN)
+            if content is None:
+                target.unlink(missing_ok=True)
+                continue
+            try:
+                current = target.read_bytes()
+            except FileNotFoundError:
+                current = None
+            if current != content:
+                _write_atomically(target, content)
         except OSError as exc:
             warn_plain(
-                f"cannot update agent instructions for {name} in {target.parent}: {exc}",
+                f"cannot update agent instructions for {name} in {directory}: {exc}",
                 stderr=True,
             )
-
-
-def _read_ownership(registry: Path) -> set[str]:
-    try:
-        records = json.loads(registry.read_bytes())
-    except FileNotFoundError:
-        return set()
-    except (ValueError, UnicodeError) as exc:
-        raise OSError(f"invalid ownership registry {registry}: {exc}") from exc
-    if not isinstance(records, list):
-        raise OSError(f"invalid ownership registry {registry}: expected a list")
-    names: set[str] = set()
-    for filename in records:
-        if (
-            isinstance(filename, str)
-            and filename not in {"", ".", ".."}
-            and "/" not in filename
-            and "\x00" not in filename
-        ):
-            names.add(filename)
-        else:
-            warn_plain(
-                f"invalid filename in ownership registry {registry}: {filename!r}", stderr=True
-            )
-    return names
-
-
-def _adopt_marked_copies(directory: Path, source: Path, names: set[str]) -> None:
-    """Adopt legacy marked files; markerless unknown files cannot be inferred."""
-    marker = MARKER_TEMPLATE.format(source=display_path(source)).encode() + b"\n"
-    try:
-        siblings = list(directory.iterdir())
-    except OSError as exc:
-        warn_plain(f"cannot discover agent instructions in {directory}: {exc}", stderr=True)
-        return
-    for sibling in siblings:
-        if sibling.name in names:
-            continue
-        try:
-            if sibling.is_symlink() or not sibling.is_file():
-                continue
-            with sibling.open("rb") as fh:
-                if fh.read(len(marker)) == marker:
-                    names.add(sibling.name)
-        except OSError as exc:
-            warn_plain(f"cannot inspect agent instructions at {sibling}: {exc}", stderr=True)
 
 
 def missing_staging_dirs(cfg: Config) -> list[Path]:
     """Return configured agent staging directories that do not yet exist."""
     return [
-        staging_dir(name) for name, _ in instruction_agents(cfg) if not staging_dir(name).is_dir()
+        directory
+        for name, gi in instruction_agents(cfg)
+        if not (directory := staging_dir(name, gi.file)).is_dir()
     ]
 
 
@@ -200,7 +139,7 @@ def profile_devices(cfg: Config) -> dict[str, dict[str, str]]:
         path = gi.dir.replace("~", home, 1) if gi.dir.startswith("~") else gi.dir
         devices[f"agent-instructions-{device_name(name)}"] = {
             "type": "disk",
-            "source": str(staging_dir(name)),
+            "source": str(staging_dir(name, gi.file)),
             "path": path,
             "readonly": "true",
         }

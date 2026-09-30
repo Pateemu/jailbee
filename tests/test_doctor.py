@@ -3796,7 +3796,16 @@ def instruction_paths(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     source = tmp_path / "config" / "jailbee" / "AGENTS.md"
-    target = tmp_path / "data" / "jailbee" / "agent-instructions" / "claude" / "CLAUDE.md"
+    target = (
+        tmp_path
+        / "data"
+        / "jailbee"
+        / "agent-instructions"
+        / "claude"
+        / "by-file"
+        / "CLAUDE.md"
+        / "CLAUDE.md"
+    )
     source.parent.mkdir(parents=True)
     return source, target
 
@@ -3832,7 +3841,7 @@ def test_agent_instructions_check(make_cfg, tmp_path, instruction_paths, case):
         assert "7 bytes" in result.detail
         assert "claude" in result.detail and "/etc/claude-code/CLAUDE.md" in result.detail
     else:
-        assert "claude" in result.detail and "jailbee ls" in result.detail
+        assert "claude" in result.detail and "jb ls" in result.detail
 
 
 @pytest.mark.parametrize("unreadable", ["source", "target"])

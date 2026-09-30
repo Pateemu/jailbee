@@ -144,7 +144,7 @@ def test_nothing_pending_prints_nothing(make_cfg, tmp_path, mocker, capsys) -> N
     assert captured.err == ""
 
 
-@pytest.mark.parametrize("command", ["ls", "shell", "tmux", "new"])
+@pytest.mark.parametrize("command", ["ls", "shell", "tmux"])
 @pytest.mark.parametrize("broken", [False, True])
 def test_everyday_commands_sync_instructions_before_delegating(mocker, command, broken):
     from jailbee.cli import app

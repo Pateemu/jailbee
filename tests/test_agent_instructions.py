@@ -25,13 +25,21 @@ def claude_cfg(make_cfg, tmp_path):
 
 
 def staged(data_home: Path) -> Path:
-    return data_home / "jailbee" / "agent-instructions" / "claude" / "CLAUDE.md"
+    return (
+        data_home
+        / "jailbee"
+        / "agent-instructions"
+        / "claude"
+        / "by-file"
+        / "CLAUDE.md"
+        / "CLAUDE.md"
+    )
 
 
 def test_paths_follow_xdg(homes):
     source, data_home = homes
     assert ai.source_path() == source
-    assert ai.staging_dir("claude") == data_home / "jailbee" / "agent-instructions" / "claude"
+    assert ai.staging_dir("claude", "CLAUDE.md") == staged(data_home).parent
 
 
 def test_instruction_agents_lists_enabled_claude(claude_cfg):
@@ -185,9 +193,7 @@ def test_opted_out_sync_touches_nothing(homes, claude_cfg):
 
 def test_missing_staging_dirs(homes, claude_cfg):
     _, data_home = homes
-    assert ai.missing_staging_dirs(claude_cfg) == [
-        data_home / "jailbee" / "agent-instructions" / "claude"
-    ]
+    assert ai.missing_staging_dirs(claude_cfg) == [staged(data_home).parent]
     ai.sync_global_instructions(claude_cfg)
     assert ai.missing_staging_dirs(claude_cfg) == []
 
@@ -197,7 +203,7 @@ def test_profile_devices_shape(homes, claude_cfg):
     assert ai.profile_devices(claude_cfg) == {
         "agent-instructions-claude": {
             "type": "disk",
-            "source": str(data_home / "jailbee" / "agent-instructions" / "claude"),
+            "source": str(staged(data_home).parent),
             "path": "/etc/claude-code",
             "readonly": "true",
         }
@@ -291,254 +297,56 @@ def test_instruction_mount_accepts_segment_distinct_policy(claude_cfg):
     assert "agent-instructions-claude" in ai.profile_devices(cfg)
 
 
-@pytest.mark.parametrize("remove", [False, True])
-def test_sync_refreshes_all_same_agent_repo_filenames(homes, claude_cfg, remove):
+def test_other_repos_file_name_never_reaches_this_repos_mount(homes, claude_cfg):
     source, data_home = homes
-    other = with_agent(
-        claude_cfg, "claude", global_instructions={"dir": "/etc/claude-code", "file": "OTHER.md"}
+    source.write_bytes(b"policy")
+    odd = with_agent(
+        claude_cfg,
+        "claude",
+        global_instructions={"dir": "/etc/claude-code", "file": "managed-settings.json"},
     )
-    source.write_bytes(b"old")
+    ai.sync_global_instructions(odd)
     ai.sync_global_instructions(claude_cfg)
-    ai.sync_global_instructions(other)
-    if remove:
-        source.unlink()
-    else:
-        source.write_bytes(b"new\r\n\xff")
-    ai.sync_global_instructions(other)
-    for target in (staged(data_home), staged(data_home).with_name("OTHER.md")):
-        if remove:
-            assert not target.exists()
-        else:
-            assert target.read_bytes().split(b"\n", 1)[1] == b"new\r\n\xff"
+    assert [p.name for p in staged(data_home).parent.iterdir()] == ["CLAUDE.md"]
+    assert ai.profile_devices(claude_cfg)["agent-instructions-claude"]["source"] == str(
+        staged(data_home).parent
+    )
+    assert ai.staging_dir("claude", "managed-settings.json") != staged(data_home).parent
 
 
-def test_filename_rename_refreshes_owned_copies_retains_unknown(homes, claude_cfg):
+def test_reverted_file_name_stops_being_refreshed(homes, claude_cfg):
     source, data_home = homes
     source.write_bytes(b"old")
-    ai.sync_global_instructions(claude_cfg)
-    unknown = staged(data_home).with_name("managed-settings.json")
-    unknown.write_bytes(b"unrelated")
     renamed = with_agent(
         claude_cfg, "claude", global_instructions={"dir": "/etc/claude-code", "file": "NEW.md"}
     )
-    source.write_bytes(b"new")
     ai.sync_global_instructions(renamed)
+    stale = ai.staging_dir("claude", "NEW.md") / "NEW.md"
+    source.write_bytes(b"new")
+    ai.sync_global_instructions(claude_cfg)
+    assert stale.read_bytes().endswith(b"\nold")
     assert staged(data_home).read_bytes().endswith(b"\nnew")
-    assert unknown.read_bytes() == b"unrelated"
-    source.unlink()
-    ai.sync_global_instructions(renamed)
-    assert not staged(data_home).exists()
-    assert not staged(data_home).with_name("NEW.md").exists()
-    assert unknown.read_bytes() == b"unrelated"
 
 
-@pytest.mark.parametrize("remove", [False, True])
-@pytest.mark.parametrize("edited", [b"hand edited", b""])
-@pytest.mark.parametrize("filename", ["CLAUDE.md", "TEAM\\POLICY.md"])
-def test_markerless_other_repo_copy_remains_owned(homes, claude_cfg, remove, edited, filename):
-    source, data_home = homes
-    first = with_agent(
-        claude_cfg, "claude", global_instructions={"dir": "/etc/claude-code", "file": filename}
-    )
-    other = with_agent(
-        claude_cfg, "claude", global_instructions={"dir": "/etc/claude-code", "file": "OTHER.md"}
-    )
-    source.write_bytes(b"old")
-    ai.sync_global_instructions(first)
-    ai.sync_global_instructions(other)
-    target_a = staged(data_home).with_name(filename)
-    target_a.write_bytes(edited)
-    if remove:
-        source.unlink()
-    else:
-        source.write_bytes(b"new")
-    ai.sync_global_instructions(other)
-    for target in (target_a, staged(data_home).with_name("OTHER.md")):
-        if remove:
-            assert not target.exists()
-        else:
-            assert target.read_bytes().endswith(b"\nnew")
-
-
-@pytest.mark.parametrize("remove", [False, True])
-@pytest.mark.parametrize("owned", [False, True])
-def test_sibling_failure_does_not_block_known_target(
-    homes, claude_cfg, remove, owned, monkeypatch, capsys
-):
-    source, data_home = homes
-    other = with_agent(
-        claude_cfg, "claude", global_instructions={"dir": "/etc/claude-code", "file": "OTHER.md"}
-    )
-    source.write_bytes(b"old")
-    ai.sync_global_instructions(claude_cfg)
-    ai.sync_global_instructions(other)
-    blocked = staged(data_home) if owned else staged(data_home).with_name("managed-settings.json")
-    if not owned:
-        blocked.write_bytes(b"unrelated")
-    method = "unlink" if owned and remove else "open"
-    original = getattr(Path, method)
-
-    def operation(path, *args, **kwargs):
-        if path == blocked:
-            raise PermissionError("sibling denied")
-        return original(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, method, operation)
-    if remove:
-        source.unlink()
-    else:
-        source.write_bytes(b"new")
-    ai.sync_global_instructions(other)
-    target = staged(data_home).with_name("OTHER.md")
-    if remove:
-        assert not target.exists()
-    else:
-        assert target.read_bytes().endswith(b"\nnew")
-    assert "sibling denied" in capsys.readouterr().err
-    monkeypatch.undo()
-    if not owned:
-        assert blocked.read_bytes() == b"unrelated"
-
-
-def test_legacy_adoption_survives_edits_and_source_recreation(homes, claude_cfg):
-    source, data_home = homes
-    target = staged(data_home)
-    target.parent.mkdir(parents=True)
-    legacy = target.with_name("LEGACY.md")
-    source.write_bytes(b"old")
-    legacy.write_bytes(
-        f"<!-- generated by jailbee from {source} — edit that file on the host -->\nold".encode()
-    )
-    unknown = target.with_name("UNKNOWN.md")
-    unknown.write_bytes(b"markerless pre-existing")
-    ai.sync_global_instructions(claude_cfg)
-    legacy.write_bytes(b"")
-    source.unlink()
-    ai.sync_global_instructions(claude_cfg)
-    assert not legacy.exists()
-    source.write_bytes(b"recreated")
-    ai.sync_global_instructions(claude_cfg)
-    assert legacy.read_bytes().endswith(b"\nrecreated")
-    assert unknown.read_bytes() == b"markerless pre-existing"
-    assert {p.name for p in target.parent.iterdir()} == {"CLAUDE.md", "LEGACY.md", "UNKNOWN.md"}
-
-
-def test_registry_validates_names(homes, claude_cfg, capsys):
-    import json
-
-    source, data_home = homes
-    source.write_bytes(b"old")
-    ai.sync_global_instructions(claude_cfg)
-    registry = data_home / "jailbee" / "agent-instructions-ownership" / "claude.json"
-    outside = ai.staging_root() / "outside.md"
-    outside.write_bytes(b"not ours")
-    registry.write_text(
-        json.dumps(["CLAUDE.md", "REMEMBERED.md", "../outside.md", "/tmp/x", "", ".", "..", 3])
-    )
-    source.write_bytes(b"new")
-    ai.sync_global_instructions(claude_cfg)
-    assert staged(data_home).with_name("REMEMBERED.md").read_bytes().endswith(b"\nnew")
-    assert outside.read_bytes() == b"not ours"
-    assert "invalid" in capsys.readouterr().err
-    assert json.loads(registry.read_text()) == ["CLAUDE.md", "REMEMBERED.md"]
-
-
-def test_corrupt_registry_retains_previous_copies(homes, claude_cfg, capsys):
-    source, data_home = homes
-    source.write_bytes(b"old")
-    ai.sync_global_instructions(claude_cfg)
-    registry = data_home / "jailbee" / "agent-instructions-ownership" / "claude.json"
-    registry.write_bytes(b"broken json")
-    source.unlink()
-    ai.sync_global_instructions(claude_cfg)
-    assert staged(data_home).read_bytes().endswith(b"\nold")
-    assert registry.read_bytes() == b"broken json"
-    assert "cannot update" in capsys.readouterr().err
-
-
-def test_concurrent_sync_keeps_ownership_union(homes, claude_cfg):
-    from concurrent.futures import ThreadPoolExecutor
-    from threading import Barrier
-
-    source, data_home = homes
-    source.write_bytes(b"old")
-    names = [f"REPO-{i}.md" for i in range(8)]
-    configs = [
-        with_agent(
-            claude_cfg, "claude", global_instructions={"dir": "/etc/claude-code", "file": name}
-        )
-        for name in names
-    ]
-    barrier = Barrier(len(configs))
-
-    def sync(cfg):
-        barrier.wait(timeout=10)
-        ai.sync_global_instructions(cfg)
-
-    with ThreadPoolExecutor(max_workers=len(configs)) as executor:
-        list(executor.map(sync, configs))
-    for name in names:
-        staged(data_home).with_name(name).write_bytes(b"marker gone")
-    source.write_bytes(b"new")
-    ai.sync_global_instructions(claude_cfg)
-    for name in names:
-        assert staged(data_home).with_name(name).read_bytes().endswith(b"\nnew")
-
-
-@pytest.mark.parametrize("remove", [False, True])
-def test_registry_write_failure_preserves_existing_targets(
-    homes, claude_cfg, remove, monkeypatch, capsys
-):
-    source, data_home = homes
-    source.write_bytes(b"old")
-    ai.sync_global_instructions(claude_cfg)
-    target = staged(data_home)
-    before = target.read_bytes()
-    registry = data_home / "jailbee" / "agent-instructions-ownership" / "claude.json"
-    recorded = registry.read_bytes()
-    replace = ai.os.replace
-
-    def fail_registry(src, dest):
-        if dest == registry:
-            raise OSError("registry replace denied")
-        return replace(src, dest)
-
-    monkeypatch.setattr(ai.os, "replace", fail_registry)
-    if remove:
-        source.unlink()
-    else:
-        source.write_bytes(b"new")
-    ai.sync_global_instructions(claude_cfg)
-    assert target.read_bytes() == before
-    assert registry.read_bytes() == recorded
-    assert "registry replace denied" in capsys.readouterr().err
-
-
-def test_target_write_failure_records_ownership_for_other_repo_retry(
-    homes, claude_cfg, monkeypatch, capsys
-):
-    import json
-
-    source, data_home = homes
+def test_sibling_agent_failure_does_not_block_other_agent(homes, claude_cfg, monkeypatch, capsys):
+    source, _ = homes
     source.write_bytes(b"policy")
-    target = staged(data_home)
+    cfg = with_agent(
+        claude_cfg,
+        "other",
+        enabled=True,
+        command="other",
+        global_instructions={"dir": "/etc/other", "file": "AGENTS.md"},
+    )
+    blocked = ai.staging_dir("claude", "CLAUDE.md") / "CLAUDE.md"
     replace = ai.os.replace
 
-    def fail_target(src, dest):
-        if dest == target:
-            raise OSError("target replace denied")
+    def fail_claude(src, dest):
+        if dest == blocked:
+            raise OSError("claude denied")
         return replace(src, dest)
 
-    monkeypatch.setattr(ai.os, "replace", fail_target)
-    ai.sync_global_instructions(claude_cfg)
-    assert not target.exists()
-    registry = data_home / "jailbee" / "agent-instructions-ownership" / "claude.json"
-    assert json.loads(registry.read_text()) == ["CLAUDE.md"]
-    assert "target replace denied" in capsys.readouterr().err
-    monkeypatch.setattr(ai.os, "replace", replace)
-    other = with_agent(
-        claude_cfg, "claude", global_instructions={"dir": "/etc/claude-code", "file": "OTHER.md"}
-    )
-    ai.sync_global_instructions(other)
-    assert target.read_bytes().endswith(b"\npolicy")
-    assert target.with_name("OTHER.md").read_bytes().endswith(b"\npolicy")
+    monkeypatch.setattr(ai.os, "replace", fail_claude)
+    ai.sync_global_instructions(cfg)
+    assert (ai.staging_dir("other", "AGENTS.md") / "AGENTS.md").read_bytes().endswith(b"policy")
+    assert "claude denied" in capsys.readouterr().err

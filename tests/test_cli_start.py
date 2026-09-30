@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from jailbee.cli import app
@@ -267,3 +268,24 @@ def test_mirror_endpoint_or_none_skips_compute_without_a_docker_stack(tmp_path, 
 
     assert cli._mirror_endpoint_or_none(cfg, mocker.MagicMock()) is None
     compute.assert_not_called()
+
+
+@pytest.mark.parametrize("command", ["start", "restart"])
+def test_boot_refusal_is_reported_cleanly_not_as_a_traceback(mocker, command):
+    mocker.patch(
+        "jailbee.cli._resolve_existing",
+        return_value=(mocker.MagicMock(), "myrepo-feat-x"),
+    )
+    mocker.patch(
+        "jailbee.lifecycle.boot_container",
+        side_effect=ValueError("cannot start: the agent-instructions directory is [missing]"),
+    )
+
+    result = runner.invoke(
+        app,
+        [command, "myrepo-feat-x", "--config", str(FIXTURES / "full_config.yaml")],
+    )
+
+    assert result.exit_code == 1
+    assert "cannot start: the agent-instructions directory is [missing]" in result.output
+    assert "Traceback" not in result.output
