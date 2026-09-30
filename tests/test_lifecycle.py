@@ -9627,6 +9627,24 @@ def test_sample_ls_columns_takes_one_reading_and_no_sleep_for_agent_alone(
     agents.assert_called_once()
 
 
+def test_sample_ls_columns_takes_the_agent_reading_for_agent_compact(mocker, make_cfg, tmp_path):
+    """`--fields agent_compact` needs the same reading as `agent`, or its cells
+    stay `—`."""
+    from jailbee.lifecycle import sample_ls_columns
+
+    activity, agents, _ = _patch_ls_sampling(mocker)
+    sleep = mocker.Mock()
+    cfg = make_cfg(tmp_path / "myrepo")
+
+    sample_ls_columns(
+        cfg, _ls_rows(), ["name", "agent_compact"], sampler=mocker.Mock(), sleep=sleep
+    )
+
+    assert activity.call_count == 1
+    sleep.assert_not_called()
+    agents.assert_called_once()
+
+
 def test_sample_ls_columns_matches_only_this_repos_rows(mocker, make_cfg, tmp_path):
     """Under `--all`, another repo's rows are never matched against this
     repo's sessions (see `sample_ls_columns`). They stay `—`."""

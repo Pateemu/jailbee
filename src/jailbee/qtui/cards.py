@@ -193,7 +193,7 @@ class _Card(QFrame):
             busy = QLabel(doing)
             busy.setStyleSheet(f"color:{_DIM};")
             self._outer.addWidget(busy)
-        agent = card_field(self._content, "agent")
+        agent = card_field(self._content, "agent_compact") or card_field(self._content, "agent")
         if agent:
             line = QLabel(agent)
             line.setObjectName(_AGENT_OBJECT_NAME)

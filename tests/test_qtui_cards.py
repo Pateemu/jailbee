@@ -682,6 +682,28 @@ def test_compact_card_shows_the_agent_state_with_its_reason(qtbot):
     assert _AGENT_WAITING in label.styleSheet()
 
 
+def test_compact_card_shows_the_agent_compact_field(qtbot):
+    """The dashboard default is `agent_compact`; the card must read it."""
+    from jailbee.qtui.cards import _AGENT_WAITING, _Card
+    from jailbee.qtui.model import CardContent, CardField
+
+    cc = CardContent(
+        name="feat",
+        state="Running",
+        fields=[CardField("agent_compact", "AGENT", "waiting 4m")],
+        agent_tooltip="claude: input needed",
+        agent_waiting=True,
+    )
+    card = _Card("p-feat", cc, style="compact", selected=False)
+    qtbot.addWidget(card)
+
+    label = _agent_label(card)
+    assert label is not None
+    assert label.text() == "waiting 4m"
+    assert "input needed" in label.toolTip()
+    assert _AGENT_WAITING in label.styleSheet()
+
+
 def test_compact_card_renders_agent_text_as_plain_text(qtbot):
     """State and reason come from a file the container writes, and a QLabel
     in AutoText mode renders anything that looks like HTML."""

@@ -611,7 +611,7 @@ def sample_ls_columns(
     """Take the /proc readings the requested `jailbee ls` columns need.
 
     `cpu` and `doing` are rates, so they cost two readings and a
-    `PRIME_INTERVAL_SECONDS` sleep. `agent` is a state and costs one reading.
+    `PRIME_INTERVAL_SECONDS` sleep. `agent` and `agent_compact` are a state and cost one reading.
     A listing that asked for none of them reads nothing.
 
     Only this repo's rows get an AGENT value: it resolves session homes for its
@@ -622,7 +622,7 @@ def sample_ls_columns(
 
     names = {name.strip() for name in requested}
     rates = bool(names & {"cpu", "doing"})
-    agent = "agent" in names
+    agent = bool(names & {"agent", "agent_compact"})
     if not (rates or agent):
         return
     if sampler is None:
