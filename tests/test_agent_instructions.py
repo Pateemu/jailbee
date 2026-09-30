@@ -8,6 +8,9 @@ from tests.conftest import with_agent
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
     cfg_home = tmp_path / "config"
     data_home = tmp_path / "data"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg_home))
@@ -107,6 +110,20 @@ def test_symlinked_source_stages_the_target(homes, claude_cfg, tmp_path):
     assert staged(data_home).read_bytes().endswith(b"\nfrom dotfiles")
 
 
+def test_symlink_loop_warns_and_keeps_previous(homes, claude_cfg, capsys):
+    source, data_home = homes
+    source.write_bytes(b"good")
+    ai.sync_global_instructions(claude_cfg)
+    before = staged(data_home).read_bytes()
+    source.unlink()
+    source.symlink_to(source)
+    ai.sync_global_instructions(claude_cfg)
+    assert staged(data_home).read_bytes() == before
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "cannot read" in output.err
+
+
 def test_bytes_are_staged_verbatim(homes, claude_cfg):
     source, data_home = homes
     payload = b"line one\r\nlatin-1: \xe4\xf6\r\n\x00end"
@@ -132,7 +149,9 @@ def test_unreadable_source_warns_and_keeps_previous(homes, claude_cfg, capsys):
     source.mkdir()
     ai.sync_global_instructions(claude_cfg)
     assert staged(data_home).read_bytes().endswith(b"\ngood")
-    assert "cannot read" in capsys.readouterr().out
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "cannot read" in output.err
 
 
 def test_disabled_agent_in_this_repo_leaves_host_staging_alone(homes, make_cfg, tmp_path):
@@ -149,9 +168,11 @@ def test_disabled_agent_in_this_repo_leaves_host_staging_alone(homes, make_cfg, 
 def test_write_failure_warns_not_raises(homes, claude_cfg, mocker, capsys):
     source, _ = homes
     source.write_bytes(b"x")
-    mocker.patch("jailbee.agent_instructions.os.replace", side_effect=OSError("disk full"))
+    mocker.patch("jailbee.agent_instructions.os.replace", side_effect=OSError("disk [full]"))
     ai.sync_global_instructions(claude_cfg)
-    assert "disk full" in capsys.readouterr().out
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "disk [full]" in output.err
 
 
 def test_opted_out_sync_touches_nothing(homes, claude_cfg):

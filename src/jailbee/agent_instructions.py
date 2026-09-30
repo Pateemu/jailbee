@@ -54,10 +54,12 @@ def instruction_agents(cfg: Config) -> list[tuple[str, AgentGlobalInstructions]]
 
 def desired_content(source: Path) -> bytes | None:
     """Return the marked source bytes, or None if the source is absent."""
-    if not source.exists():
+    try:
+        content = source.read_bytes()
+    except FileNotFoundError:
         return None
     marker = MARKER_TEMPLATE.format(source=display_path(source)).encode()
-    return marker + b"\n" + source.read_bytes()
+    return marker + b"\n" + content
 
 
 def _write_atomically(target: Path, content: bytes) -> None:
@@ -82,7 +84,9 @@ def sync_global_instructions(cfg: Config) -> None:
     try:
         content = desired_content(source)
     except OSError as exc:
-        warn_plain(f"cannot read {display_path(source)}: {exc} — keeping the previous copy")
+        warn_plain(
+            f"cannot read {display_path(source)}: {exc} — keeping the previous copy", stderr=True
+        )
         content_known = False
         content = None
     else:
@@ -104,7 +108,10 @@ def sync_global_instructions(cfg: Config) -> None:
             if current != content:
                 _write_atomically(target, content)
         except OSError as exc:
-            warn_plain(f"cannot update agent instructions for {name} in {target.parent}: {exc}")
+            warn_plain(
+                f"cannot update agent instructions for {name} in {target.parent}: {exc}",
+                stderr=True,
+            )
 
 
 def missing_staging_dirs(cfg: Config) -> list[Path]:

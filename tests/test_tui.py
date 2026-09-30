@@ -644,6 +644,17 @@ def test_warn_plain_keeps_bracketed_text_verbatim(capsys):
     assert "[build]" not in marked_up
 
 
+def test_warn_plain_stderr_keeps_bracketed_text_verbatim(capsys):
+    from jailbee import tui
+
+    tui.warn_plain("branch feat/[wip] step on_create[build]", stderr=True)
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "feat/[wip]" in output.err
+    assert "on_create[build]" in output.err
+    assert output.err.startswith("⚠ ")
+
+
 def test_error_plain_keeps_bracketed_text_verbatim(capsys):
     """Same hazard as `warn_plain`, on stderr.
 

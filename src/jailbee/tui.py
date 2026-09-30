@@ -152,7 +152,7 @@ def warn(msg: str) -> None:
     console.print(f"[yellow]⚠[/yellow] {msg}")
 
 
-def warn_plain(msg: str) -> None:
+def warn_plain(msg: str, *, stderr: bool = False) -> None:
     """Like `warn`, but the body is never reinterpreted as Rich markup.
 
     For warnings whose text embeds data that legitimately contains square
@@ -165,8 +165,10 @@ def warn_plain(msg: str) -> None:
 
     Only the ``⚠`` marker is styled; the body is emitted verbatim, with
     highlighting off so Rich doesn't recolour paths or numbers inside it.
+    Set `stderr` for warnings accompanying machine-readable stdout.
     """
-    console.print(Text.assemble(("⚠ ", "yellow"), msg), highlight=False)
+    output_console = hint_console if stderr else console
+    output_console.print(Text.assemble(("⚠ ", "yellow"), msg), highlight=False)
 
 
 def hint(lines: Sequence[str]) -> None:
