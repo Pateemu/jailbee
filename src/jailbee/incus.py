@@ -424,10 +424,14 @@ class Incus:
         return result.stdout
 
     def exec_with_input(
-        self, name: str, cmd: list[str], input_text: str, *, timeout: int | None = None
+        self, name: str, cmd: list[str], input_text: str, *, timeout: int | None = None,
+        uid: int | None = None, gid: int | None = None, cwd: str | None = None,
+        env: dict[str, str] | None = None, init_groups: bool = False,
     ) -> str:
-        """Run inside a container with explicit stdin; never put input in argv."""
-        args = self._exec_args(name, cmd, uid=None, gid=None, cwd=None, env=None, init_groups=False)
+        """Run with private stdin and the same user options as ``exec``; return stdout."""
+        args = self._exec_args(
+            name, cmd, uid=uid, gid=gid, cwd=cwd, env=env, init_groups=init_groups
+        )
         return self._run(args, timeout=timeout, input_text=input_text).stdout
 
     # How long `exec_lines` lets an abandoned command act on SIGTERM before

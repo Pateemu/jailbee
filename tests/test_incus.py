@@ -161,6 +161,26 @@ def test_exec_with_input_error_never_renders_secret(incus, mocker, failure):
     assert run.call_args.kwargs["input"] == secret
 
 
+@pytest.mark.parametrize("init_groups", [False, True])
+def test_exec_with_input_user_options(incus, mocker, init_groups):
+    run = _mock_run(mocker, stdout="result")
+    builder = mocker.spy(incus, "_exec_args")
+    assert incus.exec_with_input(
+        "c", ["bash", "-s"], "private", timeout=30,
+        uid=1000, gid=1001, cwd="/work", env={"KEY": "value"},
+        init_groups=init_groups,
+    ) == "result"
+    builder.assert_called_once_with(
+        "c", ["bash", "-s"], uid=1000, gid=1001, cwd="/work",
+        env={"KEY": "value"}, init_groups=init_groups,
+    )
+    assert run.call_args.kwargs["input"] == "private"
+    assert "private" not in run.call_args.args[0]
+    assert "--cwd" in run.call_args.args[0]
+    assert "KEY=value" in run.call_args.args[0]
+    assert ("setpriv" if init_groups else "--user") in run.call_args.args[0]
+
+
 def test_litellm_sync_key_never_in_incus_argv_or_error(tmp_path, mocker):
     from jailbee.litellm import sync_container
 
