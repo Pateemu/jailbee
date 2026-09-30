@@ -1802,9 +1802,7 @@ def _drop_setup(mocker, outbox):
     from jailbee.outbox.models import StoreSnapshot
 
     incus = mocker.MagicMock()
-    incus.list_containers.return_value = [
-        {"name": "c", "created_at": "2026-09-30T12:00:00Z"}
-    ]
+    incus.list_containers.return_value = [{"name": "c", "created_at": "2026-09-30T12:00:00Z"}]
     snapshot = StoreSnapshot("pr", tuple(sorted(outbox.files.items())), (), ())
     mocker.patch("jailbee.outbox.io.read_store", return_value=snapshot)
     mocker.patch("jailbee.pr_outbox.read_outbox", return_value=outbox)

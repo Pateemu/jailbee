@@ -125,8 +125,8 @@ def _setup(mocker, tmp_path, *, files=None, rejected=(), warnings=()):
 
 
 def test_review_fixture_has_identity_and_strict_evidence(mocker, tmp_path):
-    from jailbee.outbox.inspect import pr_progress_evidence
     from jailbee.outbox import io as outbox_io
+    from jailbee.outbox.inspect import pr_progress_evidence
     from jailbee.outbox_io import ContainerIdentity, container_identity
 
     files = {"001-x.json": _manifest_text(), "001-x.md": "body"}
@@ -146,15 +146,17 @@ def test_review_fixture_has_identity_and_strict_evidence(mocker, tmp_path):
 
 @pytest.mark.parametrize("rejected", [False, True])
 def test_review_fixture_keeps_recorded_or_rejected_progress(mocker, tmp_path, rejected):
-    from jailbee.outbox.inspect import pr_progress_evidence
     from jailbee.outbox import io as outbox_io
+    from jailbee.outbox.inspect import pr_progress_evidence
 
     sidecar = "001-x.json.progress.json"
     files = {"001-x.json": _manifest_text()}
     if not rejected:
         files[sidecar] = '{"applied": [0], "urls": {"0": "https://x/c"}}'
     _, incus = _setup(
-        mocker, tmp_path, files=files,
+        mocker,
+        tmp_path,
+        files=files,
         rejected=(sidecar,) if rejected else (),
         warnings=("Rejected unsafe progress",) if rejected else (),
     )

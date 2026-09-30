@@ -95,8 +95,8 @@ def _setup(mocker, tmp_path, labels=None):
 
 
 def test_pr_offer_fixture_has_identity_and_strict_snapshot(mocker, tmp_path):
-    from jailbee.outbox.inspect import pr_progress_evidence
     from jailbee.outbox import io as outbox_io
+    from jailbee.outbox.inspect import pr_progress_evidence
     from jailbee.outbox_io import ContainerIdentity, container_identity
 
     _, incus = _setup(mocker, tmp_path)
