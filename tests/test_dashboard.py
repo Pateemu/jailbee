@@ -8831,6 +8831,34 @@ def test_container_menu_mount_entries_follow_the_ssh_policy(
     assert {verb for _label, verb in menu.actions} & {"mount-add", "mount-remove"} == expected
 
 
+@pytest.mark.parametrize(
+    ("group_factory", "allow", "expected"),
+    [
+        (lambda tp: _cfg_group(tp, (_ci("alpha-x", "alpha"),)), ["snapshot ls"], ["Snapshots…"]),
+        (_mount_group, ["unmount"], ["Unmount…"]),
+        (lambda tp: _cfg_group(tp, (_ci("alpha-x", "alpha"),)), ["snapshot create"], None),
+        (_mount_group, ["stats"], None),
+    ],
+    ids=["snapshot-ls-only", "unmount-only", "nothing-relevant-snapshot", "nothing-relevant"],
+)
+def test_container_menu_survives_an_empty_shared_action_list(
+    tmp_path, group_factory, allow, expected
+):
+    """No lifecycle or shell verb is permitted, yet a terminal-only entry may be."""
+    policy = _ssh_policy({"commands": {"mode": "allowlist", "allow": allow}})
+    group = group_factory(tmp_path)
+    kwargs = {"remote": True, "over_ssh": True, "ssh_policy": policy}
+    assert dashboard.actions_for_container([group], "alpha-x", **kwargs) == []
+
+    menu = dashboard.open_menu([group], "alpha-x", **kwargs)
+
+    if expected is None:
+        assert menu is None
+    else:
+        assert menu is not None
+        assert [label for label, _verb in menu.actions] == expected
+
+
 def test_mount_offers_the_unattached_kinds_and_runs_quietly(mocker, tmp_path):
     group = _mount_group(tmp_path)
     quiet = mocker.patch.object(

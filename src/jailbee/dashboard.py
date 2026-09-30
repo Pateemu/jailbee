@@ -1324,22 +1324,29 @@ def open_menu(
     actions = actions_for_container(
         groups, name, remote=remote, ssh_policy=ssh_policy, over_ssh=over_ssh
     )
-    if name is None or not actions:
+    if name is None:
         return None
     group = _find_group(groups, name)
     container = (
         next((c for c in group.containers if c.name == name), None) if group is not None else None
     )
-    if group is not None and container is not None:
-        extras = dact.container_extras(
-            container, group.optional_mounts, ssh_policy, over_ssh=over_ssh
-        )
-        actions = _insert_after_job(actions, extras.after_job)
-        if extras.before_network:
-            actions = _insert_before_network(actions, extras.before_network)
+    if group is None or container is None:
+        return None
+    # An orphan group is view-only: no shared action and no terminal extra either.
+    if not actions and RepoTarget.of(group) is None:
+        return None
+    extras = dact.container_extras(container, group.optional_mounts, ssh_policy, over_ssh=over_ssh)
+    actions = _insert_after_job(actions, extras.after_job)
+    if extras.before_network:
+        actions = _insert_before_network(actions, extras.before_network)
     # Probed with placeholders: the policy judges the command, not its values.
     if permitted(["account", "group", "use", "x", "y"], ssh_policy, over_ssh=over_ssh):
         actions = _with_credential_group(actions)
+    # The shared list can be empty (an SSH allowlist naming no lifecycle or
+    # shell verb) while a terminal-only entry is still permitted; nothing at
+    # all means no menu.
+    if not actions:
+        return None
     return MenuState(name, actions)
 
 
