@@ -161,7 +161,9 @@ def _container_path_parts(path: str) -> tuple[str, ...]:
 def _validate_mount_destinations(cfg: Config, devices: dict[str, dict[str, str]]) -> None:
     from jailbee.config import ConfigError
 
-    mounts = [(f"host mount {mount.host}", mount.container) for mount in cfg.effective_host_mounts()]
+    mounts = [
+        (f"host mount {mount.host}", mount.container) for mount in cfg.effective_host_mounts()
+    ]
     mounts.extend(
         (f"shared-{cache.name}", cache.container_path) for cache in cfg.effective_shared_caches()
     )
