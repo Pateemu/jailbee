@@ -136,6 +136,23 @@ def test_up_creates_provisions_and_opens_services_rule():
     assert yaml.safe_load(services[-1].args[1])["egress"][0]["destination"] == "10.79.115.3/32"
 
 
+def test_up_gives_the_loose_bridge_its_acl_chain_before_any_nic_acl():
+    """Incus flushes `acl.<bridge>` on a NIC-ACL edit; it only exists with a bridge ACL."""
+    incus = _incus(present=False)
+    incus.network_get.side_effect = lambda _net, key: (
+        "10.79.115.1/24" if key == "ipv4.address" else ""
+    )
+    ll.litellm_up(incus, _gcfg())
+    calls = incus.mock_calls
+    attach = next(
+        i
+        for i, c in enumerate(calls)
+        if c[0] == "network_set" and c.args[1:] == ("security.acls", "jailbee-loose-baseline")
+    )
+    first_nic_acl = next(i for i, c in enumerate(calls) if c[0] == "network_acl_set_yaml")
+    assert attach < first_nic_acl
+
+
 def test_install_is_package_restricted_and_auth_mount_is_added_after_install():
     incus = _incus(present=False)
     ll.litellm_up(incus, _gcfg())

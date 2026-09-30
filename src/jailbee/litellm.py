@@ -34,7 +34,12 @@ from jailbee.litellm_render import (
     egress_hosts,
     render_instance_files,
 )
-from jailbee.loose_bridge import LOOSE_BRIDGE, loose_bridge_gateways, loose_bridge_host_ip
+from jailbee.loose_bridge import (
+    LOOSE_BRIDGE,
+    ensure_loose_bridge_acl,
+    loose_bridge_gateways,
+    loose_bridge_host_ip,
+)
 from jailbee.network import SERVICES_ACL, service_container_acl_yaml
 from jailbee.services_acl import set_services_endpoint
 
@@ -501,6 +506,8 @@ def litellm_up(
 
     if not incus.network_exists(LOOSE_BRIDGE):
         incus.network_create(LOOSE_BRIDGE)
+    # Before any NIC ACL is written: see ensure_loose_bridge_acl.
+    ensure_loose_bridge_acl(incus)
     ip = loose_bridge_host_ip(incus, _IP_INDEX)
     if ip is None:
         raise RuntimeError(

@@ -64,7 +64,7 @@ flowchart TB
     P2["prefix-binds<br>host RO mounts + shared RW mounts"]
     MODE{"network mode<br>exactly one"}
     P3A["prefix-net-strict<br>incusbr0 + prefix-allowlist ACL"]
-    P3B["prefix-net-loose<br>jailbee-loose bridge, no ACL"]
+    P3B["prefix-net-loose<br>jailbee-loose bridge, allow-all baseline ACL"]
     CT["the container"]
     DEV["per-container devices, attached outside the stack<br>host-source RO clone source, GUI sockets,<br>port-forward proxies, under-repo mounts"]
 

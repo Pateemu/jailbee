@@ -13,6 +13,28 @@ if TYPE_CHECKING:
     from jailbee.incus import Incus
 
 LOOSE_BRIDGE = "jailbee-loose"
+LOOSE_BASELINE_ACL = "jailbee-loose-baseline"
+
+
+def ensure_loose_bridge_acl(incus: Incus) -> bool:
+    """Attach an empty, allow-by-default ACL to the bridge; True if anything changed.
+
+    Incus builds the bridge's `acl.<bridge>` firewall chain only when the
+    bridge itself carries an ACL, and editing any NIC-level ACL flushes that
+    chain — so a service container with its own NIC ACL cannot be reconfigured
+    on a bare bridge. The defaults are set first: a bridge with an ACL rejects
+    unmatched traffic unless told otherwise, and loose containers must stay open.
+    """
+    if not incus.network_acl_exists(LOOSE_BASELINE_ACL):
+        incus.network_acl_create(LOOSE_BASELINE_ACL)
+    raw = incus.network_get(LOOSE_BRIDGE, "security.acls")
+    attached = [a.strip() for a in raw.split(",") if a.strip()] if isinstance(raw, str) else []
+    if LOOSE_BASELINE_ACL in attached:
+        return False
+    for direction in ("egress", "ingress"):
+        incus.network_set(LOOSE_BRIDGE, f"security.acls.default.{direction}.action", "allow")
+    incus.network_set(LOOSE_BRIDGE, "security.acls", ",".join([*attached, LOOSE_BASELINE_ACL]))
+    return True
 
 
 def loose_bridge_gateways(incus: Incus) -> list[str]:
