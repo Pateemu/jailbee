@@ -297,8 +297,7 @@ def test_read_outbox_returns_every_text_file(mocker):
 
     incus = mocker.MagicMock()
     incus.list_containers.return_value = [
-        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
-        for name in ("c", "acme-feat-foo")
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"} for name in ("c", "acme-feat-foo")
     ]
     incus.exec.return_value = _archive({"001-x.json": b'{"version": 1}', "001-x.md": b"prose"})
 
@@ -318,8 +317,7 @@ def test_read_outbox_is_empty_when_the_directory_is_missing(mocker):
 
     incus = mocker.MagicMock()
     incus.list_containers.return_value = [
-        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
-        for name in ("c", "acme-feat-foo")
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"} for name in ("c", "acme-feat-foo")
     ]
     incus.exec.return_value = ""  # `cd || exit 0` produced nothing
 
@@ -331,8 +329,7 @@ def test_read_outbox_skips_progress_files_in_manifest_names(mocker):
 
     incus = mocker.MagicMock()
     incus.list_containers.return_value = [
-        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
-        for name in ("c", "acme-feat-foo")
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"} for name in ("c", "acme-feat-foo")
     ]
     incus.exec.return_value = _archive(
         {"002-b.json": b"{}", "001-a.json": b"{}", "001-a.json.progress.json": b"{}"}
@@ -348,8 +345,7 @@ def test_read_outbox_does_not_count_the_archive_root_as_hostile(mocker):
     warn = mocker.patch("jailbee.pr_outbox.warn")
     incus = mocker.MagicMock()
     incus.list_containers.return_value = [
-        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
-        for name in ("c", "acme-feat-foo")
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"} for name in ("c", "acme-feat-foo")
     ]
     incus.exec.return_value = _archive({"001-x.json": b"{}", "001-x.md": b"prose"})
 
@@ -379,8 +375,7 @@ def test_read_outbox_drops_hostile_members(mocker):
     warn = mocker.patch("jailbee.pr_outbox.warn")
     incus = mocker.MagicMock()
     incus.list_containers.return_value = [
-        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
-        for name in ("c", "acme-feat-foo")
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"} for name in ("c", "acme-feat-foo")
     ]
     incus.exec.return_value = _archive(
         {"001-x.json": b"{}"}, extra=[absolute, escape, link, nested, hardlink]
@@ -396,8 +391,7 @@ def test_read_outbox_drops_oversized_member(mocker):
 
     incus = mocker.MagicMock()
     incus.list_containers.return_value = [
-        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
-        for name in ("c", "acme-feat-foo")
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"} for name in ("c", "acme-feat-foo")
     ]
     incus.exec.return_value = _archive(
         {"001-x.json": b"{}", "huge.json": b"x" * (MAX_MANIFEST_BYTES + 1)}
@@ -411,8 +405,7 @@ def test_read_outbox_drops_undecodable_utf8_member(mocker):
 
     incus = mocker.MagicMock()
     incus.list_containers.return_value = [
-        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
-        for name in ("c", "acme-feat-foo")
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"} for name in ("c", "acme-feat-foo")
     ]
     incus.exec.return_value = _archive({"001-x.json": b"{}", "bad.json": b"\xff\xfe\xfd"})
 
@@ -424,8 +417,7 @@ def test_read_outbox_raises_on_undecodable_output(mocker):
 
     incus = mocker.MagicMock()
     incus.list_containers.return_value = [
-        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
-        for name in ("c", "acme-feat-foo")
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"} for name in ("c", "acme-feat-foo")
     ]
     incus.exec.return_value = "not base64 at all !!!"
 
@@ -439,8 +431,7 @@ def test_read_outbox_wraps_incus_failure(mocker):
 
     incus = mocker.MagicMock()
     incus.list_containers.return_value = [
-        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
-        for name in ("c", "acme-feat-foo")
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"} for name in ("c", "acme-feat-foo")
     ]
     incus.exec.side_effect = IncusError("exit 1: Instance is not running")
 
@@ -1877,6 +1868,7 @@ def test_drop_manifest_deletes_it_with_its_sidecar_and_own_bodies(mocker):
         }
     )
     from dataclasses import replace
+
     from jailbee.outbox_io import container_identity
 
     incus = _drop_setup(mocker, outbox)
@@ -1898,6 +1890,7 @@ def test_drop_manifest_keeps_a_body_file_another_manifest_still_uses(mocker):
     shared = _manifest_text(actions=[{"type": "comment", "body_file": "shared.md"}])
     outbox = Outbox(files={"001-x.json": shared, "002-y.json": shared, "shared.md": "text"})
     from dataclasses import replace
+
     from jailbee.outbox_io import container_identity
 
     incus = _drop_setup(mocker, outbox)
@@ -1918,6 +1911,7 @@ def test_drop_manifest_raises_when_the_deletion_fails(mocker):
 
     outbox = Outbox(files={"001-x.json": "…"})
     from dataclasses import replace
+
     from jailbee.outbox_io import container_identity
 
     incus = _drop_setup(mocker, outbox)
@@ -2808,6 +2802,7 @@ def test_drop_rejects_changed_snapshot(mocker):
 
     old = Outbox({"one.json": _manifest_text()})
     from dataclasses import replace
+
     from jailbee.outbox_io import container_identity
 
     incus = _drop_setup(mocker, old)
@@ -2894,7 +2889,6 @@ def test_drop_uses_same_manager_under_outer_lock(mocker, tmp_path):
 
     outbox = Outbox({"one.json": _manifest_text()})
     from dataclasses import replace
-    from jailbee.outbox_io import container_identity
 
     incus = _drop_setup(mocker, outbox)
     outbox = replace(outbox, identity=container_identity(incus, "c"))
@@ -2989,7 +2983,6 @@ def test_selected_deep_json_is_refusal_not_crash(mocker, make_cfg, tmp_path):
     )
     assert _selected_offer(cfg, incus) == 1
     apply.assert_not_called()
-
 
 
 def test_read_outbox_binds_preview_identity(mocker):

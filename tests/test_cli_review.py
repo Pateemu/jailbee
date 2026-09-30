@@ -102,8 +102,12 @@ def _mock_store(mocker, files, *, rejected=(), warnings=()):
     from jailbee.outbox_io import ContainerIdentity
 
     def read(incus, container, *, uid):
-        return Outbox(files=files, rejected=tuple(rejected),
-                      identity=ContainerIdentity(container, "2026-09-30T12:00:00Z"))
+        return Outbox(
+            files=files,
+            rejected=tuple(rejected),
+            identity=ContainerIdentity(container, "2026-09-30T12:00:00Z"),
+        )
+
     return mocker.patch("jailbee.pr_outbox.read_outbox", side_effect=read)
 
 
@@ -893,21 +897,25 @@ def test_drop_reports_nothing_to_drop(mocker, tmp_path):
     incus.exec.assert_not_called()
 
 
-
 def test_drop_replacement_during_confirmation_never_deletes(mocker, tmp_path):
     from jailbee.outbox.models import StoreSnapshot
     from jailbee.pr_outbox import read_outbox
 
-    files = {"one.json": _manifest_text(actions=[{"type": "comment", "body_file": "body.md"}]),
-             "body.md": "same body", "one.json.progress.json": '{"applied": [], "urls": {}}'}
+    files = {
+        "one.json": _manifest_text(actions=[{"type": "comment", "body_file": "body.md"}]),
+        "body.md": "same body",
+        "one.json.progress.json": '{"applied": [], "urls": {}}',
+    }
     _, incus = _setup(mocker, tmp_path, files=files)
     mocker.patch("jailbee.pr_outbox.read_outbox", wraps=read_outbox)
     mocker.patch("jailbee.pr_outbox.read_text_outbox", return_value=files)
     store = StoreSnapshot("pr", tuple(sorted(files.items())), (), ())
     mocker.patch("jailbee.outbox.io.read_store", return_value=store)
+
     def confirm(question):
         incus.list_containers.return_value[0]["created_at"] = "replacement"
         return True
+
     mocker.patch("jailbee.cli.typer.confirm", side_effect=confirm)
     result = runner.invoke(app, ["review", "drop", "feat-foo"])
     assert result.exit_code == 1, result.output
@@ -923,10 +931,13 @@ def test_drop_multiple_preserves_preview_identity(mocker, tmp_path):
     _, incus = _setup(mocker, tmp_path, files=files)
     mocker.patch("jailbee.pr_outbox.read_outbox", wraps=read_outbox)
     mocker.patch("jailbee.pr_outbox.read_text_outbox", return_value=files)
-    mocker.patch("jailbee.outbox.io.read_store", side_effect=[
-        StoreSnapshot("pr", tuple(sorted(files.items())), (), ()),
-        StoreSnapshot("pr", (("two.json", files["two.json"]),), (), ()),
-    ])
+    mocker.patch(
+        "jailbee.outbox.io.read_store",
+        side_effect=[
+            StoreSnapshot("pr", tuple(sorted(files.items())), (), ()),
+            StoreSnapshot("pr", (("two.json", files["two.json"]),), (), ()),
+        ],
+    )
     result = runner.invoke(app, ["review", "drop", "feat-foo", "-y"])
     assert result.exit_code == 0, result.output
     removed = [c.args[1] for c in incus.exec.call_args_list if c.args[1][0] == "rm"]

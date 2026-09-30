@@ -411,12 +411,18 @@ def read_outbox(incus: Incus, container: str, *, uid: int | None) -> Outbox:
     try:
         identity = container_identity(incus, container)
         files = read_text_outbox(
-            incus, container, outbox_dir(), uid=uid,
-            max_file_bytes=MAX_MANIFEST_BYTES, warn_fn=warn,
+            incus,
+            container,
+            outbox_dir(),
+            uid=uid,
+            max_file_bytes=MAX_MANIFEST_BYTES,
+            warn_fn=warn,
         )
         _same_identity(incus, container, identity)
     except (JournalError, OutboxChanged, IncusError) as exc:
-        raise OutboxReadError(f"{container}: cannot bind outbox preview ({exc}); refresh required") from exc
+        raise OutboxReadError(
+            f"{container}: cannot bind outbox preview ({exc}); refresh required"
+        ) from exc
     return Outbox(files=files, identity=identity)
 
 
