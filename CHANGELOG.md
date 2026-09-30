@@ -24,6 +24,18 @@ before editing `## Unreleased`.
   the real `jailbee account …` command; a refusal such as a still-running
   agent is shown whole below the table, and `!` with `--force` overrides it.
 
+- **Apply, diagnose, snapshot and mount from the terminal dashboard.** A
+  repo's menu gains **Apply config…** (with or without restarts; `apply`'s own
+  restart question is asked in the terminal), **Diagnostics →** (`doctor`,
+  paged locally — over remote SSH it prints and pauses — and `disk-usage`) and **Prune stale containers…**. A container's menu
+  gains **Snapshots…** (create with a timestamp or a typed tag; restore and
+  delete ask first, "No" preselected), **Mount…**/**Unmount…** for the repo's
+  `optional_mounts`, and, while it has an autostart run, **Autostart status**
+  and **Cancel autostart…**. Each entry runs the real `jailbee` command. Over
+  remote SSH an entry is shown only when the session's policy permits its
+  command, so `apply` and `mount`, which manage the host, stay hidden under
+  `restrict_host: true`.
+
 - **Pick a PR container for `jb push --pr`.** On a TTY, omitting the name
   offers a single-select list of running clone-mode PR containers (or uses
   the only eligible one). Scripts still pass an explicit name.
@@ -198,6 +210,12 @@ before editing `## Unreleased`.
   container of a repo at a time. Memory, settings, skills, plugins and
   `/resume` across containers are shared as before. Run `jailbee apply` and
   restart running containers.
+- **`jailbee snapshot` no longer misreads a `-`-prefixed tag as an option.**
+  A tag like `-x` or `--config` after the explicit `--` separator
+  (`jailbee snapshot create NAME -- --config`) was passed to incus as a flag
+  instead of a tag name; it now reaches incus as an operand and is rejected
+  by its own name check. Before, `snapshot create NAME -- --help` reported
+  "created" although no snapshot was made.
 - **`jailbee ls` AHEAD no longer goes stale after `jailbee checkout`.**
   Checking a container's branch out onto the host left its AHEAD ±/↑ — and
   that of every other container based on the same branch — counting against

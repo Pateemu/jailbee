@@ -35,6 +35,7 @@ from rich.text import Text
 
 from jailbee import agent_status, table_format
 from jailbee import dashboard_accounts as da
+from jailbee import dashboard_actions as dact
 from jailbee.accounts.groups import RESERVED_GROUP_NAMES
 from jailbee.config import (
     DASHBOARD_DEFAULT_HIDE,
@@ -50,6 +51,7 @@ from jailbee.dashboard_commands import (
     completion_candidates,
     dashboard_action_argv,
     insert_options_before_separator,
+    permitted,
 )
 from jailbee.dashboard_egress import (
     EgressState,
@@ -215,7 +217,10 @@ class RepoGroup:
     ``agent_homes`` are ``(container, agent, session home)`` for this group's
     containers and the repo's pooled agents (``lifecycle.agent_homes``);
     `sample_activity` matches each container against its own. Orphan groups
-    keep ``()``."""
+    keep ``()``.
+    ``optional_mounts`` lists the repo config's `optional_mounts:` kinds, which
+    the terminal menu's Mount…/Unmount… pickers choose from. Orphan groups keep
+    it empty."""
 
     prefix: str
     repo_root: str | None
@@ -227,6 +232,7 @@ class RepoGroup:
     push_source_default: str = "base"
     column_notice: str | None = None
     agent_homes: tuple[tuple[str, str, Path], ...] = ()
+    optional_mounts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -512,6 +518,7 @@ def gather_rows(
                 )
                 or None,
                 agent_homes=agent_homes(cfg, [c.name for c in containers]),
+                optional_mounts=tuple(cfg.optional_mounts),
             )
         )
 
@@ -1327,30 +1334,52 @@ def open_menu(
     or a view-only (orphan) group. Callers surface :func:`view_only_note`
     instead, because an empty menu frame is indistinguishable from a broken one.
 
-    The terminal menu also offers ``Credential group…``, which the dashboard
-    handles itself rather than dispatching. It is added here, not in
-    :func:`menu_actions`, because the Qt dashboard shares that list.
+    The terminal menu also offers ``Credential group…`` and the
+    :mod:`jailbee.dashboard_actions` entries (autostart, snapshots, mounts),
+    which the dashboard handles itself rather than dispatching. They are added
+    here, not in :func:`menu_actions`, because the Qt dashboard shares that list.
     """
     actions = actions_for_container(
         groups, name, remote=remote, ssh_policy=ssh_policy, over_ssh=over_ssh
     )
-    if name is None or not actions:
+    if name is None:
         return None
+    group = _find_group(groups, name)
+    container = (
+        next((c for c in group.containers if c.name == name), None) if group is not None else None
+    )
+    if group is None or container is None:
+        return None
+    # An orphan group is view-only: no shared action and no terminal extra either.
+    if not actions and RepoTarget.of(group) is None:
+        return None
+    extras = dact.container_extras(container, group.optional_mounts, ssh_policy, over_ssh=over_ssh)
+    actions = _insert_after_job(actions, extras.after_job)
+    if extras.before_network:
+        actions = _insert_before_network(actions, extras.before_network)
     # Probed with placeholders: the policy judges the command, not its values.
-    if _permitted(["account", "group", "use", "x", "y"], ssh_policy, over_ssh):
+    if permitted(["account", "group", "use", "x", "y"], ssh_policy, over_ssh=over_ssh):
         actions = _with_credential_group(actions)
+    # The shared list can be empty (an SSH allowlist naming no lifecycle or
+    # shell verb) while a terminal-only entry is still permitted; nothing at
+    # all means no menu.
+    if not actions:
+        return None
     return MenuState(name, actions)
 
 
 _CONTAINER_LIFECYCLE_VERBS = frozenset({"restart", "stop", "destroy"})
+_JOB_VERBS = frozenset({"job clear", "job log", "job log --follow"})
+
+# Container-menu verbs the terminal dashboard handles itself. They are never in
+# the Qt-shared `menu_actions` list and never passed to `dispatch`.
+TERMINAL_MENU_VERBS: frozenset[str] = frozenset({"credential-group", *dact.CONTAINER_VERBS})
 
 
-def _with_credential_group(actions: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """``actions`` with ``Credential group…`` just before network and lifecycle.
-
-    That is before the first ``net …`` leaf (the ``Network →`` group), or the
-    first lifecycle leaf when there is no network entry; last otherwise.
-    """
+def _insert_before_network(
+    actions: Sequence[tuple[str, str]], extra: Sequence[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """``extra`` before the first ``net …`` leaf, else before lifecycle, else last."""
     at = next(
         (i for i, (_label, verb) in enumerate(actions) if verb.startswith("net ")),
         None,
@@ -1360,7 +1389,30 @@ def _with_credential_group(actions: list[tuple[str, str]]) -> list[tuple[str, st
             (i for i, (_label, verb) in enumerate(actions) if verb in _CONTAINER_LIFECYCLE_VERBS),
             len(actions),
         )
-    return [*actions[:at], ("Credential group…", "credential-group"), *actions[at:]]
+    return [*actions[:at], *extra, *actions[at:]]
+
+
+def _insert_after_job(
+    actions: Sequence[tuple[str, str]], extra: Sequence[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """``extra`` right after the last job entry; before network when there is none.
+
+    There may be none: an SSH policy can hide `job log` while permitting
+    `autostart status`.
+    """
+    at = max((i for i, (_label, verb) in enumerate(actions) if verb in _JOB_VERBS), default=None)
+    if at is None:
+        return _insert_before_network(actions, extra)
+    return [*actions[: at + 1], *extra, *actions[at + 1 :]]
+
+
+def _with_credential_group(actions: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """``actions`` with ``Credential group…`` just before network and lifecycle.
+
+    That is before the first ``net …`` leaf (the ``Network →`` group), or the
+    first lifecycle leaf when there is no network entry; last otherwise.
+    """
+    return _insert_before_network(actions, (("Credential group…", "credential-group"),))
 
 
 def open_repo_menu(
@@ -1371,7 +1423,9 @@ def open_repo_menu(
     ssh_policy: RemoteSSHConfig | None = None,
     over_ssh: bool = False,
 ) -> RepoMenuState | None:
-    """Offer creation, the credential group and egress for actionable repos, folding for all.
+    """Offer creation, the credential group, egress and repo-level CLI entries, folding for all.
+
+    Everything but folding is offered for actionable repos only.
 
     The credential group and egress entries are hidden when the SSH policy
     refuses them, so a session never sees an entry that can only fail.
@@ -1384,21 +1438,19 @@ def open_repo_menu(
         actions.append(("New container…", "new"))
         actions.append(("New from PR…", "new-pr"))
         # Probed with a placeholder group: the policy judges the command, not its value.
-        if _permitted(["account", "group", "set", "x"], ssh_policy, over_ssh):
+        if permitted(["account", "group", "set", "x"], ssh_policy, over_ssh=over_ssh):
             actions.append(("Credential group…", "credential-group"))
-        if _permitted(["net", "egress", "ls", "--repo"], ssh_policy, over_ssh):
+        if permitted(["net", "egress", "ls", "--repo"], ssh_policy, over_ssh=over_ssh):
             actions.append(MenuGroup("Network →", (("Egress…", "net egress ls"),)))
+        extras = dact.repo_extras(ssh_policy, over_ssh=over_ssh)
+        if extras.apply is not None:
+            actions.append(extras.apply)
+        if extras.diagnostics:
+            actions.append(MenuGroup(dact.DIAGNOSTICS_LABEL, extras.diagnostics))
+        if extras.prune is not None:
+            actions.append(extras.prune)
     actions.append(("Unfold" if prefix in folded else "Fold", "fold"))
     return RepoMenuState(prefix, actions)
-
-
-def _permitted(argv: list[str], ssh_policy: RemoteSSHConfig | None, over_ssh: bool) -> bool:
-    """Whether the dashboard may run ``jailbee <argv>`` under the session's SSH policy."""
-    try:
-        check_dashboard_command(argv, ssh_policy, over_ssh=over_ssh)
-    except RouteError:
-        return False
-    return True
 
 
 def _menu_entries(menu: MenuState | RepoMenuState) -> Sequence[MenuItem]:
@@ -1503,6 +1555,8 @@ def _render_help() -> RenderableType:
         "",
         "Egress panel: a adds, r removes a scoped override; Esc backs to its menu.",
         "Accounts panel: Enter acts on a login or group, n creates a group.",
+        "Repo menu: Apply config…, Diagnostics →, Prune stale containers…",
+        "Container menu: Snapshots…, Mount…/Unmount…, autostart status/cancel.",
         "",
         f"[dim]{_GATE_NOTE}[/dim]",
     ]
@@ -2461,6 +2515,51 @@ def _dispatch_action(
     return rc
 
 
+def _run_cli_foreground(
+    target: RepoTarget,
+    argv: list[str],
+    *,
+    style: DispatchStyle,
+    remote: bool = False,
+    over_ssh: bool = False,
+    ssh_policy: RemoteSSHConfig | None = None,
+) -> int:
+    """Run a dashboard-built ``jailbee <argv>`` against ``target``; return its exit code.
+
+    The counterpart of :func:`_dispatch_action` for entries that are not
+    ``<verb> <container>``: repo-level commands (``apply``, ``doctor``) and argv
+    carrying a ``--``-guarded answer (``snapshot create -- NAME TAG``).
+    ``_dispatch_action`` is deliberately not rebuilt on top of this. Its argv
+    order (``--force`` before ``--config``) is pinned by many tests, and nothing
+    would change for the user.
+
+    ``argv`` is checked exactly as given, then addressed: ``--config`` goes
+    before any ``--``, and nothing is added over SSH (`dashboard_actions.addressed`).
+    ``style`` works as in :func:`_dispatch_action`. A remote session never gets
+    a pager, because a pager can run host commands, so it gets the pause. A
+    pager that cannot start also degrades to the pause.
+
+    Raises :class:`RouteError` before anything runs when the policy refuses
+    ``argv``, and ``OSError`` when ``target.cwd()`` has vanished (the caller
+    turns that into a notice).
+    """
+    check_dashboard_command(argv, ssh_policy, over_ssh=over_ssh)
+    full = ["jailbee", *dact.addressed(argv, target.flags(), over_ssh=over_ssh)]
+    if style == "paged" and (remote or over_ssh):
+        style = "output"
+    if style == "paged":
+        pager = pager_argv()
+        if pager is not None:
+            try:
+                return _run_paged(full, pager, target.cwd())
+            except _PagerUnavailableError as exc:
+                log.debug("pager %s failed: %s", pager, exc)
+    rc = subprocess.run(full, check=False, cwd=target.cwd()).returncode
+    if style != "plain":
+        _wait_for_return()
+    return rc
+
+
 def _refresh_due(
     *,
     now: float,
@@ -2985,6 +3084,177 @@ def run(
                     set_notice(f"'jailbee new' exited {rc}")
                 force.set()  # the new container should appear on the next frame
 
+            def run_dashboard_command(
+                target: str,
+                kind: Literal["repo", "container"],
+                argv: list[str],
+                *,
+                style: DispatchStyle = "output",
+            ) -> None:
+                """Hand the terminal to one dashboard-built `jailbee` command; notice a failure.
+
+                ``target`` is re-resolved here because the row may have vanished
+                while a picker was open. The policy is checked before `foreground`
+                blanks the screen, and again by `_run_cli_foreground` right
+                before the spawn.
+                """
+                repo = repo_for(target, kind)
+                if repo is None:
+                    set_notice(f"'{target}' is gone")
+                    return
+                try:
+                    check_dashboard_command(argv, ssh_policy, over_ssh=over_ssh)
+                except RouteError as exc:
+                    set_notice(str(exc), seconds=_FAILURE_NOTICE_SECONDS)
+                    return
+                try:
+                    rc = foreground(
+                        lambda: _run_cli_foreground(
+                            repo,
+                            argv,
+                            style=style,
+                            remote=remote,
+                            over_ssh=over_ssh,
+                            ssh_policy=ssh_policy,
+                        )
+                    )
+                except RouteError as exc:
+                    set_notice(str(exc), seconds=_FAILURE_NOTICE_SECONDS)
+                    return
+                except OSError:
+                    _report_vanished_repo(repo)
+                    return
+                if rc != 0:
+                    set_notice(f"'jailbee {dact.command_label(argv)}' exited {rc}")
+                force.set()  # the command likely changed state: refresh now
+
+            def open_container_entry(container: str, verb: str) -> Overlay | None:
+                """The first step of a terminal-only container entry; None once it has run."""
+                if verb == dact.AUTOSTART_STATUS:
+                    run_dashboard_command(
+                        container, "container", dact.autostart_status_argv(container)
+                    )
+                    return None
+                if verb == dact.AUTOSTART_CANCEL:
+                    return dact.autostart_cancel_picker(container)
+                if verb == dact.SNAPSHOTS:
+                    return open_snapshots(container)
+                if verb in (dact.MOUNT_ADD, dact.MOUNT_REMOVE):
+                    return open_mount_picker(container, remove=verb == dact.MOUNT_REMOVE)
+                return None
+
+            def open_mount_picker(container: str, *, remove: bool) -> Picker | None:
+                """The kinds Mount… (Unmount…) can act on right now, or a notice."""
+                group = _find_group(groups, container)
+                info = (
+                    next((c for c in group.containers if c.name == container), None)
+                    if group is not None
+                    else None
+                )
+                if group is None or info is None:
+                    set_notice(f"'{container}' is gone")
+                    return None
+                kinds = dact.mount_choices(info, group.optional_mounts, remove=remove)
+                if not kinds:
+                    set_notice(
+                        "No optional mount to remove" if remove else "No optional mount to add"
+                    )
+                    return None
+                return dact.mount_picker(container, kinds, remove=remove)
+
+            def open_snapshots(container: str) -> Picker | None:
+                """List the container's snapshots quietly and offer them, or notice why not.
+
+                Each entry is gated on its own argv: over SSH an allowlist may
+                permit the listing and not the create.
+                """
+                repo = repo_for(container, "container")
+                if repo is None:
+                    set_notice(f"'{container}' is gone")
+                    return None
+                argv = dact.addressed(
+                    dact.snapshot_ls_argv(container), repo.flags(), over_ssh=over_ssh
+                )
+                try:
+                    check_dashboard_command(argv, ssh_policy, over_ssh=over_ssh)
+                    result = da.run_cli_quiet(argv, cwd=repo.cwd())
+                    if not result.ok:
+                        raise dact.SnapshotLoadError(result.message)
+                    rows = dact.parse_snapshot_rows(result.stdout)
+                except (RouteError, dact.SnapshotLoadError) as exc:
+                    set_notice(f"could not list snapshots: {exc}", seconds=_FAILURE_NOTICE_SECONDS)
+                    return None
+                picker = dact.snapshot_picker(
+                    container,
+                    rows,
+                    can_create=permitted(
+                        dact.snapshot_create_argv(container, None), ssh_policy, over_ssh=over_ssh
+                    ),
+                )
+                if not picker.entries:
+                    set_notice(f"No snapshots of '{container}'")
+                    return None
+                return picker
+
+            def submit_snapshot_picker(picker: Picker, entry: PickerEntry) -> Overlay | None:
+                """The `container-snapshot*` steps. Every change runs in the terminal.
+
+                Not quietly: `run_cli_quiet` kills its child after 60 s, and an
+                `incus snapshot` of a large container can outlast that.
+                """
+                container = picker.target
+                if picker.purpose == "container-snapshots":
+                    if entry.value == dact.CREATE_TIMESTAMP:
+                        run_dashboard_command(
+                            container, "container", dact.snapshot_create_argv(container, None)
+                        )
+                        return None
+                    if entry.value == dact.CREATE_NAMED:
+                        return dact.snapshot_tag_prompt(container)
+                    tag = dact.snapshot_tag(entry.value)
+                    if tag is None:
+                        return None
+                    # Each verb is gated on its own argv: over SSH an allowlist
+                    # may permit a restore and not a delete, or the reverse.
+                    actions = dact.snapshot_action_picker(
+                        container,
+                        tag,
+                        can_restore=permitted(
+                            dact.snapshot_restore_argv(container, tag),
+                            ssh_policy,
+                            over_ssh=over_ssh,
+                        ),
+                        can_delete=permitted(
+                            dact.snapshot_delete_argv(container, tag),
+                            ssh_policy,
+                            over_ssh=over_ssh,
+                        ),
+                    )
+                    if not actions.entries:
+                        set_notice(f"No change to snapshot {tag} is permitted here")
+                        return None
+                    return actions
+                if picker.purpose == "container-snapshot-action":
+                    if entry.value not in (dact.RESTORE, dact.DELETE):
+                        return None
+                    return dact.snapshot_confirm_picker(container, entry.value, picker.carry[0])
+                if picker.purpose == "container-snapshot-confirm":
+                    if entry.value != "yes":
+                        set_notice("Cancelled")
+                        return None
+                    action, tag = picker.carry
+                    if action == dact.RESTORE:
+                        build = dact.snapshot_restore_argv
+                    elif action == dact.DELETE:
+                        build = dact.snapshot_delete_argv
+                    else:
+                        return None  # never default to a destructive verb
+                    # Foreground, like the create: an incus restore can outlast
+                    # the 60 s cutoff of the quiet runner.
+                    run_dashboard_command(container, "container", build(container, tag))
+                    return None
+                return None
+
             def repo_for(
                 target: str, kind: Literal["repo", "container"] = "repo"
             ) -> RepoTarget | None:
@@ -2992,8 +3262,10 @@ def run(
                 group = target_group(groups, target, kind)
                 return RepoTarget.of(group) if group is not None else None
 
-            def run_account_cli(repo: RepoTarget, argv: list[str]) -> bool:
-                """Run one `jailbee account …` change off-screen; report it as a notice.
+            def run_quiet_cli(repo: RepoTarget, argv: list[str]) -> bool:
+                """Run one short `jailbee` change off-screen (an account or a mount).
+
+                The outcome is reported as a notice.
 
                 Quiet rather than `foreground`: the command asks nothing, so
                 handing it the terminal would only blank the dashboard. A
@@ -3001,7 +3273,7 @@ def run(
                 own message answers with `--force` — stays up long enough to
                 read. There is no automatic retry with `--force`.
                 """
-                full = [*argv, *(repo.flags() if not over_ssh else [])]
+                full = dact.addressed(argv, repo.flags(), over_ssh=over_ssh)
                 try:
                     check_dashboard_command(full, ssh_policy, over_ssh=over_ssh)
                 except RouteError as exc:
@@ -3012,7 +3284,7 @@ def run(
                     result.message,
                     seconds=_NOTICE_SECONDS if result.ok else _FAILURE_NOTICE_SECONDS,
                 )
-                force.set()  # a group change re-renders the containers' profiles
+                force.set()  # a group or mount change shows in the next gather
                 return result.ok
 
             def load_listing(
@@ -3082,7 +3354,7 @@ def run(
                 if repo is None:
                     set_notice(f"'{target}' is gone")
                     return
-                run_account_cli(repo, argv)
+                run_quiet_cli(repo, argv)
 
             def accounts_target() -> str | None:
                 """The repo prefix the Accounts panel runs its `jailbee account …` in.
@@ -3149,7 +3421,7 @@ def run(
                 if repo is None:
                     set_notice(f"'{state.prefix}' is gone", seconds=_FAILURE_NOTICE_SECONDS)
                     return None
-                if not run_account_cli(repo, argv):
+                if not run_quiet_cli(repo, argv):
                     return state
                 return load_accounts(state.prefix, state.index) or state
 
@@ -3267,6 +3539,11 @@ def run(
                 if prompt.purpose == "container-group-name":
                     change_group(prompt, da.container_group_use_argv(answer, prompt.target))
                     return None
+                if prompt.purpose == "container-snapshot-tag":
+                    run_dashboard_command(
+                        prompt.target, "container", dact.snapshot_create_argv(prompt.target, answer)
+                    )
+                    return None
                 if prompt.purpose == "acct-group-new":
                     # asked only from the Accounts panel, which it returns to
                     assert isinstance(prompt.back, da.AccountsState)
@@ -3304,6 +3581,35 @@ def run(
                         if entry.value == "__reset__"
                         else da.container_group_use_argv(entry.value, picker.target),
                     )
+                    return None
+                if picker.purpose == "repo-apply":
+                    run_dashboard_command(
+                        picker.target,
+                        "repo",
+                        dact.apply_argv(no_restart=entry.value == dact.APPLY_NO_RESTART),
+                    )
+                    return None
+                if picker.purpose == "container-autostart-cancel":
+                    if entry.value == "yes":
+                        run_dashboard_command(
+                            picker.target, "container", dact.autostart_cancel_argv(picker.target)
+                        )
+                    else:
+                        set_notice("Cancelled")
+                    return None
+                if picker.purpose.startswith("container-snapshot"):
+                    return submit_snapshot_picker(picker, entry)
+                if picker.purpose in ("container-mount-add", "container-mount-remove"):
+                    build = (
+                        dact.unmount_argv
+                        if picker.purpose == "container-mount-remove"
+                        else dact.mount_argv
+                    )
+                    repo = repo_for(picker.target, "container")
+                    if repo is None:
+                        set_notice(f"'{picker.target}' is gone")
+                    else:
+                        run_quiet_cli(repo, build(entry.value, picker.target))
                     return None
                 if picker.purpose.startswith("acct-"):
                     # every account picker is opened from the Accounts panel
@@ -3691,6 +3997,16 @@ def run(
                                     overlay = start_new_container(from_pr=True)
                                 elif verb == "credential-group":
                                     overlay = open_group_picker("repo-group", target)
+                                elif verb == dact.REPO_APPLY:
+                                    overlay = dact.apply_picker(target)
+                                elif verb == dact.REPO_DOCTOR:
+                                    run_dashboard_command(
+                                        target, "repo", dact.doctor_argv(), style="paged"
+                                    )
+                                elif verb == dact.REPO_DISK_USAGE:
+                                    run_dashboard_command(target, "repo", dact.disk_usage_argv())
+                                elif verb == dact.REPO_PRUNE:
+                                    run_dashboard_command(target, "repo", dact.prune_argv())
                                 elif verb == "fold":
                                     folded = toggle_folded(folded, target)
                                     persist_view_state(
@@ -3711,6 +4027,8 @@ def run(
                                 elif verb == "credential-group":
                                     # Handled here: it is not a CLI verb to dispatch.
                                     overlay = open_group_picker("container-group", target)
+                                elif verb in dact.CONTAINER_VERBS:
+                                    overlay = open_container_entry(target, verb)
                                 else:
                                     dispatch(target, verb)
                     continue

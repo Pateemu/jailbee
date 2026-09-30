@@ -719,14 +719,16 @@ class Incus:
 
     # ---- Snapshots ----------------------------------------------------------
 
+    # Operands follow `--` so a tag that looks like an option (`--help`) is
+    # never parsed by incus as a flag.
     def snapshot_create(self, name: str, snap: str) -> None:
-        self._run(["snapshot", "create", name, snap])
+        self._run(["snapshot", "create", "--", name, snap])
 
     def snapshot_restore(self, name: str, snap: str) -> None:
-        self._run(["snapshot", "restore", name, snap])
+        self._run(["snapshot", "restore", "--", name, snap])
 
     def snapshot_delete(self, name: str, snap: str) -> None:
-        self._run(["snapshot", "delete", name, snap])
+        self._run(["snapshot", "delete", "--", name, snap])
 
     def snapshot_list(self, name: str, *, timeout: int | None = None) -> list[dict[str, Any]]:
         result = self._run(["snapshot", "list", name, "--format", "json"], timeout=timeout)

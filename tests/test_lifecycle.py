@@ -116,6 +116,28 @@ def _container(
 # ---- list_containers ----
 
 
+def test_list_containers_reports_attached_optional_mounts(make_cfg, tmp_path):
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    cfg = make_cfg(repo)
+    mounted = _container(name="myrepo-feat-foo")
+    mounted["devices"] = {
+        "optional-gcloud": {"type": "disk"},
+        "optional-aws": {"type": "disk"},
+        "eth0": {"type": "nic"},
+    }
+    null_devices = _container(name="myrepo-null")
+    null_devices["devices"] = None
+    incus = MagicMock()
+    incus.list_containers.return_value = [mounted, null_devices, _container(name="myrepo-bare")]
+
+    result = {c.name: c for c in list_containers(cfg, incus)}
+
+    assert result["myrepo-feat-foo"].optional_mounts == ("aws", "gcloud")
+    assert result["myrepo-null"].optional_mounts == ()
+    assert result["myrepo-bare"].optional_mounts == ()
+
+
 def test_list_containers_returns_only_own_repo(make_cfg, tmp_path):
     repo = tmp_path / "myrepo"
     repo.mkdir()

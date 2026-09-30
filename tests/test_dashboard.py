@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import io
 import itertools
+import json
+import os
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -398,6 +401,31 @@ def test_gather_rows_carries_the_repos_loose_ttl_default(tmp_path, mocker, make_
     groups = dashboard.gather_rows(mocker.MagicMock(), [root], cwd_root=root, with_git=False)
 
     assert groups[0].loose_ttl_default == "45m"
+
+
+def test_gather_rows_carries_the_repos_optional_mount_kinds(tmp_path, mocker, make_cfg):
+    cfg = make_cfg(
+        tmp_path / "alpha",
+        optional_mounts={
+            "aws": {"host": str(tmp_path), "container": "/home/dev/.aws"},
+            "gcloud": {"host": str(tmp_path), "container": "/home/dev/.config/gcloud"},
+        },
+    )
+    root = tmp_path / "alpha"
+    mocker.patch.object(dashboard, "load_repo_config", return_value=cfg)
+
+    def fake_list(c, incus, *, all_repos, with_git_status, with_background):
+        return [] if all_repos else [_ci("alpha-one", "alpha")]
+
+    mocker.patch.object(dashboard, "list_containers", side_effect=fake_list)
+
+    groups = dashboard.gather_rows(mocker.MagicMock(), [root], cwd_root=root, with_git=False)
+
+    assert groups[0].optional_mounts == ("aws", "gcloud")
+
+
+def test_orphan_groups_have_no_optional_mounts():
+    assert dashboard.RepoGroup("orphan", None, None, []).optional_mounts == ()
 
 
 def test_gather_rows_loose_ttl_default_is_none_when_policy_disabled(tmp_path, mocker, make_cfg):
@@ -1958,8 +1986,8 @@ def test_open_menu_captures_the_actions_with_the_cursor_at_the_top(tmp_path):
     assert menu is not None
     assert menu.container == "alpha-x"
     assert menu.index == 0
-    # the shared (Qt too) action list, plus the terminal-only credential group entry
-    assert [a for a in menu.actions if a[1] != "credential-group"] == (
+    # the shared (Qt too) action list, plus the terminal-only entries
+    assert [a for a in menu.actions if a[1] not in dashboard.TERMINAL_MENU_VERBS] == (
         dashboard.actions_for_container([group], "alpha-x")
     )
     assert ("Attach tmux", "tmux") in menu.actions
@@ -5742,7 +5770,16 @@ def test_repo_header_enter_opens_menu_without_folding(mocker, tmp_path):
     assert [
         item.label if isinstance(item, dashboard.MenuGroup) else item[0]
         for item in menus[0].actions
-    ] == ["New container…", "New from PR…", "Credential group…", "Network →", "Fold"]
+    ] == [
+        "New container…",
+        "New from PR…",
+        "Credential group…",
+        "Network →",
+        "Apply config…",
+        "Diagnostics →",
+        "Prune stale containers…",
+        "Fold",
+    ]
     save.assert_not_called()
 
 
@@ -5822,7 +5859,7 @@ def test_repo_menu_toggles_fold_and_persists_it(mocker, tmp_path, initially_fold
     assert (
         _drive_run(
             mocker,
-            [b"\r", b"j", b"j", b"j", b"j", b"\r"],
+            _repo_menu_keys(group, "fold"),
             groups=[group],
             view_state=dashboard.ViewState(
                 folded=frozenset({"alpha"}) if initially_folded else frozenset(),
@@ -5834,7 +5871,7 @@ def test_repo_menu_toggles_fold_and_persists_it(mocker, tmp_path, initially_fold
     )
 
     menus = [call.kwargs["overlay"] for call in render.call_args_list if call.kwargs["overlay"]]
-    assert menus[0].actions[4][0] == ("Unfold" if initially_folded else "Fold")
+    assert menus[0].actions[-1] == (("Unfold" if initially_folded else "Fold"), "fold")
     assert save.call_count == 1
     assert save.call_args.args[1] == FRONTEND_TUI
     assert save.call_args.args[2].folded == (
@@ -5855,6 +5892,179 @@ def test_orphan_repo_menu_only_offers_folding(mocker):
     menus = [call.kwargs["overlay"] for call in render.call_args_list if call.kwargs["overlay"]]
     assert menus[0].actions == [("Fold", "fold")]
     child.assert_not_called()
+
+
+# --- Repo-level CLI entries (apply, diagnostics, prune) ----------------------
+
+
+def _cfg_group(tmp_path: Path, containers: tuple[ContainerInfo, ...] = ()) -> dashboard.RepoGroup:
+    """Repo ``alpha`` with a config path: a local child gets ``--config``, an SSH one must not."""
+    return dashboard.RepoGroup(
+        "alpha", str(tmp_path), tmp_path / ".jailbee" / "config.yaml", list(containers)
+    )
+
+
+def _repo_menu_keys(group: dashboard.RepoGroup, verb: str, **menu_kwargs) -> list[bytes]:
+    """Keys that choose repo-menu ``verb`` from the first row (the repo header).
+
+    Finds a top-level leaf or one inside a submenu, so no test counts entries.
+    ``menu_kwargs`` (``ssh_policy``/``over_ssh``) must match the ``run()`` call.
+    """
+    menu = dashboard.open_repo_menu([group], group.prefix, frozenset(), **menu_kwargs)
+    assert menu is not None
+    for i, item in enumerate(menu.actions):
+        if isinstance(item, dashboard.MenuGroup):
+            leaves = [leaf_verb for _label, leaf_verb in item.actions]
+            if verb in leaves:
+                return [_ENTER, *[b"j"] * i, _ENTER, *[b"j"] * leaves.index(verb), _ENTER]
+        elif item[1] == verb:
+            return [_ENTER, *[b"j"] * i, _ENTER]
+    raise AssertionError(f"{verb!r} is not in the repo menu")
+
+
+def _repo_menu_verbs(menu: dashboard.RepoMenuState | None) -> set[str]:
+    """Every leaf verb of a repo menu, submenus included."""
+    assert menu is not None
+    return {
+        leaf[1]
+        for item in menu.actions
+        for leaf in (item.actions if isinstance(item, dashboard.MenuGroup) else (item,))
+    }
+
+
+def _notices(render) -> list[str]:
+    return [c.kwargs["notice"] for c in render.call_args_list if c.kwargs.get("notice")]
+
+
+def test_repo_menu_offers_apply_after_network_and_before_fold(tmp_path):
+    menu = dashboard.open_repo_menu([_cfg_group(tmp_path)], "alpha", frozenset())
+    assert menu is not None
+    labels = [i.label if isinstance(i, dashboard.MenuGroup) else i[0] for i in menu.actions]
+    assert labels.index("Network →") < labels.index("Apply config…") < labels.index("Fold")
+
+
+def test_orphan_repo_menu_offers_no_apply():
+    group = dashboard.RepoGroup("orphan", None, None, [_ci("orphan-x", "orphan")])
+    assert "apply" not in _repo_menu_verbs(dashboard.open_repo_menu([group], "orphan", frozenset()))
+
+
+@pytest.mark.parametrize(
+    ("over_ssh", "policy_kwargs", "offered"),
+    [
+        (False, None, True),
+        (False, {"commands": {"mode": "disabled"}}, True),
+        (True, {}, False),
+        (True, {"commands": {"mode": "allowlist", "allow": ["apply"]}}, False),
+        (
+            True,
+            {"commands": {"mode": "allowlist", "allow": ["apply"]}, "restrict_host": False},
+            True,
+        ),
+        (
+            True,
+            {"commands": {"mode": "allowlist", "allow": ["shell"]}, "restrict_host": False},
+            False,
+        ),
+    ],
+    ids=[
+        "local",
+        "local-ignores-policy",
+        "ssh-default",
+        "ssh-allowlist-restricted",
+        "ssh-allowlist-unrestricted",
+        "ssh-allowlist-without-it",
+    ],
+)
+def test_repo_menu_apply_follows_the_ssh_policy(tmp_path, over_ssh, policy_kwargs, offered):
+    menu = dashboard.open_repo_menu(
+        [_cfg_group(tmp_path)],
+        "alpha",
+        frozenset(),
+        ssh_policy=_ssh_policy(policy_kwargs),
+        over_ssh=over_ssh,
+    )
+    assert ("apply" in _repo_menu_verbs(menu)) is offered
+
+
+@pytest.mark.parametrize(
+    ("downs", "tail"), [(0, []), (1, ["--no-restart"])], ids=["restart", "no-restart"]
+)
+def test_repo_apply_runs_in_the_terminal_with_the_chosen_restart_policy(
+    mocker, tmp_path, downs, tail
+):
+    group = _cfg_group(tmp_path)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_repo_menu_keys(group, "apply"), *[b"j"] * downs, _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    picker = _rendered(render, dashboard.Picker)[0]
+    assert [e.value for e in picker.entries] == ["restart", "no-restart"]
+    child.assert_called_once_with(
+        ["jailbee", "apply", *tail, "--config", str(group.config_path)], check=False, cwd=tmp_path
+    )
+    wait.assert_called_once()
+
+
+@pytest.mark.parametrize("key", [_ESC, b"\x03"], ids=["escape", "ctrl-c"])
+def test_repo_apply_cancel_runs_nothing(mocker, tmp_path, key):
+    group = _cfg_group(tmp_path)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [*_repo_menu_keys(group, "apply"), key], [group]) == 0
+
+    child.assert_not_called()
+    assert _rendered(render, dashboard.Picker)
+    if key == _ESC:
+        assert "Cancelled" in _notices(render)
+
+
+def test_repo_apply_over_unrestricted_ssh_sends_no_config_flag(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path)
+    policy = RemoteSSHConfig(restrict_host=False)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+
+    keys = [*_repo_menu_keys(group, "apply", ssh_policy=policy, over_ssh=True), _ENTER]
+    assert _drive_run(mocker, keys, [group], over_ssh=True, ssh_policy=policy) == 0
+
+    child.assert_called_once_with(["jailbee", "apply"], check=False, cwd=tmp_path)
+
+
+def test_repo_apply_is_not_offered_to_a_default_ssh_session(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert (
+        _drive_run(
+            mocker, [_ENTER], [group], remote=True, over_ssh=True, ssh_policy=RemoteSSHConfig()
+        )
+        == 0
+    )
+
+    menus = _rendered(render, dashboard.RepoMenuState)
+    assert menus and "apply" not in _repo_menu_verbs(menus[0])
+
+
+def test_repo_apply_nonzero_exit_is_a_notice(mocker, tmp_path):
+    group = _cfg_group(tmp_path)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 2
+    mocker.patch.object(dashboard, "_wait_for_return")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    _drive_run(mocker, [*_repo_menu_keys(group, "apply"), _ENTER], [group])
+
+    assert "'jailbee apply' exited 2" in _notices(render)
 
 
 # --- Credential group… in the repo menu ------------------------------------
@@ -7577,3 +7787,1507 @@ def test_accounts_repo_vanishing_while_a_question_is_open_runs_nothing(
     child.assert_not_called()
     notices = " ".join(str(c.kwargs["notice"]) for c in render.call_args_list)
     assert "'alpha' is gone" in notices
+
+
+# --- _run_cli_foreground: dashboard-built argv in the real terminal -----------
+
+
+def _target(tmp_path: Path) -> dashboard.RepoTarget:
+    return dashboard.RepoTarget(tmp_path, tmp_path / "c.yaml")
+
+
+def test_run_cli_foreground_inserts_config_before_the_separator_and_pauses(mocker, tmp_path):
+    run = mocker.patch.object(dashboard.subprocess, "run")
+    run.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+
+    rc = dashboard._run_cli_foreground(
+        _target(tmp_path), ["snapshot", "create", "--", "alpha-x", "t"], style="output"
+    )
+
+    assert rc == 0
+    run.assert_called_once_with(
+        [
+            "jailbee",
+            "snapshot",
+            "create",
+            "--config",
+            str(tmp_path / "c.yaml"),
+            "--",
+            "alpha-x",
+            "t",
+        ],
+        check=False,
+        cwd=tmp_path,
+    )
+    wait.assert_called_once()
+
+
+def test_run_cli_foreground_over_ssh_sends_no_config_flag(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    run = mocker.patch.object(dashboard.subprocess, "run")
+    run.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+
+    dashboard._run_cli_foreground(
+        _target(tmp_path),
+        ["disk-usage"],
+        style="output",
+        remote=True,
+        over_ssh=True,
+        ssh_policy=RemoteSSHConfig(),
+    )
+
+    run.assert_called_once_with(["jailbee", "disk-usage"], check=False, cwd=tmp_path)
+
+
+def test_run_cli_foreground_refuses_before_spawning(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+    from jailbee.remote_ssh.router import RouteError
+
+    run = mocker.patch.object(dashboard.subprocess, "run")
+    paged = mocker.patch.object(dashboard, "_run_paged")
+
+    with pytest.raises(RouteError):
+        dashboard._run_cli_foreground(
+            _target(tmp_path),
+            ["apply"],
+            style="paged",
+            remote=True,
+            over_ssh=True,
+            ssh_policy=RemoteSSHConfig(),
+        )
+
+    run.assert_not_called()
+    paged.assert_not_called()
+
+
+def test_run_cli_foreground_pages_locally(mocker, tmp_path):
+    mocker.patch.object(dashboard, "pager_argv", return_value=["less", "-R"])
+    paged = mocker.patch.object(dashboard, "_run_paged", return_value=3)
+    run = mocker.patch.object(dashboard.subprocess, "run")
+
+    rc = dashboard._run_cli_foreground(_target(tmp_path), ["doctor"], style="paged")
+
+    assert rc == 3
+    paged.assert_called_once_with(
+        ["jailbee", "doctor", "--config", str(tmp_path / "c.yaml")], ["less", "-R"], tmp_path
+    )
+    run.assert_not_called()
+
+
+def test_run_cli_foreground_never_pages_a_remote_session(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    mocker.patch.object(dashboard, "pager_argv", return_value=["less", "-R"])
+    paged = mocker.patch.object(dashboard, "_run_paged")
+    run = mocker.patch.object(dashboard.subprocess, "run")
+    run.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+
+    dashboard._run_cli_foreground(
+        _target(tmp_path),
+        ["doctor"],
+        style="paged",
+        remote=True,
+        over_ssh=True,
+        ssh_policy=RemoteSSHConfig(),
+    )
+
+    paged.assert_not_called()
+    run.assert_called_once_with(["jailbee", "doctor"], check=False, cwd=tmp_path)
+    wait.assert_called_once()
+
+
+def test_run_cli_foreground_falls_back_to_a_pause_when_the_pager_fails(mocker, tmp_path):
+    mocker.patch.object(dashboard, "pager_argv", return_value=["less", "-R"])
+    mocker.patch.object(
+        dashboard, "_run_paged", side_effect=dashboard._PagerUnavailableError("gone")
+    )
+    run = mocker.patch.object(dashboard.subprocess, "run")
+    run.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+
+    assert dashboard._run_cli_foreground(_target(tmp_path), ["doctor"], style="paged") == 0
+    run.assert_called_once()
+    wait.assert_called_once()
+
+
+def test_run_cli_foreground_plain_does_not_pause(mocker, tmp_path):
+    run = mocker.patch.object(dashboard.subprocess, "run")
+    run.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+
+    dashboard._run_cli_foreground(_target(tmp_path), ["disk-usage"], style="plain")
+
+    wait.assert_not_called()
+
+
+@pytest.mark.parametrize(("remote", "over_ssh"), [(False, True), (True, False)])
+def test_run_cli_foreground_either_remote_flag_alone_forbids_the_pager(
+    mocker, tmp_path, remote, over_ssh
+):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    pager = mocker.patch.object(dashboard, "pager_argv", return_value=["less", "-R"])
+    paged = mocker.patch.object(dashboard, "_run_paged")
+    run = mocker.patch.object(dashboard.subprocess, "run")
+    run.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+
+    dashboard._run_cli_foreground(
+        _target(tmp_path),
+        ["doctor"],
+        style="paged",
+        remote=remote,
+        over_ssh=over_ssh,
+        ssh_policy=RemoteSSHConfig(),
+    )
+
+    pager.assert_not_called()
+    paged.assert_not_called()
+    run.assert_called_once()
+    wait.assert_called_once()
+
+
+def test_repo_menu_diagnostics_submenu_then_prune_before_fold(tmp_path):
+    menu = dashboard.open_repo_menu([_cfg_group(tmp_path)], "alpha", frozenset())
+    assert menu is not None
+    labels = [i.label if isinstance(i, dashboard.MenuGroup) else i[0] for i in menu.actions]
+    at = labels.index("Diagnostics →")
+    assert labels[at - 1] == "Apply config…"
+    assert labels[at + 1 : at + 3] == ["Prune stale containers…", "Fold"]
+    diagnostics = menu.actions[at]
+    assert isinstance(diagnostics, dashboard.MenuGroup)
+    assert diagnostics.actions == (("Doctor", "doctor"), ("Disk usage", "disk-usage"))
+
+
+@pytest.mark.parametrize(
+    ("over_ssh", "policy_kwargs", "expected"),
+    [
+        (False, None, {"doctor", "disk-usage", "prune"}),
+        (False, {"commands": {"mode": "disabled"}}, {"doctor", "disk-usage", "prune"}),
+        (True, {}, {"doctor", "disk-usage", "prune"}),
+        (True, {"commands": {"mode": "allowlist", "allow": ["doctor"]}}, {"doctor"}),
+        (True, {"commands": {"mode": "allowlist", "allow": ["prune"]}}, {"prune"}),
+        (True, {"commands": {"mode": "allowlist", "allow": ["shell"]}}, set()),
+        (True, {"excluded_repos": ["other"]}, {"prune"}),
+    ],
+    ids=[
+        "local",
+        "local-ignores-policy",
+        "ssh-default",
+        "ssh-allowlist-doctor",
+        "ssh-allowlist-prune",
+        "ssh-allowlist-without",
+        "ssh-excluded-repos",
+    ],
+)
+def test_repo_menu_diagnostics_and_prune_follow_the_ssh_policy(
+    tmp_path, over_ssh, policy_kwargs, expected
+):
+    menu = dashboard.open_repo_menu(
+        [_cfg_group(tmp_path)],
+        "alpha",
+        frozenset(),
+        ssh_policy=_ssh_policy(policy_kwargs),
+        over_ssh=over_ssh,
+    )
+    assert _repo_menu_verbs(menu) & {"doctor", "disk-usage", "prune"} == expected
+    assert menu is not None
+    labels = [i.label for i in menu.actions if isinstance(i, dashboard.MenuGroup)]
+    # the submenu is dropped, not left empty, when both leaves are refused
+    assert ("Diagnostics →" in labels) is bool(expected & {"doctor", "disk-usage"})
+
+
+def test_repo_doctor_is_paged_locally(mocker, tmp_path):
+    group = _cfg_group(tmp_path)
+    mocker.patch.object(dashboard, "pager_argv", return_value=["less", "-R"])
+    paged = mocker.patch.object(dashboard, "_run_paged", return_value=0)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+
+    assert _drive_run(mocker, _repo_menu_keys(group, "doctor"), [group]) == 0
+
+    paged.assert_called_once_with(
+        ["jailbee", "doctor", "--config", str(group.config_path)], ["less", "-R"], tmp_path
+    )
+    child.assert_not_called()
+
+
+def test_repo_doctor_over_ssh_pauses_instead_of_paging_and_sends_no_config(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path)
+    policy = RemoteSSHConfig()
+    mocker.patch.object(dashboard, "pager_argv", return_value=["less", "-R"])
+    paged = mocker.patch.object(dashboard, "_run_paged")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+
+    keys = _repo_menu_keys(group, "doctor", ssh_policy=policy, over_ssh=True)
+    assert _drive_run(mocker, keys, [group], remote=True, over_ssh=True, ssh_policy=policy) == 0
+
+    paged.assert_not_called()
+    child.assert_called_once_with(["jailbee", "doctor"], check=False, cwd=tmp_path)
+    wait.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("verb", "argv"),
+    [("disk-usage", ["disk-usage"]), ("prune", ["prune"])],
+    ids=["disk-usage", "prune"],
+)
+@pytest.mark.parametrize("over_ssh", [False, True], ids=["local", "ssh-default"])
+def test_repo_disk_usage_and_prune_run_in_the_terminal_with_a_pause(
+    mocker, tmp_path, verb, argv, over_ssh
+):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path)
+    policy = RemoteSSHConfig() if over_ssh else None
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+
+    keys = _repo_menu_keys(group, verb, ssh_policy=policy, over_ssh=over_ssh)
+    assert (
+        _drive_run(mocker, keys, [group], remote=over_ssh, over_ssh=over_ssh, ssh_policy=policy)
+        == 0
+    )
+
+    flags = [] if over_ssh else ["--config", str(group.config_path)]
+    child.assert_called_once_with(["jailbee", *argv, *flags], check=False, cwd=tmp_path)
+    assert "--yes-to-all" not in child.call_args.args[0]
+    wait.assert_called_once()
+
+
+def test_repo_doctor_failure_is_a_notice(mocker, tmp_path):
+    group = _cfg_group(tmp_path)
+    mocker.patch.object(dashboard, "pager_argv", return_value=None)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 1
+    mocker.patch.object(dashboard, "_wait_for_return")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    _drive_run(mocker, _repo_menu_keys(group, "doctor"), [group])
+
+    assert "'jailbee doctor' exited 1" in _notices(render)
+
+
+# --- Terminal-only container entries (autostart, snapshots, mounts) ---------
+
+
+def _autostart_ci(phase: str = "autostart") -> ContainerInfo:
+    """A container whose job row is an autostart run; os.getpid() keeps the worker alive."""
+    return dataclasses.replace(
+        _ci("alpha-x", "alpha", job_phase=phase, job_pid=os.getpid()), job_kind="autostart"
+    )
+
+
+def _container_menu_keys(group: dashboard.RepoGroup, verb: str, **menu_kwargs) -> list[bytes]:
+    """Keys that choose top-level container-menu leaf ``verb`` for the first container.
+
+    ``menu_kwargs`` (``remote``/``over_ssh``/``ssh_policy``) must match the ``run()`` call.
+    """
+    menu = dashboard.open_menu([group], group.containers[0].name, **menu_kwargs)
+    assert menu is not None
+    entries = list(dashboard._menu_entries(menu))
+    at = next(
+        i
+        for i, entry in enumerate(entries)
+        if not isinstance(entry, dashboard.MenuGroup) and entry[1] == verb
+    )
+    return [b"j", _ENTER, *[b"j"] * at, _ENTER]
+
+
+def test_container_menu_places_autostart_after_the_job_log_and_snapshots_before_the_group(
+    tmp_path,
+):
+    menu = dashboard.open_menu([_cfg_group(tmp_path, (_autostart_ci(),))], "alpha-x")
+    assert menu is not None
+    verbs = [verb for _label, verb in menu.actions]
+    at = verbs.index("job log --follow")
+    assert verbs[at + 1 : at + 3] == ["autostart-status", "autostart-cancel"]
+    assert verbs[verbs.index("snapshots") + 1] == "credential-group"
+    # Credential group… still sits directly above the Network → group
+    assert verbs[verbs.index("credential-group") + 1].startswith("net ")
+
+
+def test_terminal_only_verbs_never_reach_the_shared_action_list(tmp_path):
+    group = _cfg_group(tmp_path, (_autostart_ci(),))
+    group.optional_mounts = ("aws",)
+    shared = {verb for _label, verb in dashboard.actions_for_container([group], "alpha-x")}
+    assert not shared & dashboard.TERMINAL_MENU_VERBS
+
+
+@pytest.mark.parametrize(
+    ("verbs", "expected"),
+    [
+        (["tmux", "job log", "net loose", "destroy"], ["tmux", "job log", "X", "net loose"]),
+        (["tmux", "net loose", "destroy"], ["tmux", "X", "net loose"]),
+        (["tmux", "restart", "destroy"], ["tmux", "X", "restart"]),
+    ],
+    ids=["after-the-job-entry", "no-job-entry-before-network", "no-network-before-lifecycle"],
+)
+def test_insert_after_job_falls_back_to_before_network(verbs, expected):
+    actions = [(verb.title(), verb) for verb in verbs]
+    placed = [verb for _label, verb in dashboard._insert_after_job(actions, [("X", "X")])]
+    assert placed[: len(expected)] == expected
+
+
+@pytest.mark.parametrize(
+    ("over_ssh", "policy_kwargs", "expected"),
+    [
+        (False, None, {"autostart-status", "autostart-cancel"}),
+        (False, {"commands": {"mode": "disabled"}}, {"autostart-status", "autostart-cancel"}),
+        (True, {}, {"autostart-status", "autostart-cancel"}),
+        (
+            True,
+            {"commands": {"mode": "allowlist", "allow": ["shell", "autostart status"]}},
+            {"autostart-status"},
+        ),
+        (True, {"commands": {"mode": "allowlist", "allow": ["shell"]}}, set()),
+        (True, {"excluded_repos": ["other"]}, set()),
+    ],
+    ids=[
+        "local",
+        "local-ignores-policy",
+        "ssh-default",
+        "ssh-allowlist-status",
+        "ssh-allowlist-without",
+        "ssh-excluded-repos",
+    ],
+)
+def test_container_menu_autostart_entries_follow_the_ssh_policy(
+    tmp_path, over_ssh, policy_kwargs, expected
+):
+    menu = dashboard.open_menu(
+        [_cfg_group(tmp_path, (_autostart_ci(),))],
+        "alpha-x",
+        remote=over_ssh,
+        over_ssh=over_ssh,
+        ssh_policy=_ssh_policy(policy_kwargs),
+    )
+    assert menu is not None
+    assert {verb for _label, verb in menu.actions} & {"autostart-status", "autostart-cancel"} == (
+        expected
+    )
+
+
+@pytest.mark.parametrize("over_ssh", [False, True], ids=["local", "ssh-default"])
+def test_autostart_status_runs_in_the_terminal(mocker, tmp_path, over_ssh):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_autostart_ci(),))
+    policy = RemoteSSHConfig() if over_ssh else None
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+    kwargs = {"remote": over_ssh, "over_ssh": over_ssh, "ssh_policy": policy}
+
+    keys = _container_menu_keys(group, "autostart-status", **kwargs)
+    assert _drive_run(mocker, keys, [group], **kwargs) == 0
+
+    flags = [] if over_ssh else ["--config", str(group.config_path)]
+    child.assert_called_once_with(
+        ["jailbee", "autostart", "status", "alpha-x", *flags], check=False, cwd=tmp_path
+    )
+    wait.assert_called_once()
+
+
+def test_cancel_autostart_asks_first_and_no_runs_nothing(mocker, tmp_path):
+    group = _cfg_group(tmp_path, (_autostart_ci(),))
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_menu_keys(group, "autostart-cancel"), _ENTER]  # Enter on "No"
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert [e.value for e in _rendered(render, dashboard.Picker)[0].entries] == ["no", "yes"]
+    child.assert_not_called()
+    assert "Cancelled" in _notices(render)
+
+
+@pytest.mark.parametrize("over_ssh", [False, True], ids=["local", "ssh-default"])
+def test_cancel_autostart_yes_runs_the_cancel(mocker, tmp_path, over_ssh):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_autostart_ci(),))
+    policy = RemoteSSHConfig() if over_ssh else None
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+    kwargs = {"remote": over_ssh, "over_ssh": over_ssh, "ssh_policy": policy}
+
+    keys = [*_container_menu_keys(group, "autostart-cancel", **kwargs), b"j", _ENTER]
+    assert _drive_run(mocker, keys, [group], **kwargs) == 0
+
+    flags = [] if over_ssh else ["--config", str(group.config_path)]
+    child.assert_called_once_with(
+        ["jailbee", "autostart", "cancel", "alpha-x", *flags], check=False, cwd=tmp_path
+    )
+
+
+# --- Vanish, inert and stale-policy protection of the terminal-only entries --
+
+
+def _drive_with_vanish(mocker, keys, groups, vanish, *, when: str) -> int:
+    """Run the loop; ``vanish()`` fires after ``keys``: a frame before Enter, or on its read."""
+    script = iter([*keys, "vanish", *([_ENTER] if when == "frame-before-enter" else [])])
+
+    def read(_fd, _n):
+        item = next(script, b"\x03")
+        if item == "vanish":
+            vanish()
+            return b"z" if when == "frame-before-enter" else _ENTER
+        return item
+
+    return _drive_run_with_reader(mocker, read, groups)
+
+
+_VANISH_WHEN = pytest.mark.parametrize("when", ["frame-before-enter", "same-read-as-enter"])
+
+
+@_VANISH_WHEN
+def test_container_vanishing_while_the_autostart_cancel_picker_is_open_runs_nothing(
+    mocker, tmp_path, when
+):
+    group = _cfg_group(tmp_path, (_autostart_ci(),))
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    # ``j`` moves the cursor from "No" to "Yes"; the container then disappears
+    keys = [*_container_menu_keys(group, "autostart-cancel"), b"j"]
+    assert _drive_with_vanish(mocker, keys, [group], group.containers.clear, when=when) == 0
+
+    child.assert_not_called()
+    assert "'alpha-x' is gone" in " ".join(str(n) for n in _notices(render))
+
+
+@pytest.mark.parametrize("when", ["frame-before-enter", "same-read-as-enter"])
+def test_repo_vanishing_while_the_apply_picker_is_open_runs_nothing(mocker, tmp_path, when):
+    group = _cfg_group(tmp_path)
+    groups = [group]
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    gone = False
+    real_target_group = dashboard.target_group
+
+    def target_group(seen, target, kind):
+        return None if gone and kind == "repo" else real_target_group(seen, target, kind)
+
+    mocker.patch.object(dashboard, "target_group", side_effect=target_group)
+
+    def vanish():
+        nonlocal gone
+        if when == "frame-before-enter":
+            groups.clear()  # the next frame's loop-top guard closes the picker
+        else:
+            gone = True  # the frame still lists it; only the submit's re-resolve can notice
+
+    assert (
+        _drive_with_vanish(mocker, _repo_menu_keys(group, "apply"), groups, vanish, when=when) == 0
+    )
+
+    child.assert_not_called()
+    assert "'alpha' is gone" in " ".join(str(n) for n in _notices(render))
+
+
+def test_stale_menu_refused_by_the_policy_at_submit_spawns_nothing(mocker, tmp_path):
+    group = _cfg_group(tmp_path, (_autostart_ci(),))
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    keys = _container_menu_keys(group, "autostart-status")  # built while the menu offers it
+    real_check = dashboard.check_dashboard_command
+
+    def refuse(argv, policy, *, over_ssh):
+        if argv[:2] == ["autostart", "status"]:
+            raise dashboard.RouteError("autostart status is not permitted")
+        return real_check(argv, policy, over_ssh=over_ssh)
+
+    mocker.patch.object(dashboard, "check_dashboard_command", side_effect=refuse)
+
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    child.assert_not_called()
+    assert "autostart status is not permitted" in _notices(render)
+
+
+# --- Snapshots…: listing and create -----------------------------------------
+
+_SNAPS_JSON = '[{"name": "before-upgrade", "created": "2026-09-29T10:00:00.5Z"}]'
+_SNAPSHOT_LS = ["snapshot", "ls", "alpha-x", "-o", "json", "--fields", "name,created"]
+
+
+def _fake_snapshot_ls(mocker, result=None):
+    """Patch the quiet runner the snapshot listing goes through."""
+    return mocker.patch.object(
+        dashboard.da,
+        "run_cli_quiet",
+        return_value=result or dashboard.da.CliResult(True, "done", _SNAPS_JSON),
+    )
+
+
+@pytest.mark.parametrize("over_ssh", [False, True], ids=["local", "ssh-default"])
+def test_snapshots_lists_quietly_and_offers_create_above_the_snapshots(mocker, tmp_path, over_ssh):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    policy = RemoteSSHConfig() if over_ssh else None
+    listing = _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    kwargs = {"remote": over_ssh, "over_ssh": over_ssh, "ssh_policy": policy}
+
+    assert (
+        _drive_run(mocker, _container_menu_keys(group, "snapshots", **kwargs), [group], **kwargs)
+        == 0
+    )
+
+    flags = [] if over_ssh else ["--config", str(group.config_path)]
+    listing.assert_called_once_with([*_SNAPSHOT_LS, *flags], cwd=tmp_path)
+    picker = _rendered(render, dashboard.Picker)[0]
+    assert [e.value for e in picker.entries] == [
+        "create:timestamp",
+        "create:named",
+        "snapshot:before-upgrade",
+    ]
+    child.assert_not_called()  # listing is quiet: the screen never blanked
+
+
+@pytest.mark.parametrize("over_ssh", [False, True], ids=["local", "ssh-default"])
+def test_snapshot_create_with_a_timestamp_runs_in_the_terminal(mocker, tmp_path, over_ssh):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    policy = RemoteSSHConfig() if over_ssh else None
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+    kwargs = {"remote": over_ssh, "over_ssh": over_ssh, "ssh_policy": policy}
+
+    keys = [*_container_menu_keys(group, "snapshots", **kwargs), _ENTER]
+    assert _drive_run(mocker, keys, [group], **kwargs) == 0
+
+    flags = [] if over_ssh else ["--config", str(group.config_path)]
+    child.assert_called_once_with(
+        ["jailbee", "snapshot", "create", *flags, "--", "alpha-x"], check=False, cwd=tmp_path
+    )
+    wait.assert_called_once()
+
+
+def test_snapshot_create_named_takes_an_option_like_tag_as_a_tag(mocker, tmp_path):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+
+    keys = [*_container_menu_keys(group, "snapshots"), b"j", _ENTER, *_keys("--yes"), _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    child.assert_called_once_with(
+        [
+            "jailbee",
+            "snapshot",
+            "create",
+            "--config",
+            str(group.config_path),
+            "--",
+            "alpha-x",
+            "--yes",
+        ],
+        check=False,
+        cwd=tmp_path,
+    )
+
+
+def _snapshot_tag_prompts(render) -> list:
+    return [
+        p for p in _rendered(render, dashboard.TextPrompt) if p.purpose == "container-snapshot-tag"
+    ]
+
+
+def test_snapshot_tag_prompt_escape_runs_nothing(mocker, tmp_path):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_menu_keys(group, "snapshots"), b"j", _ENTER, *_keys("x"), _ESC]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert _snapshot_tag_prompts(render)
+    assert "Cancelled" in _notices(render)
+    child.assert_not_called()
+
+
+def test_snapshot_tag_prompt_ctrl_c_cancels_only_the_prompt(mocker, tmp_path):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [
+        *_container_menu_keys(group, "snapshots"),
+        b"j",
+        _ENTER,
+        *_keys("x"),
+        b"\x03",
+        b"h",
+        _ESC,
+    ]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert _snapshot_tag_prompts(render)
+    child.assert_not_called()
+    assert "Cancelled" in _notices(render)
+    # the dashboard survived the Ctrl-C: the later `h` still opened help
+    assert "help" in [c.kwargs.get("overlay") for c in render.call_args_list]
+
+
+def test_snapshot_tag_prompt_rejects_a_blank_tag_inline(mocker, tmp_path):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_menu_keys(group, "snapshots"), b"j", _ENTER, *_keys("  "), _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    child.assert_not_called()
+    assert any(p.error == "Snapshot tag cannot be empty" for p in _snapshot_tag_prompts(render))
+
+
+def test_snapshot_picker_escape_runs_nothing(mocker, tmp_path):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [*_container_menu_keys(group, "snapshots"), _ESC], [group]) == 0
+
+    assert _rendered(render, dashboard.Picker)
+    child.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("result", "notice"),
+    [
+        (dashboard.da.CliResult(False, "error: boom"), "could not list snapshots: error: boom"),
+        (
+            dashboard.da.CliResult(True, "done", "No snapshots"),
+            "could not list snapshots: unexpected output from 'jailbee snapshot ls'",
+        ),
+    ],
+    ids=["cli-failed", "not-json"],
+)
+def test_a_failed_snapshot_listing_is_a_notice(mocker, tmp_path, result, notice):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker, result)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, _container_menu_keys(group, "snapshots"), [group]) == 0
+
+    assert not _rendered(render, dashboard.Picker)
+    assert notice in _notices(render)
+
+
+def test_snapshot_listing_is_refused_when_create_is_not_permitted_and_there_are_none(
+    mocker, tmp_path
+):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    policy = RemoteSSHConfig.model_validate(
+        {"commands": {"mode": "allowlist", "allow": ["shell", "snapshot ls"]}}
+    )
+    _fake_snapshot_ls(mocker, dashboard.da.CliResult(True, "done", "[]"))
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    kwargs = {"remote": True, "over_ssh": True, "ssh_policy": policy}
+
+    assert (
+        _drive_run(mocker, _container_menu_keys(group, "snapshots", **kwargs), [group], **kwargs)
+        == 0
+    )
+
+    assert not _rendered(render, dashboard.Picker)
+    assert "No snapshots of 'alpha-x'" in _notices(render)
+
+
+def test_snapshot_picker_hides_create_when_only_the_listing_is_permitted(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    policy = RemoteSSHConfig.model_validate(
+        {"commands": {"mode": "allowlist", "allow": ["shell", "snapshot ls"]}}
+    )
+    _fake_snapshot_ls(mocker)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    kwargs = {"remote": True, "over_ssh": True, "ssh_policy": policy}
+
+    assert (
+        _drive_run(mocker, _container_menu_keys(group, "snapshots", **kwargs), [group], **kwargs)
+        == 0
+    )
+
+    picker = _rendered(render, dashboard.Picker)[0]
+    assert [e.value for e in picker.entries] == ["snapshot:before-upgrade"]
+
+
+def test_snapshot_create_permitted_over_ssh_with_an_empty_listing_still_opens_the_picker(
+    mocker, tmp_path
+):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    policy = RemoteSSHConfig.model_validate(
+        {"commands": {"mode": "allowlist", "allow": ["shell", "snapshot ls", "snapshot create"]}}
+    )
+    _fake_snapshot_ls(mocker, dashboard.da.CliResult(True, "done", "[]"))
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    kwargs = {"remote": True, "over_ssh": True, "ssh_policy": policy}
+
+    keys = [*_container_menu_keys(group, "snapshots", **kwargs), b"j", _ENTER, *_keys("--yes")]
+    assert _drive_run(mocker, [*keys, _ENTER], [group], **kwargs) == 0
+
+    picker = _rendered(render, dashboard.Picker)[0]
+    assert [e.value for e in picker.entries] == ["create:timestamp", "create:named"]
+    child.assert_called_once_with(
+        ["jailbee", "snapshot", "create", "--", "alpha-x", "--yes"], check=False, cwd=tmp_path
+    )
+
+
+def test_snapshot_create_refused_by_the_policy_at_submit_spawns_nothing(mocker, tmp_path):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    real_check = dashboard.check_dashboard_command
+
+    def refuse(argv, policy, *, over_ssh):
+        if argv[:2] == ["snapshot", "create"]:
+            raise dashboard.RouteError("snapshot create is not permitted")
+        return real_check(argv, policy, over_ssh=over_ssh)
+
+    mocker.patch.object(dashboard, "check_dashboard_command", side_effect=refuse)
+
+    keys = [*_container_menu_keys(group, "snapshots"), _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    child.assert_not_called()
+    assert "snapshot create is not permitted" in _notices(render)
+
+
+@_VANISH_WHEN
+@pytest.mark.parametrize("choice", ["timestamp", "named-tag"])
+def test_container_vanishing_while_the_snapshots_picker_or_tag_prompt_is_open_runs_nothing(
+    mocker, tmp_path, when, choice
+):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    listing = _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = _container_menu_keys(group, "snapshots")
+    if choice == "named-tag":
+        keys = [*keys, b"j", _ENTER, *_keys("v1")]
+    assert _drive_with_vanish(mocker, keys, [group], group.containers.clear, when=when) == 0
+
+    child.assert_not_called()
+    assert listing.call_count == 1  # nothing was listed again either
+    assert "'alpha-x' is gone" in " ".join(str(n) for n in _notices(render))
+
+
+# --- Snapshots…: restore and delete, confirmed -------------------------------
+
+_TO_SNAPSHOT_ROW = [b"j", b"j", _ENTER]
+
+
+@pytest.mark.parametrize(
+    ("action_downs", "verb"), [(0, "restore"), (1, "delete")], ids=["restore", "delete"]
+)
+@pytest.mark.parametrize("over_ssh", [False, True], ids=["local", "ssh-default"])
+def test_snapshot_restore_and_delete_run_after_a_yes(
+    mocker, tmp_path, action_downs, verb, over_ssh
+):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    policy = RemoteSSHConfig() if over_ssh else None
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+    kwargs = {"remote": over_ssh, "over_ssh": over_ssh, "ssh_policy": policy}
+
+    keys = [
+        *_container_menu_keys(group, "snapshots", **kwargs),
+        *_TO_SNAPSHOT_ROW,
+        *[b"j"] * action_downs,
+        _ENTER,
+        b"j",  # "Yes, …"
+        _ENTER,
+    ]
+    assert _drive_run(mocker, keys, [group], **kwargs) == 0
+
+    flags = [] if over_ssh else ["--config", str(group.config_path)]
+    child.assert_called_once_with(
+        ["jailbee", "snapshot", verb, *flags, "--", "alpha-x", "before-upgrade"],
+        check=False,
+        cwd=tmp_path,
+    )
+    wait.assert_called_once()
+
+
+@pytest.mark.parametrize("action_downs", [0, 1], ids=["restore", "delete"])
+def test_snapshot_confirm_no_runs_nothing(mocker, tmp_path, action_downs):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [
+        *_container_menu_keys(group, "snapshots"),
+        *_TO_SNAPSHOT_ROW,
+        *[b"j"] * action_downs,
+        _ENTER,
+        _ENTER,  # a stray Enter lands on "No"
+    ]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    confirm = [
+        p for p in _rendered(render, dashboard.Picker) if p.purpose == "container-snapshot-confirm"
+    ]
+    assert confirm and confirm[0].entries[0].value == "no"
+    child.assert_not_called()
+    assert "Cancelled" in _notices(render)
+
+
+@pytest.mark.parametrize("step", ["action", "confirm"])
+@pytest.mark.parametrize("key", [_ESC, b"\x03"], ids=["esc", "ctrl-c"])
+def test_snapshot_action_and_confirm_cancel_runs_nothing(mocker, tmp_path, step, key):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_menu_keys(group, "snapshots"), *_TO_SNAPSHOT_ROW]
+    if step == "confirm":
+        keys += [b"j", _ENTER, b"j"]  # Delete, then onto "Yes"
+    assert _drive_run(mocker, [*keys, key, _ENTER], [group]) == 0
+
+    purposes = {p.purpose for p in _rendered(render, dashboard.Picker)}
+    assert "container-snapshot-action" in purposes
+    assert ("container-snapshot-confirm" in purposes) == (step == "confirm")
+    child.assert_not_called()
+
+
+def test_snapshot_changes_the_policy_refuses_are_not_offered(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    policy = RemoteSSHConfig.model_validate(
+        {"commands": {"mode": "allowlist", "allow": ["shell", "snapshot ls", "snapshot delete"]}}
+    )
+    _fake_snapshot_ls(mocker)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    kwargs = {"remote": True, "over_ssh": True, "ssh_policy": policy}
+
+    # no create entries: the listed snapshot is row 0
+    keys = [*_container_menu_keys(group, "snapshots", **kwargs), _ENTER]
+    assert _drive_run(mocker, keys, [group], **kwargs) == 0
+
+    pickers = _rendered(render, dashboard.Picker)
+    assert [e.value for e in pickers[0].entries] == ["snapshot:before-upgrade"]
+    actions = [p for p in pickers if p.purpose == "container-snapshot-action"]
+    assert [e.value for e in actions[0].entries] == ["delete"]
+
+
+def test_snapshot_restore_alone_is_offered_when_delete_is_refused(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    policy = RemoteSSHConfig.model_validate(
+        {"commands": {"mode": "allowlist", "allow": ["shell", "snapshot ls", "snapshot restore"]}}
+    )
+    _fake_snapshot_ls(mocker)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    kwargs = {"remote": True, "over_ssh": True, "ssh_policy": policy}
+
+    keys = [*_container_menu_keys(group, "snapshots", **kwargs), _ENTER]
+    assert _drive_run(mocker, keys, [group], **kwargs) == 0
+
+    actions = [
+        p for p in _rendered(render, dashboard.Picker) if p.purpose == "container-snapshot-action"
+    ]
+    assert [e.value for e in actions[0].entries] == ["restore"]
+
+
+def test_a_snapshot_the_policy_permits_no_change_to_is_a_notice(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    policy = RemoteSSHConfig.model_validate(
+        {"commands": {"mode": "allowlist", "allow": ["shell", "snapshot ls"]}}
+    )
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    kwargs = {"remote": True, "over_ssh": True, "ssh_policy": policy}
+
+    keys = [*_container_menu_keys(group, "snapshots", **kwargs), _ENTER]
+    assert _drive_run(mocker, keys, [group], **kwargs) == 0
+
+    assert "No change to snapshot before-upgrade is permitted here" in _notices(render)
+    assert not [p for p in _rendered(render, dashboard.Picker) if p.purpose.endswith("action")]
+    child.assert_not_called()
+
+
+@pytest.mark.parametrize("verb", ["restore", "delete"])
+@pytest.mark.parametrize("name", ["--yes", "snapshot:x"])
+def test_snapshot_names_that_look_like_options_or_sentinels_stay_positional(
+    mocker, tmp_path, verb, name
+):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    listing = json.dumps([{"name": name, "created": "2026-09-29T10:00:00Z"}])
+    _fake_snapshot_ls(mocker, dashboard.da.CliResult(True, "done", listing))
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+
+    keys = [
+        *_container_menu_keys(group, "snapshots"),
+        *_TO_SNAPSHOT_ROW,
+        *([b"j"] if verb == "delete" else []),
+        _ENTER,
+        b"j",
+        _ENTER,
+    ]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    child.assert_called_once_with(
+        [
+            "jailbee",
+            "snapshot",
+            verb,
+            "--config",
+            str(group.config_path),
+            "--",
+            "alpha-x",
+            name,
+        ],
+        check=False,
+        cwd=tmp_path,
+    )
+
+
+@pytest.mark.parametrize("verb", ["restore", "delete"])
+def test_snapshot_change_refused_by_the_policy_at_submit_spawns_nothing(mocker, tmp_path, verb):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    real_check = dashboard.check_dashboard_command
+
+    def refuse(argv, policy, *, over_ssh):
+        if argv[:2] == ["snapshot", verb]:
+            raise dashboard.RouteError(f"snapshot {verb} is not permitted")
+        return real_check(argv, policy, over_ssh=over_ssh)
+
+    mocker.patch.object(dashboard, "check_dashboard_command", side_effect=refuse)
+
+    keys = [
+        *_container_menu_keys(group, "snapshots"),
+        *_TO_SNAPSHOT_ROW,
+        *([b"j"] if verb == "delete" else []),
+        _ENTER,
+        b"j",
+        _ENTER,
+    ]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    child.assert_not_called()
+    assert f"snapshot {verb} is not permitted" in _notices(render)
+
+
+@_VANISH_WHEN
+@pytest.mark.parametrize("step", ["action", "confirm"])
+def test_container_vanishing_while_a_snapshot_action_or_confirm_is_open_runs_nothing(
+    mocker, tmp_path, when, step
+):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_menu_keys(group, "snapshots"), *_TO_SNAPSHOT_ROW]
+    if step == "confirm":
+        keys += [_ENTER, b"j"]  # Restore, then onto "Yes"
+    assert _drive_with_vanish(mocker, keys, [group], group.containers.clear, when=when) == 0
+
+    purposes = {p.purpose for p in _rendered(render, dashboard.Picker)}
+    assert "container-snapshot-action" in purposes
+    assert ("container-snapshot-confirm" in purposes) == (step == "confirm")
+    child.assert_not_called()
+    assert "'alpha-x' is gone" in " ".join(str(n) for n in _notices(render))
+
+
+_THREE_SNAPS = json.dumps([{"name": n, "created": "2026-09-29T10:00:00Z"} for n in ("a", "b", "c")])
+
+
+@pytest.mark.parametrize("verb", ["restore", "delete"])
+@pytest.mark.parametrize(("row", "tag"), [(0, "a"), (1, "b"), (2, "c")], ids=["a", "b", "c"])
+def test_snapshot_change_acts_on_the_chosen_snapshot_not_the_first(
+    mocker, tmp_path, verb, row, tag
+):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker, dashboard.da.CliResult(True, "done", _THREE_SNAPS))
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+
+    keys = [
+        *_container_menu_keys(group, "snapshots"),
+        *[b"j"] * (2 + row),  # past the two create entries
+        _ENTER,
+        *([b"j"] if verb == "delete" else []),
+        _ENTER,
+        b"j",
+        _ENTER,
+    ]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    child.assert_called_once_with(
+        ["jailbee", "snapshot", verb, "--config", str(group.config_path), "--", "alpha-x", tag],
+        check=False,
+        cwd=tmp_path,
+    )
+
+
+@pytest.mark.parametrize("verb", ["restore", "delete"])
+def test_snapshot_named_config_stays_positional_over_ssh(mocker, tmp_path, verb):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    listing = json.dumps([{"name": "--config", "created": "2026-09-29T10:00:00Z"}])
+    _fake_snapshot_ls(mocker, dashboard.da.CliResult(True, "done", listing))
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+    kwargs = {"remote": True, "over_ssh": True, "ssh_policy": RemoteSSHConfig()}
+
+    keys = [
+        *_container_menu_keys(group, "snapshots", **kwargs),
+        *_TO_SNAPSHOT_ROW,
+        *([b"j"] if verb == "delete" else []),
+        _ENTER,
+        b"j",
+        _ENTER,
+    ]
+    assert _drive_run(mocker, keys, [group], **kwargs) == 0
+
+    child.assert_called_once_with(
+        ["jailbee", "snapshot", verb, "--", "alpha-x", "--config"], check=False, cwd=tmp_path
+    )
+
+
+def test_an_unknown_snapshot_action_spawns_nothing(mocker, tmp_path):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    real = dashboard.dact.snapshot_confirm_picker
+    mocker.patch.object(
+        dashboard.dact,
+        "snapshot_confirm_picker",
+        side_effect=lambda container, _action, tag: real(container, "bogus", tag),
+    )
+
+    keys = [*_container_menu_keys(group, "snapshots"), *_TO_SNAPSHOT_ROW, _ENTER, b"j", _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    child.assert_not_called()
+
+
+# --- Mount… / Unmount… -------------------------------------------------------
+
+
+def _mount_group(tmp_path: Path) -> dashboard.RepoGroup:
+    """Kinds aws + gcloud configured; gcloud attached to alpha-x."""
+    group = _cfg_group(
+        tmp_path, (dataclasses.replace(_ci("alpha-x", "alpha"), optional_mounts=("gcloud",)),)
+    )
+    group.optional_mounts = ("aws", "gcloud")
+    return group
+
+
+@pytest.mark.parametrize(
+    ("over_ssh", "policy_kwargs", "expected"),
+    [
+        (False, None, {"mount-add", "mount-remove"}),
+        (False, {"commands": {"mode": "disabled"}}, {"mount-add", "mount-remove"}),
+        (True, {}, {"mount-remove"}),
+        (True, {"commands": {"mode": "allowlist", "allow": ["shell", "mount"]}}, set()),
+        (
+            True,
+            {
+                "commands": {"mode": "allowlist", "allow": ["shell", "mount"]},
+                "restrict_host": False,
+            },
+            {"mount-add"},
+        ),
+        (
+            True,
+            {"commands": {"mode": "allowlist", "allow": ["shell", "unmount"]}},
+            {"mount-remove"},
+        ),
+        (True, {"commands": {"mode": "allowlist", "allow": ["shell"]}}, set()),
+        (True, {"excluded_repos": ["other"]}, set()),
+    ],
+    ids=[
+        "local",
+        "local-ignores-policy",
+        "ssh-default",
+        "ssh-allowlist-mount-restricted",
+        "ssh-allowlist-mount-unrestricted",
+        "ssh-allowlist-unmount",
+        "ssh-allowlist-without",
+        "ssh-excluded-repos",
+    ],
+)
+def test_container_menu_mount_entries_follow_the_ssh_policy(
+    tmp_path, over_ssh, policy_kwargs, expected
+):
+    menu = dashboard.open_menu(
+        [_mount_group(tmp_path)],
+        "alpha-x",
+        remote=over_ssh,
+        over_ssh=over_ssh,
+        ssh_policy=_ssh_policy(policy_kwargs),
+    )
+    assert menu is not None
+    assert {verb for _label, verb in menu.actions} & {"mount-add", "mount-remove"} == expected
+
+
+@pytest.mark.parametrize(
+    ("group_factory", "allow", "expected"),
+    [
+        (lambda tp: _cfg_group(tp, (_ci("alpha-x", "alpha"),)), ["snapshot ls"], ["Snapshots…"]),
+        (_mount_group, ["unmount"], ["Unmount…"]),
+        (lambda tp: _cfg_group(tp, (_ci("alpha-x", "alpha"),)), ["snapshot create"], None),
+        (_mount_group, ["stats"], None),
+    ],
+    ids=["snapshot-ls-only", "unmount-only", "nothing-relevant-snapshot", "nothing-relevant"],
+)
+def test_container_menu_survives_an_empty_shared_action_list(
+    tmp_path, group_factory, allow, expected
+):
+    """No lifecycle or shell verb is permitted, yet a terminal-only entry may be."""
+    policy = _ssh_policy({"commands": {"mode": "allowlist", "allow": allow}})
+    group = group_factory(tmp_path)
+    kwargs = {"remote": True, "over_ssh": True, "ssh_policy": policy}
+    assert dashboard.actions_for_container([group], "alpha-x", **kwargs) == []
+
+    menu = dashboard.open_menu([group], "alpha-x", **kwargs)
+
+    if expected is None:
+        assert menu is None
+    else:
+        assert menu is not None
+        assert [label for label, _verb in menu.actions] == expected
+
+
+def test_mount_offers_the_unattached_kinds_and_runs_quietly(mocker, tmp_path):
+    group = _mount_group(tmp_path)
+    quiet = mocker.patch.object(
+        dashboard.da,
+        "run_cli_quiet",
+        return_value=dashboard.da.CliResult(True, "✓ Mounted 'aws' in container 'x'"),
+    )
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_menu_keys(group, "mount-add"), _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert [e.value for e in _rendered(render, dashboard.Picker)[0].entries] == ["aws"]
+    quiet.assert_called_once_with(
+        ["mount", "--config", str(group.config_path), "--", "aws", "alpha-x"], cwd=tmp_path
+    )
+    child.assert_not_called()  # quiet: the screen never blanked
+    assert "✓ Mounted 'aws' in container 'x'" in _notices(render)
+
+
+def test_unmount_offers_the_attached_kinds(mocker, tmp_path):
+    group = _mount_group(tmp_path)
+    quiet = mocker.patch.object(
+        dashboard.da, "run_cli_quiet", return_value=dashboard.da.CliResult(True, "done")
+    )
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_menu_keys(group, "mount-remove"), _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert [e.value for e in _rendered(render, dashboard.Picker)[0].entries] == ["gcloud"]
+    quiet.assert_called_once_with(
+        ["unmount", "--config", str(group.config_path), "--", "gcloud", "alpha-x"], cwd=tmp_path
+    )
+
+
+def test_unmount_over_ssh_offers_the_attached_kinds_without_config(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    group = _mount_group(tmp_path)
+    policy = RemoteSSHConfig()
+    quiet = mocker.patch.object(
+        dashboard.da, "run_cli_quiet", return_value=dashboard.da.CliResult(True, "done")
+    )
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    kwargs = {"remote": True, "over_ssh": True, "ssh_policy": policy}
+
+    keys = [*_container_menu_keys(group, "mount-remove", **kwargs), _ENTER]
+    assert _drive_run(mocker, keys, [group], **kwargs) == 0
+
+    assert [e.value for e in _rendered(render, dashboard.Picker)[0].entries] == ["gcloud"]
+    quiet.assert_called_once_with(["unmount", "--", "gcloud", "alpha-x"], cwd=tmp_path)
+
+
+def test_a_refused_mount_is_a_long_notice(mocker, tmp_path):
+    group = _mount_group(tmp_path)
+    mocker.patch.object(
+        dashboard.da,
+        "run_cli_quiet",
+        return_value=dashboard.da.CliResult(False, "error: Unknown optional mount 'aws'"),
+    )
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_menu_keys(group, "mount-add"), _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    # the CLI's own verdict, shown whole; the dashboard is still running (rc 0)
+    assert "error: Unknown optional mount 'aws'" in _notices(render)
+    child.assert_not_called()
+
+
+def test_mount_picker_escape_runs_nothing(mocker, tmp_path):
+    group = _mount_group(tmp_path)
+    quiet = mocker.patch.object(dashboard.da, "run_cli_quiet")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_menu_keys(group, "mount-add"), _ESC]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert _rendered(render, dashboard.Picker)  # it did open
+    quiet.assert_not_called()
+
+
+@pytest.mark.parametrize("verb", ["mount-add", "mount-remove"])
+def test_a_kind_spelled_like_an_option_stays_positional(mocker, tmp_path, verb):
+    group = _mount_group(tmp_path)
+    group.optional_mounts = ("--yes", "gcloud")
+    quiet = mocker.patch.object(
+        dashboard.da, "run_cli_quiet", return_value=dashboard.da.CliResult(True, "done")
+    )
+    if verb == "mount-remove":
+        group.containers[0] = dataclasses.replace(
+            group.containers[0], optional_mounts=("--yes", "gcloud")
+        )
+
+    keys = [*_container_menu_keys(group, verb), _ENTER]  # the first entry: "--yes"
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    verb_word = "unmount" if verb == "mount-remove" else "mount"
+    quiet.assert_called_once_with(
+        [verb_word, "--config", str(group.config_path), "--", "--yes", "alpha-x"], cwd=tmp_path
+    )
+
+
+def test_kinds_missing_from_the_config_are_not_offered_to_unmount(mocker, tmp_path):
+    group = _mount_group(tmp_path)
+    group.containers[0] = dataclasses.replace(
+        group.containers[0], optional_mounts=("gcloud", "retired")
+    )
+    mocker.patch.object(
+        dashboard.da, "run_cli_quiet", return_value=dashboard.da.CliResult(True, "done")
+    )
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_menu_keys(group, "mount-remove"), _ESC]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert [e.value for e in _rendered(render, dashboard.Picker)[0].entries] == ["gcloud"]
+
+
+def _drive_mount_menu_then(mocker, group, verb, change, *, same_read: bool = False) -> None:
+    """Open the container menu on ``verb``, run ``change()``, then press Enter on it.
+
+    The menu overlay keeps the entries it opened with, so this is a stale menu.
+    With ``same_read`` the change lands on the very read that delivers Enter, so
+    no frame sees it first.
+    """
+    keys = _container_menu_keys(group, verb)
+    script = iter([*keys[:-1], "change", *([] if same_read else [keys[-1]])])
+
+    def read(_fd, _n):
+        item = next(script, b"\x03")
+        if item == "change":
+            change()
+            return keys[-1] if same_read else b"z"
+        return item
+
+    assert _drive_run_with_reader(mocker, read, [group]) == 0
+
+
+def test_mount_with_nothing_left_to_add_notices_instead_of_opening(mocker, tmp_path):
+    group = _mount_group(tmp_path)
+    quiet = mocker.patch.object(dashboard.da, "run_cli_quiet")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    def attach_everything():
+        group.containers[0] = dataclasses.replace(
+            group.containers[0], optional_mounts=("aws", "gcloud")
+        )
+
+    _drive_mount_menu_then(mocker, group, "mount-add", attach_everything)
+
+    assert not _rendered(render, dashboard.Picker)
+    assert "No optional mount to add" in _notices(render)
+    quiet.assert_not_called()
+
+
+def test_unmount_with_nothing_attached_notices_instead_of_opening(mocker, tmp_path):
+    group = _mount_group(tmp_path)
+    quiet = mocker.patch.object(dashboard.da, "run_cli_quiet")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    def detach_everything():
+        group.containers[0] = dataclasses.replace(group.containers[0], optional_mounts=())
+
+    _drive_mount_menu_then(mocker, group, "mount-remove", detach_everything)
+
+    assert not _rendered(render, dashboard.Picker)
+    assert "No optional mount to remove" in _notices(render)
+    quiet.assert_not_called()
+
+
+@pytest.mark.parametrize("verb", ["mount-add", "mount-remove"])
+def test_container_vanishing_on_the_read_that_opens_the_mount_picker_runs_nothing(
+    mocker, tmp_path, verb
+):
+    group = _mount_group(tmp_path)
+    quiet = mocker.patch.object(dashboard.da, "run_cli_quiet")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    _drive_mount_menu_then(mocker, group, verb, group.containers.clear, same_read=True)
+
+    assert not _rendered(render, dashboard.Picker)
+    quiet.assert_not_called()
+    assert "'alpha-x' is gone" in " ".join(str(n) for n in _notices(render))
+
+
+def test_stale_mount_menu_refused_by_the_policy_at_submit_runs_nothing(mocker, tmp_path):
+    group = _mount_group(tmp_path)
+    quiet = mocker.patch.object(dashboard.da, "run_cli_quiet")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    real_check = dashboard.check_dashboard_command
+
+    def refuse(argv, policy, *, over_ssh):
+        if argv[:1] == ["mount"]:
+            raise dashboard.RouteError("mount is not permitted")
+        return real_check(argv, policy, over_ssh=over_ssh)
+
+    mocker.patch.object(dashboard, "check_dashboard_command", side_effect=refuse)
+
+    keys = [*_container_menu_keys(group, "mount-add"), _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert _rendered(render, dashboard.Picker)
+    quiet.assert_not_called()
+    assert "mount is not permitted" in _notices(render)
+
+
+@_VANISH_WHEN
+@pytest.mark.parametrize("verb", ["mount-add", "mount-remove"])
+def test_container_vanishing_while_the_mount_picker_is_open_runs_nothing(
+    mocker, tmp_path, when, verb
+):
+    group = _mount_group(tmp_path)
+    quiet = mocker.patch.object(dashboard.da, "run_cli_quiet")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = _container_menu_keys(group, verb)
+    assert _drive_with_vanish(mocker, keys, [group], group.containers.clear, when=when) == 0
+
+    purpose = "container-mount-remove" if verb == "mount-remove" else "container-mount-add"
+    assert {p.purpose for p in _rendered(render, dashboard.Picker)} == {purpose}
+    quiet.assert_not_called()
+    child.assert_not_called()
+    assert "'alpha-x' is gone" in " ".join(str(n) for n in _notices(render))
+
+
+def test_help_panel_points_at_the_repo_and_container_menu_entries():
+    text = _render_text(dashboard._render_help())
+    assert "Apply config…" in text
+    assert "Snapshots…" in text
+
+
+def _every_verb_group(tmp_path: Path) -> dashboard.RepoGroup:
+    """A container that is offered every terminal-only entry at once."""
+    group = _mount_group(tmp_path)
+    group.containers[0] = dataclasses.replace(
+        group.containers[0], job_phase="autostart", job_pid=os.getpid(), job_kind="autostart"
+    )
+    return group
+
+
+_CONTAINER_VERB_CASES = sorted(dashboard.dact.CONTAINER_VERBS)
+
+
+def test_every_container_verb_has_a_guard_case(tmp_path):
+    group = _every_verb_group(tmp_path)
+    menu = dashboard.open_menu([group], "alpha-x")
+    assert menu is not None
+    offered = {verb for _label, verb in menu.actions}
+    # a new verb must be offered by this fixture (and so parametrized below)
+    assert offered & dashboard.dact.CONTAINER_VERBS == dashboard.dact.CONTAINER_VERBS
+    assert set(_CONTAINER_VERB_CASES) == dashboard.dact.CONTAINER_VERBS
+
+
+@pytest.mark.parametrize("verb", _CONTAINER_VERB_CASES)
+def test_a_terminal_only_container_entry_never_reaches_the_shared_dispatcher(
+    mocker, tmp_path, verb
+):
+    """Each entry opens an overlay or spawns through the dashboard's own runners.
+
+    It must never fall through to ``_dispatch_action``, which would build the
+    invalid ``jailbee <verb> <container>`` command.
+    """
+    group = _every_verb_group(tmp_path)
+    dispatch = mocker.patch.object(dashboard, "_dispatch_action")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+    # one quiet runner: the snapshot listing needs JSON, the mount a plain success
+    mocker.patch.object(
+        dashboard.da,
+        "run_cli_quiet",
+        return_value=dashboard.da.CliResult(True, "done", _SNAPS_JSON),
+    )
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [*_container_menu_keys(group, verb), _ENTER], [group]) == 0
+
+    dispatch.assert_not_called()
+    opened = _rendered(render, dashboard.Picker) or _rendered(render, dashboard.TextPrompt)
+    spawned = [call.args[0] for call in child.call_args_list]
+    assert opened or spawned
+    assert ["jailbee", verb, "alpha-x"] not in spawned
+    assert all(argv[:2] != ["jailbee", verb] for argv in spawned)
