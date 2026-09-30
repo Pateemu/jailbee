@@ -127,7 +127,9 @@ def sync_global_instructions(cfg: Config) -> None:
                             if current != content:
                                 _write_atomically(owned, content)
                         except OSError as exc:
-                            warn_plain(f"cannot update agent instructions at {owned}: {exc}", stderr=True)
+                            warn_plain(
+                                f"cannot update agent instructions at {owned}: {exc}", stderr=True
+                            )
                 finally:
                     fcntl.flock(lock, fcntl.LOCK_UN)
         except OSError as exc:
@@ -157,7 +159,9 @@ def _read_ownership(registry: Path) -> set[str]:
         ):
             names.add(filename)
         else:
-            warn_plain(f"invalid filename in ownership registry {registry}: {filename!r}", stderr=True)
+            warn_plain(
+                f"invalid filename in ownership registry {registry}: {filename!r}", stderr=True
+            )
     return names
 
 
