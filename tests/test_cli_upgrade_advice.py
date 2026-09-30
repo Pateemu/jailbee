@@ -6,7 +6,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -159,9 +158,7 @@ def test_everyday_commands_sync_instructions_before_delegating(mocker, command, 
         if broken:
             raise RuntimeError("boom")
 
-    synced = mocker.patch(
-        "jailbee.agent_instructions.sync_global_instructions", side_effect=sync
-    )
+    synced = mocker.patch("jailbee.agent_instructions.sync_global_instructions", side_effect=sync)
     mocker.patch("jailbee.incus.Incus")
     mocker.patch("jailbee.lifecycle.repo_has_submodules", return_value=False)
     mocker.patch("jailbee.cli._resolve_attachable", return_value=(mocker.MagicMock(), "c1"))

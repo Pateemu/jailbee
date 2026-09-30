@@ -4784,9 +4784,7 @@ def test_boot_container_syncs_instructions_before_allocation(
         side_effect=lambda cfg: events.append("sync"),
     )
     mocker.patch("jailbee.agent_instructions.missing_staging_dirs", return_value=[])
-    mocker.patch(
-        "jailbee.pool.allocate_startup", side_effect=lambda *a: events.append("allocate")
-    )
+    mocker.patch("jailbee.pool.allocate_startup", side_effect=lambda *a: events.append("allocate"))
 
     boot_container(cfg, incus, "feat-x", restart=restart)
 
