@@ -3885,6 +3885,7 @@ def test_agent_instructions_check_size_uses_the_read_snapshot(
 def test_run_checks_includes_agent_instructions_without_incus(
     make_cfg, tmp_path, instruction_paths, mocker
 ):
-    mocker.patch("jailbee.doctor.shutil.which", return_value=None)
-    results = run_checks(make_cfg(tmp_path / "repo"), mocker.MagicMock())
+    # Exit before incus_on_path tears down: shutil.which is shared process-wide.
+    with patch("jailbee.doctor.shutil.which", return_value=None):
+        results = run_checks(make_cfg(tmp_path / "repo"), mocker.MagicMock())
     assert any(r.name == "agent instructions" and r.ok for r in results)
