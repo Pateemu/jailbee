@@ -67,11 +67,18 @@ container, read a submodule's real upstream with
 by `jb submodule pr` for that submodule; its comments remain publishable with
 `jb review apply`.
 
-- First, `gh pr view --json number` for this branch. A PR that already exists
-  goes in the manifest's `pr` field; only a branch with no PR at all gets
-  `pr: null`. `jb pr` will not apply a `pr: null` description to a PR it did
-  not open itself, and an existing PR is often exactly that — one the user
+- First, `gh pr view --json number,title` for this branch. A PR that already
+  exists goes in the manifest's `pr` field; only a branch with no PR at all
+  gets `pr: null`. `jb pr` will not apply a `pr: null` description to a PR it
+  did not open itself, and an existing PR is often exactly that — one the user
   opened elsewhere and bound with `jb pr --pr N`.
+- Set the `description` action's `title` to the intended PR title as a JSON
+  string, separate from `body`/`body_file`. For a new PR, write a concise
+  title based on the change; for a body-only update, copy the current title
+  from `gh pr view <n> --json title`. With `jb pr`, a missing, `null`, or
+  blank title is replaced by the body's first non-blank line (without leading
+  Markdown `#` markers), even when updating an existing PR. A body opening
+  with `Why?` would therefore rename the PR to `Why?`.
 - Read `git log <base>..HEAD` and `git diff <base>...HEAD` for the commits
   and cumulative diff.
 - Follow `.github/pull_request_template.md`, or a file under
