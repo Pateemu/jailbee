@@ -4659,6 +4659,53 @@ def test_is_synthetic_is_false_for_a_hand_built_config():
     assert Config().is_synthetic() is False
 
 
+def test_make_cfg_has_agent_instructions_enabled(make_cfg, tmp_path):
+    assert make_cfg(tmp_path).agent_instructions_enabled() is True
+
+
+def test_global_opt_out_reaches_config(tmp_path, mocker):
+    from jailbee.config import load_config_from_layers
+
+    mocker.patch("jailbee.config.loader.detect_default_branch", return_value="main")
+    mocker.patch("jailbee.config.loader.detect_upstream_remote", return_value="origin")
+    config_path = tmp_path / "repo" / ".jailbee" / "config.yaml"
+
+    cfg = load_config_from_layers(
+        {"agent_instructions": False}, {}, config_path, origin=str(config_path)
+    )
+
+    assert cfg.agent_instructions_enabled() is False
+    assert cfg.model_copy(update={}).agent_instructions_enabled() is False
+
+
+def test_non_bool_agent_instructions_is_a_config_error(tmp_path, mocker):
+    from jailbee.config import ConfigError, load_config_from_layers
+
+    mocker.patch("jailbee.config.loader.detect_default_branch", return_value="main")
+    mocker.patch("jailbee.config.loader.detect_upstream_remote", return_value="origin")
+    config_path = tmp_path / "repo" / ".jailbee" / "config.yaml"
+
+    with pytest.raises(ConfigError, match="agent_instructions"):
+        load_config_from_layers(
+            {"agent_instructions": "no"}, {}, config_path, origin=str(config_path)
+        )
+
+
+def test_agent_instructions_is_rejected_in_repo_config(tmp_path, mocker):
+    from jailbee.config import ConfigError, load_config_from_layers
+
+    mocker.patch("jailbee.config.loader.detect_default_branch", return_value="main")
+    mocker.patch("jailbee.config.loader.detect_upstream_remote", return_value="origin")
+
+    with pytest.raises(ConfigError, match="agent_instructions"):
+        load_config_from_layers(
+            {},
+            {"agent_instructions": False},
+            tmp_path / "repo" / ".jailbee" / "config.yaml",
+            origin="<staged>",
+        )
+
+
 def test_load_config_from_layers_ignores_the_global_file_on_disk(tmp_path, monkeypatch, mocker):
     """The editor validates a staged global layer that is not on disk yet.
 

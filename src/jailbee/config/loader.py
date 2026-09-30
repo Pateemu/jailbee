@@ -92,6 +92,13 @@ def _credentials_from_host_raw(
         raise ConfigError(f"Invalid `credentials` in {origin}:\n{e}") from e
 
 
+def _agent_instructions_from_host_raw(host_raw: dict[str, object], origin: str) -> bool:
+    value = host_raw.get("agent_instructions", True)
+    if not isinstance(value, bool):
+        raise ConfigError(f"`agent_instructions` in {origin} must be true or false, got {value!r}")
+    return value
+
+
 def _litellm_from_host_raw(host_raw: dict[str, object], origin: str) -> LiteLLMConfig:
     """Validate the host `litellm:` block; `GlobalConfig` does too, for its own callers.
 
@@ -731,6 +738,7 @@ def load_config_from_layers(
 
     creds = _credentials_from_host_raw(host_raw, default_global_config_path())
     object.__setattr__(cfg, "credential_group", creds.group_for(cfg.container_prefix, local_creds))
+    cfg._agent_instructions = _agent_instructions_from_host_raw(host_raw, global_from)
     cfg._litellm_view = repo_litellm_view(
         _litellm_from_host_raw(host_raw, global_from),
         cfg.container_prefix,

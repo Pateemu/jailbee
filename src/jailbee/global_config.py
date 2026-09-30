@@ -258,6 +258,16 @@ class GlobalConfig(BaseModel):
             "call. Host-level only (`common.py`'s `_HOST_LEVEL_KEYS`)."
         ),
     )
+    agent_instructions: bool = Field(
+        default=True,
+        description=(
+            "When true (default), `~/.config/jailbee/AGENTS.md` is mounted read-only "
+            "into every container as each wired agent's host-wide instructions "
+            "(Claude: `/etc/claude-code/CLAUDE.md`). With no such file the mount is "
+            "an empty directory. `false` drops the mount and the copy. Host-level "
+            "only (`common.py`'s `_HOST_LEVEL_KEYS`)."
+        ),
+    )
     config_edit: ConfigEditPolicy = Field(
         default_factory=ConfigEditPolicy,
         description=(

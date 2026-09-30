@@ -155,6 +155,10 @@ def test_install_host_skills_loads_from_yaml(tmp_path):
     assert cfg.install_host_skills is True
 
 
+def test_global_config_agent_instructions_defaults_true():
+    assert GlobalConfig().agent_instructions is True
+
+
 def test_docker_registry_mirror_defaults_to_port_3128():
     gcfg = GlobalConfig()
     assert gcfg.docker_registry_mirror.port == 3128
@@ -417,9 +421,14 @@ def test_credentials_is_a_host_level_key():
 
     assert "credentials" in _HOST_LEVEL_KEYS
     assert "claude_credentials" in _HOST_LEVEL_KEYS
-    host, config_level = _split_host_keys({"credentials": {"group": "work"}, "gpg": {}})
+    assert "agent_instructions" in _HOST_LEVEL_KEYS
+    host, config_level = _split_host_keys(
+        {"credentials": {"group": "work"}, "agent_instructions": False, "gpg": {}}
+    )
     assert "credentials" in host
     assert "credentials" not in config_level
+    assert host["agent_instructions"] is False
+    assert "agent_instructions" not in config_level
 
 
 def test_scratch_block_reaches_global_config(tmp_path) -> None:
