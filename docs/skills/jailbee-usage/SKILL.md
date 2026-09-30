@@ -687,7 +687,8 @@ credential lands in the holder as usual.
 
 On the host, enable `litellm.enabled: true` in `global.yaml`, then run
 `jailbee litellm up`, `jailbee litellm login [ACCOUNT]` (interactive ChatGPT
-device code), `jailbee base build` per repo and `jailbee apply` per repo. Inside a
+device code), `jailbee litellm up` again (the first leaves an unlogged account
+stopped), `jailbee base build` per repo and `jailbee apply` per repo. Inside a
 container, `claude-jb` runs Claude Code through the proxy while plain `claude`
 remains native. Choose a gateway profile with `claude-jb --profile NAME`, then
 `JAILBEE_LITELLM_PROFILE`, then `litellm.default_profile` (`codex`), which a

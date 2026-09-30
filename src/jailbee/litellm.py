@@ -124,6 +124,9 @@ class UpResult:
     retired: list[str]
     installed: bool
     issues: list[str] = field(default_factory=list)
+    # Left stopped: no ChatGPT login yet, and the proxy would block at startup
+    # on LiteLLM's own device-code prompt, never answering its health probe.
+    awaiting_login: list[str] = field(default_factory=list)
 
 
 def _resolve_egress(hosts: list[str]) -> list[EgressEntry]:
@@ -457,15 +460,26 @@ def _restart_changed(
     *,
     force: bool,
     on_step: Callable[[str], None],
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     """Restart each instance whose files changed (or whose unit is down); wait for health.
+
+    Returns `(restarted, awaiting_login)`. An account with no login is kept
+    stopped instead: its proxy would sit in LiteLLM's device-code prompt and
+    never turn healthy. `jailbee litellm login` then `up` starts it.
 
     The digest is recorded only after the unit is healthy on the new files, so
     a run that fails in between is retried by the next one.
     """
     restarted: list[str] = []
+    awaiting: list[str] = []
     for instance in files:
         account = instance.account
+        if auth_state(incus, account) == "missing":
+            incus.exec(
+                LITELLM_CONTAINER, ["systemctl", "disable", "--now", unit(account)], timeout=60
+            )
+            awaiting.append(account)
+            continue
         digest = instance.digest(callback_source)
         restart = (
             force
@@ -479,7 +493,7 @@ def _restart_changed(
         if restart:
             litellm_state.record_applied(account, digest)
             restarted.append(account)
-    return restarted
+    return restarted, awaiting
 
 
 def litellm_up(
@@ -587,7 +601,7 @@ def litellm_up(
     # enabled symlink of an account that has since been removed.
     retired = _retire_accounts(incus, set(cfg.accounts))
 
-    restarted = _restart_changed(
+    restarted, awaiting_login = _restart_changed(
         incus, files, ports, callback_source, force=needs_install, on_step=on_step
     )
 
@@ -599,6 +613,7 @@ def litellm_up(
         retired=retired,
         installed=needs_install,
         issues=issues,
+        awaiting_login=awaiting_login,
     )
 
 
@@ -626,6 +641,8 @@ class ReconcileResult:
     # Why only `jailbee litellm up` can bring the proxy in line; None if it was not needed.
     needs_up: str | None = None
     issues: list[str] = field(default_factory=list)
+    # Skipped, not started: no login yet (see `UpResult.awaiting_login`).
+    awaiting_login: list[str] = field(default_factory=list)
 
 
 def litellm_reconcile(
@@ -703,10 +720,10 @@ def litellm_reconcile(
     _set_egress(incus, _resolve_egress(egress_hosts(cfg, scopes=scopes)), sorted(known.values()))
     on_step("writing the proxy configuration")
     _push_state(incus, changed, callback_source)
-    restarted = _restart_changed(
+    restarted, awaiting_login = _restart_changed(
         incus, changed, known, callback_source, force=False, on_step=on_step
     )
-    return ReconcileResult(restarted=restarted, issues=issues)
+    return ReconcileResult(restarted=restarted, issues=issues, awaiting_login=awaiting_login)
 
 
 def container_sync_payload(

@@ -23,6 +23,25 @@ def _accounts(context, **litellm):
     context.return_value = (context.return_value[0], gcfg)
 
 
+def test_up_says_what_to_do_for_an_account_without_a_login(mocker, context):
+    mocker.patch(
+        "jailbee.litellm.litellm_up",
+        return_value=ll.UpResult(
+            ip="10.0.0.3",
+            ports={"default": 4100},
+            restarted=[],
+            retired=[],
+            installed=True,
+            awaiting_login=["default"],
+        ),
+    )
+    result = runner.invoke(app, ["litellm", "up"])
+    out = " ".join(result.output.split())
+    assert result.exit_code == 0, result.output
+    assert "running on" not in out
+    assert "jailbee litellm login <account>" in out and "jailbee litellm up" in out
+
+
 def test_up_prints_endpoint_and_next_steps(mocker, context):
     up = mocker.patch(
         "jailbee.litellm.litellm_up",
@@ -39,7 +58,6 @@ def test_up_prints_endpoint_and_next_steps(mocker, context):
     out = " ".join(result.output.split())
     assert result.exit_code == 0, result.output
     assert "10.0.0.3" in out and ":4100" in out
-    assert "jailbee litellm login" in out
     assert "jailbee apply" in out
     assert "in-flight" in out
     assert "broken.yaml" in out

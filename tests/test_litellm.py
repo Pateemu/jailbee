@@ -62,7 +62,13 @@ def _secrets(xdg: Path, text: str) -> None:
     path.chmod(0o600)
 
 
-def _incus(*, present: bool, running: bool = True, installed: str | None = "1.103.0") -> MagicMock:
+def _incus(
+    *,
+    present: bool,
+    running: bool = True,
+    installed: str | None = "1.103.0",
+    login: str = "present",
+) -> MagicMock:
     incus = MagicMock()
     incus.network_get.return_value = "10.79.115.1/24"
     incus.network_exists.return_value = True
@@ -92,7 +98,7 @@ def _incus(*, present: bool, running: bool = True, installed: str | None = "1.10
         if "health/liveliness" in text:
             return "ok\n"
         if "auth.json" in text:
-            return "missing\n"
+            return f"{login}\n"
         return ""
 
     incus.exec.side_effect = exec_
@@ -305,6 +311,44 @@ def test_sync_publishes_json_only_after_private_key():
     )
 
 
+def test_up_does_not_start_an_account_without_a_login():
+    """Unlogged, LiteLLM blocks in its device-code prompt and never turns healthy."""
+    incus = _incus(present=True, login="missing")
+    result = ll.litellm_up(incus, _gcfg())
+    assert result.awaiting_login == ["default"] and result.restarted == []
+    execs = _execs(incus)
+    assert not any("systemctl restart" in e or "systemctl enable" in e for e in execs)
+    assert any("systemctl disable --now jailbee-litellm@default.service" in e for e in execs)
+    assert not any("health/liveliness" in e for e in execs)
+    incus.network_acl_set_yaml.assert_called()
+
+
+def test_up_after_login_starts_the_instance():
+    incus = _incus(present=True, login="present")
+    result = ll.litellm_up(incus, _gcfg())
+    assert result.awaiting_login == [] and result.restarted == ["default"]
+
+
+def test_reconcile_skips_an_account_without_a_login():
+    incus = _incus(present=True, login="present")
+    ll.litellm_up(incus, _gcfg())
+    base = incus.exec.side_effect
+
+    def logged_out(name, cmd, **kw):
+        text = " ".join(cmd)
+        if "is-active" in text:
+            return "inactive\n"
+        if "auth.json" in text:
+            return "missing\n"
+        return base(name, cmd, **kw)
+
+    incus.exec.side_effect = logged_out
+    incus.exec.reset_mock()
+    result = ll.litellm_reconcile(incus, _gcfg())
+    assert result is not None and result.awaiting_login == ["default"]
+    assert not any("systemctl restart" in e for e in _execs(incus))
+
+
 def test_up_is_quiet_when_nothing_changed():
     incus = _incus(present=True)
     ll.litellm_up(incus, _gcfg())
@@ -455,13 +499,13 @@ def test_status_missing():
 
 
 def test_status_running_reports_instance_and_login(xdg):
-    incus = _incus(present=True)
+    incus = _incus(present=True, login="present")
     ll.litellm_up(incus, _gcfg())
     status = ll.litellm_status(incus, _gcfg())
     assert status.container == ll.ContainerState.RUNNING
     assert status.version == "1.103.0"
     assert status.instances == [
-        ll.InstanceStatus(account="default", port=4100, active=True, healthy=True, login="missing")
+        ll.InstanceStatus(account="default", port=4100, active=True, healthy=True, login="present")
     ]
 
 

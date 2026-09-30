@@ -65,7 +65,7 @@ security and the `claude-jb` wrapper are described in [LiteLLM](../../../litellm
 
 | Command | What it does |
 |---|---|
-| `jailbee litellm up [--reinstall]` | Create/repair the proxy, render the configuration, and start it. `--reinstall` forces package installation. Requires `litellm.enabled: true` in the host's `global.yaml`. |
+| `jailbee litellm up [--reinstall]` | Create/repair the proxy, render the configuration, and start it — except for an account with no ChatGPT login yet, which stays stopped until `login` and a second `up`. `--reinstall` forces package installation. Requires `litellm.enabled: true` in the host's `global.yaml`. |
 | `jailbee litellm down [--purge]` | Delete the proxy container; keep its state volume (logins, settings) unless `--purge`. Run `jailbee apply` per repo afterward. |
 | `jailbee litellm status` | Show container, IP, version, and per account the service health and login presence; nonzero when absent or unhealthy. |
 | `jailbee litellm ls` | List profiles as `claude-jb` uses them (default profile, autostart, aliases, per tier route/model/effort/context window), globally and for each repo with a LiteLLM override. Read-only; allowed over remote SSH in the default commands mode, but refused when `remote.ssh.excluded_repos` is set (it lists every repo). |

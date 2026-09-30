@@ -26,7 +26,10 @@ committed `.jailbee/config.yaml`. See [Configuration](config.md#litellm) and
      enabled: true
    ```
 
-2. Run `jailbee litellm up`, then `jailbee litellm login [ACCOUNT]`. The latter
+2. Run `jailbee litellm up`, then `jailbee litellm login [ACCOUNT]`, then
+   `jailbee litellm up` again. The first `up` sets up the container but leaves an
+   account without a login stopped (LiteLLM would wait in its own device-code
+   prompt and never answer its health probe); the second starts it. `login`
    starts LiteLLM's interactive ChatGPT device-code login for that account (the
    name may be omitted while there is only one account, `default` by default).
 3. Run `jailbee base build` in each repo that needs `claude-jb` (the wrapper is

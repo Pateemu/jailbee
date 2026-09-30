@@ -10653,8 +10653,17 @@ def litellm_up_cmd(
     except (ValueError, RuntimeError, IncusError) as exc:
         error(str(exc))
         raise typer.Exit(1) from exc
-    ports = ", ".join(f"{account} on :{port}" for account, port in result.ports.items())
-    success(f"LiteLLM proxy running on {result.ip} ({ports})")
+    serving = {a: p for a, p in result.ports.items() if a not in result.awaiting_login}
+    if serving:
+        ports = ", ".join(f"{account} on :{port}" for account, port in serving.items())
+        success(f"LiteLLM proxy running on {result.ip} ({ports})")
+    else:
+        success(f"LiteLLM container ready on {result.ip}; no proxy instance is running yet.")
+    if result.awaiting_login:
+        warn_plain(
+            f"Not started, no ChatGPT login yet: {', '.join(result.awaiting_login)}. Run "
+            "`jailbee litellm login <account>`, then `jailbee litellm up` again."
+        )
     if result.restarted:
         info(
             f"Restarted {', '.join(result.restarted)}; their in-flight `claude-jb` "
@@ -10667,10 +10676,7 @@ def litellm_up_cmd(
         )
     for issue in result.issues:
         warn_plain(issue)
-    info(
-        "Next: `jailbee litellm login <account>` for each new account, then "
-        "`jailbee apply` in each repo that uses `claude-jb`."
-    )
+    info("Next: `jailbee apply` in each repo that uses `claude-jb`.")
 
 
 @litellm_app.command("down")
@@ -10777,6 +10783,8 @@ def litellm_login_cmd(
     except (RuntimeError, IncusError) as exc:
         error(str(exc))
         raise typer.Exit(1) from exc
+    if exit_code == 0:
+        info(f"Logged in. Run `jailbee litellm up` to (re)start the {resolved} instance.")
     raise typer.Exit(exit_code)
 
 

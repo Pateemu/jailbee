@@ -148,6 +148,9 @@ def _check_litellm(incus: Incus, gcfg: GlobalConfig) -> list[CheckResult]:
         address = f"{status.ip}:{instance.port}"
         if instance.active and instance.healthy:
             rows.append(CheckResult(name, True, f"running on {address}, LiteLLM {status.version}"))
+        elif instance.login == "missing" and not instance.active:
+            # Held back on purpose; the login row below says what it costs.
+            rows.append(CheckResult(name, True, "not started until it has a login"))
         else:
             rows.append(
                 CheckResult(
@@ -158,7 +161,7 @@ def _check_litellm(incus: Incus, gcfg: GlobalConfig) -> list[CheckResult]:
                 )
             )
         login_row = f"{name} login"
-        fix = f"run 'jailbee litellm login {instance.account}'"
+        fix = f"run 'jailbee litellm login {instance.account}', then 'jailbee litellm up'"
         if instance.login == "unknown":
             rows.append(
                 CheckResult(
