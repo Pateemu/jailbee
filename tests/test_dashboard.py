@@ -8307,15 +8307,61 @@ def test_snapshot_create_named_takes_an_option_like_tag_as_a_tag(mocker, tmp_pat
     )
 
 
+def _snapshot_tag_prompts(render) -> list:
+    return [
+        p for p in _rendered(render, dashboard.TextPrompt) if p.purpose == "container-snapshot-tag"
+    ]
+
+
 def test_snapshot_tag_prompt_escape_runs_nothing(mocker, tmp_path):
     group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
     _fake_snapshot_ls(mocker)
     child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
 
     keys = [*_container_menu_keys(group, "snapshots"), b"j", _ENTER, *_keys("x"), _ESC]
     assert _drive_run(mocker, keys, [group]) == 0
 
+    assert _snapshot_tag_prompts(render)
+    assert "Cancelled" in _notices(render)
     child.assert_not_called()
+
+
+def test_snapshot_tag_prompt_ctrl_c_cancels_only_the_prompt(mocker, tmp_path):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [
+        *_container_menu_keys(group, "snapshots"),
+        b"j",
+        _ENTER,
+        *_keys("x"),
+        b"\x03",
+        b"h",
+        _ESC,
+    ]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    assert _snapshot_tag_prompts(render)
+    child.assert_not_called()
+    assert "Cancelled" in _notices(render)
+    # the dashboard survived the Ctrl-C: the later `h` still opened help
+    assert "help" in [c.kwargs.get("overlay") for c in render.call_args_list]
+
+
+def test_snapshot_tag_prompt_rejects_a_blank_tag_inline(mocker, tmp_path):
+    group = _cfg_group(tmp_path, (_ci("alpha-x", "alpha"),))
+    _fake_snapshot_ls(mocker)
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    keys = [*_container_menu_keys(group, "snapshots"), b"j", _ENTER, *_keys("  "), _ENTER]
+    assert _drive_run(mocker, keys, [group]) == 0
+
+    child.assert_not_called()
+    assert any(p.error == "Snapshot tag cannot be empty" for p in _snapshot_tag_prompts(render))
 
 
 def test_snapshot_picker_escape_runs_nothing(mocker, tmp_path):
@@ -9093,3 +9139,57 @@ def test_help_panel_points_at_the_repo_and_container_menu_entries():
     text = _render_text(dashboard._render_help())
     assert "Apply config…" in text
     assert "Snapshots…" in text
+
+
+def _every_verb_group(tmp_path: Path) -> dashboard.RepoGroup:
+    """A container that is offered every terminal-only entry at once."""
+    group = _mount_group(tmp_path)
+    group.containers[0] = dataclasses.replace(
+        group.containers[0], job_phase="autostart", job_pid=os.getpid(), job_kind="autostart"
+    )
+    return group
+
+
+_CONTAINER_VERB_CASES = sorted(dashboard.dact.CONTAINER_VERBS)
+
+
+def test_every_container_verb_has_a_guard_case(tmp_path):
+    group = _every_verb_group(tmp_path)
+    menu = dashboard.open_menu([group], "alpha-x")
+    assert menu is not None
+    offered = {verb for _label, verb in menu.actions}
+    # a new verb must be offered by this fixture (and so parametrized below)
+    assert offered & dashboard.dact.CONTAINER_VERBS == dashboard.dact.CONTAINER_VERBS
+    assert set(_CONTAINER_VERB_CASES) == dashboard.dact.CONTAINER_VERBS
+
+
+@pytest.mark.parametrize("verb", _CONTAINER_VERB_CASES)
+def test_a_terminal_only_container_entry_never_reaches_the_shared_dispatcher(
+    mocker, tmp_path, verb
+):
+    """Each entry opens an overlay or spawns through the dashboard's own runners.
+
+    It must never fall through to ``_dispatch_action``, which would build the
+    invalid ``jailbee <verb> <container>`` command.
+    """
+    group = _every_verb_group(tmp_path)
+    dispatch = mocker.patch.object(dashboard, "_dispatch_action")
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    child.return_value.returncode = 0
+    mocker.patch.object(dashboard, "_wait_for_return")
+    # one quiet runner: the snapshot listing needs JSON, the mount a plain success
+    mocker.patch.object(
+        dashboard.da,
+        "run_cli_quiet",
+        return_value=dashboard.da.CliResult(True, "done", _SNAPS_JSON),
+    )
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+
+    assert _drive_run(mocker, [*_container_menu_keys(group, verb), _ENTER], [group]) == 0
+
+    dispatch.assert_not_called()
+    opened = _rendered(render, dashboard.Picker) or _rendered(render, dashboard.TextPrompt)
+    spawned = [call.args[0] for call in child.call_args_list]
+    assert opened or spawned
+    assert ["jailbee", verb, "alpha-x"] not in spawned
+    assert all(argv[:2] != ["jailbee", verb] for argv in spawned)

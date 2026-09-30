@@ -27,7 +27,7 @@ before editing `## Unreleased`.
 - **Apply, diagnose, snapshot and mount from the terminal dashboard.** A
   repo's menu gains **Apply config…** (with or without restarts; `apply`'s own
   restart question is asked in the terminal), **Diagnostics →** (`doctor`,
-  paged, and `disk-usage`) and **Prune stale containers…**. A container's menu
+  paged locally — over remote SSH it prints and pauses — and `disk-usage`) and **Prune stale containers…**. A container's menu
   gains **Snapshots…** (create with a timestamp or a typed tag; restore and
   delete ask first, "No" preselected), **Mount…**/**Unmount…** for the repo's
   `optional_mounts`, and, while it has an autostart run, **Autostart status**
@@ -201,7 +201,8 @@ before editing `## Unreleased`.
   A tag like `-x` or `--config` after the explicit `--` separator
   (`jailbee snapshot create NAME -- --config`) was passed to incus as a flag
   instead of a tag name; it now reaches incus as an operand and is rejected
-  by its own name check.
+  by its own name check. Before, `snapshot create NAME -- --help` reported
+  "created" although no snapshot was made.
 - **`jailbee ls` AHEAD no longer goes stale after `jailbee checkout`.**
   Checking a container's branch out onto the host left its AHEAD ±/↑ — and
   that of every other container based on the same branch — counting against
