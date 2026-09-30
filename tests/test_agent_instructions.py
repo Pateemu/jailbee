@@ -486,7 +486,9 @@ def test_concurrent_sync_keeps_ownership_union(homes, claude_cfg):
 
 
 @pytest.mark.parametrize("remove", [False, True])
-def test_registry_write_failure_preserves_existing_targets(homes, claude_cfg, remove, monkeypatch, capsys):
+def test_registry_write_failure_preserves_existing_targets(
+    homes, claude_cfg, remove, monkeypatch, capsys
+):
     source, data_home = homes
     source.write_bytes(b"old")
     ai.sync_global_instructions(claude_cfg)
@@ -512,7 +514,9 @@ def test_registry_write_failure_preserves_existing_targets(homes, claude_cfg, re
     assert "registry replace denied" in capsys.readouterr().err
 
 
-def test_target_write_failure_records_ownership_for_other_repo_retry(homes, claude_cfg, monkeypatch, capsys):
+def test_target_write_failure_records_ownership_for_other_repo_retry(
+    homes, claude_cfg, monkeypatch, capsys
+):
     import json
 
     source, data_home = homes
@@ -532,7 +536,9 @@ def test_target_write_failure_records_ownership_for_other_repo_retry(homes, clau
     assert json.loads(registry.read_text()) == ["CLAUDE.md"]
     assert "target replace denied" in capsys.readouterr().err
     monkeypatch.setattr(ai.os, "replace", replace)
-    other = with_agent(claude_cfg, "claude", global_instructions={"dir": "/etc/claude-code", "file": "OTHER.md"})
+    other = with_agent(
+        claude_cfg, "claude", global_instructions={"dir": "/etc/claude-code", "file": "OTHER.md"}
+    )
     ai.sync_global_instructions(other)
     assert target.read_bytes().endswith(b"\npolicy")
     assert target.with_name("OTHER.md").read_bytes().endswith(b"\npolicy")
