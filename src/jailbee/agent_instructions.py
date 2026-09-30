@@ -7,6 +7,8 @@ reach existing containers without exposing the host config tree.
 
 from __future__ import annotations
 
+import fcntl
+import json
 import os
 import posixpath
 import tempfile
@@ -99,31 +101,85 @@ def sync_global_instructions(cfg: Config) -> None:
             target.parent.mkdir(parents=True, exist_ok=True)
             if not content_known:
                 continue
-            # Recognize existing generated copies, including filenames chosen by
-            # other repos. Unknown siblings (notably managed settings) are not ours.
-            marker = MARKER_TEMPLATE.format(source=display_path(source)).encode() + b"\n"
-            targets = {target}
-            for sibling in target.parent.iterdir():
-                if sibling.is_symlink() or not sibling.is_file():
-                    continue
-                with sibling.open("rb") as fh:
-                    if fh.read(len(marker)) == marker:
-                        targets.add(sibling)
-            for owned in sorted(targets):
-                if content is None:
-                    owned.unlink(missing_ok=True)
-                    continue
+            # Keep metadata and its stable lock inode outside the mounted directory.
+            registry = staging_root().parent / "agent-instructions-ownership" / f"{name}.json"
+            registry.parent.mkdir(parents=True, exist_ok=True)
+            with registry.with_suffix(".lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
                 try:
-                    current = owned.read_bytes()
-                except FileNotFoundError:
-                    current = None
-                if current != content:
-                    _write_atomically(owned, content)
+                    owned_names = _read_ownership(registry)
+                    owned_names.add(gi.file)
+                    _adopt_marked_copies(target.parent, source, owned_names)
+                    # Persist before creating copies, including when the source
+                    # is absent, so failed writes never leave unrecorded copies.
+                    recorded = (json.dumps(sorted(owned_names)) + "\n").encode()
+                    _write_atomically(registry, recorded)
+                    for filename in sorted(owned_names):
+                        owned = target.parent / filename
+                        try:
+                            if content is None:
+                                owned.unlink(missing_ok=True)
+                                continue
+                            try:
+                                current = owned.read_bytes()
+                            except FileNotFoundError:
+                                current = None
+                            if current != content:
+                                _write_atomically(owned, content)
+                        except OSError as exc:
+                            warn_plain(f"cannot update agent instructions at {owned}: {exc}", stderr=True)
+                finally:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
         except OSError as exc:
             warn_plain(
                 f"cannot update agent instructions for {name} in {target.parent}: {exc}",
                 stderr=True,
             )
+
+
+def _read_ownership(registry: Path) -> set[str]:
+    try:
+        records = json.loads(registry.read_bytes())
+    except FileNotFoundError:
+        return set()
+    except (ValueError, UnicodeError) as exc:
+        raise OSError(f"invalid ownership registry {registry}: {exc}") from exc
+    if not isinstance(records, list):
+        raise OSError(f"invalid ownership registry {registry}: expected a list")
+    names: set[str] = set()
+    for filename in records:
+        if (
+            isinstance(filename, str)
+            and filename not in {"", ".", ".."}
+            and "/" not in filename
+            and "\\" not in filename
+            and "\x00" not in filename
+        ):
+            names.add(filename)
+        else:
+            warn_plain(f"invalid filename in ownership registry {registry}: {filename!r}", stderr=True)
+    return names
+
+
+def _adopt_marked_copies(directory: Path, source: Path, names: set[str]) -> None:
+    """Adopt legacy marked files; markerless unknown files cannot be inferred."""
+    marker = MARKER_TEMPLATE.format(source=display_path(source)).encode() + b"\n"
+    try:
+        siblings = list(directory.iterdir())
+    except OSError as exc:
+        warn_plain(f"cannot discover agent instructions in {directory}: {exc}", stderr=True)
+        return
+    for sibling in siblings:
+        if sibling.name in names:
+            continue
+        try:
+            if sibling.is_symlink() or not sibling.is_file():
+                continue
+            with sibling.open("rb") as fh:
+                if fh.read(len(marker)) == marker:
+                    names.add(sibling.name)
+        except OSError as exc:
+            warn_plain(f"cannot inspect agent instructions at {sibling}: {exc}", stderr=True)
 
 
 def missing_staging_dirs(cfg: Config) -> list[Path]:
