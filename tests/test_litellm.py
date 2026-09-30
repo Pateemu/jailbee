@@ -1151,7 +1151,11 @@ def test_up_runs_one_instance_per_account_on_its_own_port():
     assert {"4100", "4101"} <= listen
     files = _pushed(incus)
     work = yaml.safe_load(files[f"{ll.CONTAINER_STATE_DIR}/work/config.yaml"])
-    assert {m["model_name"] for m in work["model_list"]} == {"jb-default-sol-low", "claude-*"}
+    assert {m["model_name"] for m in work["model_list"]} == {
+        "jb-default-sol-low",
+        "jb.work.capable",
+        "claude-*",
+    }
 
 
 def test_up_restarts_only_the_account_whose_files_changed():
@@ -1457,7 +1461,7 @@ def test_sync_payload_for_a_repo_view_uses_its_scope_and_default_profile():
     )
     payload = ll.container_sync_payload(incus, _gcfg(), view=view)
     assert payload["json"]["default_profile"] == "lean"
-    assert payload["json"]["profiles"]["codex"]["tiers"]["opus"] == "jb-myrepo.sol-xhigh"
+    assert payload["json"]["profiles"]["codex"]["tiers"]["opus"] == "jb-myrepo.codex.capable"
     assert set(payload["json"]["profiles"]) == {"codex", "lean"}
 
 
@@ -1466,7 +1470,7 @@ def test_sync_payload_for_a_view_without_own_scope_uses_host_aliases():
     ll.litellm_up(incus, _gcfg())
     view = LiteLLMRepoView(config=_gcfg().litellm, scope=None, origin="/x/repos/r.yaml")
     payload = ll.container_sync_payload(incus, _gcfg(), view=view)
-    assert payload["json"]["profiles"]["codex"]["tiers"]["opus"] == "jb-default-sol-xhigh"
+    assert payload["json"]["profiles"]["codex"]["tiers"]["opus"] == "jb.codex.capable"
 
 
 def _restarts(incus: MagicMock) -> list[str]:

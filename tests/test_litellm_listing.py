@@ -17,7 +17,8 @@ def test_host_block_lists_the_builtin_profile_and_its_efforts():
     lines = listing_lines(LiteLLMConfig(enabled=True), [], global_origin="/c/global.yaml")
     text = "\n".join(lines)
     assert lines[0] == "global  (/c/global.yaml)"
-    assert "default profile: codex · autostart: off · aliases: jb-default-<route>" in text
+    assert "default profile: codex · autostart: off · aliases: jb.<profile>.<level>" in text
+    assert "opus    jb.codex.capable       sol-xhigh" in text
     assert "codex*  account default" in text
     assert "fable" in text and "chatgpt/gpt-6-astra" in text and "session" in text
     assert "xhigh (fixed)" in text and "922000 tokens" in text
@@ -35,7 +36,8 @@ def test_each_repo_block_shows_its_own_scope_and_settings():
     )
     host_part, repo_part = text.split("repo myrepo  (/c/repos/myrepo.yaml)")
     assert "xhigh (fixed)" in host_part and "max (fixed)" in repo_part
-    assert "autostart: on · aliases: jb-myrepo.<route>" in repo_part
+    assert "autostart: on · aliases: jb-myrepo.<profile>.<level>" in repo_part
+    assert "jb-myrepo.codex.capable" in repo_part
 
 
 def test_a_repo_without_own_scope_says_it_uses_the_host_aliases():
@@ -44,7 +46,7 @@ def test_a_repo_without_own_scope_says_it_uses_the_host_aliases():
         listing_lines(LiteLLMConfig(enabled=True), [repo], global_origin="/c/global.yaml")
     )
     assert "repo lean" in text
-    assert text.split("repo lean")[1].count("aliases: jb-default-<route>") == 1
+    assert text.split("repo lean")[1].count("aliases: jb.<profile>.<level>") == 1
 
 
 def test_floor_efforts_and_profile_session_effort_are_shown():

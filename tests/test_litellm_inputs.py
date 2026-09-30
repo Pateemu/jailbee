@@ -203,6 +203,7 @@ def test_a_non_utf8_extra_file_is_an_input_error_without_its_bytes(tmp_path: Pat
     [
         ("[1, 2]\n", "must be a mapping"),
         ("model_list:\n  - model_name: jb-default-astra\n", "jailbee's"),
+        ("model_list:\n  - model_name: jb.codex.capable\n", "jailbee's"),
         ("model_list:\n  - model_name: claude-*\n", "jailbee's"),
         ("general_settings: {master_key: sk-mine}\n", "master_key"),
         ("general_settings: open\n", "general_settings must be a mapping"),

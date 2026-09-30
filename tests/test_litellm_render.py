@@ -18,6 +18,7 @@ from jailbee.litellm_render import (
     render_instance_env,
     render_instance_files,
     served_routes,
+    tier_alias,
     upstream_targets,
 )
 
@@ -43,7 +44,32 @@ def test_aliases_of_different_scopes_never_collide(a, b):
     assert alias(*a) != alias(*b)
 
 
-def test_instance_config_has_one_deployment_per_route_plus_catch_all():
+def test_tier_alias_names_the_tier_by_role_never_by_claude_family():
+    assert tier_alias(None, "codex", "fable") == "jb.codex.most-capable"
+    assert tier_alias(None, "codex", "opus") == "jb.codex.capable"
+    assert tier_alias(None, "codex", "sonnet") == "jb.codex.standard"
+    assert tier_alias("myrepo", "codex", "haiku") == "jb-myrepo.codex.cheap"
+
+
+@pytest.mark.parametrize("tier", ["fable", "opus", "sonnet", "haiku"])
+def test_tier_aliases_carry_no_claude_family_name(tier):
+    # Claude Code infers capabilities from `opus`/`haiku`/... in a model name.
+    name = tier_alias(None, "p", tier)
+    assert not any(family in name for family in ("fable", "opus", "sonnet", "haiku"))
+
+
+@pytest.mark.parametrize("scope", [None, "default", "a-b"])
+def test_tier_aliases_never_meet_route_aliases(scope):
+    """Names hold no `.`: a route alias has at most one, a tier alias two."""
+    assert alias(scope, "codex-capable").count(".") <= 1
+    assert tier_alias(scope, "codex", "opus").count(".") == 2
+
+
+def test_host_and_repo_tier_aliases_never_meet():
+    assert tier_alias(None, "codex", "opus") != tier_alias("default", "codex", "opus")
+
+
+def test_instance_config_serves_every_route_every_profile_tier_and_the_catch_all():
     rendered = render_instance_config(LiteLLMConfig(), "default")
     models = _by_name(rendered)
     assert set(models) == {
@@ -51,8 +77,14 @@ def test_instance_config_has_one_deployment_per_route_plus_catch_all():
         "jb-default-sol-xhigh",
         "jb-default-sol-medium",
         "jb-default-luna-high",
+        "jb.codex.most-capable",
+        "jb.codex.capable",
+        "jb.codex.standard",
+        "jb.codex.cheap",
         CATCH_ALL,
     }
+    assert models["jb.codex.capable"]["litellm_params"] == {"model": "chatgpt/gpt-6-sol"}
+    assert models["jb.codex.capable"]["model_info"] == models["jb-default-sol-xhigh"]["model_info"]
     sol = models["jb-default-sol-xhigh"]
     assert sol["litellm_params"] == {"model": "chatgpt/gpt-6-sol"}
     assert sol["model_info"] == {"mode": "responses", "max_input_tokens": 922_000}
@@ -142,10 +174,10 @@ def test_container_profiles():
             "key_file": "/etc/jailbee/litellm-default.key",
             "effort": None,
             "tiers": {
-                "fable": "jb-default-astra",
-                "opus": "jb-default-sol-xhigh",
-                "sonnet": "jb-default-sol-medium",
-                "haiku": "jb-default-luna-high",
+                "fable": "jb.codex.most-capable",
+                "opus": "jb.codex.capable",
+                "sonnet": "jb.codex.standard",
+                "haiku": "jb.codex.cheap",
             },
             "context_window": 922_000,
         }
@@ -242,7 +274,16 @@ def test_an_account_no_profile_uses_has_no_catch_all():
 
 def test_callback_data_covers_only_the_served_aliases():
     data = render_callback_data(_two_accounts(), "work")
-    assert set(data["aliases"]) == {"jb-default-sol-low", "jb-default-kimi"}
+    assert set(data["aliases"]) == {
+        "jb-default-sol-low",
+        "jb-default-kimi",
+        "jb.work.capable",
+        "jb.work.cheap",
+        "jb.kimi.capable",
+        "jb.kimi.standard",
+        "jb.kimi.cheap",
+    }
+    assert data["aliases"]["jb.work.capable"] == data["aliases"]["jb-default-sol-low"]
     assert data["aliases"]["jb-default-kimi"]["chatgpt"] is False
     assert data["aliases"]["jb-default-sol-low"] == {
         "chatgpt": True,
@@ -390,12 +431,12 @@ def test_a_scope_serves_its_subscription_routes_only_on_its_profiles_account():
     assert "jb-default-sol-xhigh" in on_default and "jb-default-sol-xhigh" not in on_work
 
 
-def test_container_profiles_use_the_scope_aliases():
+def test_container_profiles_use_the_scope_tier_aliases():
     cfg = _scope(routes={"sol-xhigh": {"effort": "max"}})
     profiles = container_profiles(cfg, base_urls={"default": "u"}, scope="myrepo")
-    assert profiles["codex"]["tiers"]["opus"] == "jb-myrepo.sol-xhigh"
+    assert profiles["codex"]["tiers"]["opus"] == "jb-myrepo.codex.capable"
     host = container_profiles(LiteLLMConfig(), base_urls={"default": "u"})
-    assert host["codex"]["tiers"]["opus"] == "jb-default-sol-xhigh"
+    assert host["codex"]["tiers"]["opus"] == "jb.codex.capable"
 
 
 def test_egress_and_probe_targets_include_every_scope():
@@ -463,3 +504,35 @@ def test_scopes_whose_prefix_and_route_names_interleave_stay_apart_on_one_instan
     assert table["jb-default.sol-xhigh"]["effort"] == "max"
     assert table["jb-default-sol-xhigh"]["effort"] == "xhigh"
     assert set(table) == set(names) - {CATCH_ALL}
+
+
+def test_a_profile_tier_is_served_only_where_its_route_is():
+    personal = _by_name(render_instance_config(_two_accounts(), "personal"))
+    work = _by_name(render_instance_config(_two_accounts(), "work"))
+    assert "jb.codex.capable" in personal and "jb.codex.capable" not in work
+    assert "jb.work.capable" in work and "jb.work.capable" not in personal
+    # API-key tiers are served by every instance, as their routes are.
+    assert "jb.kimi.capable" in personal and "jb.kimi.capable" in work
+
+
+def test_a_renamed_route_keeps_the_tier_alias_a_running_session_holds():
+    """The regression: renaming a route in `global.yaml` broke every session
+    started before, because the session held the route's alias."""
+    before = LiteLLMConfig()
+    after = LiteLLMConfig.model_validate(
+        {
+            "routes": {"sol-max": {"model": "chatgpt/gpt-6-sol", "effort": "max"}},
+            "profiles": {"codex": {"opus": "sol-max"}},
+        }
+    )
+    held = container_profiles(before, base_urls={"default": "u"})["codex"]["tiers"]["opus"]
+    models = _by_name(render_instance_config(after, "default"))
+    assert models[held]["litellm_params"] == {"model": "chatgpt/gpt-6-sol"}
+    assert render_callback_data(after, "default")["aliases"][held]["effort"] == "max"
+
+
+def test_a_repo_scope_serves_its_profile_tiers_under_its_prefix():
+    scopes = {"myrepo": _scope(routes={"sol-xhigh": {"effort": "max"}})}
+    table = render_callback_data(LiteLLMConfig(), "default", scopes=scopes)["aliases"]
+    assert table["jb-myrepo.codex.capable"]["effort"] == "max"
+    assert table["jb.codex.capable"]["effort"] == "xhigh"

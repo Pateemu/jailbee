@@ -95,6 +95,23 @@ Profile selection order is `claude-jb --profile NAME`, then
 `--profile` is consumed by the wrapper, not passed to Claude Code. Use plain
 `claude` for native access, not `--profile native`.
 
+`claude-jb` gives Claude Code one model name per tier of the selected profile,
+and the name comes from the profile and tier, not from the route:
+`jb.<profile>.<level>`, where the level is `most-capable` (Fable), `capable`
+(Opus), `standard` (Sonnet) or `cheap` (Haiku). The built-in profile's Opus
+tier is `jb.codex.capable`. A running session keeps the names it started with,
+and the proxy answers each one with whichever route the profile maps that tier
+to now. So after `jailbee apply` you can rename, replace or remap routes, and
+every open session continues on the new route. What still breaks an open
+session is renaming or removing the profile itself, unmapping the tier, or
+moving the profile to another `account`. The levels do not repeat Claude
+family names because Claude Code reads `opus`, `haiku` and similar from a model
+name and changes its requests to match.
+
+The proxy also serves every route under its own name, `jb-default-<route>`,
+for `/model` and for sessions started before tier names existed. Profile names
+follow the same rule as route names (`[a-z0-9][a-z0-9_-]{0,63}`).
+
 The three built-in GPT-6 models default to a **922,000-token context window**:
 the ChatGPT subscription backend's maximum input, not the API's 1.05M total.
 Claude Code compacts a fixed reserve below the window it is told about, so a
@@ -133,13 +150,14 @@ reverse), because the merge keeps the value below and the two cannot be set toge
 merged result must be valid as a whole (known routes, accounts and so on),
 otherwise the repo's config fails to load.
 
-The proxy serves the two scopes under different model aliases:
-`jb-default-<route>` for the host's routes and `jb-<prefix>.<route>` for a repo
-whose override sets non-empty `routes` or `profiles`. A repo that only sets
-`default_profile` or `autostart` has no scope of its own and uses the host's
-aliases. Route names match `[a-z0-9][a-z0-9_-]{0,63}` (no dots, as container
-prefixes have none either), so the two alias forms never collide. Inspect the
-result with `jailbee litellm ls`.
+The proxy serves the two scopes under different model names. A repo whose
+override sets non-empty `routes` or `profiles` gets its own:
+`jb-<prefix>.<profile>.<level>` for its tiers and `jb-<prefix>.<route>` for its
+routes. The host's are `jb.<profile>.<level>` and `jb-default-<route>`. A repo
+that only sets `default_profile` or `autostart` has no scope of its own and
+uses the host's names. Route and profile names contain no dots, and neither do
+container prefixes, so no two of these forms can collide. Inspect the result
+with `jailbee litellm ls`.
 
 After editing an override, run `jailbee apply` in that repo. It re-renders the
 proxy configuration and restarts only the instances whose routes changed,
