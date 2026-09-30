@@ -91,8 +91,8 @@ replacement subset.
 The local file is a per-repo overlay, not another host-global config. It
 rejects `container_prefix`, computed fields such as `credential_group` and
 `claude_credentials_dir`, the host-only keys `scratch`, `config_edit`,
-`update_check`, `install_host_skills`, `remote`, and `claude_credentials`, and
-`github.api_tokens`. Other `Config` fields—including `ls`, `dashboard`, and
+`update_check`, `install_host_skills`, `agent_instructions`, `remote`, and
+`claude_credentials`, and `github.api_tokens`. Other `Config` fields—including `ls`, `dashboard`, and
 `docker_registry_mirror`—are allowed in the local overlay. Refused keys either
 describe the file/repo identity, apply to the whole host, or are legacy
 per-repo maps; put host-wide settings in `global.yaml` and per-repo secrets in
@@ -180,11 +180,11 @@ If you need per-user defaults for `extra_registries`, set them per-repo. There i
 
 ### Keys that bypass the deep-merge pipeline
 
-Ten top-level keys are read from `~/.config/jailbee/global.yaml` into
+Eleven top-level keys are read from `~/.config/jailbee/global.yaml` into
 `GlobalConfig` and are **not** merged into the Config layer:
 `docker_registry_mirror` (see above), `ls`, `dashboard`,
 `credentials`, `scratch`, `config_edit`, `update_check`,
-`install_host_skills`, `remote` and `litellm`. `ls`'s column block is
+`install_host_skills`, `agent_instructions`, `remote` and `litellm`. `ls`'s column block is
 merged field-by-field instead
 (repo block over global block) — the generic pipeline would *append* its
 `fields`/`hide` lists and concatenate the two layers' column lists rather
@@ -2335,8 +2335,8 @@ Instructions that apply to every wired agent in every container of every repo �
 model preferences, house rules — go in one file on the host:
 `~/.config/jailbee/AGENTS.md` (`$XDG_CONFIG_HOME/jailbee/AGENTS.md` if set).
 
-Jailbee copies it into `~/.local/share/jailbee/agent-instructions/<agent>/`
-(`$XDG_DATA_HOME/jailbee/agent-instructions/<agent>/` if set), under each
+Jailbee copies it into `~/.local/share/jailbee/agent-instructions/<agent>/by-file/<file>/`
+(`$XDG_DATA_HOME/jailbee/agent-instructions/...` if set), under each
 agent's own file name, and mounts that directory read-only into containers
 where the agent is enabled. For Claude Code that is
 `/etc/claude-code/CLAUDE.md`, its managed-policy memory file: loaded in every
@@ -2352,10 +2352,10 @@ model-policy enforcement; they do not configure the agent running on the host.
   A session reads it when it starts, so an edit reaches the next agent session,
   not one already running. No `jailbee apply` needed after the first.
 - **No file:** the mount is an empty directory; nothing is loaded. Removing
-  the source removes all recognized generated copies for the enabled agent on
-  the next refresh, not the directory. If repos choose different filenames for
-  the same agent, every generated copy is refreshed together; unrelated files
-  are retained.
+  the source removes the staged copy on the next refresh, not the directory.
+  Each (agent, file name) pair has its own staging directory, so a repo that
+  sets an unusual `global_instructions.file` only adds that file to its own
+  containers.
 - **Mount conflicts:** instruction destinations must be disjoint from effective
   host/shared mounts and other instruction destinations (including parent/child
   paths). An existing policy mount at `/etc/claude-code`, for example, is not

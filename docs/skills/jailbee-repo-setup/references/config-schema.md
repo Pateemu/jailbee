@@ -33,7 +33,7 @@ Both files are deep-merged at load time. Repo wins on scalars, repo list appends
 | `autostart` | see below | empty triggers | repo |
 | `docker_registry_mirror.extra_registries` | list of `host[:port]` | `[]` | repo |
 | `container_prefix` | string | `repo_root.name` | repo (only if name doesn't match regex) |
-| `agents` | dict of name → `{enabled, autostart, command, install, install_check, update, auto_update, install_network, shared, egress_allow, env, skills_dir, install_jailbee_skills}` | `{}` (six presets available: `claude`, `codex`, `gemini`, `aider`, `opencode`, `grok`) | global for the master switch, repo appends |
+| `agents` | dict of name → `{enabled, autostart, command, install, install_check, update, auto_update, install_network, shared, egress_allow, env, skills_dir, install_jailbee_skills, global_instructions}` | `{}` (six presets available: `claude`, `codex`, `gemini`, `aider`, `opencode`, `grok`) | global for the master switch, repo appends |
 | `claude` | **legacy alias for `agents.claude`** — same fields, plus Claude-only ones (`plugins_enabled`, `agent_view`, `seed_onboarding`, `ai_pr_description`, `ai_pr_branch`, `ai_pr_model`, `pr_prompt`, `ai_pr_timeout`) | `enabled: false`, rest see below | global (`pr_prompt` belongs in the repo) |
 | `github` | `{enabled, api_tokens}` | `enabled: false` (opt-in) | global |
 | `terminal` | `{kitty: {enabled, host_terminfo_path}}` | `kitty.enabled: "auto"` | global |
@@ -854,6 +854,7 @@ agents:
 | `env` | map[string, string] | `{}` | Env vars passed to the install/update step and the autostart launch step. |
 | `skills_dir` | string \| null | preset | Container-side directory the agent reads user-level skills from (`~/.codex/skills`, …). When set and covered by a `shared` mount, `jailbee new` / `jailbee apply` copy the three bundled jailbee skills (`jailbee-usage`, `jailbee-repo-setup`, `jailbee-pr-review`) into the shared copy of it. The four skill-capable presets set it (`claude` `~/.claude/skills`, `codex` `~/.codex/skills`, `gemini` `~/.gemini/skills`, `opencode` `~/.config/opencode/skills`); `aider` and `grok` have none. Rejected at load if empty or carrying a `.` / `..` segment — the value is joined onto a host-side path. |
 | `install_jailbee_skills` | bool | `true` | `false` keeps this agent's shared skills directory untouched by jailbee's bundled skills. Does nothing when `skills_dir` is unset or no `shared` mount covers it. A disabled agent gets nothing either way. |
+| `global_instructions` | `{dir, file}` \| null | preset | Where the agent reads the host's `~/.config/jailbee/AGENTS.md`. jailbee mounts a staged directory holding only `file` read-only at `dir` in every container. `dir` is absolute or `~`-relative without `.`/`..`, must not overlap a `shared` mount or be `/`, `/etc`, `/usr`, `/home` or the home directory; `file` is a bare file name. Only the `claude` preset sets it (`/etc/claude-code`, `CLAUDE.md`). Turn the whole feature off with `agent_instructions: false` in `global.yaml`. |
 
 `jailbee config validate` additionally rejects: an agent name outside
 `[a-z0-9-]+`; `enabled: true` with an empty `command`; `autostart: true`
