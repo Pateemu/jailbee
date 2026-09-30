@@ -912,3 +912,14 @@ def test_dismissal_bounds_skips_an_unparseable_fingerprint() -> None:
     assert dismissal_bounds(rows) == {}
     marks = {"apply": Watermark(version=(1, 1, 0), observed=True)}
     assert pending("1.3.2", marks, notes=_dismiss_notes(), dismissals=dismissal_bounds(rows))
+
+
+def test_host_wide_instructions_render_in_the_existing_claude_apply_reason() -> None:
+    from jailbee.upgrade import Watermark, format_advice, pending
+
+    lines = format_advice(pending("1.6.0", {"apply": Watermark((1, 5, 0), observed=True)}))
+    reason = next(line for line in lines if "agent view" in line)
+    assert "~/.config/jailbee/AGENTS.md" in reason
+    assert "/etc/claude-code" in reason
+    assert "restart each running container" in reason
+    assert not any("more (see the CHANGELOG)" in line for line in lines)

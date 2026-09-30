@@ -284,6 +284,52 @@ def _check_upgrade_advice(cfg: Config) -> CheckResult:
     return CheckResult("upgrade actions", False, "\n".join(lines))
 
 
+def _check_agent_instructions(cfg: Config) -> CheckResult:
+    """Report host-wide instruction staging without requiring Incus."""
+    from jailbee.agent_instructions import (
+        desired_content,
+        instruction_agents,
+        source_path,
+        staging_dir,
+    )
+    from jailbee.paths import display_path
+
+    name = "agent instructions"
+    if not cfg.agent_instructions_enabled():
+        return CheckResult(name, True, "disabled (`agent_instructions: false`)")
+    agents = instruction_agents(cfg)
+    if not agents:
+        return CheckResult(name, True, "no enabled agent reads host-wide instructions")
+    source = source_path()
+    try:
+        content = desired_content(source)
+    except OSError as exc:
+        return CheckResult(name, False, f"cannot read {display_path(source)}: {exc}")
+    stale: list[str] = []
+    for agent, gi in agents:
+        target = staging_dir(agent) / gi.file
+        try:
+            current = target.read_bytes()
+        except FileNotFoundError:
+            current = None
+        except OSError as exc:
+            return CheckResult(name, False, f"cannot read {display_path(target)}: {exc}")
+        if current != content:
+            stale.append(agent)
+    if stale:
+        return CheckResult(
+            name,
+            False,
+            f"staged copy out of date for {', '.join(stale)} — run any `jailbee ls` to refresh",
+        )
+    if content is None:
+        return CheckResult(name, True, f"none (no {display_path(source)})")
+    # desired_content prepends one marker line; use its snapshot, not a second source read/stat.
+    size = len(content.partition(b"\n")[2])
+    wired = ", ".join(f"{a} → {gi.dir}/{gi.file}" for a, gi in agents)
+    return CheckResult(name, True, f"{display_path(source)} ({size} bytes): {wired}")
+
+
 def _check_update_available() -> CheckResult:
     """Report whether a newer jailbee has been seen on PyPI.
 
@@ -754,6 +800,7 @@ def run_checks(cfg: Config, incus: Incus, *, gcfg: GlobalConfig | None = None) -
     # no Incus (it is a bookkeeping read against the state DB), so it lives
     # here rather than behind the `incus_available` gate below.
     results.append(_check_upgrade_advice(cfg))
+    results.append(_check_agent_instructions(cfg))
     results.append(_check_update_available())
     # Same reasoning as the check above: a dismissal hides the hint on the
     # commands the user actually runs, never the diagnosis here.

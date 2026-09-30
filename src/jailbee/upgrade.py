@@ -237,6 +237,8 @@ UPGRADE_NOTES: tuple[UpgradeNote, ...] = (
             "Claude Code's agent view and its background daemon are off in "
             "containers by default (`agents.claude.agent_view`), and its session "
             "registry, daemon and job state move to a per-container directory; "
+            "`jailbee apply` also mounts host-wide agent instructions from "
+            "`~/.config/jailbee/AGENTS.md` at `/etc/claude-code`; "
             "restart each running container after `jailbee apply` so the new "
             "mounts land"
         ),

@@ -3789,3 +3789,100 @@ def test_litellm_doctor_names_a_broken_repo_override(mocker):
     mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
     row = _rows(gcfg)["litellm repo override"]
     assert not row.ok and "/h/repos/app.yaml" in row.detail
+
+
+@pytest.fixture
+def instruction_paths(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    source = tmp_path / "config" / "jailbee" / "AGENTS.md"
+    target = tmp_path / "data" / "jailbee" / "agent-instructions" / "claude" / "CLAUDE.md"
+    source.parent.mkdir(parents=True)
+    return source, target
+
+
+@pytest.mark.parametrize("case", ["opted_out", "no_agent", "no_source", "synced", "stale", "removed"])
+def test_agent_instructions_check(make_cfg, tmp_path, instruction_paths, case):
+    from jailbee.agent_instructions import sync_global_instructions
+    from jailbee.doctor import _check_agent_instructions
+
+    source, target = instruction_paths
+    cfg = make_cfg(tmp_path / "repo", agents={"claude": {"enabled": case != "no_agent"}})
+    if case == "opted_out":
+        cfg._agent_instructions = False
+    if case in {"synced", "stale", "removed"}:
+        source.write_bytes(b"policy\n")
+    if case in {"synced", "removed"}:
+        sync_global_instructions(cfg)
+    if case == "removed":
+        source.unlink()
+    result = _check_agent_instructions(cfg)
+    assert result.name == "agent instructions"
+    assert result.ok is (case not in {"stale", "removed"})
+    if case == "opted_out":
+        assert "agent_instructions: false" in result.detail
+    elif case == "no_agent":
+        assert "no enabled agent" in result.detail
+    elif case == "no_source":
+        assert "no " in result.detail and "AGENTS.md" in result.detail
+        assert not target.exists()
+    elif case == "synced":
+        assert "7 bytes" in result.detail
+        assert "claude" in result.detail and "/etc/claude-code/CLAUDE.md" in result.detail
+    else:
+        assert "claude" in result.detail and "jailbee ls" in result.detail
+
+
+@pytest.mark.parametrize("unreadable", ["source", "target"])
+def test_agent_instructions_check_warns_on_read_error(
+    make_cfg, tmp_path, instruction_paths, monkeypatch, unreadable
+):
+    from jailbee.doctor import _check_agent_instructions
+
+    source, target = instruction_paths
+    source.write_bytes(b"policy\n")
+    real_read = Path.read_bytes
+    broken = source if unreadable == "source" else target
+
+    def read(path):
+        if path == broken:
+            raise PermissionError("read denied")
+        return real_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+    result = _check_agent_instructions(
+        make_cfg(tmp_path / "repo", agents={"claude": {"enabled": True}})
+    )
+    assert not result.ok
+    assert str(broken) in result.detail and "read denied" in result.detail
+
+
+def test_agent_instructions_check_size_uses_the_read_snapshot(
+    make_cfg, tmp_path, instruction_paths, monkeypatch
+):
+    from jailbee.agent_instructions import sync_global_instructions
+    from jailbee.doctor import _check_agent_instructions
+
+    source, _ = instruction_paths
+    source.write_bytes(b"policy\n")
+    cfg = make_cfg(tmp_path / "repo", agents={"claude": {"enabled": True}})
+    sync_global_instructions(cfg)
+    real_read = Path.read_bytes
+
+    def read(path):
+        content = real_read(path)
+        if path == source:
+            source.unlink()
+        return content
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+    result = _check_agent_instructions(cfg)
+    assert result.ok and "7 bytes" in result.detail
+
+
+def test_run_checks_includes_agent_instructions_without_incus(
+    make_cfg, tmp_path, instruction_paths, mocker
+):
+    mocker.patch("jailbee.doctor.shutil.which", return_value=None)
+    results = run_checks(make_cfg(tmp_path / "repo"), mocker.MagicMock())
+    assert any(r.name == "agent instructions" and r.ok for r in results)
