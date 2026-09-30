@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -141,3 +143,56 @@ def test_nothing_pending_prints_nothing(make_cfg, tmp_path, mocker, capsys) -> N
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == ""
+
+
+@pytest.mark.parametrize("command", ["ls", "shell", "tmux", "new"])
+@pytest.mark.parametrize("broken", [False, True])
+def test_everyday_commands_sync_instructions_before_delegating(mocker, command, broken):
+    from jailbee.cli import app
+    from jailbee.egress_pool import RefreshResult
+    from jailbee.global_config import DockerRegistryMirror, GlobalConfig
+
+    events = []
+
+    def sync(cfg):
+        events.append("sync")
+        if broken:
+            raise RuntimeError("boom")
+
+    synced = mocker.patch(
+        "jailbee.agent_instructions.sync_global_instructions", side_effect=sync
+    )
+    mocker.patch("jailbee.incus.Incus")
+    mocker.patch("jailbee.lifecycle.repo_has_submodules", return_value=False)
+    mocker.patch("jailbee.cli._resolve_attachable", return_value=(mocker.MagicMock(), "c1"))
+    mocker.patch(
+        "jailbee.cli._load_global",
+        return_value=GlobalConfig(docker_registry_mirror=DockerRegistryMirror(enabled=False)),
+    )
+    mocker.patch("jailbee.egress_pool.register_repo")
+    mocker.patch(
+        "jailbee.egress_pool.refresh_pool",
+        return_value=RefreshResult(container_prefix="foo", status="ok"),
+    )
+    targets = {
+        "ls": "jailbee.lifecycle.list_containers",
+        "shell": "jailbee.cli._attach_shell",
+        "tmux": "jailbee.cli._attach_tmux",
+        "new": "jailbee.lifecycle.new_container",
+    }
+    returns = {"ls": [], "shell": 0, "tmux": 0, "new": "foo-smokebox"}
+    mocker.patch(
+        targets[command],
+        side_effect=lambda *a, **kw: events.append("delegate") or returns[command],
+    )
+    argv = [command]
+    if command == "new":
+        argv += ["smokebox", "--mount", "--no-autostart"]
+    elif command != "ls":
+        argv += ["c1"]
+
+    result = runner.invoke(app, [*argv, "--config", str(FIXTURES / "full_config.yaml")])
+
+    assert result.exit_code == 0, result.output
+    synced.assert_called_once()
+    assert events == ["sync", "delegate"]

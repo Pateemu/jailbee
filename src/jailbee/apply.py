@@ -313,6 +313,11 @@ def run_apply(
     except Exception as e:  # non-fatal
         warn(f"jailbee-skills sync failed (continuing): {e}")
 
+    # Stage instructions before rendering the binds profile that mounts them.
+    from jailbee.agent_instructions import sync_global_instructions
+
+    sync_global_instructions(cfg)
+
     names = profile_names(cfg)
     profile_yamls = {
         names.base: base_profile_yaml(cfg),

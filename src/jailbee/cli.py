@@ -549,6 +549,16 @@ def _advise_upgrade(cfg: "Config") -> None:
         return
 
 
+def _sync_agent_instructions(cfg: "Config") -> None:
+    """Refresh host-wide instructions on everyday commands, without failing them."""
+    from jailbee.agent_instructions import sync_global_instructions
+
+    try:
+        sync_global_instructions(cfg)
+    except Exception:  # a courtesy must never fail the command
+        return
+
+
 def _advise_update() -> None:
     """Print the PyPI update hint, and start the probe that keeps it fresh.
 
@@ -1633,6 +1643,7 @@ def list_cmd(
         raise typer.BadParameter(models_columns.RETIRED_DIFF_FIELD_NOTICE)
 
     cfg = _load_or_exit(config)
+    _sync_agent_instructions(cfg)
     _advise_upgrade(cfg)
     _advise_ssh_restart()
     _advise_update()
@@ -1996,6 +2007,7 @@ def new_cmd(
     )
 
     cfg = _load_or_exit(config)
+    _sync_agent_instructions(cfg)
 
     if cfg.is_synthetic():
         # `new_cmd` uses the local name `hint` below for an unrelated string,
@@ -3395,6 +3407,7 @@ def shell(
         raise typer.Exit(2)
 
     cfg = _load_or_exit(config)
+    _sync_agent_instructions(cfg)
     _advise_upgrade(cfg)
     _advise_ssh_restart()
     _advise_update()
@@ -3418,6 +3431,7 @@ def tmux(
 ) -> None:
     """Attach to the autostart tmux session inside the container."""
     cfg = _load_or_exit(config)
+    _sync_agent_instructions(cfg)
     incus, name = _resolve_attachable(cfg, name, force=force, attach_cmd="tmux")
     raise typer.Exit(_attach_tmux(cfg, incus, name))
 

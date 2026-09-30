@@ -247,6 +247,33 @@ def test_run_apply_syncs_gie_skills_when_claude_enabled(
     sync.assert_called_once_with(cfg)
 
 
+def test_run_apply_syncs_instructions_before_building_binds(make_cfg, tmp_path, mocker):
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+
+    cfg = make_cfg(tmp_path)
+    incus = MagicMock(spec=Incus)
+    incus.list_containers.return_value = []
+    incus.network_acl_list.return_value = []
+    incus.network_get.return_value = ""
+    mocker.patch("jailbee.apply._profile_differs", return_value=False)
+    mocker.patch("jailbee.apply._acl_differs", return_value=False)
+    events = []
+    sync = mocker.patch(
+        "jailbee.agent_instructions.sync_global_instructions",
+        side_effect=lambda cfg: events.append("sync"),
+    )
+    mocker.patch(
+        "jailbee.apply.binds_profile_yaml",
+        side_effect=lambda cfg: events.append("binds") or "devices: {}",
+    )
+
+    run_apply(cfg, incus, GlobalConfig(), confirm_fn=lambda _msg: False)
+
+    sync.assert_called_once_with(cfg)
+    assert events == ["sync", "binds"]
+
+
 def test_run_apply_pushes_changed_profile(make_cfg, tmp_path: Path, mocker: MockerFixture) -> None:
     from jailbee.apply import run_apply
     from jailbee.global_config import GlobalConfig

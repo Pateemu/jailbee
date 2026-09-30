@@ -4768,6 +4768,56 @@ def test_list_containers_reads_mode_from_user_gie_mode(make_cfg, tmp_path):
 # ---- boot_container ----
 
 
+@pytest.mark.parametrize(
+    "restart,state,operation",
+    [(False, "Stopped", "start"), (True, "Stopped", "start"), (True, "Running", "restart")],
+)
+def test_boot_container_syncs_instructions_before_allocation(
+    tmp_path, mocker, restart, state, operation
+):
+    cfg = _cfg_for_new(tmp_path)
+    incus = MagicMock()
+    incus.list_containers.return_value = [{"name": "feat-x", "status": state}]
+    events = _boot_events(mocker, incus)
+    sync = mocker.patch(
+        "jailbee.agent_instructions.sync_global_instructions",
+        side_effect=lambda cfg: events.append("sync"),
+    )
+    mocker.patch("jailbee.agent_instructions.missing_staging_dirs", return_value=[])
+    mocker.patch(
+        "jailbee.pool.allocate_startup", side_effect=lambda *a: events.append("allocate")
+    )
+
+    boot_container(cfg, incus, "feat-x", restart=restart)
+
+    sync.assert_called_once_with(cfg)
+    assert events == ["sync", "allocate", "detach", operation, "attach"]
+
+
+@pytest.mark.parametrize("restart", [False, True])
+def test_boot_container_refuses_missing_instruction_staging(tmp_path, mocker, restart):
+    cfg = _cfg_for_new(tmp_path)
+    incus = MagicMock()
+    incus.list_containers.return_value = [{"name": "feat-x", "status": "Running"}]
+    sync = mocker.patch("jailbee.agent_instructions.sync_global_instructions")
+    missing = mocker.patch(
+        "jailbee.agent_instructions.missing_staging_dirs",
+        return_value=[Path("/nope/agent-instructions/claude")],
+    )
+    allocate = mocker.patch("jailbee.pool.allocate_startup")
+    detach = mocker.patch("jailbee.runtime_mounts.detach_runtime_devices")
+
+    with pytest.raises(ValueError, match="/nope/agent-instructions/claude"):
+        boot_container(cfg, incus, "feat-x", restart=restart)
+
+    sync.assert_called_once_with(cfg)
+    missing.assert_called_once_with(cfg)
+    allocate.assert_not_called()
+    detach.assert_not_called()
+    incus.start.assert_not_called()
+    incus.restart.assert_not_called()
+
+
 def _boot_events(mocker, incus):
     """Record the detach/boot/attach order of one `boot_container` call."""
     events: list[str] = []
@@ -6208,6 +6258,26 @@ def test_new_container_syncs_gie_skills(make_cfg, tmp_path, mocker):
     new_container(cfg, incus, _new_opts())
 
     sync.assert_called_once_with(cfg)
+
+
+def test_new_container_syncs_instructions_before_init(make_cfg, tmp_path, mocker):
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    cfg = make_cfg(repo, default_branch="main")
+    incus = MagicMock()
+    incus.exists.return_value = False
+    _patch_new_container_deps(mocker)
+    events = []
+    sync = mocker.patch(
+        "jailbee.agent_instructions.sync_global_instructions",
+        side_effect=lambda cfg: events.append("sync"),
+    )
+    incus.init.side_effect = lambda *a: events.append("init")
+
+    new_container(cfg, incus, _new_opts())
+
+    sync.assert_called_once_with(cfg)
+    assert events == ["sync", "init"]
 
 
 def test_new_container_invokes_on_phase_in_order(make_cfg, tmp_path, mocker):

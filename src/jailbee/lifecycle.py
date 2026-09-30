@@ -1385,6 +1385,11 @@ def new_container(
         ensure_claude_config_dir(cfg, incus)
         ensure_claude_credentials_env(cfg, incus)
 
+    # Incus needs the instruction mount's source directory before creation.
+    from jailbee.agent_instructions import sync_global_instructions
+
+    sync_global_instructions(cfg)
+
     # Before `incus.init`, deliberately. `profile_assign` below is the first
     # thing that fails on a repo that never ran `jailbee init`, and by then the
     # instance exists — an orphan carrying only `default`, which `jailbee ls`
@@ -2127,6 +2132,18 @@ def boot_container(cfg: Config, incus: Incus, name: str, *, restart: bool) -> No
             state = raw.get("status", "Stopped")
             labels = raw.get("config") or {}
             break
+
+    # Create the mounted source before boot; report a failed mkdir ourselves
+    # rather than leaving Incus to fail with an opaque disk-device error.
+    from jailbee.agent_instructions import missing_staging_dirs, sync_global_instructions
+
+    sync_global_instructions(cfg)
+    missing = missing_staging_dirs(cfg)
+    if missing:
+        raise ValueError(
+            "cannot start: the agent-instructions directory the container mounts is "
+            f"missing and could not be created: {', '.join(str(p) for p in missing)}"
+        )
 
     # Idempotent: this is also how a container created before pooling
     # existed acquires its slot.
