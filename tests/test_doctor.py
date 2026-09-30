@@ -3801,7 +3801,9 @@ def instruction_paths(tmp_path, monkeypatch):
     return source, target
 
 
-@pytest.mark.parametrize("case", ["opted_out", "no_agent", "no_source", "synced", "stale", "removed"])
+@pytest.mark.parametrize(
+    "case", ["opted_out", "no_agent", "no_source", "synced", "stale", "removed"]
+)
 def test_agent_instructions_check(make_cfg, tmp_path, instruction_paths, case):
     from jailbee.agent_instructions import sync_global_instructions
     from jailbee.doctor import _check_agent_instructions
