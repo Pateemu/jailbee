@@ -211,9 +211,10 @@ def test_apply_submodule_repo_manifest_without_an_extra_option(mocker, tmp_path)
 
     assert result.exit_code == 0, result.output
     assert "https://x/sub-comment" in result.output
-    resolve.assert_called_once_with(
+    expected_resolution = mocker.call(
         cfg.repo_root / "deps/library", 42, remote="upstream", repo="acme/library"
     )
+    assert resolve.call_args_list == [expected_resolution, expected_resolution]
     comment.assert_called_once_with(
         cfg.repo_root / "deps/library", 42, "looks good", repo="acme/library"
     )
@@ -497,7 +498,12 @@ def test_apply_deletes_a_body_file_shared_by_two_completed_manifests(mocker, tmp
 
     mocker.patch(
         "jailbee.pr_outbox.resolve_target",
-        side_effect=[_target("001-x.json"), _target("002-y.json")],
+        side_effect=[
+            _target("001-x.json"),
+            _target("002-y.json"),
+            _target("001-x.json"),
+            _target("002-y.json"),
+        ],
     )
     mocker.patch(
         "jailbee.pr_outbox.apply_manifest",
@@ -587,7 +593,12 @@ def test_apply_stops_before_the_next_manifest_after_a_failed_publish(mocker, tmp
     )
     mocker.patch(
         "jailbee.pr_outbox.resolve_target",
-        side_effect=[_a_target("001-x.json"), _a_target("002-y.json")],
+        side_effect=[
+            _a_target("001-x.json"),
+            _a_target("002-y.json"),
+            _a_target("001-x.json"),
+            _a_target("002-y.json"),
+        ],
     )
     apply_mock = mocker.patch(
         "jailbee.pr_outbox.apply_manifest",
@@ -598,6 +609,7 @@ def test_apply_stops_before_the_next_manifest_after_a_failed_publish(mocker, tmp
     result = runner.invoke(app, ["review", "apply", "feat-foo", "-y"])
 
     assert result.exit_code == 1
+    assert apply_mock.call_args.args[3].manifest.name == "001-x.json"
     assert apply_mock.call_count == 1, "the second manifest must not be attempted"
     assert "002-y.json" in result.output, "and the user must be told it is still pending"
 
@@ -613,7 +625,12 @@ def test_apply_stops_before_the_next_manifest_when_it_cannot_record(mocker, tmp_
     )
     mocker.patch(
         "jailbee.pr_outbox.resolve_target",
-        side_effect=[_a_target("001-x.json"), _a_target("002-y.json")],
+        side_effect=[
+            _a_target("001-x.json"),
+            _a_target("002-y.json"),
+            _a_target("001-x.json"),
+            _a_target("002-y.json"),
+        ],
     )
     apply_mock = mocker.patch(
         "jailbee.pr_outbox.apply_manifest",
@@ -624,6 +641,7 @@ def test_apply_stops_before_the_next_manifest_when_it_cannot_record(mocker, tmp_
     result = runner.invoke(app, ["review", "apply", "feat-foo", "-y"])
 
     assert result.exit_code == 1
+    assert apply_mock.call_args.args[3].manifest.name == "001-x.json"
     assert apply_mock.call_count == 1
     assert "002-y.json" in result.output
 

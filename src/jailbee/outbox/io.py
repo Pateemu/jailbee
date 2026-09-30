@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import base64
 import binascii
+import fcntl
+import hashlib
 import io
+import os
 import tarfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from threading import local
 from typing import TYPE_CHECKING
 
+from jailbee.db import state_dir
 from jailbee.incus import IncusError
 from jailbee.outbox.models import Kind, OutboxExecutionError, StoreSnapshot
+from jailbee.outbox_io import ContainerIdentity
 
 if TYPE_CHECKING:
     from jailbee.incus import Incus
@@ -184,3 +193,44 @@ def read_store(incus: Incus, container: str, kind: Kind, *, uid: int | None) -> 
     except IncusError as exc:
         raise OutboxExecutionError(f"outbox unavailable: {exc}") from exc
     return _decode(kind, raw)
+
+
+class PrManagement:
+    """Instance-reentrant, host-side serialization of one container's PR store."""
+
+    def __init__(self, root: Path | None = None) -> None:
+        self.root = root if root is not None else state_dir() / "pr-outbox" / "locks"
+        self._lock_state = local()
+
+    @contextmanager
+    def lock(self, identity: ContainerIdentity) -> Iterator[None]:
+        if not identity.full_name or not identity.created_at:
+            raise OutboxExecutionError("cannot lock an empty container identity")
+        digest = hashlib.sha256(f"{identity.full_name}\0{identity.created_at}".encode()).hexdigest()
+        path = self.root / f"{digest}.lock"
+        held = getattr(self._lock_state, "paths", None)
+        if held is None:
+            held = set()
+            self._lock_state.paths = held
+        if path in held:
+            yield
+            return
+        descriptor = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+            os.chmod(path, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        except OSError as exc:
+            if descriptor is not None:
+                os.close(descriptor)
+            raise OutboxExecutionError("could not lock PR outbox") from exc
+        held.add(path)
+        try:
+            yield
+        finally:
+            held.remove(path)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)

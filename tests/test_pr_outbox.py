@@ -1506,7 +1506,13 @@ def test_finalize_deletes_a_fully_applied_manifest_and_its_own_bodies(mocker):
         _manifest_text(actions=[{"type": "comment", "body_file": "001-x.md"}]),
         {"001-x.md": "text"},
     )
-    outbox = Outbox(files={"001-x.json": "…", "001-x.md": "text", "002-y.json": "…"})
+    outbox = Outbox(
+        files={
+            "001-x.json": _manifest_text(actions=[{"type": "comment", "body_file": "001-x.md"}]),
+            "001-x.md": "text",
+            "002-y.json": _manifest_text(),
+        }
+    )
     incus = mocker.MagicMock()
 
     finalize(
@@ -2560,3 +2566,367 @@ def test_pending_pr_text_rejects_an_invalid_proposed_branch(mocker, make_cfg, tm
     assert found.text.branch == "feat/foo"  # the source branch, not '-x'
     assert found.text.body == "B"  # the description itself is still used
     assert "-x" in warn.call_args.args[0]
+
+
+# Selected publication uses strict evidence and the exact inspection token.
+def _selected_setup(mocker, make_cfg, tmp_path, *, files=None, rejected=()):
+    from jailbee.outbox.models import StoreSnapshot
+    from jailbee.outbox_io import ContainerIdentity
+
+    files = files if files is not None else {"one.json": _manifest_text()}
+    cfg = make_cfg(tmp_path)
+    identity = ContainerIdentity("c", "2026-09-30T12:00:00Z")
+    incus = mocker.MagicMock()
+    incus.list_containers.return_value = [{"name": "c", "created_at": identity.created_at}]
+    store = StoreSnapshot("pr", tuple(sorted(files.items())), tuple(rejected), ())
+    reader = mocker.patch("jailbee.outbox.io.read_store", return_value=store)
+    _target_setup(mocker, tmp_path, labels={"user.jailbee.pr": "1234"})
+    incus.config_get.side_effect = lambda c, key: {"user.jailbee.pr": "1234"}.get(key)
+    mocker.patch("jailbee.pr.gh_login", return_value="octocat")
+    apply = mocker.patch("jailbee.pr_outbox._apply_one", return_value="https://x/receipt")
+    return cfg, incus, identity, store, reader, apply
+
+
+def _selected_offer(cfg, incus, **kwargs):
+    from jailbee.pr_outbox import offer_pending_comments
+
+    return offer_pending_comments(
+        cfg,
+        incus,
+        "c",
+        "feature",
+        pr_number=kwargs.pop("pr_number", None),
+        manifest_names=("one.json",),
+        confirm=kwargs.pop("confirm", lambda count: True),
+        **kwargs,
+    )
+
+
+def _revision(tmp_path, identity, store):
+    from jailbee.outbox.inspect import build_views
+    from jailbee.outbox_io import JournalStore
+
+    return next(
+        v.revision
+        for v in build_views(identity, (store,), journal_store=JournalStore(tmp_path / "journals"))
+        if v.id.name == "one.json"
+    )
+
+
+def test_selected_publication_preserves_full_cleanup_scope(mocker, make_cfg, tmp_path):
+    text = _manifest_text(actions=[{"type": "comment", "body_file": "shared.md"}])
+    files = {"one.json": text, "two.json": text, "shared.md": "body", "orphan.md": "unrelated"}
+    cfg, incus, _, _, _, apply = _selected_setup(mocker, make_cfg, tmp_path, files=files)
+    assert _selected_offer(cfg, incus, pr_number=9999) == 0
+    assert apply.call_count == 1
+    removed = next(c.args[1] for c in incus.exec.call_args_list if c.args[1][0] == "rm")
+    assert "/home/dev/.jailbee/pr-outbox/one.json" in removed
+    assert not any(n.endswith(("two.json", "shared.md", "orphan.md")) for n in removed)
+
+
+@pytest.mark.parametrize("change", ["body", "identity", "progress", "rejected", "manifest"])
+def test_selected_rechecks_confirmation_inputs(mocker, make_cfg, tmp_path, change):
+    from jailbee.outbox.models import StoreSnapshot
+
+    text = _manifest_text(actions=[{"type": "comment", "body_file": "body.md"}])
+    cfg, incus, identity, store, reader, apply = _selected_setup(
+        mocker, make_cfg, tmp_path, files={"one.json": text, "body.md": "original"}
+    )
+
+    def confirm(count):
+        files = store.as_dict()
+        rejected = ()
+        if change == "body":
+            files["body.md"] = "changed"
+        elif change == "identity":
+            incus.list_containers.return_value[0]["created_at"] = "2026-10-01T00:00:00Z"
+        elif change == "progress":
+            files["one.json.progress.json"] = '{"applied": [0], "urls": {"0": "https://x"}}'
+        elif change == "manifest":
+            files["one.json"] = _manifest_text()
+        else:
+            rejected = ("one.json.progress.json",)
+        reader.return_value = StoreSnapshot("pr", tuple(sorted(files.items())), rejected, ())
+        return True
+
+    assert (
+        _selected_offer(
+            cfg, incus, confirm=confirm, expected_revision=_revision(tmp_path, identity, store)
+        )
+        == 1
+    )
+    apply.assert_not_called()
+    incus.exec.assert_not_called()
+
+
+@pytest.mark.parametrize("bad", ["broken", "rejected", "log", "out_of_range", "wrong_urls"])
+def test_selected_progress_never_authorizes_replay(mocker, make_cfg, tmp_path, bad):
+    files = {"one.json": _manifest_text()}
+    rejected = ()
+    if bad == "rejected":
+        rejected = ("one.json.progress.json",)
+    elif bad == "log":
+        files["applied.log"] = "2026-09-30 one.json pr=1234 actions=1 urls=https://x"
+    else:
+        files["one.json.progress.json"] = {
+            "broken": "{broken",
+            "out_of_range": '{"applied": [1], "urls": {}}',
+            "wrong_urls": '{"applied": [0], "urls": {"1": "https://x"}}',
+        }[bad]
+    cfg, incus, _, _, _, apply = _selected_setup(
+        mocker, make_cfg, tmp_path, files=files, rejected=rejected
+    )
+    assert _selected_offer(cfg, incus) == 1
+    apply.assert_not_called()
+    incus.exec.assert_not_called()
+
+
+def test_selected_uses_shared_revision_not_domain_digest(mocker, make_cfg, tmp_path):
+    from jailbee.outbox_io import proposal_digest
+
+    cfg, incus, identity, store, _, apply = _selected_setup(mocker, make_cfg, tmp_path)
+    revision = _revision(tmp_path, identity, store)
+    assert (
+        _selected_offer(
+            cfg,
+            incus,
+            expected_revision=proposal_digest("one.json", store.as_dict()["one.json"], {}),
+        )
+        == 1
+    )
+    apply.assert_not_called()
+    assert _selected_offer(cfg, incus, expected_revision=revision) == 0
+    apply.assert_called_once()
+
+
+def test_selected_rejects_changed_supplied_snapshot(mocker, make_cfg, tmp_path):
+    from jailbee.pr_outbox import Outbox
+
+    cfg, incus, _, _, _, apply = _selected_setup(mocker, make_cfg, tmp_path)
+    preview = Outbox({"one.json": _manifest_text(actions=[{"type": "comment", "body": "old"}])})
+    assert _selected_offer(cfg, incus, outbox=preview) == 1
+    apply.assert_not_called()
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_selected_rechecks_moved_head(mocker, make_cfg, tmp_path, force):
+    text = _manifest_text(actions=[{"type": "review", "body": "review", "comments": []}])
+    cfg, incus, _, _, _, apply = _selected_setup(
+        mocker, make_cfg, tmp_path, files={"one.json": text}
+    )
+
+    def confirm(count):
+        mocker.patch("jailbee.pr.resolve_pr", return_value=_pr_info(head_sha="changed"))
+        return True
+
+    assert _selected_offer(cfg, incus, confirm=confirm, force=force) == (0 if force else 1)
+    assert apply.call_count == int(force)
+
+
+def test_selected_rechecks_ownership(mocker, make_cfg, tmp_path):
+    cfg, incus, _, _, _, apply = _selected_setup(mocker, make_cfg, tmp_path)
+
+    def confirm(count):
+        incus.config_get.side_effect = lambda c, key: "9999" if key == "user.jailbee.pr" else None
+        return True
+
+    assert _selected_offer(cfg, incus, confirm=confirm) == 1
+    apply.assert_not_called()
+
+
+@pytest.mark.parametrize("neighbor", ["escaped", "invalid", "rejected"])
+def test_selected_cleanup_retains_uncertain_neighbor_refs(mocker, make_cfg, tmp_path, neighbor):
+    text = _manifest_text(actions=[{"type": "comment", "body_file": "body.md"}])
+    files = {"one.json": text, "body.md": "body", "orphan.md": "orphan"}
+    rejected = ()
+    if neighbor == "escaped":
+        files["two.json"] = text.replace("body.md", r"body\u002emd")
+    elif neighbor == "invalid":
+        files["two.json"] = "{invalid"
+    else:
+        rejected = ("two.json",)
+    cfg, incus, _, _, _, apply = _selected_setup(
+        mocker, make_cfg, tmp_path, files=files, rejected=rejected
+    )
+    assert _selected_offer(cfg, incus) == 0
+    apply.assert_called_once()
+    removed = next(c.args[1] for c in incus.exec.call_args_list if c.args[1][0] == "rm")
+    assert not any(n.endswith(("body.md", "orphan.md")) for n in removed)
+
+
+def test_drop_rejects_changed_snapshot(mocker):
+    from jailbee.outbox.models import StoreSnapshot
+    from jailbee.pr_outbox import FinalizeError, Outbox, drop_manifest
+
+    old = Outbox({"one.json": _manifest_text()})
+    incus = _drop_setup(mocker, old)
+    mocker.patch(
+        "jailbee.outbox.io.read_store",
+        return_value=StoreSnapshot(
+            "pr",
+            (("one.json", _manifest_text(actions=[{"type": "comment", "body": "changed"}])),),
+            (),
+            (),
+        ),
+    )
+    with pytest.raises(FinalizeError, match="refresh"):
+        drop_manifest(incus, "c", old, "one.json", uid=1000)
+    incus.exec.assert_not_called()
+
+
+def test_selected_uses_strict_progress_even_if_legacy_parser_lies(mocker, make_cfg, tmp_path):
+    from jailbee.pr_outbox import Progress
+
+    files = {
+        "one.json": _manifest_text(
+            actions=[{"type": "comment", "body": "landed"}, {"type": "comment", "body": "pending"}]
+        ),
+        "one.json.progress.json": '{"applied": [0], "urls": {"0": "https://x/old"}}',
+    }
+    cfg, incus, _, _, _, apply = _selected_setup(mocker, make_cfg, tmp_path, files=files)
+    mocker.patch("jailbee.pr_outbox.read_progress", return_value=Progress(frozenset(), {}))
+    assert _selected_offer(cfg, incus) == 0
+    assert [c.args[1].body for c in apply.call_args_list] == ["pending"]
+    sidecars = [
+        json.loads(c.args[1][4])
+        for c in incus.exec.call_args_list
+        if c.args[1][0] == "bash" and c.args[1][-1].endswith(".progress.json")
+    ]
+    assert all(s["urls"]["0"] == "https://x/old" for s in sidecars)
+
+
+@pytest.mark.parametrize("offer", [None, 9999])
+def test_selected_failed_read_is_failure_even_in_offer_mode(mocker, make_cfg, tmp_path, offer):
+    from jailbee.outbox.models import OutboxExecutionError
+
+    cfg, incus, _, _, reader, apply = _selected_setup(mocker, make_cfg, tmp_path)
+    reader.side_effect = OutboxExecutionError("unavailable")
+    assert _selected_offer(cfg, incus, pr_number=offer) == 1
+    apply.assert_not_called()
+
+
+def test_selected_cleanup_only_removes_completed_refs(mocker, make_cfg, tmp_path):
+    text = _manifest_text(actions=[{"type": "comment", "body_file": "body.md"}])
+    files = {"one.json": text, "body.md": "body", "orphan.md": "orphan", "applied.log": ""}
+    cfg, incus, _, _, _, _ = _selected_setup(mocker, make_cfg, tmp_path, files=files)
+    assert _selected_offer(cfg, incus) == 0
+    removed = next(c.args[1] for c in incus.exec.call_args_list if c.args[1][0] == "rm")
+    assert any(n.endswith("body.md") for n in removed)
+    assert not any(n.endswith(("orphan.md", "applied.log")) for n in removed)
+
+
+def test_selected_post_confirm_neighbor_added_keeps_body(mocker, make_cfg, tmp_path):
+    from jailbee.outbox.models import StoreSnapshot
+
+    text = _manifest_text(actions=[{"type": "comment", "body_file": "body.md"}])
+    cfg, incus, _, store, reader, _ = _selected_setup(
+        mocker, make_cfg, tmp_path, files={"one.json": text, "body.md": "body"}
+    )
+
+    def confirm(count):
+        reader.return_value = StoreSnapshot("pr", (*store.files, ("two.json", text)), (), ())
+        return True
+
+    assert _selected_offer(cfg, incus, confirm=confirm) == 0
+    removed = next(c.args[1] for c in incus.exec.call_args_list if c.args[1][0] == "rm")
+    assert not any(n.endswith("body.md") for n in removed)
+
+
+def test_drop_uses_same_manager_under_outer_lock(mocker, tmp_path):
+    from jailbee.outbox.io import PrManagement
+    from jailbee.outbox_io import container_identity
+    from jailbee.pr_outbox import Outbox, drop_manifest
+
+    outbox = Outbox({"one.json": _manifest_text()})
+    incus = _drop_setup(mocker, outbox)
+    manager = PrManagement(tmp_path / "locks")
+    with manager.lock(container_identity(incus, "c")):
+        assert drop_manifest(incus, "c", outbox, "one.json", uid=1000, management=manager) == [
+            "one.json"
+        ]
+
+
+def test_drop_rejects_replaced_preview_identity(mocker):
+    from jailbee.outbox_io import ContainerIdentity
+    from jailbee.pr_outbox import FinalizeError, Outbox, drop_manifest
+
+    outbox = Outbox({"one.json": _manifest_text()}, identity=ContainerIdentity("c", "older"))
+    incus = _drop_setup(mocker, outbox)
+    with pytest.raises(FinalizeError, match="refresh"):
+        drop_manifest(incus, "c", outbox, "one.json", uid=1000)
+    incus.exec.assert_not_called()
+
+
+def test_selected_duplicate_names_do_not_repost(mocker, make_cfg, tmp_path):
+    from jailbee.pr_outbox import offer_pending_comments
+
+    cfg, incus, _, _, _, apply = _selected_setup(mocker, make_cfg, tmp_path)
+    assert (
+        offer_pending_comments(
+            cfg,
+            incus,
+            "c",
+            "feature",
+            pr_number=None,
+            manifest_names=("one.json", "one.json"),
+            confirm=lambda count: True,
+        )
+        == 1
+    )
+    apply.assert_not_called()
+
+
+def test_selected_checks_identity_after_target_revalidation(mocker, make_cfg, tmp_path):
+    from jailbee.pr_outbox import Target, parse_manifest
+
+    cfg, incus, _, store, _, apply = _selected_setup(mocker, make_cfg, tmp_path)
+    target = Target(
+        parse_manifest("one.json", store.as_dict()["one.json"], {}),
+        _pr_info(),
+        False,
+        PrScope(tmp_path, "origin", "", None),
+    )
+    calls = 0
+
+    def resolve(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            incus.list_containers.return_value[0]["created_at"] = "replacement"
+        return target
+
+    mocker.patch("jailbee.pr_outbox.resolve_target", side_effect=resolve)
+    assert _selected_offer(cfg, incus) == 1
+    apply.assert_not_called()
+
+
+def test_selected_offer_reenters_injected_manager(mocker, make_cfg, tmp_path):
+    from jailbee.outbox.io import PrManagement
+
+    cfg, incus, identity, _, _, apply = _selected_setup(mocker, make_cfg, tmp_path)
+    manager = PrManagement(tmp_path / "locks")
+    with manager.lock(identity):
+        assert _selected_offer(cfg, incus, management=manager) == 0
+    apply.assert_called_once()
+
+
+def test_legacy_offer_does_not_replace_supplied_missing_proposal(mocker, make_cfg, tmp_path):
+    from jailbee.pr_outbox import Outbox, offer_pending_comments
+
+    cfg, incus, _, _, _, apply = _selected_setup(mocker, make_cfg, tmp_path, files={})
+    preview = Outbox({"one.json": _manifest_text()})
+    assert (
+        offer_pending_comments(
+            cfg, incus, "c", "feature", pr_number=None, outbox=preview, confirm=lambda count: True
+        )
+        == 1
+    )
+    apply.assert_not_called()
+
+
+def test_selected_deep_json_is_refusal_not_crash(mocker, make_cfg, tmp_path):
+    cfg, incus, _, _, _, apply = _selected_setup(
+        mocker, make_cfg, tmp_path, files={"one.json": "[" * 2000 + "0" + "]" * 2000}
+    )
+    assert _selected_offer(cfg, incus) == 1
+    apply.assert_not_called()
