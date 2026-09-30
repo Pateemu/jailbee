@@ -73,3 +73,20 @@ def test_ensure_claude_verifies_binary_after_install():
     """
     script = _script()
     assert '[ -x "${BIN}" ]' in script or '[ ! -x "${BIN}" ]' in script
+
+
+def test_ensure_claude_links_only_runnable_semver_release(tmp_path):
+    """A half-written or non-executable entry in the shared store must not
+    become the launcher target (it dangles once the writer renames/removes it)."""
+    import os
+    import subprocess
+
+    versions = tmp_path / ".local/share/claude/versions"
+    versions.mkdir(parents=True)
+    for name, mode in (("2.1.285", 0o755), ("2.1.287.tmp", 0o755), ("2.1.288", 0o644)):
+        (versions / name).write_text("#!/bin/sh\nexit 0\n")
+        (versions / name).chmod(mode)
+    script = importlib.resources.files("jailbee.provision").joinpath("ensure-claude.sh")
+    env = {**os.environ, "HOME": str(tmp_path), "JAILBEE_CLAUDE_AUTO_UPDATE": "true"}
+    subprocess.run(["bash", str(script)], env=env, check=True, capture_output=True)
+    assert (tmp_path / ".local/bin/claude").resolve() == (versions / "2.1.285").resolve()

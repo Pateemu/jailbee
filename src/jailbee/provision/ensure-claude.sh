@@ -35,7 +35,20 @@ flock 9
 
 # versions/ holds one executable file per release, named by semver (e.g. 2.1.160).
 # The newest is the target of ~/.local/bin/claude; claude is invoked via that symlink.
-LATEST="$(ls -1 "${VERSIONS_DIR}" 2>/dev/null | sort -V | tail -1 || true)"
+# Only a semver-named executable counts: a partial download or temp file that
+# another container's updater has in flight (and later renames or deletes) must
+# never become the link target, or the launcher dangles ("No such file").
+newest_release() {
+    local v
+    for v in $(ls -1 "${VERSIONS_DIR}" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V -r || true); do
+        if [ -f "${VERSIONS_DIR}/${v}" ] && [ -x "${VERSIONS_DIR}/${v}" ]; then
+            echo "${v}"
+            return 0
+        fi
+    done
+}
+
+LATEST="$(newest_release)"
 
 if [ -z "${LATEST}" ]; then
     # Nothing in the shared store yet → full install (always, even when
@@ -51,7 +64,7 @@ if [ -z "${LATEST}" ]; then
     # store ourselves and relink from whatever it populated.
     curl -fsSL https://claude.ai/install.sh | bash \
         || echo "==> ensure-claude: installer exited non-zero; verifying store"
-    LATEST="$(ls -1 "${VERSIONS_DIR}" 2>/dev/null | sort -V | tail -1 || true)"
+    LATEST="$(newest_release)"
     if [ -n "${LATEST}" ]; then
         ln -sfn "${VERSIONS_DIR}/${LATEST}" "${BIN}"
     fi
@@ -66,6 +79,13 @@ else
     ln -sfn "${VERSIONS_DIR}/${LATEST}" "${BIN}"
     if [ "${JAILBEE_CLAUDE_AUTO_UPDATE:-false}" = "true" ]; then
         echo "==> ensure-claude: auto_update on, running 'claude update'"
+        # The updater in another (running) container is not under our flock and
+        # may prune the release we just linked; relink from what is left and
+        # retry once before giving up.
+        if [ ! -x "${BIN}" ]; then
+            LATEST="$(newest_release)"
+            [ -n "${LATEST}" ] && ln -sfn "${VERSIONS_DIR}/${LATEST}" "${BIN}"
+        fi
         "${BIN}" update
     fi
 fi
