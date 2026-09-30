@@ -799,6 +799,21 @@ def test_snapshot_list_accepts_timeout(incus, mocker):
     assert mock_run.call_args.kwargs["timeout"] == 2
 
 
+@pytest.mark.parametrize("verb", ["create", "restore", "delete"])
+def test_snapshot_operands_follow_double_dash(incus, mocker, verb):
+    """An option-looking tag must not be parsed by incus as a flag."""
+    mock_run = _mock_run(mocker)
+    getattr(incus, f"snapshot_{verb}")("myrepo-feat", "--help")
+    assert mock_run.call_args.args[0] == [
+        "incus",
+        "snapshot",
+        verb,
+        "--",
+        "myrepo-feat",
+        "--help",
+    ]
+
+
 # ---- error messages: readable when a long script is involved ----
 
 

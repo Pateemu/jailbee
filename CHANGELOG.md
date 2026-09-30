@@ -185,6 +185,10 @@ before editing `## Unreleased`.
 
 ### Fixed
 
+- **`jailbee snapshot` no longer misreads a `-`-prefixed tag as an option.**
+  `jailbee snapshot create --help` used to report a snapshot created when
+  incus had only printed its help; the tag now reaches incus as an operand
+  and is rejected by its own name check.
 - **`jailbee ls` AHEAD no longer goes stale after `jailbee checkout`.**
   Checking a container's branch out onto the host left its AHEAD ±/↑ — and
   that of every other container based on the same branch — counting against
