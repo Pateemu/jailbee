@@ -334,21 +334,26 @@ def test_filename_rename_refreshes_owned_copies_retains_unknown(homes, claude_cf
 
 @pytest.mark.parametrize("remove", [False, True])
 @pytest.mark.parametrize("edited", [b"hand edited", b""])
-def test_markerless_other_repo_copy_remains_owned(homes, claude_cfg, remove, edited):
+@pytest.mark.parametrize("filename", ["CLAUDE.md", "TEAM\\POLICY.md"])
+def test_markerless_other_repo_copy_remains_owned(homes, claude_cfg, remove, edited, filename):
     source, data_home = homes
+    first = with_agent(
+        claude_cfg, "claude", global_instructions={"dir": "/etc/claude-code", "file": filename}
+    )
     other = with_agent(
         claude_cfg, "claude", global_instructions={"dir": "/etc/claude-code", "file": "OTHER.md"}
     )
     source.write_bytes(b"old")
-    ai.sync_global_instructions(claude_cfg)
+    ai.sync_global_instructions(first)
     ai.sync_global_instructions(other)
-    staged(data_home).write_bytes(edited)
+    target_a = staged(data_home).with_name(filename)
+    target_a.write_bytes(edited)
     if remove:
         source.unlink()
     else:
         source.write_bytes(b"new")
     ai.sync_global_instructions(other)
-    for target in (staged(data_home), staged(data_home).with_name("OTHER.md")):
+    for target in (target_a, staged(data_home).with_name("OTHER.md")):
         if remove:
             assert not target.exists()
         else:
@@ -478,3 +483,56 @@ def test_concurrent_sync_keeps_ownership_union(homes, claude_cfg):
     ai.sync_global_instructions(claude_cfg)
     for name in names:
         assert staged(data_home).with_name(name).read_bytes().endswith(b"\nnew")
+
+
+@pytest.mark.parametrize("remove", [False, True])
+def test_registry_write_failure_preserves_existing_targets(homes, claude_cfg, remove, monkeypatch, capsys):
+    source, data_home = homes
+    source.write_bytes(b"old")
+    ai.sync_global_instructions(claude_cfg)
+    target = staged(data_home)
+    before = target.read_bytes()
+    registry = data_home / "jailbee" / "agent-instructions-ownership" / "claude.json"
+    recorded = registry.read_bytes()
+    replace = ai.os.replace
+
+    def fail_registry(src, dest):
+        if dest == registry:
+            raise OSError("registry replace denied")
+        return replace(src, dest)
+
+    monkeypatch.setattr(ai.os, "replace", fail_registry)
+    if remove:
+        source.unlink()
+    else:
+        source.write_bytes(b"new")
+    ai.sync_global_instructions(claude_cfg)
+    assert target.read_bytes() == before
+    assert registry.read_bytes() == recorded
+    assert "registry replace denied" in capsys.readouterr().err
+
+
+def test_target_write_failure_records_ownership_for_other_repo_retry(homes, claude_cfg, monkeypatch, capsys):
+    import json
+
+    source, data_home = homes
+    source.write_bytes(b"policy")
+    target = staged(data_home)
+    replace = ai.os.replace
+
+    def fail_target(src, dest):
+        if dest == target:
+            raise OSError("target replace denied")
+        return replace(src, dest)
+
+    monkeypatch.setattr(ai.os, "replace", fail_target)
+    ai.sync_global_instructions(claude_cfg)
+    assert not target.exists()
+    registry = data_home / "jailbee" / "agent-instructions-ownership" / "claude.json"
+    assert json.loads(registry.read_text()) == ["CLAUDE.md"]
+    assert "target replace denied" in capsys.readouterr().err
+    monkeypatch.setattr(ai.os, "replace", replace)
+    other = with_agent(claude_cfg, "claude", global_instructions={"dir": "/etc/claude-code", "file": "OTHER.md"})
+    ai.sync_global_instructions(other)
+    assert target.read_bytes().endswith(b"\npolicy")
+    assert target.with_name("OTHER.md").read_bytes().endswith(b"\npolicy")

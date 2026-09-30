@@ -154,7 +154,6 @@ def _read_ownership(registry: Path) -> set[str]:
             isinstance(filename, str)
             and filename not in {"", ".", ".."}
             and "/" not in filename
-            and "\\" not in filename
             and "\x00" not in filename
         ):
             names.add(filename)
