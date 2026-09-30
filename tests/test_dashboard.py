@@ -9087,3 +9087,9 @@ def test_container_vanishing_while_the_mount_picker_is_open_runs_nothing(
     quiet.assert_not_called()
     child.assert_not_called()
     assert "'alpha-x' is gone" in " ".join(str(n) for n in _notices(render))
+
+
+def test_help_panel_points_at_the_repo_and_container_menu_entries():
+    text = _render_text(dashboard._render_help())
+    assert "Apply config…" in text
+    assert "Snapshots…" in text

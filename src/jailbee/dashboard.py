@@ -1537,6 +1537,8 @@ def _render_help() -> RenderableType:
         "",
         "Egress panel: a adds, r removes a scoped override; Esc backs to its menu.",
         "Accounts panel: Enter acts on a login or group, n creates a group.",
+        "Repo menu: Apply config…, Diagnostics →, Prune stale containers…",
+        "Container menu: Snapshots…, Mount…/Unmount…, autostart status/cancel.",
         "",
         f"[dim]{_GATE_NOTE}[/dim]",
     ]

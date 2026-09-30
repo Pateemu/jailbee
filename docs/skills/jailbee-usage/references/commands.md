@@ -580,7 +580,7 @@ ignores `fields` entirely.
 Live, auto-refreshing TUI of all JailBee containers across registered repos + the cwd
 repo, grouped by repo. Keys: `↑/↓` or `j/k` move (spans repos; repo headers
 are cursor stops, not skipped), `Enter` action menu (on a repo header, a repo
-menu with New container, `Network → Egress…` and Fold/Unfold (orphan repos
+menu with New container, New from PR, Credential group, `Network → Egress…`, Apply config, `Diagnostics →` (doctor, disk usage), Prune stale containers and Fold/Unfold (orphan repos
 only offer Fold/Unfold; on a container, its action menu),
 `Space` fold/unfold the selected repo (in the settings overlay: toggle the
 selected setting), `F2`/`S` settings overlay (columns + folding), `r`
@@ -615,13 +615,15 @@ in the selected row's repo; a refusal (for example a running agent) is shown
 as a notice — use `!` with `--force` to override. `Esc` backs out of each
 question to the overlay, and closes the overlay itself.
 
+The repo menu also carries `Apply config…` (runs `jailbee apply` in the terminal, optionally with `--no-restart`; its restart question is asked there), `Diagnostics →` (`doctor`, paged; `disk-usage`) and `Prune stale containers…` (`jailbee prune`, which asks about each container). The container menu adds `Snapshots…` (create with a timestamp or a typed tag, restore or delete after a confirmation), `Mount…`/`Unmount…` for the repo's `optional_mounts` (only kinds not attached / attached), and, while the container has an autostart run, `Autostart status` and `Cancel autostart…`. Over remote SSH an entry appears only when the session's policy permits its command; `apply` and `mount` manage the host, so `restrict_host: true` keeps them hidden.
+
 The menu, in order: pending outbox applies first (`review apply` "Apply N PR
 action(s)", `issue apply` "Apply N issue action(s)"), then tmux/shell, then
 `Launch →` with one "Launch `<name>`" entry per app the repo's GUI registry
 declares (browsers, the JetBrains IDE, and any `apps:` entries, in that order —
-empty repos get none), then `job clear`, `job log`, then `Git →` (`merge`,
+empty repos get none), then `job clear`, `job log`, then `Autostart status` / `Cancel autostart…` (only while the container has an autostart run; cancel only while its worker is alive, and it asks first), then `Git →` (`merge`,
 `git pull`, `git push`, `git push --pr`, `git diff`), then `PR →`
-(`pr --open`, `pr`), then `Credential group…`, then `Network →` with available
+(`pr --open`, `pr`), then `Snapshots…`, `Mount…`, `Unmount…`, then `Credential group…`, then `Network →` with available
 mode switches and `Egress…`, then restart/stop/destroy for Running (a Stopped
 container leads with start and ends with destroy). Each entry appears only
 when it would do something:
