@@ -18,6 +18,7 @@ before it is shown, let alone published.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -406,10 +407,16 @@ class Outbox:
         )
 
 
-def read_outbox(incus: Incus, container: str, *, uid: int | None) -> Outbox:
+def read_outbox(incus: Incus, container: str, *, uid: int | None, strict: bool = False) -> Outbox:
     """Bind the preview to its origin before any caller asks for confirmation."""
     try:
         identity = container_identity(incus, container)
+        if strict:
+            from jailbee.outbox.io import read_store
+
+            store = read_store(incus, container, "pr", uid=uid)
+            _same_identity(incus, container, identity)
+            return Outbox(store.as_dict(), store.rejected, identity)
         files = read_text_outbox(
             incus,
             container,
@@ -419,7 +426,7 @@ def read_outbox(incus: Incus, container: str, *, uid: int | None) -> Outbox:
             warn_fn=warn,
         )
         _same_identity(incus, container, identity)
-    except (JournalError, OutboxChanged, IncusError) as exc:
+    except (JournalError, OutboxChanged, OutboxExecutionError, IncusError) as exc:
         raise OutboxReadError(
             f"{container}: cannot bind outbox preview ({exc}); refresh required"
         ) from exc
@@ -1406,6 +1413,35 @@ class OutboxPrText:
     text: PrText
     manifest: str
     index: int
+    identity: ContainerIdentity | None = None
+    digest: str | None = None
+    manifest_text: str | None = None
+    body_files: tuple[tuple[str, str], ...] = ()
+
+
+def description_source_digest(outbox: Outbox, name: str, index: int, text: PrText) -> str:
+    """Bind a selected description to strict proposal and publication evidence."""
+    from dataclasses import asdict
+    from jailbee.outbox.inspect import pr_progress_evidence
+    from jailbee.outbox_io import proposal_digest
+
+    if outbox.identity is None or name in outbox.rejected:
+        raise OutboxChanged("description identity unavailable; refresh required")
+    raw = outbox.files[name]
+    bodies = {n: outbox.files[n] for n in _body_references(raw)}
+    if set(bodies).intersection(outbox.rejected):
+        raise OutboxChanged("description body rejected; refresh required")
+    manifest = parse_manifest(name, raw, outbox.files)
+    store = StoreSnapshot("pr", tuple(sorted(outbox.files.items())), outbox.rejected, ())
+    progress = pr_progress_evidence(store, name, len(manifest.actions))
+    if progress.error or index not in pending_indices(manifest, Progress(progress.applied, {str(i): u for i, u in progress.receipts})):
+        raise OutboxChanged("description progress changed or unavailable; refresh required")
+    if not isinstance(manifest.actions[index], DescriptionAction):
+        raise OutboxChanged("description index changed; refresh required")
+    evidence = asdict(progress) | {"applied": sorted(progress.applied)}
+    payload = {"identity": asdict(outbox.identity), "proposal": proposal_digest(name, raw, bodies),
+               "index": index, "text": asdict(text), "progress": evidence, "rejected": sorted(outbox.rejected)}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 def _description_title(action: DescriptionAction, fallback: str) -> str:
@@ -1526,7 +1562,7 @@ def pending_pr_text(
     line, once the PR is up.
     """
     try:
-        outbox = read_outbox(incus, container, uid=uid)
+        outbox = read_outbox(incus, container, uid=uid, strict=True)
     except OutboxReadError as e:
         warn(f"{e}; falling back to the usual PR text.")
         return None
@@ -1569,9 +1605,14 @@ def pending_pr_text(
             if manifest.repo not in known_slugs:
                 warn(f"Ignoring outbox manifest {name}: it targets {manifest.repo}, not {slug}.")
             continue
+        try:
+            progress = _publication_progress(outbox, name, len(manifest.actions))
+        except OutboxError as exc:
+            warn(f"Ignoring outbox manifest {name}: {exc}")
+            continue
         described = [
             (name, index, action)
-            for index in pending_indices(manifest, read_progress(outbox, name))
+            for index in pending_indices(manifest, progress)
             if isinstance(action := manifest.actions[index], DescriptionAction)
         ]
         if not _eligible_for(manifest, for_pr, numbered_only=numbered_only):
@@ -1619,15 +1660,18 @@ def pending_pr_text(
     # anyway, and `confirm_pr_branch_name` skips its prompt when the proposal
     # and the source branch agree.
     fallback_branch = source_branch or ""
-    return OutboxPrText(
-        text=PrText(
+    text = PrText(
             title=_description_title(action, fallback_branch or container),
             body=action.body,
             branch=_outbox_branch(action, fallback_branch, name),
-        ),
-        manifest=name,
-        index=index,
-    )
+        )
+    try:
+        digest = description_source_digest(outbox, name, index, text) if outbox.identity else None
+        bodies = tuple(sorted((n, outbox.files[n]) for n in _body_references(outbox.files[name])))
+    except (OutboxChanged, ManifestError, ValueError, KeyError, RecursionError) as exc:
+        warn(f"Ignoring outbox manifest {name}: {exc}; refresh required")
+        return None
+    return OutboxPrText(text, name, index, outbox.identity, digest, outbox.files[name], bodies)
 
 
 # --------------------------------------------------------------------------

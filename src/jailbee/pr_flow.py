@@ -379,6 +379,29 @@ def resolve_pr_text_and_head(
     return HeadPlan(publish_name=source_branch, ai_text=ai_text, outbox_source=outbox_source)
 
 
+def validate_outbox_source(
+    cfg: Config, incus: IncusType, container: str, source: OutboxPrText | None
+) -> None:
+    """Revalidate the original selection without picking a replacement or writing."""
+    from jailbee import pr_outbox
+    from jailbee.outbox.models import OutboxChanged
+
+    if source is None:
+        return
+    if source.identity is None or source.digest is None or source.manifest_text is None:
+        raise OutboxChanged("description source lacks revision evidence; refresh required")
+    try:
+        fresh = pr_outbox.read_outbox(incus, container, uid=cfg.container_user.uid, strict=True)
+        if fresh.identity != source.identity or fresh.files.get(source.manifest) != source.manifest_text:
+            raise OutboxChanged("description source changed; refresh required")
+        bodies = tuple(sorted((n, fresh.files[n]) for n in pr_outbox._body_references(source.manifest_text)))
+        digest = pr_outbox.description_source_digest(fresh, source.manifest, source.index, source.text)
+        if bodies != source.body_files or digest != source.digest:
+            raise OutboxChanged("description source changed; refresh required")
+    except (pr_outbox.OutboxReadError, pr_outbox.ManifestError, ValueError, KeyError, IndexError, RecursionError) as exc:
+        raise OutboxChanged("description source unavailable; refresh required") from exc
+
+
 def record_outbox_consumption(
     cfg: Config,
     incus: IncusType,
