@@ -1622,15 +1622,13 @@ def new_container(
             if attached:
                 info(f"Attached {len(attached)} port forward(s) to {short_name(cfg, name)}")
 
-    # Pin /etc/hosts for strict profile so the container's resolver sees
-    # the ACL'd IPs before autostart's first network use. Must run after
-    # `incus.start` because `apply_hosts` uses `incus exec`.
-    # `mirror_endpoint` also pins jailbee-registry-mirror.incus because
-    # incusbr0's dnsmasq doesn't know about the mirror on jailbee-loose.
-    if opts.network == "strict":
-        from jailbee.hosts import apply_hosts
+    # Pin /etc/hosts so the container's resolver sees the ACL'd IPs (strict)
+    # and the registry mirror (both modes) before autostart's first network
+    # use. Must run after `incus.start` because the pin uses `incus exec`.
+    # Only jailbee-loose's dnsmasq knows jailbee-registry-mirror.incus.
+    from jailbee.hosts import sync_hosts
 
-        apply_hosts(cfg, incus, name, mirror_endpoint=opts.mirror_endpoint)
+    sync_hosts(cfg, incus, name, opts.network, mirror_endpoint=opts.mirror_endpoint)
 
     # Wire dockerd to the registry mirror via HTTPS_PROXY. Strict
     # mode needs the proxy to reach upstreams under its ACL; loose mode
@@ -2366,10 +2364,10 @@ def switch_network(
 ) -> None:
     """Replace the container's network profile with <repo>-net-<mode>.
 
-    `mirror_endpoint=(ip, port)` is forwarded to ``apply_hosts`` when
-    switching to strict, so the jailbee-registry-mirror.incus row stays
-    pinned in /etc/hosts (the mirror lives on jailbee-loose, but strict
-    containers query incusbr0's dnsmasq).
+    `mirror_endpoint=(ip, port)` is forwarded to ``hosts.sync_hosts`` in
+    both directions, so the jailbee-registry-mirror.incus row stays pinned
+    in /etc/hosts (the mirror lives on jailbee-loose, whose dnsmasq is the
+    only one with its record).
     """
     names = profile_names(cfg)
     if mode not in names.net_by_mode:
@@ -2426,13 +2424,10 @@ def switch_network(
 
     # Keep /etc/hosts in sync with the new profile. Strict mode pins
     # allowlisted hostnames so the container sees the same IPs the ACL
-    # enforces; loose restores normal DNS resolution.
-    from jailbee.hosts import apply_hosts, clear_hosts
+    # enforces; loose restores normal DNS resolution but keeps the mirror.
+    from jailbee.hosts import sync_hosts
 
-    if mode == "strict":
-        apply_hosts(cfg, incus, name, mirror_endpoint=mirror_endpoint)
-    else:
-        clear_hosts(cfg, incus, name)
+    sync_hosts(cfg, incus, name, mode, mirror_endpoint=mirror_endpoint)
 
 
 def _stdin_is_interactive() -> bool:

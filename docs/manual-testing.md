@@ -105,6 +105,14 @@ Checks that only a real daemon can settle, and that the mocked suite cannot:
 - Interrupt `jailbee litellm up` after the install (block DNS for the provider
   hosts), then run it again: it must attach the state volume and come up
   without `--reinstall`.
+- An open session survives a route rename. Start an interactive `claude-jb`
+  with `--model haiku` and send one prompt. On the host, add
+  `routes: {luna-mine: {model: chatgpt/gpt-6-luna}}` and
+  `profiles: {codex: {haiku: luna-mine}}` to `global.yaml`, then run
+  `jailbee apply`. Send a second prompt in the same session: it must still get
+  an answer (not `400 ... no healthy deployments`), and `jailbee litellm logs`
+  must show `jb.codex.cheap`. Claude Code's `/model` picker (gateway discovery)
+  lists the two-dot `jb.codex.*` names.
 
 ### Several accounts, an API-key route, the state volume
 
@@ -142,7 +150,7 @@ never Astra.
    `litellm: {routes: {luna-high: {effort: low}}}` and run `jailbee apply`.
    Expect `Restarted LiteLLM instance(s) default on the new routes`. In the
    container `claude-jb -p 'say hi' --model haiku` answers, and
-   `jailbee litellm logs` shows requests for `jb-<prefix>.luna-high`.
+   `jailbee litellm logs` shows requests for `jb-<prefix>.codex.cheap`.
    `jailbee litellm ls` lists a `repo <prefix>` block with `luna-high  chatgpt/gpt-6-luna  low (fixed)`.
 2. Run `jailbee apply` again: no restart message.
 3. Change the effort to `medium` and run `jailbee apply --no-restart`: it warns

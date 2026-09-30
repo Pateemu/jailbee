@@ -18,6 +18,15 @@ under `jb-<prefix>.<route>`. Repos with different overrides then share one
 instance, and one login, without answering each other's model names. The
 catch-all stays the host's.
 
+`claude-jb` hands Claude Code **tier aliases**, not route aliases:
+`jb.<profile>.<level>` (`jb-<prefix>.<profile>.<level>` in a repo scope), each
+served by whatever route the profile maps that tier to right now. A running
+session holds the model names it started with, so a route renamed, dropped or
+remapped in `global.yaml` must not take a name away from it. The level names a
+tier by role, never by Claude family: Claude Code reads `opus`, `haiku` and the
+like out of a model name and changes what it sends. Route aliases stay served
+for `/model` and for sessions started before tier aliases existed.
+
 Secrets appear in the rendered config only as `os.environ/<NAME>`; their
 values live in the per-instance `instance.env`.
 """
@@ -41,6 +50,12 @@ if TYPE_CHECKING:
 CATCH_ALL = "claude-*"
 CONTAINER_STATE_DIR = "/var/lib/jailbee-litellm"
 _CHEAPEST_FIRST = ("haiku", "sonnet", "opus", "fable")
+TIER_LEVELS: Mapping[str, str] = {
+    "fable": "most-capable",
+    "opus": "capable",
+    "sonnet": "standard",
+    "haiku": "cheap",
+}
 
 Scopes = Mapping[str, "LiteLLMConfig"]
 """Repo prefix → that repo's merged config, for repos served under their own aliases."""
@@ -52,6 +67,19 @@ def alias(scope: str | None, route: str) -> str:
     Neither a route name nor a prefix may contain `.`, so the two forms never meet.
     """
     return f"jb-default-{route}" if scope is None else f"jb-{scope}.{route}"
+
+
+def level_alias(scope: str | None, profile: str, level: str) -> str:
+    """`jb.<profile>.<level>` for the host's profiles, `jb-<prefix>.<profile>.<level>` for a repo's.
+
+    Profile names hold no `.`, so a tier alias holds exactly two and a route
+    alias at most one; `jb.` and `jb-<prefix>.` keep the scopes apart.
+    """
+    return f"jb{'' if scope is None else f'-{scope}'}.{profile}.{level}"
+
+
+def tier_alias(scope: str | None, profile: str, tier: str) -> str:
+    return level_alias(scope, profile, TIER_LEVELS[tier])
 
 
 def _scoped(
@@ -75,6 +103,24 @@ def served_routes(cfg: LiteLLMConfig, account: str) -> dict[str, ResolvedRoute]:
         for route in profile.tiers.values()
     }
     return {n: r for n, r in routes.items() if not r.subscription or n in bound}
+
+
+def _served_aliases(
+    cfg: LiteLLMConfig, account: str, scopes: Scopes | None
+) -> Iterator[tuple[str, ResolvedRoute]]:
+    """Every model name this instance answers but the catch-all, with its route.
+
+    A tier alias is served wherever its route is, so an API-key tier answers on
+    every instance, like its route alias.
+    """
+    for scope, view in _scoped(cfg, scopes):
+        served = served_routes(view, account)
+        for name, route in served.items():
+            yield alias(scope, name), route
+        for profile in view.effective_profiles().values():
+            for tier, name in profile.tiers.items():
+                if name in served:
+                    yield tier_alias(scope, profile.name, tier), served[name]
 
 
 def _cheapest(
@@ -140,11 +186,7 @@ def render_instance_config(
     extra: Mapping[str, object] | None = None,
     scopes: Scopes | None = None,
 ) -> dict[str, object]:
-    model_list = [
-        _deployment(alias(scope, name), route)
-        for scope, view in _scoped(cfg, scopes)
-        for name, route in served_routes(view, account).items()
-    ]
+    model_list = [_deployment(name, route) for name, route in _served_aliases(cfg, account, scopes)]
     catch_all = catch_all_route(cfg, account)
     if catch_all is not None:
         model_list.append(_deployment(CATCH_ALL, catch_all))
@@ -170,11 +212,7 @@ def render_callback_data(
 ) -> dict[str, object]:
     catch_all = catch_all_route(cfg, account)
     return {
-        "aliases": {
-            alias(scope, name): _entry(route)
-            for scope, view in _scoped(cfg, scopes)
-            for name, route in served_routes(view, account).items()
-        },
+        "aliases": {name: _entry(route) for name, route in _served_aliases(cfg, account, scopes)},
         "catch_all": None if catch_all is None else _entry(catch_all),
     }
 
@@ -261,7 +299,7 @@ def container_profiles(
             "base_url": base_urls[account],
             "key_file": container_key_file(account),
             "effort": profile.effort,
-            "tiers": {t: alias(scope, r) for t, r in profile.tiers.items()},
+            "tiers": {t: tier_alias(scope, name, t) for t in profile.tiers},
             "context_window": max(routes[r].context_window for r in profile.tiers.values()),
         }
     return out

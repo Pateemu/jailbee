@@ -85,7 +85,7 @@ def test_upcoming_network_generation_upgrade_note_advises_apply():
     notes = [
         note
         for note in UPGRADE_NOTES
-        if note.version == (1, 7, 0) and "work-network" in note.reason
+        if note.version == (1, 6, 0) and "work-network" in note.reason
     ]
     assert len(notes) == 1
     assert notes[0].actions == frozenset({"apply"})
@@ -98,7 +98,7 @@ def test_upcoming_services_acl_upgrade_note_advises_apply():
 
     notes = [note for note in UPGRADE_NOTES if "jailbee-services" in note.reason]
     assert len(notes) == 1
-    assert notes[0].version == (1, 7, 0)
+    assert notes[0].version == (1, 6, 0)
     assert notes[0].actions == frozenset({"apply"})
     assert "strict network profiles" in notes[0].reason
 
@@ -106,11 +106,11 @@ def test_upcoming_services_acl_upgrade_note_advises_apply():
 def test_claude_jb_upgrade_note_advises_base_build_only() -> None:
     from jailbee.upgrade import UPGRADE_NOTES, Watermark, pending
 
-    owed = pending("1.7.0", {"base_build": Watermark((1, 6, 0), observed=True)})
+    owed = pending("1.6.0", {"base_build": Watermark((1, 5, 0), observed=True)})
     assert any("claude-jb" in reason for item in owed.actions for reason in item.reasons)
     notes = [note for note in UPGRADE_NOTES if "claude-jb" in note.reason]
     assert len(notes) == 1
-    assert notes[0].version == (1, 7, 0)
+    assert notes[0].version == (1, 6, 0)
     assert notes[0].actions == frozenset({"base_build"})
 
 
@@ -118,7 +118,7 @@ def test_upcoming_claude_runtime_isolation_upgrade_note_advises_apply():
     from jailbee.upgrade import UPGRADE_NOTES
 
     notes = [
-        note for note in UPGRADE_NOTES if note.version == (1, 7, 0) and "agent_view" in note.reason
+        note for note in UPGRADE_NOTES if note.version == (1, 6, 0) and "agent_view" in note.reason
     ]
     assert len(notes) == 1
     assert notes[0].actions == frozenset({"apply"})
@@ -691,14 +691,13 @@ def test_the_skill_sync_note_survives_the_reason_cap() -> None:
 
 
 def test_the_restart_advice_survives_the_reason_cap_from_a_150_upgrade() -> None:
-    """From a 1.5.0 watermark there are six `apply` reasons by 1.7.0, and the
-    Claude runtime-isolation note is the only one that needs a container
-    restart. It is ordered ahead of the later 1.7.0 notes so that, at the
-    default cap, it does not fall into "... and N more"."""
+    """From a 1.5.0 watermark the Claude runtime-isolation note is the only
+    `apply` reason that needs a container restart, so it must render at the
+    default cap rather than fall into "... and N more"."""
     from jailbee.upgrade import Watermark, format_advice, pending
 
     owed = pending(
-        "1.7.0",
+        "1.6.0",
         {
             "base_build": Watermark((1, 5, 0), observed=True),
             "apply": Watermark((1, 5, 0), observed=True),
@@ -748,17 +747,16 @@ def test_upgrade_note_for_the_issue_management_skill_advises_apply() -> None:
 
 
 def test_the_160_apply_notes_all_render_at_the_default_reason_cap() -> None:
-    """1.6.0 carries two `apply` reasons (the multi-agent skill sync, the
-    issue-management skill) against a `MAX_REASONS` of four. Render through
-    `pending`/`format_advice` at the *default* cap (no `max_reasons` override)
-    to prove the new reason isn't collapsed into "... and N more": a note that
-    exists but never renders is invisible to users."""
-    from jailbee.upgrade import UPGRADE_NOTES, Watermark, format_advice, pending
+    """1.6.0 carries four `apply` reasons against a `MAX_REASONS` of four.
+    Render through `pending`/`format_advice` at the *default* cap (no
+    `max_reasons` override) and require every reason: a note that exists but
+    collapses into "... and N more" is invisible to users."""
+    from jailbee.upgrade import MAX_REASONS, UPGRADE_NOTES, Watermark, format_advice, pending
 
     notes_160_apply = [
         n for n in UPGRADE_NOTES if n.version == (1, 6, 0) and n.actions == frozenset({"apply"})
     ]
-    assert len(notes_160_apply) == 2
+    assert len(notes_160_apply) <= MAX_REASONS
 
     owed = pending(
         "1.6.0",
@@ -768,12 +766,9 @@ def test_the_160_apply_notes_all_render_at_the_default_reason_cap() -> None:
         },
     )
     lines = format_advice(owed)
-    assert not any("more" in line for line in lines)
-    reason = (
-        "the `jailbee-issue-management` skill is new and `jailbee apply` "
-        "installs it alongside the other bundled skills"
-    )
-    assert any(reason in line for line in lines)
+    assert not any("more (see the CHANGELOG)" in line for line in lines)
+    for note in notes_160_apply:
+        assert any(note.reason in line for line in lines), note.reason
 
 
 def test_the_apparmor_note_advises_base_build_only() -> None:

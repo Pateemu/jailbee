@@ -85,10 +85,10 @@ def check_extra(fragment: dict[str, object], origin: str) -> None:
         )
     for entry in models:
         name = entry.get("model_name") if isinstance(entry, dict) else None
-        if isinstance(name, str) and (name.startswith("jb-") or name == CATCH_ALL):
+        if isinstance(name, str) and (name.startswith(("jb-", "jb.")) or name == CATCH_ALL):
             raise LiteLLMInputError(
                 f"litellm.extra {origin} defines model {name!r}: "
-                f"`jb-*` and `{CATCH_ALL}` are jailbee's"
+                f"`jb-*`, `jb.*` and `{CATCH_ALL}` are jailbee's"
             )
     general = fragment.get("general_settings")
     if isinstance(general, dict) and "master_key" in general:

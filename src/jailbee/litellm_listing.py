@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from jailbee.litellm_render import alias
+from jailbee.litellm_render import level_alias, tier_alias
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -29,7 +29,7 @@ def _block(title: str, cfg: LiteLLMConfig, scope: str | None) -> list[str]:
     settings = [
         f"default profile: {cfg.default_profile}",
         f"autostart: {'on' if cfg.autostart else 'off'}",
-        f"aliases: {alias(scope, '<route>')}",
+        f"aliases: {level_alias(scope, '<profile>', '<level>')}",
     ]
     lines = [title, "  " + " · ".join(settings)]
     for name, profile in sorted(cfg.effective_profiles().items()):
@@ -37,13 +37,19 @@ def _block(title: str, cfg: LiteLLMConfig, scope: str | None) -> list[str]:
         session = f" · session effort {profile.effort}" if profile.effort else ""
         lines.append(f"  {name}{mark}  account {cfg.instance_account(profile)}{session}")
         rows = [
-            (tier, route, routes[route].model, _effort(routes[route]))
+            (
+                tier,
+                tier_alias(scope, name, tier),
+                route,
+                routes[route].model,
+                _effort(routes[route]),
+            )
             for tier, route in profile.tiers.items()
         ]
-        widths = [max(len(row[i]) for row in rows) for i in range(4)]
+        widths = [max(len(row[i]) for row in rows) for i in range(5)]
         for row in rows:
             cells = "  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True))
-            lines.append(f"    {cells}  {routes[row[1]].context_window} tokens")
+            lines.append(f"    {cells}  {routes[row[2]].context_window} tokens")
     return lines
 
 

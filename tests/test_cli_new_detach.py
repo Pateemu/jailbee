@@ -228,6 +228,7 @@ def _setup_boot(tmp_path: Path, mocker, *, detached: bool):
     mocker.patch("jailbee.lifecycle.current_network_mode", return_value="loose")
     mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/myrepo")
     mocker.patch("jailbee.autostart.inject_github_token")
+    mocker.patch("jailbee.hosts.sync_hosts")
     run_autostart = mocker.patch(
         "jailbee.autostart.run_autostart",
         return_value=AutostartPlan(blocking=[], detached=[_stage("deps")] if detached else []),

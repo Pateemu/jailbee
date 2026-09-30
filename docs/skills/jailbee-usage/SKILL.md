@@ -708,7 +708,11 @@ are supported. A repo can override routes, profiles, `default_profile` and
 does not update the proxy; `apply --no-restart` defers the restart of changed
 proxy instances; an edit that only changes egress, such as a route's `egress`
 list on an existing route or `litellm.egress`, needs `jailbee litellm up` because `apply` does not
-notice it). With `litellm.autostart`, the Claude autostart window runs
+notice it). `claude-jb` gives Claude Code per-tier names such as
+`jb.codex.capable` (`jb.<profile>.<most-capable|capable|standard|cheap>`), not
+route names. After `apply`, a route rename or remap therefore reaches open
+sessions without breaking them; renaming a profile or unmapping a tier does
+break them. With `litellm.autostart`, the Claude autostart window runs
 `claude-jb`. Inside the container there is no key and no login: `claude-jb` only
 reads `/etc/jailbee/litellm.json` and the proxy key for the profile's account.
 ChatGPT subscription use through this gateway is

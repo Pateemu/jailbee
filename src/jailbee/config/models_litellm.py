@@ -52,6 +52,12 @@ host's routes, `jb-<prefix>.<route>` for a repo override's. Neither a route name
 nor a container prefix may hold a `.`, so a host alias never contains one and a
 repo alias contains exactly one: no two aliases can be equal."""
 
+PROFILE_NAME_RE = ROUTE_NAME_RE
+"""A profile name becomes part of its tiers' proxy model names:
+`jb.<profile>.<level>` for the host's profiles, `jb-<prefix>.<profile>.<level>`
+for a repo override's. Without a `.` in it, a tier alias holds exactly two and
+never equals a route alias."""
+
 REPO_REFUSED_KEYS: tuple[str, ...] = ("enabled", "version", "accounts", "egress", "extra")
 """`litellm:` keys a repo's `repos/<prefix>.yaml` may not set: they describe the
 proxy container and its logins, which every repo on the host shares."""
@@ -171,6 +177,15 @@ def _check_route_names(routes: dict[str, object]) -> None:
     if bad:
         raise ValueError(
             f"invalid route name(s) {', '.join(repr(n) for n in bad)}: use 1-64 lowercase "
+            "letters, digits, '-' or '_', starting with a letter or digit"
+        )
+
+
+def _check_profile_names(profiles: dict[str, object]) -> None:
+    bad = sorted(name for name in profiles if not PROFILE_NAME_RE.fullmatch(name))
+    if bad:
+        raise ValueError(
+            f"invalid profile name(s) {', '.join(repr(n) for n in bad)}: use 1-64 lowercase "
             "letters, digits, '-' or '_', starting with a letter or digit"
         )
 
@@ -341,6 +356,12 @@ class LiteLLMRepoOverlay(BaseModel):
         _check_route_names(dict(value))
         return value
 
+    @field_validator("profiles")
+    @classmethod
+    def _profile_names(cls, value: dict[str, LiteLLMProfile]) -> dict[str, LiteLLMProfile]:
+        _check_profile_names(dict(value))
+        return value
+
 
 @dataclass(frozen=True)
 class ResolvedRoute:
@@ -448,7 +469,7 @@ class LiteLLMConfig(BaseModel):
         default=None,
         description=(
             "Path to a raw LiteLLM config fragment deep-merged into every instance's "
-            "config last (lists appended). It may not define `jb-*` or `claude-*` models "
+            "config last (lists appended). It may not define `jb-*`, `jb.*` or `claude-*` models "
             "or `general_settings.master_key`."
         ),
     )
@@ -476,6 +497,12 @@ class LiteLLMConfig(BaseModel):
     @classmethod
     def _route_names(cls, value: dict[str, LiteLLMRoute]) -> dict[str, LiteLLMRoute]:
         _check_route_names(dict(value))
+        return value
+
+    @field_validator("profiles")
+    @classmethod
+    def _profile_names(cls, value: dict[str, LiteLLMProfile]) -> dict[str, LiteLLMProfile]:
+        _check_profile_names(dict(value))
         return value
 
     def effective_version(self) -> str:

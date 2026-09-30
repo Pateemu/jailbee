@@ -258,7 +258,7 @@ def test_ls_lists_host_and_repo_blocks(mocker, tmp_path, monkeypatch):
     result = runner.invoke(app, ["litellm", "ls"])
     assert result.exit_code == 0, result.output
     assert "codex*" in result.output
-    assert "repo myrepo" in result.output and "jb-myrepo.<route>" in result.output
+    assert "repo myrepo" in result.output and "jb-myrepo.<profile>.<level>" in result.output
     # Rich folds long paths at the terminal width; compare without whitespace.
     assert "repos/broken.yaml" in "".join(result.output.split())
 

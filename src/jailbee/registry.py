@@ -184,10 +184,10 @@ def _mirror_profile_yaml(host_uid: int, host_gid: int, mirror_ip: str | None) ->
     lease records can cause loose-mode containers to resolve
     ``jailbee-registry-mirror.incus`` to a pre-reboot IP (DNS query goes
     to jailbee-loose's dnsmasq, which keeps the stale entry alive until
-    explicitly cleared). Strict mode side-steps it because jailbee pins
-    /etc/hosts from the live container state, not from DNS — but loose
-    mode strips that pin (``clear_hosts``) and is therefore at the
-    mercy of dnsmasq.
+    explicitly cleared). Containers side-step it because jailbee pins
+    the mirror row in /etc/hosts from the live container state, in both
+    network modes (``hosts.sync_hosts``); only a process that resolves the
+    name without that pin is at the mercy of dnsmasq.
     """
     eth0: dict[str, str] = {
         "type": "nic",

@@ -208,27 +208,22 @@ UPGRADE_NOTES: tuple[UpgradeNote, ...] = (
             "container — nothing to re-apply unless you enable that agent"
         ),
     ),
+    # 1.6.0 owes `apply` for four reasons and `MAX_REASONS` shows four: a
+    # fifth would fall into "... and N more". Fold a new `apply` reason into
+    # the closest existing one instead of appending it.
     UpgradeNote(
         version=(1, 6, 0),
         actions=frozenset({"apply"}),
         reason=(
-            "`jailbee apply`/`jailbee new` sync the bundled skills into every "
-            "enabled skill-capable agent's shared skills directory (`codex`, "
-            "`gemini`, `opencode`, not just `claude`) — nothing to re-apply "
-            "unless you enable one of those agents; existing containers pick "
-            "them up on the next `apply` or on re-creation"
+            "`jailbee apply`/`jailbee new` sync the bundled skills, including the "
+            "new `jailbee-issue-management`, into every enabled skill-capable "
+            "agent's shared skills directory (`codex`, `gemini`, `opencode`, not "
+            "just `claude`); existing containers pick them up on the next `apply` "
+            "or on re-creation"
         ),
     ),
     UpgradeNote(
         version=(1, 6, 0),
-        actions=frozenset({"apply"}),
-        reason=(
-            "the `jailbee-issue-management` skill is new and `jailbee apply` "
-            "installs it alongside the other bundled skills"
-        ),
-    ),
-    UpgradeNote(
-        version=(1, 7, 0),
         actions=frozenset({"apply"}),
         reason=(
             "work-network profiles and bridge ACL provisioning changed; existing "
@@ -236,7 +231,7 @@ UPGRADE_NOTES: tuple[UpgradeNote, ...] = (
         ),
     ),
     UpgradeNote(
-        version=(1, 7, 0),
+        version=(1, 6, 0),
         actions=frozenset({"apply"}),
         reason=(
             "Claude Code's agent view and its background daemon are off in "
@@ -247,25 +242,19 @@ UPGRADE_NOTES: tuple[UpgradeNote, ...] = (
         ),
     ),
     UpgradeNote(
-        version=(1, 7, 0),
+        version=(1, 6, 0),
         actions=frozenset({"apply"}),
         reason=(
             "strict network profiles list the new host-wide `jailbee-services` ACL, "
-            "through which containers reach `jailbee litellm`"
+            "through which containers reach `jailbee litellm`, and `jailbee apply` "
+            "installs or removes the per-container LiteLLM settings and key when "
+            "the proxy is enabled or disabled"
         ),
     ),
     UpgradeNote(
-        version=(1, 7, 0),
+        version=(1, 6, 0),
         actions=frozenset({"base_build"}),
         reason="the golden image ships `claude-jb`, Claude Code through `jailbee litellm`",
-    ),
-    UpgradeNote(
-        version=(1, 7, 0),
-        actions=frozenset({"apply"}),
-        reason=(
-            "`jailbee apply` installs or removes the per-container LiteLLM settings "
-            "and key when the proxy is enabled or disabled"
-        ),
     ),
 )
 """What each release requires, ascending by version. Maintained by hand.

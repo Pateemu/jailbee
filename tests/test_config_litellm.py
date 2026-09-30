@@ -342,6 +342,15 @@ def test_route_names_are_alias_safe(name):
         LiteLLMConfig.model_validate({"routes": {name: {"model": "chatgpt/gpt-6-sol"}}})
 
 
+@pytest.mark.parametrize("name", ["co.dex", "Codex", "-codex", "a" * 65, "co dex"])
+def test_profile_names_are_alias_safe(name):
+    """No `.`: a profile name is part of its tiers' aliases (`jb.<profile>.<level>`)."""
+    with pytest.raises(ValidationError, match="invalid profile name"):
+        LiteLLMConfig.model_validate({"profiles": {name: {"opus": "sol-xhigh"}}})
+    with pytest.raises(ValidationError, match="invalid profile name"):
+        _overlay(profiles={name: {"opus": "sol-xhigh"}})
+
+
 def test_builtin_route_names_satisfy_the_rule():
     assert all(ROUTE_NAME_RE.fullmatch(n) for n in LiteLLMConfig().effective_routes())
 
