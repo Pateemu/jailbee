@@ -542,6 +542,31 @@ def test_host_tmux_paths_filters_to_existing(tmp_path, mocker):
     assert names == {"host-tmux-conf", "host-tmux-plugins"}
 
 
+def test_binds_profile_mounts_agent_instructions_for_claude(make_cfg, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    cfg = make_cfg(tmp_path / "repo", agents={"claude": {"enabled": True}})
+    devices = yaml.safe_load(binds_profile_yaml(cfg))["devices"]
+    assert devices["agent-instructions-claude"] == {
+        "type": "disk",
+        "source": str(tmp_path / "data" / "jailbee" / "agent-instructions" / "claude"),
+        "path": "/etc/claude-code",
+        "readonly": "true",
+    }
+
+
+def test_binds_profile_has_no_agent_instructions_when_claude_disabled(make_cfg, tmp_path):
+    cfg = make_cfg(tmp_path / "repo", agents={"claude": {"enabled": False}})
+    devices = yaml.safe_load(binds_profile_yaml(cfg))["devices"]
+    assert not any(k.startswith("agent-instructions-") for k in devices)
+
+
+def test_binds_profile_has_no_agent_instructions_when_opted_out(make_cfg, tmp_path):
+    cfg = make_cfg(tmp_path / "repo", agents={"claude": {"enabled": True}})
+    cfg._agent_instructions = False
+    devices = yaml.safe_load(binds_profile_yaml(cfg))["devices"]
+    assert not any(k.startswith("agent-instructions-") for k in devices)
+
+
 def test_binds_profile_includes_shared_caches_rw():
     """Language caches are opt-in (not in the stack-neutral default), but
     when configured explicitly via `shared_caches:` they must render as

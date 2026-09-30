@@ -447,6 +447,11 @@ def binds_profile_yaml(cfg: Config) -> str:
             "readonly": "true",
         }
 
+    # Mount host-wide instructions read-only from each agent's staging directory.
+    from jailbee.agent_instructions import profile_devices
+
+    devices.update(profile_devices(cfg))
+
     profile = {
         "name": profile_names(cfg).binds,
         "description": "Host RO mounts and shared RW mounts for jailbee containers",
