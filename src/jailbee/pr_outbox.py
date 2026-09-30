@@ -407,17 +407,17 @@ class Outbox:
 
 
 def read_outbox(incus: Incus, container: str, *, uid: int | None) -> Outbox:
-    """Read the whole outbox in one round-trip; never extracts to disk."""
-    return Outbox(
-        files=read_text_outbox(
-            incus,
-            container,
-            outbox_dir(),
-            uid=uid,
-            max_file_bytes=MAX_MANIFEST_BYTES,
-            warn_fn=warn,
+    """Bind the preview to its origin before any caller asks for confirmation."""
+    try:
+        identity = container_identity(incus, container)
+        files = read_text_outbox(
+            incus, container, outbox_dir(), uid=uid,
+            max_file_bytes=MAX_MANIFEST_BYTES, warn_fn=warn,
         )
-    )
+        _same_identity(incus, container, identity)
+    except (JournalError, OutboxChanged, IncusError) as exc:
+        raise OutboxReadError(f"{container}: cannot bind outbox preview ({exc}); refresh required") from exc
+    return Outbox(files=files, identity=identity)
 
 
 # --------------------------------------------------------------------------
@@ -1247,8 +1247,10 @@ def drop_manifest(
     manager = management if management is not None else PrManagement()
     try:
         ProposalId("pr", name)
+        if outbox.identity is None:
+            raise OutboxChanged("preview identity is unavailable; refresh required")
         identity = container_identity(incus, container)
-        if outbox.identity is not None and outbox.identity != identity:
+        if outbox.identity != identity:
             raise OutboxChanged("container changed; refresh required")
         with manager.lock(identity):
             from jailbee.outbox import io as store_io

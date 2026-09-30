@@ -12020,7 +12020,9 @@ def review_drop_cmd(
         # manifests being dropped doesn't look referenced by each of them in
         # turn and outlive them both.
         remaining = pr_outbox.Outbox(
-            files={k: v for k, v in remaining.files.items() if k not in deleted}
+            files={k: v for k, v in remaining.files.items() if k not in deleted},
+            rejected=remaining.rejected,
+            identity=remaining.identity,
         )
         success_plain(f"dropped {manifest_name} ({len(deleted)} file(s))")
 

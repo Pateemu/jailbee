@@ -296,6 +296,10 @@ def test_read_outbox_returns_every_text_file(mocker):
     from jailbee.pr_outbox import read_outbox
 
     incus = mocker.MagicMock()
+    incus.list_containers.return_value = [
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
+        for name in ("c", "acme-feat-foo")
+    ]
     incus.exec.return_value = _archive({"001-x.json": b'{"version": 1}', "001-x.md": b"prose"})
 
     outbox = read_outbox(incus, "acme-feat-foo", uid=1000)
@@ -313,6 +317,10 @@ def test_read_outbox_is_empty_when_the_directory_is_missing(mocker):
     from jailbee.pr_outbox import read_outbox
 
     incus = mocker.MagicMock()
+    incus.list_containers.return_value = [
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
+        for name in ("c", "acme-feat-foo")
+    ]
     incus.exec.return_value = ""  # `cd || exit 0` produced nothing
 
     assert read_outbox(incus, "c", uid=1000).files == {}
@@ -322,6 +330,10 @@ def test_read_outbox_skips_progress_files_in_manifest_names(mocker):
     from jailbee.pr_outbox import read_outbox
 
     incus = mocker.MagicMock()
+    incus.list_containers.return_value = [
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
+        for name in ("c", "acme-feat-foo")
+    ]
     incus.exec.return_value = _archive(
         {"002-b.json": b"{}", "001-a.json": b"{}", "001-a.json.progress.json": b"{}"}
     )
@@ -335,6 +347,10 @@ def test_read_outbox_does_not_count_the_archive_root_as_hostile(mocker):
 
     warn = mocker.patch("jailbee.pr_outbox.warn")
     incus = mocker.MagicMock()
+    incus.list_containers.return_value = [
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
+        for name in ("c", "acme-feat-foo")
+    ]
     incus.exec.return_value = _archive({"001-x.json": b"{}", "001-x.md": b"prose"})
 
     read_outbox(incus, "c", uid=1000)
@@ -362,6 +378,10 @@ def test_read_outbox_drops_hostile_members(mocker):
 
     warn = mocker.patch("jailbee.pr_outbox.warn")
     incus = mocker.MagicMock()
+    incus.list_containers.return_value = [
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
+        for name in ("c", "acme-feat-foo")
+    ]
     incus.exec.return_value = _archive(
         {"001-x.json": b"{}"}, extra=[absolute, escape, link, nested, hardlink]
     )
@@ -375,6 +395,10 @@ def test_read_outbox_drops_oversized_member(mocker):
     from jailbee.pr_outbox import MAX_MANIFEST_BYTES, read_outbox
 
     incus = mocker.MagicMock()
+    incus.list_containers.return_value = [
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
+        for name in ("c", "acme-feat-foo")
+    ]
     incus.exec.return_value = _archive(
         {"001-x.json": b"{}", "huge.json": b"x" * (MAX_MANIFEST_BYTES + 1)}
     )
@@ -386,6 +410,10 @@ def test_read_outbox_drops_undecodable_utf8_member(mocker):
     from jailbee.pr_outbox import read_outbox
 
     incus = mocker.MagicMock()
+    incus.list_containers.return_value = [
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
+        for name in ("c", "acme-feat-foo")
+    ]
     incus.exec.return_value = _archive({"001-x.json": b"{}", "bad.json": b"\xff\xfe\xfd"})
 
     assert read_outbox(incus, "c", uid=1000).files == {"001-x.json": "{}"}
@@ -395,6 +423,10 @@ def test_read_outbox_raises_on_undecodable_output(mocker):
     from jailbee.pr_outbox import OutboxReadError, read_outbox
 
     incus = mocker.MagicMock()
+    incus.list_containers.return_value = [
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
+        for name in ("c", "acme-feat-foo")
+    ]
     incus.exec.return_value = "not base64 at all !!!"
 
     with pytest.raises(OutboxReadError, match="unreadable"):
@@ -406,6 +438,10 @@ def test_read_outbox_wraps_incus_failure(mocker):
     from jailbee.pr_outbox import OutboxReadError, read_outbox
 
     incus = mocker.MagicMock()
+    incus.list_containers.return_value = [
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
+        for name in ("c", "acme-feat-foo")
+    ]
     incus.exec.side_effect = IncusError("exit 1: Instance is not running")
 
     with pytest.raises(OutboxReadError, match="not running"):
@@ -1840,7 +1876,11 @@ def test_drop_manifest_deletes_it_with_its_sidecar_and_own_bodies(mocker):
             "002-y.json": _manifest_text(),
         }
     )
+    from dataclasses import replace
+    from jailbee.outbox_io import container_identity
+
     incus = _drop_setup(mocker, outbox)
+    outbox = replace(outbox, identity=container_identity(incus, "c"))
 
     deleted = drop_manifest(incus, "c", outbox, "001-x.json", uid=1000)
 
@@ -1857,7 +1897,11 @@ def test_drop_manifest_keeps_a_body_file_another_manifest_still_uses(mocker):
 
     shared = _manifest_text(actions=[{"type": "comment", "body_file": "shared.md"}])
     outbox = Outbox(files={"001-x.json": shared, "002-y.json": shared, "shared.md": "text"})
+    from dataclasses import replace
+    from jailbee.outbox_io import container_identity
+
     incus = _drop_setup(mocker, outbox)
+    outbox = replace(outbox, identity=container_identity(incus, "c"))
 
     deleted = drop_manifest(incus, "c", outbox, "001-x.json", uid=1000)
 
@@ -1873,7 +1917,11 @@ def test_drop_manifest_raises_when_the_deletion_fails(mocker):
     from jailbee.pr_outbox import FinalizeError, Outbox, drop_manifest
 
     outbox = Outbox(files={"001-x.json": "…"})
+    from dataclasses import replace
+    from jailbee.outbox_io import container_identity
+
     incus = _drop_setup(mocker, outbox)
+    outbox = replace(outbox, identity=container_identity(incus, "c"))
     incus.exec.side_effect = IncusError("instance is not running")
 
     with pytest.raises(FinalizeError, match=r"001-x\.json"):
@@ -2759,7 +2807,11 @@ def test_drop_rejects_changed_snapshot(mocker):
     from jailbee.pr_outbox import FinalizeError, Outbox, drop_manifest
 
     old = Outbox({"one.json": _manifest_text()})
+    from dataclasses import replace
+    from jailbee.outbox_io import container_identity
+
     incus = _drop_setup(mocker, old)
+    old = replace(old, identity=container_identity(incus, "c"))
     mocker.patch(
         "jailbee.outbox.io.read_store",
         return_value=StoreSnapshot(
@@ -2792,7 +2844,10 @@ def test_selected_uses_strict_progress_even_if_legacy_parser_lies(mocker, make_c
         for c in incus.exec.call_args_list
         if c.args[1][0] == "bash" and c.args[1][-1].endswith(".progress.json")
     ]
-    assert all(s["urls"]["0"] == "https://x/old" for s in sidecars)
+    assert sidecars == [
+        {"applied": [0, 1], "urls": {"0": "https://x/old", "1": "https://x/receipt"}},
+        {"applied": [0, 1], "urls": {"0": "https://x/old", "1": "https://x/receipt"}},
+    ]
 
 
 @pytest.mark.parametrize("offer", [None, 9999])
@@ -2838,7 +2893,11 @@ def test_drop_uses_same_manager_under_outer_lock(mocker, tmp_path):
     from jailbee.pr_outbox import Outbox, drop_manifest
 
     outbox = Outbox({"one.json": _manifest_text()})
+    from dataclasses import replace
+    from jailbee.outbox_io import container_identity
+
     incus = _drop_setup(mocker, outbox)
+    outbox = replace(outbox, identity=container_identity(incus, "c"))
     manager = PrManagement(tmp_path / "locks")
     with manager.lock(container_identity(incus, "c")):
         assert drop_manifest(incus, "c", outbox, "one.json", uid=1000, management=manager) == [
@@ -2930,3 +2989,38 @@ def test_selected_deep_json_is_refusal_not_crash(mocker, make_cfg, tmp_path):
     )
     assert _selected_offer(cfg, incus) == 1
     apply.assert_not_called()
+
+
+
+def test_read_outbox_binds_preview_identity(mocker):
+    from jailbee.outbox_io import ContainerIdentity
+    from jailbee.pr_outbox import read_outbox
+
+    incus = mocker.MagicMock()
+    incus.list_containers.return_value = [{"name": "c", "created_at": "original"}]
+    incus.exec.return_value = _archive({"one.json": _manifest_text().encode()})
+    preview = read_outbox(incus, "c", uid=1000)
+    assert preview.identity == ContainerIdentity("c", "original")
+
+
+def test_read_outbox_rejects_replacement_during_read(mocker):
+    from jailbee.pr_outbox import OutboxReadError, read_outbox
+
+    incus = mocker.MagicMock()
+    incus.list_containers.side_effect = [
+        [{"name": "c", "created_at": "original"}],
+        [{"name": "c", "created_at": "replacement"}],
+    ]
+    incus.exec.return_value = _archive({"one.json": _manifest_text().encode()})
+    with pytest.raises(OutboxReadError, match="refresh"):
+        read_outbox(incus, "c", uid=1000)
+
+
+def test_drop_refuses_identityless_preview(mocker):
+    from jailbee.pr_outbox import FinalizeError, Outbox, drop_manifest
+
+    preview = Outbox({"one.json": _manifest_text()})
+    incus = _drop_setup(mocker, preview)
+    with pytest.raises(FinalizeError, match="refresh"):
+        drop_manifest(incus, "c", preview, "one.json", uid=1000)
+    incus.exec.assert_not_called()
