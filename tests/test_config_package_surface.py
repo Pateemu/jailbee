@@ -14,6 +14,7 @@ import jailbee.config as config
 EXPECTED_SURFACE = frozenset(
     {
         "AgentConfig",
+        "AgentGlobalInstructions",
         "Autostart",
         "AutostartStep",
         "BootConfig",

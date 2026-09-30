@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
@@ -342,6 +342,51 @@ class AgentSharedMount(BaseModel):
         return self
 
 
+class AgentGlobalInstructions(BaseModel):
+    """Where an agent reads host-wide instructions inside the container.
+
+    `dir` is mounted whole, read-only, from jailbee's host-level staging
+    directory (`agent_instructions.staging_dir`), which holds one file named
+    `file`: `~/.config/jailbee/AGENTS.md` under the agent's own name. A
+    directory, not a file, because a single-file bind mount pins the inode
+    and an editor's write-and-rename save would leave the container on the
+    old content. Hence `dir` must be a directory jailbee owns outright — see
+    `AgentConfig._global_instructions_outside_shared`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    dir: str = Field(
+        default=...,
+        description=(
+            "Container-side directory (absolute or `~`-relative) jailbee mounts "
+            "read-only with the host-wide instructions; Claude's preset uses "
+            "`/etc/claude-code`. Must not lie inside one of the agent's `shared` mounts."
+        ),
+    )
+    file: str = Field(
+        default=...,
+        description="File name the agent reads the instructions under, e.g. `CLAUDE.md`.",
+    )
+
+    @field_validator("dir")
+    @classmethod
+    def _dir_is_rooted_without_traversal(cls, v: str) -> str:
+        # Raw-string segments preserve `.` for validation; pathlib drops it.
+        segments = v.split("/")
+        if not (v.startswith("/") or v == "~" or v.startswith("~/")):
+            raise ValueError(f"global_instructions.dir {v!r} must be absolute or start with '~/'")
+        if "." in segments or ".." in segments:
+            raise ValueError(f"global_instructions.dir {v!r} must not contain '.' / '..' segments")
+        return v
+
+    @field_validator("file")
+    @classmethod
+    def _file_is_bare_name(cls, v: str) -> str:
+        if not v or v in (".", "..") or "/" in v:
+            raise ValueError(f"global_instructions.file {v!r} must be a bare file name")
+        return v
+
+
 class AgentConfig(BaseModel):
     """A terminal coding agent wired into the container lifecycle.
 
@@ -436,6 +481,15 @@ class AgentConfig(BaseModel):
             "`skills_dir` is unset or no `shared` mount covers it."
         ),
     )
+    global_instructions: AgentGlobalInstructions | None = Field(
+        default=None,
+        description=(
+            "Where this agent reads host-wide instructions. When set, jailbee "
+            "mounts `~/.config/jailbee/AGENTS.md` (renamed to `file`) read-only "
+            "at `dir` in every container. Presets set it for the agents wired so "
+            "far (claude); leave unset otherwise."
+        ),
+    )
 
     @field_validator("skills_dir")
     @classmethod
@@ -462,6 +516,21 @@ class AgentConfig(BaseModel):
                 f"skills_dir {v!r} must be a non-empty path without '.' / '..' segments"
             )
         return v
+
+    @model_validator(mode="after")
+    def _global_instructions_outside_shared(self) -> Self:
+        """Keep the dedicated read-only instructions mount disjoint from shared state."""
+        if self.global_instructions is None:
+            return self
+        target = PurePosixPath(self.global_instructions.dir).parts
+        for mount in self.shared:
+            base = PurePosixPath(mount.path).parts
+            if target[: len(base)] == base:
+                raise ValueError(
+                    f"global_instructions.dir {self.global_instructions.dir!r} lies inside "
+                    f"the shared mount {mount.path!r}; choose a directory jailbee owns outright"
+                )
+        return self
 
     def effective_install_check(self) -> str:
         """The command that decides install-vs-update.

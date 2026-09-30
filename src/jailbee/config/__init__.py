@@ -43,6 +43,7 @@ from jailbee.config.loader import (
 )
 from jailbee.config.models_agents import (
     AgentConfig,
+    AgentGlobalInstructions,
     Autostart,
     AutostartChain,
     AutostartStage,
@@ -131,6 +132,7 @@ __all__ = [
     "SCRATCH_ORIGIN_SUFFIX",
     "_HOST_LEVEL_KEYS",
     "AgentConfig",
+    "AgentGlobalInstructions",
     "AppEntry",
     "Autostart",
     "AutostartChain",

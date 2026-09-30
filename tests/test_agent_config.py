@@ -8,7 +8,7 @@ from jailbee.config import (
     device_name,
     resolve_agents_raw,
 )
-from jailbee.config.models_agents import AgentSharedMount
+from jailbee.config.models_agents import AgentGlobalInstructions, AgentSharedMount
 from tests.conftest import make_cfg
 
 
@@ -120,6 +120,55 @@ def test_generic_agent_accepts_install_jailbee_skills():
     opting claude out."""
     cfg = AgentConfig.model_validate({"install_jailbee_skills": False})
     assert cfg.install_jailbee_skills is False
+
+
+def test_global_instructions_defaults_to_none():
+    assert AgentConfig(command="x").global_instructions is None
+
+
+@pytest.mark.parametrize("bad_dir", ["", "relative/dir", "/etc/../root", "/etc/./x", "~/../x"])
+def test_global_instructions_rejects_bad_dir(bad_dir):
+    with pytest.raises(ValidationError):
+        AgentGlobalInstructions(dir=bad_dir, file="CLAUDE.md")
+
+
+@pytest.mark.parametrize("bad_file", ["", ".", "..", "a/b", "/CLAUDE.md"])
+def test_global_instructions_rejects_non_bare_file(bad_file):
+    with pytest.raises(ValidationError):
+        AgentGlobalInstructions(dir="/etc/claude-code", file=bad_file)
+
+
+def test_global_instructions_accepts_tilde_dir():
+    gi = AgentGlobalInstructions(dir="~/.config/agent-policy", file="AGENTS.md")
+    assert gi.dir == "~/.config/agent-policy"
+
+
+@pytest.mark.parametrize("bad_dir", ["~/.claude", "~/.claude/policy"])
+def test_global_instructions_dir_may_not_sit_in_a_shared_mount(bad_dir):
+    with pytest.raises(ValidationError, match="shared"):
+        AgentConfig(
+            command="claude",
+            shared=[{"subpath": "claude", "path": "~/.claude"}],
+            global_instructions={"dir": bad_dir, "file": "CLAUDE.md"},
+        )
+
+
+def test_global_instructions_dir_beside_a_shared_mount_is_fine():
+    cfg = AgentConfig(
+        command="claude",
+        shared=[{"subpath": "claude", "path": "~/.claude"}],
+        global_instructions={"dir": "~/.claude-policy", "file": "CLAUDE.md"},
+    )
+    assert cfg.global_instructions is not None
+
+
+def test_claude_preset_declares_etc_claude_code():
+    from jailbee.agent_presets import claude_preset
+
+    assert claude_preset()["global_instructions"] == {
+        "dir": "/etc/claude-code",
+        "file": "CLAUDE.md",
+    }
 
 
 @pytest.mark.parametrize(

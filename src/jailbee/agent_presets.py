@@ -268,5 +268,11 @@ def claude_preset() -> dict[str, object]:
         # mount above. Checked against Claude Code 2.1.278, and the path this
         # preset has always written to.
         "skills_dir": "~/.claude/skills",
+        # Claude Code's managed-policy memory file on Linux
+        # (https://code.claude.com/docs/en/memory.md): loaded in every
+        # session before ~/.claude/CLAUDE.md and cannot be excluded. Outside
+        # the shared ~/.claude mount, so the repo's own CLAUDE.md there is
+        # untouched. See agent_instructions.py.
+        "global_instructions": {"dir": "/etc/claude-code", "file": "CLAUDE.md"},
         "egress_allow": list(CLAUDE_API_HOSTS),
     }
