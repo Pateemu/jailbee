@@ -11,6 +11,7 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
+from jailbee.config.common import CONTAINER_USERNAME
 from jailbee.config.models_net import _reject_offline
 
 # An agent name becomes a tmux window name and a `jailbee doctor` label —
@@ -522,9 +523,22 @@ class AgentConfig(BaseModel):
         """Keep the dedicated read-only instructions mount disjoint from shared state."""
         if self.global_instructions is None:
             return self
-        target = PurePosixPath(self.global_instructions.dir).parts
+
+        home = f"/home/{CONTAINER_USERNAME}"
+        target_path = self.global_instructions.dir
+        if target_path == "~":
+            target_path = home
+        elif target_path.startswith("~/"):
+            target_path = f"{home}/{target_path[2:]}"
+        target = PurePosixPath(target_path).parts
+
         for mount in self.shared:
-            base = PurePosixPath(mount.path).parts
+            mount_path = mount.path
+            if mount_path == "~":
+                mount_path = home
+            elif mount_path.startswith("~/"):
+                mount_path = f"{home}/{mount_path[2:]}"
+            base = PurePosixPath(mount_path).parts
             if target[: len(base)] == base:
                 raise ValueError(
                     f"global_instructions.dir {self.global_instructions.dir!r} lies inside "

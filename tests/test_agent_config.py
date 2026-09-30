@@ -162,6 +162,22 @@ def test_global_instructions_dir_beside_a_shared_mount_is_fine():
     assert cfg.global_instructions is not None
 
 
+@pytest.mark.parametrize(
+    ("shared_path", "instructions_dir"),
+    [
+        ("~/.claude", "/home/dev/.claude/policy"),
+        ("/home/dev/.claude", "~/.claude/policy"),
+    ],
+)
+def test_global_instructions_rejects_mixed_home_path_forms(shared_path, instructions_dir):
+    with pytest.raises(ValidationError, match="shared"):
+        AgentConfig(
+            command="claude",
+            shared=[{"subpath": "claude", "path": shared_path}],
+            global_instructions={"dir": instructions_dir, "file": "CLAUDE.md"},
+        )
+
+
 def test_claude_preset_declares_etc_claude_code():
     from jailbee.agent_presets import claude_preset
 
