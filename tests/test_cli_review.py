@@ -93,14 +93,26 @@ def _running_ci(name: str = "acme-feat-foo", *, pending: int | None = 1, state: 
     )
 
 
-def _setup(mocker, tmp_path, *, files=None):
-    cfg = mocker.MagicMock()
-    cfg.repo_root = tmp_path
-    cfg.container_prefix = "acme"
-    cfg.upstream_remote = "origin"
-    cfg.container_user.uid = 1000
+def _mock_store(mocker, files, *, rejected=(), warnings=()):
+    from jailbee.outbox.models import StoreSnapshot
+    from jailbee.pr_outbox import Outbox
+
+    snapshot = StoreSnapshot("pr", tuple(sorted(files.items())), tuple(rejected), tuple(warnings))
+    mocker.patch("jailbee.outbox.io.read_store", return_value=snapshot)
+    return mocker.patch("jailbee.pr_outbox.read_outbox", return_value=Outbox(files=files))
+
+
+def _setup(mocker, tmp_path, *, files=None, rejected=(), warnings=()):
+    from tests.conftest import make_cfg
+
+    cfg = make_cfg(tmp_path, container_prefix="acme")
     mocker.patch("jailbee.cli._load_or_exit", return_value=cfg)
     incus = mocker.MagicMock()
+    incus.list_containers.return_value = [
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
+        for name in ("acme-feat-foo", "acme-feat-a", "acme-feat-b", "allowed-feat")
+    ]
+    mocker.patch("jailbee.incus.Incus", return_value=incus)
     mocker.patch("jailbee.cli._resolve_existing", return_value=(incus, "acme-feat-foo"))
     mocker.patch("jailbee.lifecycle.short_name", return_value="feat-foo")
     # The plan's identity line calls `gh` for real otherwise, and the
@@ -108,10 +120,57 @@ def _setup(mocker, tmp_path, *, files=None):
     # exercises the interactive path deliberately.
     mocker.patch("jailbee.pr.gh_login", return_value="octocat")
     mocker.patch("jailbee.lifecycle._stdin_is_interactive", return_value=True)
-    from jailbee.pr_outbox import Outbox
-
-    mocker.patch("jailbee.pr_outbox.read_outbox", return_value=Outbox(files=files or {}))
+    _mock_store(mocker, files or {}, rejected=rejected, warnings=warnings)
     return cfg, incus
+
+
+def test_review_fixture_has_identity_and_strict_evidence(mocker, tmp_path):
+    from jailbee.outbox.inspect import pr_progress_evidence
+    from jailbee.outbox import io as outbox_io
+    from jailbee.outbox_io import ContainerIdentity, container_identity
+
+    files = {"001-x.json": _manifest_text(), "001-x.md": "body"}
+    _, incus = _setup(mocker, tmp_path, files=files)
+    assert container_identity(incus, "acme-feat-foo") == ContainerIdentity(
+        "acme-feat-foo", "2026-09-30T12:00:00Z"
+    )
+    store = outbox_io.read_store(incus, "acme-feat-foo", "pr", uid=1000)
+    assert store.as_dict() == files
+    assert store.rejected == ()
+    assert store.warnings == ()
+    evidence = pr_progress_evidence(store, "001-x.json", 1)
+    assert evidence.error is None
+    assert evidence.applied == frozenset()
+    incus.exec.assert_not_called()
+
+
+@pytest.mark.parametrize("rejected", [False, True])
+def test_review_fixture_keeps_recorded_or_rejected_progress(mocker, tmp_path, rejected):
+    from jailbee.outbox.inspect import pr_progress_evidence
+    from jailbee.outbox import io as outbox_io
+
+    sidecar = "001-x.json.progress.json"
+    files = {"001-x.json": _manifest_text()}
+    if not rejected:
+        files[sidecar] = '{"applied": [0], "urls": {"0": "https://x/c"}}'
+    _, incus = _setup(
+        mocker, tmp_path, files=files,
+        rejected=(sidecar,) if rejected else (),
+        warnings=("Rejected unsafe progress",) if rejected else (),
+    )
+    store = outbox_io.read_store(incus, "acme-feat-foo", "pr", uid=1000)
+    assert store.as_dict() == files
+    assert store.rejected == ((sidecar,) if rejected else ())
+    assert store.warnings == (("Rejected unsafe progress",) if rejected else ())
+    evidence = pr_progress_evidence(store, "001-x.json", 1)
+    assert evidence.edit_block is not None
+    if rejected:
+        assert evidence.error == "publication evidence was rejected"
+    else:
+        assert evidence.error is None
+        assert evidence.applied == frozenset({0})
+        assert evidence.receipts == ((0, "https://x/c"),)
+    incus.exec.assert_not_called()
 
 
 # ---- apply ----------------------------------------------------------------
@@ -217,12 +276,17 @@ def test_apply_exits_1_when_publishing_fails(mocker, tmp_path):
 
 
 def test_apply_refuses_a_stopped_container(mocker, tmp_path):
+    from jailbee.outbox.models import OutboxExecutionError
     from jailbee.pr_outbox import OutboxReadError
 
     _setup(mocker, tmp_path)
     mocker.patch(
         "jailbee.pr_outbox.read_outbox",
         side_effect=OutboxReadError("could not read the outbox in acme-feat-foo: not running"),
+    )
+    mocker.patch(
+        "jailbee.outbox.io.read_store",
+        side_effect=OutboxExecutionError("outbox unavailable: acme-feat-foo: not running"),
     )
     apply_mock = mocker.patch("jailbee.pr_outbox.apply_manifest")
 
@@ -448,12 +512,8 @@ def test_apply_deletes_a_body_file_shared_by_two_completed_manifests(mocker, tmp
 
 
 def test_apply_asks_which_container_when_several_may_be_pending(mocker, tmp_path):
-    from jailbee.pr_outbox import Outbox
-
     _setup(mocker, tmp_path)
-    read = mocker.patch(
-        "jailbee.pr_outbox.read_outbox", return_value=Outbox(files={"001-x.json": _manifest_text()})
-    )
+    read = _mock_store(mocker, {"001-x.json": _manifest_text()})
     mocker.patch(
         "jailbee.lifecycle.list_containers",
         return_value=[_running_ci(name="acme-feat-a"), _running_ci(name="acme-feat-b")],
@@ -487,12 +547,8 @@ def test_apply_refuses_off_a_tty_rather_than_showing_the_picker(mocker, tmp_path
 
 def test_apply_reads_a_container_whose_pending_count_is_unknown(mocker, tmp_path):
     """`None` means the probe could not say — never "nothing pending"."""
-    from jailbee.pr_outbox import Outbox
-
     _setup(mocker, tmp_path)
-    read = mocker.patch(
-        "jailbee.pr_outbox.read_outbox", return_value=Outbox(files={"001-x.json": _manifest_text()})
-    )
+    read = _mock_store(mocker, {"001-x.json": _manifest_text()})
     mocker.patch(
         "jailbee.lifecycle.list_containers",
         return_value=[_running_ci(name="acme-feat-a", pending=None)],
@@ -623,10 +679,7 @@ def test_ls_all_repos_filters_hidden_repo_before_review_probe(mocker, tmp_path):
     hidden.repo = "secret"
     scope = RemoteRepoScope(frozenset({"secret"}))
     mocker.patch("jailbee.remote_ssh.repo_scope.scope_for_session", return_value=scope)
-    reads = mocker.patch("jailbee.pr_outbox.read_outbox")
-    from jailbee.pr_outbox import Outbox
-
-    reads.return_value = Outbox(files={"001-x.json": _manifest_text()})
+    reads = _mock_store(mocker, {"001-x.json": _manifest_text()})
     mocker.patch("jailbee.pr_outbox.resolve_target", return_value=_a_target())
 
     def scoped_rows(*args, **kwargs):

@@ -1798,6 +1798,33 @@ def test_record_consumed_keeps_a_manifest_still_missing_other_actions(mocker):
     assert not rm_calls, "one of two actions is applied; the manifest must stay"
 
 
+def _drop_setup(mocker, outbox):
+    from jailbee.outbox.models import StoreSnapshot
+
+    incus = mocker.MagicMock()
+    incus.list_containers.return_value = [
+        {"name": "c", "created_at": "2026-09-30T12:00:00Z"}
+    ]
+    snapshot = StoreSnapshot("pr", tuple(sorted(outbox.files.items())), (), ())
+    mocker.patch("jailbee.outbox.io.read_store", return_value=snapshot)
+    mocker.patch("jailbee.pr_outbox.read_outbox", return_value=outbox)
+    return incus
+
+
+def test_drop_fixture_keeps_invalid_text_without_losing_identity(mocker):
+    from jailbee.outbox import io as outbox_io
+    from jailbee.outbox_io import ContainerIdentity, container_identity
+    from jailbee.pr_outbox import Outbox
+
+    outbox = Outbox(files={"001-x.json": "not JSON"})
+    incus = _drop_setup(mocker, outbox)
+    assert container_identity(incus, "c") == ContainerIdentity("c", "2026-09-30T12:00:00Z")
+    store = outbox_io.read_store(incus, "c", "pr", uid=1000)
+    assert store.as_dict() == outbox.files
+    assert (store.rejected, store.warnings) == ((), ())
+    incus.exec.assert_not_called()
+
+
 def test_drop_manifest_deletes_it_with_its_sidecar_and_own_bodies(mocker):
     from jailbee.pr_outbox import Outbox, drop_manifest
 
@@ -1809,7 +1836,7 @@ def test_drop_manifest_deletes_it_with_its_sidecar_and_own_bodies(mocker):
             "002-y.json": _manifest_text(),
         }
     )
-    incus = mocker.MagicMock()
+    incus = _drop_setup(mocker, outbox)
 
     deleted = drop_manifest(incus, "c", outbox, "001-x.json", uid=1000)
 
@@ -1826,7 +1853,7 @@ def test_drop_manifest_keeps_a_body_file_another_manifest_still_uses(mocker):
 
     shared = _manifest_text(actions=[{"type": "comment", "body_file": "shared.md"}])
     outbox = Outbox(files={"001-x.json": shared, "002-y.json": shared, "shared.md": "text"})
-    incus = mocker.MagicMock()
+    incus = _drop_setup(mocker, outbox)
 
     deleted = drop_manifest(incus, "c", outbox, "001-x.json", uid=1000)
 
@@ -1841,11 +1868,12 @@ def test_drop_manifest_raises_when_the_deletion_fails(mocker):
     from jailbee.incus import IncusError
     from jailbee.pr_outbox import FinalizeError, Outbox, drop_manifest
 
-    incus = mocker.MagicMock()
+    outbox = Outbox(files={"001-x.json": "…"})
+    incus = _drop_setup(mocker, outbox)
     incus.exec.side_effect = IncusError("instance is not running")
 
     with pytest.raises(FinalizeError, match=r"001-x\.json"):
-        drop_manifest(incus, "c", Outbox(files={"001-x.json": "…"}), "001-x.json", uid=1000)
+        drop_manifest(incus, "c", outbox, "001-x.json", uid=1000)
 
 
 def test_action_summary_counts_actions_by_type():
