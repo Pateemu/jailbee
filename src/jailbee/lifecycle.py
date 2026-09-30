@@ -306,6 +306,8 @@ def list_containers(
     """
     from jailbee.accounts import groups
     from jailbee.mounts import DEVICE_NAME_PREFIX
+    from jailbee.network_generation import generation_of
+    from jailbee.work_mode import work_mode_state
 
     own_names = profile_names(cfg)
     own_net_to_mode = {v: k for k, v in own_names.net_by_mode.items()}
@@ -334,16 +336,30 @@ def list_containers(
         # Determine network mode from profile names. For own-repo we have a
         # known mapping; for foreign repos, strip "<repo>-net-" prefix.
         network: str | None = None
-        for p in profiles:
-            if p in own_net_to_mode:
-                network = own_net_to_mode[p]
-                break
-            prefix = f"{repo}-net-"
-            if p.startswith(prefix):
-                mode = p[len(prefix) :]
-                if mode in ("strict", "loose"):
-                    network = mode
-                break
+        if generation_of(cfg, raw) == "work":
+            # Work-generation instances carry `<repo>-net-work-<mode>` as a
+            # marker, not a mode profile. For the own repo the answer is
+            # cross-checked against the NIC's ACL, as current_network_mode
+            # does; a foreign repo's ACL name is unknown, so trust its marker.
+            if repo == cfg.container_prefix:
+                network = work_mode_state(cfg, raw)[0]
+            else:
+                network = next(
+                    p.rsplit("-", 1)[-1]
+                    for p in profiles
+                    if p.endswith(("-net-work-strict", "-net-work-loose"))
+                )
+        else:
+            for p in profiles:
+                if p in own_net_to_mode:
+                    network = own_net_to_mode[p]
+                    break
+                prefix = f"{repo}-net-"
+                if p.startswith(prefix):
+                    mode = p[len(prefix) :]
+                    if mode in ("strict", "loose"):
+                        network = mode
+                    break
 
         # Extract IP for running containers. Stopped containers have
         # state.network = null (not {}), so the explicit `or {}` chain
