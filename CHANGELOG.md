@@ -10,6 +10,15 @@ before editing `## Unreleased`.
 
 ### Added
 
+- **Host-wide agent instructions.** Write `~/.config/jailbee/AGENTS.md` once on
+  the host and every container of every repo with Claude enabled gets it
+  read-only as Claude Code's managed-policy memory
+  (`/etc/claude-code/CLAUDE.md`), loaded before the shared `~/.claude/CLAUDE.md`
+  and the project's own. Edits reach the next session after a refresh such as
+  `jailbee ls`, without another `jailbee apply`; existing repos need one apply
+  and running-container restart to add the mount. `agent_instructions: false`
+  in `global.yaml` turns it off while retaining host staging.
+
 - **Create PR review containers from either dashboard.** Select **New from PR…**
   in a repo's TUI menu or the Qt dashboard's Container menu / repo header;
   enter a PR number to run `jailbee new --pr N` in that repo.

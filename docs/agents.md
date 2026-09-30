@@ -200,6 +200,7 @@ append/reset semantics.
 | `egress_allow` | list[string] | `[]` | Hosts added to the strict-mode allowlist when this agent is enabled. Same `host[:port]`/CIDR grammar as top-level [`egress_allow`](config.md#egress_allow). |
 | `env` | map[string, string] | `{}` | Env vars passed to the install/update step *and* the autostart launch step. |
 | `skills_dir` | string \| null | preset | Container-side directory the agent reads user-level skills from (`~/.codex/skills`, …). When set and covered by a `shared` mount, `jailbee new`/`apply` copy the [bundled skills](#10-the-bundled-jailbee-skills) into the shared copy of it. Leave unset for an agent with no skills mechanism. |
+| `global_instructions` | `{dir, file}` \| null | preset | Where the agent reads host-wide instructions; `dir` is mounted read-only and must not lie inside a `shared` mount. `dir` is absolute or `~`-relative without `.`/`..` segments; `file` is a bare file name. Only Claude's preset sets it today. |
 | `install_jailbee_skills` | bool | `true` | `false` keeps this agent's shared skills directory untouched by jailbee's bundled skills. Does nothing when `skills_dir` is unset or no `shared` mount covers it. A disabled agent gets nothing either way. |
 
 A full custom entry:
@@ -484,6 +485,13 @@ Full field-by-field descriptions for these live in the
 [`claude` section of Configuration reference](config.md#claude) — that
 section stays the authoritative reference for the Claude-only fields; this
 page covers the generic `agents:` mechanism they sit on top of.
+
+Claude's preset also declares `global_instructions: {dir: /etc/claude-code,
+file: CLAUDE.md}`. The host's `~/.config/jailbee/AGENTS.md` reaches every repo's
+containers there as read-only managed-policy memory, before the shared and
+project CLAUDE.md files. Edits reach the next session after a refresh, not one
+already running. See [Agent-wide instructions](config.md#agent-wide-instructions-configjailbeeagentsmd)
+for first-time apply, refresh commands and the host-wide opt-out.
 
 ### What the containers of a repo share
 

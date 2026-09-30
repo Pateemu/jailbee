@@ -683,6 +683,18 @@ cannot tell in advance. The symptom is a `/login` prompt in the container right
 after a switch that reported success. Logging in there fixes it, and the new
 credential lands in the holder as usual.
 
+## Host-wide agent instructions
+
+`/etc/claude-code/CLAUDE.md` holds the host-wide instructions from the host's
+`~/.config/jailbee/AGENTS.md` (`$XDG_CONFIG_HOME/jailbee/AGENTS.md` if set).
+It is read-only in the container; to change it, edit that file on the host,
+not the managed file or a shared `~/.claude/CLAUDE.md`. Run `jailbee ls` on
+the host to refresh the copy; the next Claude session reads it, not an
+already-running one. Existing repos need `jailbee apply` once and a restart
+of running containers to add the mount. `agent_instructions: false` in the
+host's `global.yaml` skips updates and removes the mounts after apply and
+restart, but retains host staging. Only Claude is wired today.
+
 ## Claude Code through LiteLLM — `claude-jb`
 
 On the host, enable `litellm.enabled: true` in `global.yaml`, then run

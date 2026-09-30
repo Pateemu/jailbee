@@ -2329,6 +2329,47 @@ either a legacy `github.api_tokens` entry or this repo's local `github.token`.
 Without one, loading the config fails and asks you to set a token. With a
 valid token, `jailbee doctor` checks its presence and permissions.
 
+## Agent-wide instructions (`~/.config/jailbee/AGENTS.md`)
+
+Instructions that apply to every wired agent in every container of every repo —
+model preferences, house rules — go in one file on the host:
+`~/.config/jailbee/AGENTS.md` (`$XDG_CONFIG_HOME/jailbee/AGENTS.md` if set).
+
+Jailbee copies it into `~/.local/share/jailbee/agent-instructions/<agent>/`
+(`$XDG_DATA_HOME/jailbee/agent-instructions/<agent>/` if set), under each
+agent's own file name, and mounts that directory read-only into containers
+where the agent is enabled. For Claude Code that is
+`/etc/claude-code/CLAUDE.md`, its managed-policy memory file: loaded in every
+session before `~/.claude/CLAUDE.md` and the project's CLAUDE.md, and not
+excludable. A container cannot change it. These are instructions, not hard
+model-policy enforcement; they do not configure the agent running on the host.
+
+- **First use:** run `jailbee apply` once in each existing repo to add the
+  mount, then restart its running containers so the mounts land. New containers
+  get it automatically.
+- **Editing:** the copy is refreshed by `jailbee apply`, `jailbee new`,
+  `jailbee start`/`restart`, `jailbee ls`, `jailbee shell` and `jailbee tmux`.
+  A session reads it when it starts, so an edit reaches the next agent session,
+  not one already running. No `jailbee apply` needed after the first.
+- **No file:** the mount is an empty directory; nothing is loaded. Removing
+  the source removes the staged file on the next refresh, not the directory.
+- **Opting out:** `agent_instructions: false` in `global.yaml` skips updates
+  and omits the mount. Run `jailbee apply` in each repo and restart its running
+  containers to remove existing mounts. Host staging is retained, not deleted.
+- **Agents:** Claude Code today (the `global_instructions` preset field, see
+  [agents.md](agents.md#4-writing-your-own-agent)). Codex is not wired: its
+  instruction path lies inside its writable shared mount.
+- **Diagnosis:** `jailbee doctor` reports source size and staged-copy status;
+  a stale copy is refreshed by `jailbee ls`.
+
+Example:
+
+```markdown
+# ~/.config/jailbee/AGENTS.md
+- Never use the Fable model unless explicitly asked to.
+- Run subagents that write code on Sonnet; reviews on Opus.
+```
+
 ## Global config (`~/.config/jailbee/global.yaml`)
 
 Optional. Host-global settings shared across all repos. It is the usual home
@@ -2930,6 +2971,20 @@ from a checkout, so no upgrade command would give you what you want. The
 same release is mentioned at most once a day, and `jailbee dismiss update`
 silences it until a release newer still appears. `jailbee doctor` reports it
 either way — including the dismissal — under `update check`.
+
+### `agent_instructions`
+
+Host-level only: a repo cannot turn host-wide instructions on or off.
+See [Agent-wide instructions](#agent-wide-instructions-configjailbeeagentsmd)
+for delivery and refresh behavior.
+
+```yaml
+agent_instructions: true       # true (default) | false
+```
+
+| Key | Default | Description |
+|---|---|---|
+| `agent_instructions` | `true` | Sync the host's `AGENTS.md` and mount its staged directory read-only for every enabled agent with `global_instructions`. `false` skips updates and omits the devices on `jailbee apply`; host staging is retained. Apply in each repo and restart running containers to remove existing mounts. |
 
 ### `install_host_skills`
 
