@@ -2066,13 +2066,13 @@ something has one" still applies to a hidden-by-config column, unlike
 
 **The two views have different built-in defaults.** `jailbee ls` is a
 one-shot listing and stays narrow: NAME, BASE, STATE, CREATED, NETWORK, WT,
-DIFF ±, ↑, ↓, MERGE. The dashboards add MEM, CPU, DOING and AGENT, because a live
-number is worth its width in a view that refreshes and is a stale sample in
-one that does not — CPU and DOING are rates and have no value at all in a
-single reading, so `ls` takes a second one when you name either in
-`--fields`. AGENT (whether an agent in the container is waiting for you) needs a
-single reading. IP is off in both — enable it in the dashboard settings UI, or
-ask for it from `ls` with `--fields ip`.
+DIFF ±, ↑, ↓, MERGE. The dashboards add MEM, CPU, DOING and AGENT_COMPACT; the
+compact agent status omits agent names to save width. The full AGENT column
+includes those names and is available by selecting it in dashboard settings.
+CPU and DOING are rates and have no value at all in a single reading, so `ls`
+takes a second one when you name either in `--fields`. Either agent field
+needs a single reading. IP is off in both — enable it in the dashboard
+settings UI, or ask for it from `ls` with `--fields ip`.
 
 Four columns are dynamic and appear only when they have
 something to say: `job` (a background job is running), `ttl` (a container is
@@ -2089,8 +2089,8 @@ Allowed names (also the `jailbee ls --fields` vocabulary): `name`, `full_name`,
 `repo`, `mode`, `base`, `state`, `created`, `job`, `network`, `ttl`,
 `loose_until`, `ip`, `memory_limit`, `mem`, `wt`, `target_diff`,
 `ahead_count`, `behind_count`, `conflict`, `local_diff`, `local_count`, `git_status`, `pr`,
-`issues`, `group`, `cpu`, `doing`, `agent`. `claude` and `claude_group` are accepted
-aliases for `group`.
+`issues`, `group`, `cpu`, `doing`, `agent`, `agent_compact`. `claude` and `claude_group`
+are accepted aliases for `group`.
 
 `ahead_diff` was retired: configured uses produce a migration warning and
 explicit `--fields ahead_diff` is an error. Use `target_diff` for the direct

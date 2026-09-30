@@ -4956,8 +4956,8 @@ runs the dashboard:
    dashboard user prints two numbers, the last equal to the file's `pid`
    (no `hidepid` on `/proc`).
 3. **The cgroup walk works unprivileged** — the same prerequisite as
-   CPU/DOING: `jailbee ls --fields name,cpu,doing,agent` shows values, not
-   dashes, for a busy container.
+   CPU/DOING: `jailbee ls --fields name,cpu,doing,agent_compact` shows values,
+   not dashes, for a busy container.
 
 Then, in `jailbee dashboard`: start Claude in a container and leave it at a
 prompt — the row reads `claude: waiting …` in yellow. `kill -9` it inside

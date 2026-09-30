@@ -505,7 +505,7 @@ that path.
 |---|---|
 | `--all` | Containers from every jailbee-managed repo (adds a REPO column). Default: cwd repo only. |
 | `-o` / `--format <fmt>` | `table` (default) or `json`. |
-| `--fields <list>` | Comma-separated columns. Allowed: `name, full_name, repo, mode, base, state, created, job, network, ttl, loose_until, ip, memory_limit, mem, wt, target_diff, ahead_count, behind_count, conflict, local_diff, local_count, git_status, pr, issues, group, cpu, doing, agent`. `claude` and `claude_group` are accepted aliases for `group`. Wins outright over the `ls:` config block, and applies to every `--format`. |
+| `--fields <list>` | Comma-separated columns. Allowed: `name, full_name, repo, mode, base, state, created, job, network, ttl, loose_until, ip, memory_limit, mem, wt, target_diff, ahead_count, behind_count, conflict, local_diff, local_count, git_status, pr, issues, group, cpu, doing, agent, agent_compact`. `claude` and `claude_group` are accepted aliases for `group`. Wins outright over the `ls:` config block, and applies to every `--format`. |
 
 Git-status columns: **BASE** (base branch), **WT** (uncommitted: `+adds -dels`),
 **DIFF ±** (direct tree diff against the host target), **↑** / **↓** (unique
@@ -542,22 +542,26 @@ so they cost no command inside the container.
 **AGENT** says whether an agent session inside the container needs you:
 `claude: waiting 4m` (it is waiting for input, and has been for four
 minutes), `claude: busy 12s`, `claude: idle 2h`; `·2` counts several
-sessions of one agent, and `—` means none is running. It reads the session
-files Claude Code writes on its own under the repo's shared config home —
-nothing is installed into Claude's settings — and trusts a file only while a
-process of *that* container still matches it, so a crashed session never
-reads as live. Under `ls --all`, only the current repo's rows are filled in.
+sessions of one agent, and `—` means none is running. **AGENT_COMPACT** shows
+the same states and durations without agent names (`waiting 4m`, `busy 12s`,
+`idle 2h`). Both show multiple agents/sessions in order, and waiting states
+are highlighted. These columns read the session files and trust a file only
+while a process of *that* container still matches it, so a crashed session
+never reads as live. Under `ls --all`, only the current repo's rows are filled
+in.
 
 The default table is NAME, BASE, STATE, CREATED, NETWORK and the four git
-columns. **IP**, **MEM**, **CPU**, **DOING** and **AGENT** are *not* in it — reach any
-of them from `ls` with `--fields ip,mem,cpu,doing,agent`. The dashboards' own
-default set adds **MEM**, **CPU**, **DOING** and **AGENT**, since the view refreshes
-and a live number earns its width there; **IP** is off by default in both —
-enable it in the dashboard settings (see below) if you want it there
+columns. **IP**, **MEM**, **CPU**, **DOING**, **AGENT** and **AGENT_COMPACT** are *not* in
+it — reach any of them from `ls` with `--fields ip,mem,cpu,doing,agent,agent_compact`.
+The dashboards' own default set adds **MEM**, **CPU**, **DOING** and **AGENT_COMPACT**;
+choose either agent column in dashboard settings. **IP** is off by default in
+both — enable it in the dashboard settings (see below) if you want it there
 instead. CPU and DOING are *rates*, measured between two readings, so `ls`
-takes a second reading (about 0.2 s) when you ask for either by name. AGENT is a state, not a rate: `--fields agent` takes one reading and no pause. **MODE** is dynamic like JOB, TTL and PR: it appears only once a
-mount-mode container exists, since on a clone-only host every row would
-read `clone`.
+takes a second reading (about 0.2 s) when you ask for either by name. Agent
+status is not a rate: either `--fields agent` or `--fields agent_compact` takes
+one reading and no pause. **MODE** is dynamic like JOB, TTL and PR: it appears
+only once a mount-mode container exists, since on a clone-only host every row
+would read `clone`.
 
 **MERGE values**, in priority order — a live state always outranks a
 prediction, because it describes what the container is doing *right now*,

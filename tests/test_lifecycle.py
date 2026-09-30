@@ -9223,10 +9223,10 @@ def _agent(state="waiting", *, agent="claude", since=None, waiting_for=None, cou
 _AGENT_NOW = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
 
 
-def _agent_spec():
+def _agent_spec(name="agent"):
     from jailbee.lifecycle import ls_field_specs
 
-    return next(f for f in ls_field_specs(now=_AGENT_NOW) if f.name == "agent")
+    return next(f for f in ls_field_specs(now=_AGENT_NOW) if f.name == name)
 
 
 def _plain(cell: str) -> str:
@@ -9380,6 +9380,35 @@ def test_agent_cell_is_a_dash_without_a_live_session():
     assert _agent_spec().cell(_running()) == "[dim]—[/dim]"
 
 
+def test_agent_compact_cell_omits_agent_name_and_keeps_state_and_duration():
+    c = _running(agent_status=(_agent("waiting", since=_AGENT_NOW - timedelta(minutes=4)),))
+
+    assert _plain(_agent_spec("agent_compact").cell(c)) == "waiting 4m"
+
+
+def test_agent_compact_cell_counts_multiple_sessions_and_agents():
+    c = _running(
+        agent_status=(
+            _agent("waiting", since=_AGENT_NOW - timedelta(minutes=4), count=2),
+            _agent("busy", agent="codex", since=_AGENT_NOW - timedelta(seconds=12)),
+        )
+    )
+
+    assert _plain(_agent_spec("agent_compact").cell(c)) == "waiting 4m·2, busy 12s"
+
+
+def test_agent_compact_is_dashboard_only_and_not_default_with_full_agent():
+    from jailbee.table_format import shows_by_default_in_dashboard
+
+    compact = _agent_spec("agent_compact")
+    full = _agent_spec()
+    assert compact.header == "AGENT*"
+    assert compact.default_table is False
+    assert compact.default_json is False
+    assert shows_by_default_in_dashboard(compact) is True
+    assert shows_by_default_in_dashboard(full) is False
+
+
 def test_agent_cell_shows_a_markup_looking_state_literally():
     """The state is raw text from a file the container wrote."""
     c = _running(agent_status=(_agent("[red]x", since=None),))
@@ -9412,7 +9441,7 @@ def test_agent_is_a_dashboard_only_column():
     assert spec.header == "AGENT"
     assert spec.default_table is False
     assert spec.default_json is False
-    assert shows_by_default_in_dashboard(spec) is True
+    assert shows_by_default_in_dashboard(spec) is False
 
 
 # ---- private agent subpaths ----

@@ -1787,6 +1787,7 @@ _AUTO_HIDE_ORDER = (
     "ttl",
     "mode",
     "ahead_count",
+    "agent_compact",
     "agent",
     "wt",
     "conflict",

@@ -2781,8 +2781,8 @@ def ls_field_specs(
             names.append(f"[dim]+{hidden}[/dim]")
         return ", ".join(names)
 
-    def _agent_text(s: AgentSummary) -> str:
-        text = f"{s.agent}: {s.state}"
+    def _agent_text(s: AgentSummary, *, include_name: bool = True) -> str:
+        text = f"{s.agent}: {s.state}" if include_name else s.state
         if s.since is not None and s.since <= now:
             text += f" {format_duration_short(now - s.since)}"
         if s.count > 1:
@@ -2795,6 +2795,11 @@ def ls_field_specs(
         if not c.agent_status:
             return "[dim]—[/dim]"
         return ", ".join(_agent_text(s) for s in c.agent_status)
+
+    def _agent_compact_cell(c: ContainerInfo) -> str:
+        if not c.agent_status:
+            return "[dim]—[/dim]"
+        return ", ".join(_agent_text(s, include_name=False) for s in c.agent_status)
 
     def _agent_json(c: ContainerInfo) -> list[dict[str, object]]:
         return [
@@ -3002,6 +3007,15 @@ def ls_field_specs(
             # Live like CPU/DOING, and the reason to keep a dashboard open:
             # which container is waiting for you. `--fields agent` reaches it
             # from `ls`, at the cost of one /proc reading.
+            default_table=False,
+            default_dashboard=False,
+            default_json=False,
+        ),
+        table_format.FieldSpec(
+            name="agent_compact",
+            header="AGENT*",
+            cell=_agent_compact_cell,
+            json=_agent_json,
             default_table=False,
             default_dashboard=True,
             default_json=False,

@@ -2863,6 +2863,8 @@ def test_default_columns_matches_the_built_in_dashboard_set():
     names = dashboard.default_columns()
     assert "name" in names
     assert "mem" in names  # the dashboard-only default
+    assert "agent_compact" in names
+    assert "agent" not in names
     assert "ip" not in names  # Task 1
     assert not set(names) & set(DASHBOARD_DEFAULT_HIDE)
 
@@ -7136,10 +7138,11 @@ def test_every_column_has_an_auto_hide_priority():
     assert names - set(dashboard._AUTO_HIDE_ORDER) == set()
 
 
-def test_agent_outlives_every_column_but_the_core_ones():
-    """It is the reason for the column to exist: hidden just before WT."""
+def test_agent_columns_outlive_every_column_but_the_core_ones():
+    """Agent status is the reason for the columns to exist: hidden just before WT."""
     order = dashboard._AUTO_HIDE_ORDER
     assert order.index("agent") == order.index("wt") - 1
+    assert order.index("agent_compact") < order.index("agent")
 
 
 def test_remote_action_menu_never_opens_the_pr_in_a_host_browser():
