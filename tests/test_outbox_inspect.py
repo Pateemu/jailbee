@@ -236,6 +236,45 @@ def test_corrupt_issue_journal_blocks_inspection(tmp_path, corruption):
     assert all(a.state == "pending" for a in view.actions)
 
 
+@pytest.mark.parametrize("kind", ["pr", "issue"])
+def test_rejected_unsafe_names_do_not_hide_valid_neighbors(tmp_path, kind):
+    files = pr_files() if kind == "pr" else issue_files()
+    rejected = ("nested/001.json", "../002.json", "bad\x1b.json", "bad\x00.json")
+    snapshot = store(kind, files, rejected=rejected)
+    views = build_views(IDENTITY, (snapshot,), journal_store=JournalStore(tmp_path))
+    assert [str(v.id) for v in views] == [f"{kind}/001.json"]
+    assert views[0].state == "pending"
+    container = ContainerView(IDENTITY, IDENTITY.full_name, True, None, (snapshot,), views)
+    assert overview_json((container,))["containers"][0]["stores"][0]["rejected"] == list(rejected)
+
+
+@pytest.mark.parametrize("kind", ["pr", "issue"])
+@pytest.mark.parametrize("depth", [900, 1100])
+def test_deep_json_is_invalid_without_hiding_neighbor_or_progress(tmp_path, kind, depth):
+    raw = "[" * depth + "]" * depth
+    files = (pr_files() if kind == "pr" else issue_files()) | {"bad.json": raw}
+    journals = JournalStore(tmp_path / "journals")
+    first = build_views(IDENTITY, (store(kind, files),), journal_store=journals)
+    bad = next(v for v in first if v.id.name == "bad.json")
+    valid = next(v for v in first if v.id.name == "001.json")
+    assert valid.state == "pending"
+    assert bad.state == "invalid"
+    assert bad.raw_text == raw
+    assert bad.error and bad.revision
+    if kind == "pr":
+        files["bad.json.progress.json"] = "{bad"
+    else:
+        key = journal_key(IDENTITY, "bad.json")
+        journals.create(key, "b" * 64, 1)
+        journals.mark_prepared(key, 0, repo="acme/repo")
+    second = build_views(IDENTITY, (store(kind, files),), journal_store=journals)
+    changed = next(v for v in second if v.id.name == "bad.json")
+    assert changed.state == "invalid"
+    assert changed.raw_text == raw
+    assert changed.edit_block
+    assert changed.revision != bad.revision
+
+
 def test_inspection_never_resolves_remote_targets(tmp_path, mocker):
     mocker.patch("jailbee.pr.resolve_pr", side_effect=AssertionError("network"))
     for helper in ("current_login", "list_labels", "get_issue"):

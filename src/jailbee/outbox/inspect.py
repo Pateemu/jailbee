@@ -110,14 +110,18 @@ def safe_text(value: str) -> str:
 
 def _body_names(value: object) -> set[str]:
     """Collect inputs only; domain parsers remain the sole body validators."""
-    if isinstance(value, dict):
-        result = {value["body_file"]} if isinstance(value.get("body_file"), str) else set()
-        for child in value.values():
-            result.update(_body_names(child))
-        return result
-    if isinstance(value, list):
-        return set().union(*(_body_names(child) for child in value))
-    return set()
+    result: set[str] = set()
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, dict):
+            body_file = item.get("body_file")
+            if isinstance(body_file, str):
+                result.add(body_file)
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+    return result
 
 
 def _issue_action(index: int, action: issues.IssueAction) -> ActionView:
@@ -202,12 +206,12 @@ def _build_view(
     actions: tuple[ActionView, ...] = ()
     state: State = "pending"
     body_names: set[str] = set()
-    try:
-        body_names = _body_names(json.loads(raw))
-    except ValueError:
-        pass
     evidence: object = None
     try:
+        try:
+            body_names = _body_names(json.loads(raw))
+        except ValueError:
+            pass
         if name in store.rejected:
             raise OutboxError("manifest was rejected by the bounded text reader")
         if store.kind == "pr":
@@ -219,6 +223,8 @@ def _build_view(
             issue = issues.parse_manifest(name, raw, files)
             body_names = set(issue.body_files)
             actions = tuple(_issue_action(i, a) for i, a in enumerate(issue.actions))
+    except RecursionError:
+        error, state = "manifest JSON nesting exceeds the supported depth", "invalid"
     except (prs.ManifestError, issues.IssueManifestError, OutboxError) as exc:
         error, state = str(exc), "invalid"
     if store.kind == "pr":
@@ -330,6 +336,11 @@ def build_views(
         for name in sorted(
             n for n in names if n.endswith(".json") and not n.endswith(".progress.json")
         ):
+            try:
+                ProposalId(store.kind, name)
+            except OutboxError:
+                # Non-addressable rejected entries remain visible in store evidence.
+                continue
             views.append(_build_view(identity, store, name, journal_store, recorded_pr))
     return tuple(views)
 
