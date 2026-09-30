@@ -90,7 +90,9 @@ def plan_delete(
         raise OutboxError("a comment selector requires an action selector")
     if selection.archive_journal and (proposal.kind != "issue" or not whole):
         raise OutboxError("archive_journal is only valid for whole issue deletion")
-    if selection.with_dependents and (proposal.kind != "issue" or whole or selection.comment is not None):
+    if selection.with_dependents and (
+        proposal.kind != "issue" or whole or selection.comment is not None
+    ):
         raise OutboxError("with_dependents requires an issue-create action deletion")
     if view.edit_block:
         if not (
@@ -139,11 +141,14 @@ def plan_delete(
                 if selection.with_dependents and not is_create:
                     raise OutboxError("with_dependents requires an issue-create action deletion")
                 dependents = tuple(
-                    i for i, a in enumerate(actions)
+                    i
+                    for i, a in enumerate(actions)
                     if is_create and a.get("issue_ref") == action["ref"]
                 )
                 if dependents and not selection.with_dependents:
-                    raise OutboxError(f"action {index} has dependent actions {dependents}; use with_dependents")
+                    raise OutboxError(
+                        f"action {index} has dependent actions {dependents}; use with_dependents"
+                    )
                 removed_actions = tuple(sorted((index, *dependents)))
                 surviving = [a for i, a in enumerate(actions) if i not in removed_actions]
             updated["actions"] = surviving
@@ -157,6 +162,12 @@ def plan_delete(
         f"Delete files: {delete_names}",
     )
     return DeletePlan(
-        proposal, view.revision, selection, removed_actions, removed_comments,
-        new_text, delete_names, summary,
+        proposal,
+        view.revision,
+        selection,
+        removed_actions,
+        removed_comments,
+        new_text,
+        delete_names,
+        summary,
     )
