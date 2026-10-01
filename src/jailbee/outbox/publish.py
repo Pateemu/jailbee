@@ -93,10 +93,13 @@ def issue_outcome_lines(
             text = f"{failure.manifest} action {failure.index}: {label} — {failure.detail}"
         lines.append(OutcomeLine("error", text))
         if failure.uncertain and failure.manifest is not None and failure.index is not None:
-            lines.append(OutcomeLine(
-                "info", f"  resolve: jailbee issue resolve {batch.container} {failure.manifest} "
-                f"{failure.index} (--applied --url <url> [--issue <n>] | --retry)"
-            ))
+            lines.append(
+                OutcomeLine(
+                    "info",
+                    f"  resolve: jailbee issue resolve {batch.container} {failure.manifest} "
+                    f"{failure.index} (--applied --url <url> [--issue <n>] | --retry)",
+                )
+            )
         lines.extend(
             OutcomeLine("info", f"{prepared.manifest.name} action {resolved.index}: pending")
             for prepared in batch.manifests
@@ -106,7 +109,9 @@ def issue_outcome_lines(
     return tuple(lines)
 
 
-def print_issue_outcome(batch: issue_outbox.PreparedBatch, report: issue_outbox.ApplyReport) -> None:
+def print_issue_outcome(
+    batch: issue_outbox.PreparedBatch, report: issue_outbox.ApplyReport
+) -> None:
     """Render the shared pure formatter through the established stdout/stderr helpers."""
     for line in issue_outcome_lines(batch, report):
         if line.severity == "error":

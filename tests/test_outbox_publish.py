@@ -413,30 +413,45 @@ def test_plan_cannot_interpret_terminal_controls(env, kind, capsys):
 
 @pytest.mark.parametrize("mode", ["failed", "uncertain", "batch", "cleanup", "success"])
 def test_actual_cli_and_selected_publication_share_outcome_streams(env, mocker, capsys, mode):
-    from jailbee.cli import app
     from typer.testing import CliRunner
+
+    from jailbee.cli import app
     from jailbee.outbox_io import JournalAction
 
     mocker.patch("jailbee.cli._load_or_exit", return_value=env[0])
     mocker.patch("jailbee.cli._resolve_existing", return_value=(env[1], IDENTITY.full_name))
     mocker.patch("jailbee.lifecycle.short_name", return_value="feature")
-    receipt = JournalAction(index=0, state="applied", repo="acme/repo", issue=73, url="https://github.com/acme/repo/issues/73")
+    receipt = JournalAction(
+        index=0,
+        state="applied",
+        repo="acme/repo",
+        issue=73,
+        url="https://github.com/acme/repo/issues/73",
+    )
     skipped = replace(receipt, index=1, url="https://receipt/2")
-    failure = None if mode == "success" else issue_outbox.ApplyFailure(
-        None if mode == "batch" else "001.json",
-        1 if mode in ("failed", "uncertain") else None,
-        mode == "uncertain", "Rejected mutation",
+    failure = (
+        None
+        if mode == "success"
+        else issue_outbox.ApplyFailure(
+            None if mode == "batch" else "001.json",
+            1 if mode in ("failed", "uncertain") else None,
+            mode == "uncertain",
+            "Rejected mutation",
+        )
     )
     report = issue_outbox.ApplyReport(
         applied=(("001.json", receipt),),
         skipped=(("001.json", skipped),) if mode == "success" else (),
-        cleaned=("001.json",) if mode == "success" else (), failure=failure,
+        cleaned=("001.json",) if mode == "success" else (),
+        failure=failure,
     )
     # This isolates rendering only; prepare and revalidation remain real.
     mocker.patch.object(issue_outbox, "apply_batch", return_value=report)
     assert selected(env) == (0 if mode == "success" else 1)
     selected_output = capsys.readouterr()
-    result = CliRunner().invoke(app, ["issue", "apply", "feature", "--manifest", "001.json", "-y"], env={"COLUMNS": "200"})
+    result = CliRunner().invoke(
+        app, ["issue", "apply", "feature", "--manifest", "001.json", "-y"], env={"COLUMNS": "200"}
+    )
     assert result.exit_code == (0 if mode == "success" else 1), result.output
     assert result.stderr == selected_output.err
     if mode == "success":
@@ -454,13 +469,21 @@ def test_actual_cli_and_selected_publication_share_outcome_streams(env, mocker, 
         if mode == "success":
             assert "001.json action 1: applied (https://receipt/2)" in text
             assert "001.json: fully applied and removed from the outbox" in text
-            assert text.index("001.json action 0: applied") < text.index("001.json action 1: applied") < text.index("001.json: fully applied")
+            assert (
+                text.index("001.json action 0: applied")
+                < text.index("001.json action 1: applied")
+                < text.index("001.json: fully applied")
+            )
         else:
             assert "001.json action 2: pending" in text
-            assert text.index("001.json action 0: applied") < text.index("001.json action 2: pending")
+            assert text.index("001.json action 0: applied") < text.index(
+                "001.json action 2: pending"
+            )
         if mode == "uncertain":
             assert "resolve: jailbee issue resolve acme-feature 001.json 1" in text
-            assert text.index("resolve: jailbee issue resolve") < text.index("001.json action 2: pending")
+            assert text.index("resolve: jailbee issue resolve") < text.index(
+                "001.json action 2: pending"
+            )
 
 
 def test_issue_prepare_cannot_replace_original_preview(env, mocker):
