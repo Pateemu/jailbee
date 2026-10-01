@@ -5150,3 +5150,36 @@ resources created by this approved rig. If the daemon, PTY, Qt dependency
 or approved rig is unavailable, report the exact omitted check as pending,
 not verified. Real-display and live GitHub publication remain separate,
 explicitly authorized checks.
+
+## Remote GUI over SSH (shared RDP display)
+
+Host-only checks; they need a real Incus daemon, the SSH service with
+`remote.ssh.gui: true` (restarted), and an RDP client. Background:
+[Remote GUI over SSH](remote-gui.md).
+
+1. `jb display up` from cold (no `jailbee-display` container). Expected: the
+   image is pulled, weston installed, the service reported active, and the
+   connection recipe printed.
+2. `jb display status`. Expected: running, plus the same recipe.
+3. Open the tunnel (`ssh -N -L 3389:127.0.0.1:13389 -p <port> jailbee@<host>`)
+   and connect an RDP client to `localhost:3389`. Expected: a weston desktop
+   with a panel.
+4. In an SSH session, run `jb chrome` against a running container. Expected:
+   a Chrome window on the RDP desktop.
+5. Do the same from a second container. Expected: its window lands on the
+   same screen.
+6. In the remote dashboard, choose a launch. Expected: with no client
+   connected the recipe is printed and the launch waits; connecting a client
+   lets it proceed.
+7. `jb display down`, then try a new forward with the same key. Expected: the
+   tunnel refuses it.
+8. Set `remote.ssh.gui: false`, restart the service, run `jb chrome` over SSH.
+   Expected: refused.
+9. From the host and from a sibling container, `nc -vz <display container
+   bridge address> 3389`. Expected: refused in both cases.
+
+Not yet verified on a real host: the shared directory mount under `/run` in
+the display container surviving a boot; whether the few-second settle delay is
+long enough for an RDP seat to exist; the TCP forward through asyncssh with a
+real RDP client; weston cold provisioning; and the remote dashboard menu in a
+pty.

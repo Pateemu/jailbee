@@ -19,7 +19,7 @@ Common conventions:
 
 ## Table of contents
 
-- [Setup & host (`setup`, `init`, `apply`, `doctor`, `base`, `registry`)](#setup--host)
+- [Setup & host (`setup`, `init`, `apply`, `doctor`, `base`, `registry`, `display`)](#setup--host)
 - [LiteLLM proxy (`litellm up|down|status|login|logout|logs`)](#litellm-proxy)
 - [Remote SSH (`remote ssh`)](#remote-ssh)
 - [Config (`config show|validate|init|edit`)](#config)
@@ -54,6 +54,7 @@ speculatively.
 | `jailbee base usage [--all]` | Show disk usage of golden base images: each live base image and dated archive with its size, a per-repo subtotal, a prunable figure (archives only, i.e. what `jailbee base prune` would reclaim), and a grand total across images shown. `--all` includes every registered repo, not just the current one. |
 | `jailbee doctor` | Host- and repo-level diagnostics: Incus running, bridges, `uid delegation` (the `/etc/subuid` + `/etc/subgid` lines `raw.idmap` needs — without them containers are created but stay `STOPPED`), `network <bridge> reachability` (probes each bridge's DHCP lease, DNS and egress from a running container, to tell a host firewall's three missing openings apart; silent when no container runs on that bridge), keyring limits, registry mirror, registry cache integrity (every digest-keyed cache entry hashed against its digest — minutes on a large cache, with live progress; Ctrl+C skips just that row, which then shows SKIPPED and does not fail doctor), GitHub token perms, agent setup, port forwards, the `jailbee setup` steps (`shell completions`, `agent skills (host)`), `qt dashboard (optional)` (whether PySide6 is present for `jailbee gui` — reported, never a failure, since `jailbee setup` cannot install an extra into the environment it is running from), and `upgrade actions` — whether this repo still owes a `jailbee base build` / `jailbee apply` after a jailbee upgrade. Exits non-zero if any check fails, a pending upgrade action included. Not purely read-only: the first run in a repo inserts that repo's upgrade-watermark row. |
 | `jailbee registry up [--recreate]\|down\|status\|verify [--purge]` | Control the Incus-hosted Docker registry mirror (rpardini proxy; caches all upstreams). `up` is idempotent and self-repairing: if an earlier provisioning run died partway (a network drop during `apt-get install`), it reinstalls the proxy rather than failing forever. `--recreate` deletes and rebuilds the container for damage reinstalling can't fix; the host-side cache and CA survive. `status`: `running`/`stopped`/`degraded`/`missing`. `verify` checks cached blobs/manifests against their digests and removes corrupt ones on confirmation (`--purge`: without asking) — the fix when a pull fails with `unexpected commit digest`. Host-only: the container has no `jailbee`. |
+| `jailbee display up [--recreate]\|down\|status` | Shared RDP display for GUI apps launched over remote SSH. `up` provisions the `jailbee-display` container (weston) and prints how to connect; `down` stops it and revokes SSH forwarding to it; `--recreate` rebuilds it. Only meaningful with `remote.ssh.gui: true`. Host-only: the container has no `jailbee`. |
 | `jailbee net install` | Deprecated alias for `jailbee setup --yes --only timer`, which does exactly the same work — (re)installing the `jailbee-net-refresh` user systemd timer + service. Still works; prints a deprecation warning. |
 | `jailbee version` / `jailbee --version` | Print the version. |
 
@@ -169,7 +170,7 @@ with a warning rather than cloned into the host tree,
 (it shares the host's working tree), and a branch-autostart privilege widening is refused even with `--yes`.
 Host-management commands — `config edit`/`init`, `remote ...`, `setup`,
 `init`, `apply`, `base build`/`prune`, `net install`/`refresh`/`unregister`,
-`net egress add`/`rm`, `registry up`/`down`, writing `account` commands,
+`net egress add`/`rm`, `registry up`/`down`, `display up`/`down`, writing `account` commands,
 `mount`, `port to-container`, `gui`/`ide`/browsers/`apps run` — are refused
 in every mode, `full` and allowlists included; the startup log names any
 allowlisted one. Publishing (`pr`, `submodule pr`, `review apply`, `issue

@@ -871,6 +871,14 @@ session marker, it admits public leaves including future ones except reserved
 routes and hidden internal commands. See the full command behavior and security boundary in
 [`references/commands.md`](references/commands.md#remote-ssh).
 
+With `remote.ssh.gui: true` and `jailbee display up` run on the host, `jailbee
+chrome`, `ide` and `apps run` over an SSH session draw on one shared RDP
+display (weston, one screen for every container) instead of being refused.
+They print how to connect: tunnel `ssh -N -L 3389:127.0.0.1:13389 -p <port>
+jailbee@<host>`, then an RDP client to `localhost:3389` (no password). The
+launch waits up to 120 s for a client. These host commands (`display
+up|down|status`) are not available inside a container.
+
 ## Other day-to-day commands
 
 - **Shell / run:** `jailbee shell <name>` (interactive, lands in the clone),
