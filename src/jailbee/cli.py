@@ -1745,6 +1745,10 @@ and on `jb` vs `jailbee`.
 """
 
 
+# `jailbee ls` is the visible, canonical command; `jailbee list` is a hidden alias.
+app.command("list", hidden=True, help="See `jailbee ls --help`.")(list_cmd)
+
+
 @app.command("new")
 def new_cmd(
     container_branch: Annotated[
