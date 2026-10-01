@@ -20,17 +20,7 @@
     {% block head %}{% endblock %}
   </head>
   <body>
-    <header class="topbar">
-      <nav class="topbar__inner" aria-label="Main navigation">
-        <a class="topbar__brand" href="/">
-          <img src="/assets/img/jailbee-mark.png" alt="" width="340" height="345" />
-          <span>JailBee</span>
-        </a>
-        <a class="topbar__link topbar__link--news" href="/news/">News</a>
-        <a class="topbar__link" href="/docs/">Docs</a>
-        <a class="topbar__source" href="https://github.com/VRTFinland/jailbee">Source code</a>
-      </nav>
-    </header>
+    {{ topbar }}
     <main class="wrap news-main">{% block content %}{% endblock %}</main>
     <footer>
       <div class="wrap">

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import shutil
 import sys
 import xml.etree.ElementTree as ET
@@ -14,6 +15,7 @@ from pathlib import Path
 
 import markdown
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from markupsafe import Markup
 
 from scripts.news_content import Post, asset_path, load_posts
 
@@ -131,6 +133,28 @@ def _sitemap(website_dir: Path, site_dir: Path, urls: list[str]) -> None:
     tree.write(site_dir / "sitemap.xml", encoding="utf-8", xml_declaration=True)
 
 
+def _topbar(website_dir: Path) -> Markup:
+    """The home page's top bar, rewritten for pages that are not at the root.
+
+    The home page owns the markup (icons, source box, release number kept in
+    step by scripts/site_version.py); news pages reuse it so the two cannot
+    drift apart. Its relative links become root-relative.
+    """
+    html = (website_dir / "index.html").read_text(encoding="utf-8")
+    match = re.search(r'<header class="topbar">.*?</header>', html, re.DOTALL)
+    if match is None:
+        sys.exit('news_site: website/index.html has no <header class="topbar">')
+    header = re.sub(r"<!--.*?-->\s*", "", match.group(0), flags=re.DOTALL)
+
+    def absolute(link: re.Match[str]) -> str:
+        target = link.group("target")
+        if re.match(r"([a-z][a-z0-9+.-]*:|/|#)", target):
+            return link.group(0)
+        return f'{link.group("attr")}="/{target.removeprefix("./")}"'
+
+    return Markup(re.sub(r'(?P<attr>href|src)="(?P<target>[^"]*)"', absolute, header))
+
+
 def build(website_dir: Path, site_dir: Path) -> None:
     posts = load_posts(website_dir / "news" / "posts", website_dir / "assets")
     env = Environment(
@@ -142,6 +166,7 @@ def build(website_dir: Path, site_dir: Path) -> None:
         shutil.rmtree(output)
     output.mkdir(parents=True, exist_ok=True)
     shared = {
+        "topbar": _topbar(website_dir),
         "style_hash": _hash(website_dir / "assets" / "style.css"),
         "news_hash": _hash(website_dir / "assets" / "news.css"),
     }

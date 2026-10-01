@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,7 @@ def site(tmp_path: Path) -> tuple[Path, Path]:
     (assets / "style.css").write_text("body { color: red; }")
     (assets / "news.css").write_text("article { max-width: 60ch; }")
     (assets / "feature.png").write_bytes(b"image")
+    shutil.copy(REPO / "website" / "index.html", website / "index.html")
     (website / "sitemap.xml").write_text(
         '<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
         "<url><loc>https://jailbee.gisgro.io/</loc></url></urlset>"
@@ -75,6 +77,34 @@ def test_article_has_body_brand_and_canonical_url(site: tuple[Path, Path]) -> No
     assert "topbar" in html and "footer" in html
     assert "/assets/style.css?v=" in html and "/assets/news.css?v=" in html
     assert "https://jailbee.gisgro.io/assets/img/jailbee-og.png" in html
+
+
+def test_every_news_page_carries_the_home_pages_top_bar(site: tuple[Path, Path]) -> None:
+    website, output = site
+    _add(website, "2026-09-28-release.md", META)
+    build(website, output)
+
+    home = (website / "index.html").read_text()
+    version = re.search(r'class="topbar__version">(v[^<]*)<', home)
+    assert version is not None
+    for page in (
+        output / "news" / "index.html",
+        output / "news" / "release" / "index.html",
+    ):
+        html = page.read_text()
+        assert html.count('<header class="topbar">') == 1
+        # The icons, the source box and the release number all come along.
+        assert html.count("<svg") == home[home.index('<header class="topbar">') :].split(
+            "</header>"
+        )[0].count("<svg")
+        assert f'class="topbar__version">{version.group(1)}<' in html
+        assert 'href="https://github.com/VRTFinland/jailbee"' in html
+        # Links resolve from /news/<slug>/, so none may stay relative.
+        header = html[html.index('<header class="topbar">') : html.index("</header>")]
+        assert 'href="/"' in header and 'href="/news/"' in header and 'href="/docs/"' in header
+        assert 'src="/assets/img/jailbee-mark.png"' in header
+        assert 'href="news/"' not in header and 'src="assets/' not in header
+        assert "<!--" not in header
 
 
 def test_feature_image_and_metadata_are_escaped(site: tuple[Path, Path]) -> None:
