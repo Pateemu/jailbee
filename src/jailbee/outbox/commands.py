@@ -10,9 +10,9 @@ from jailbee import config as config_api
 from jailbee.config import ConfigError
 from jailbee.incus import IncusError
 from jailbee.lifecycle import list_containers
-from jailbee.outbox.io import READ_TIMEOUT
 from jailbee.outbox.delete import DeletePlan, DeleteSelection, plan_delete
 from jailbee.outbox.inspect import detail_json, overview_json, safe_text
+from jailbee.outbox.io import READ_TIMEOUT
 from jailbee.outbox.models import (
     ContainerView,
     OutboxChanged,
@@ -111,9 +111,7 @@ def resolve_target(cfg: Config, incus: Incus, name: str) -> tuple[Config, str]:
     return target, item.name
 
 
-def _resolve_visible(
-    cfg: Config, name: str, containers: Sequence[ContainerInfo]
-) -> ContainerInfo:
+def _resolve_visible(cfg: Config, name: str, containers: Sequence[ContainerInfo]) -> ContainerInfo:
     # Only the scoped inventory can supply candidates; exact full names win.
     for candidate in (name, f"{cfg.container_prefix}-{name}"):
         item = next((c for c in containers if c.name == candidate), None)

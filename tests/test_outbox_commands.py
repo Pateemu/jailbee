@@ -286,8 +286,13 @@ def test_stale_inventory_cannot_authorize_deletion(env):
     incus.list_containers.side_effect = [original] * 4 + [changed] * 4
     with pytest.raises(OutboxError, match="changed"):
         drop_selected(
-            cfg, incus, "feature", ProposalId("issue", "001.json"),
-            selection=DeleteSelection(), journal_store=journals, confirm=lambda plan: True,
+            cfg,
+            incus,
+            "feature",
+            ProposalId("issue", "001.json"),
+            selection=DeleteSelection(),
+            journal_store=journals,
+            confirm=lambda plan: True,
         )
     mutation.assert_not_called()
 

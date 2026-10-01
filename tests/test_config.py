@@ -4916,7 +4916,9 @@ def test_tag_policy_rejects_unknown_value(make_cfg, tmp_path):
 
 
 @pytest.mark.parametrize("configured", [True, False])
-def test_repo_config_local_git_timeout_keeps_effective_config(tmp_path, monkeypatch, mocker, configured):
+def test_repo_config_local_git_timeout_keeps_effective_config(
+    tmp_path, monkeypatch, mocker, configured
+):
     import subprocess
 
     from jailbee.config import load_repo_config
