@@ -4,6 +4,7 @@ import pytest
 from typer.testing import CliRunner
 
 from jailbee.cli import app
+from jailbee.config.models_remote import RemoteConfig, RemoteSSHConfig
 from jailbee.global_config import GlobalConfig
 from jailbee.incus import IncusError
 from jailbee.remote_display import DisplayError, DisplayStatus
@@ -26,6 +27,26 @@ def test_up_starts_the_display_and_prints_the_recipe(display):
     assert up.call_args.kwargs["recreate"] is False
     assert callable(up.call_args.kwargs["on_step"])
     assert "ssh -N -L" in result.output
+
+
+def test_up_warns_when_remote_ssh_gui_is_off(display):
+    display.patch("jailbee.remote_display.display_up")
+
+    result = CliRunner().invoke(app, ["display", "up"])
+
+    assert result.exit_code == 0, result.output
+    assert "remote.ssh.gui is off" in result.output
+
+
+def test_up_does_not_warn_when_remote_ssh_gui_is_on(display):
+    display.patch("jailbee.remote_display.display_up")
+    gcfg = GlobalConfig(remote=RemoteConfig(ssh=RemoteSSHConfig(gui=True)))
+    display.patch("jailbee.cli._load_global", return_value=gcfg)
+
+    result = CliRunner().invoke(app, ["display", "up"])
+
+    assert result.exit_code == 0, result.output
+    assert "remote.ssh.gui is off" not in result.output
 
 
 def test_up_recreate_is_passed_through(display):

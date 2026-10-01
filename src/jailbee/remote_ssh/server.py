@@ -20,7 +20,12 @@ from jailbee.db import state_dir
 from jailbee.global_config import default_global_config_path, load_global_config
 from jailbee.remote_ssh.display_grants import is_allowed
 from jailbee.remote_ssh.keys import AuthorizedKey, SSHKeyError, read_authorized_keys, ssh_paths
-from jailbee.remote_ssh.overrides import ServeOverrides, apply_ssh_overrides, describe_overrides
+from jailbee.remote_ssh.overrides import (
+    ServeOverrides,
+    apply_ssh_overrides,
+    describe_overrides,
+    remote_gui_enabled,
+)
 from jailbee.remote_ssh.pty import ChildSpec, PTYError, run_child
 from jailbee.remote_ssh.router import (
     RouteError,
@@ -458,19 +463,6 @@ def _shut_down(listener: asyncssh.SSHAcceptor, live: set[asyncssh.SSHServerConne
         conn.close()
 
 
-def _gui_enabled(overrides: ServeOverrides | None) -> bool:
-    """`remote.ssh.gui` as the next request would see it; any failure is off."""
-    try:
-        global_config, _ = load_global_config(default_global_config_path())
-        current = global_config.remote.ssh
-        if overrides is not None:
-            current = apply_ssh_overrides(current, overrides)
-    except Exception:
-        log.warning("remote.ssh.gui could not be read; refusing forwarding", exc_info=True)
-        return False
-    return current.gui
-
-
 async def serve_async(
     config: RemoteSSHConfig,
     overrides: ServeOverrides | None = None,
@@ -524,7 +516,7 @@ async def serve_async(
     update = UpdateWatch(__version__, stop_for_update)
 
     def server_factory() -> JailbeeSSHServer:
-        return JailbeeSSHServer(live, lambda: _gui_enabled(overrides))
+        return JailbeeSSHServer(live, lambda: remote_gui_enabled(overrides))
 
     def process_factory(process: asyncssh.SSHServerProcess[bytes]) -> Coroutine[Any, Any, None]:
         effective = None if overrides is None or overrides.is_empty() else overrides

@@ -19,6 +19,7 @@ from jailbee.config import ConfigError
 from jailbee.config.models_remote import RemoteCommandPolicy, RemoteConfig, RemoteSSHConfig
 from jailbee.db.models import RegisteredRepo
 from jailbee.global_config import GlobalConfig, default_global_config_path
+from jailbee.remote_ssh import overrides as overrides_module
 from jailbee.remote_ssh import server
 from jailbee.remote_ssh.keys import ssh_paths
 from jailbee.remote_ssh.pty import ChildSpec, PTYError
@@ -1602,7 +1603,7 @@ def test_a_connection_without_an_authenticated_key_gets_no_forwarding(connection
 
 
 def test_a_grant_is_useless_without_an_authenticated_key(connection, tmp_path, monkeypatch):
-    """Fails if the `fingerprint is not None` guard is removed."""
+    """Defense in depth: no fingerprint means no match, with or without the explicit guard."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     from jailbee.remote_ssh.display_grants import record_grant
 
@@ -1614,13 +1615,27 @@ def test_a_grant_is_useless_without_an_authenticated_key(connection, tmp_path, m
 
 @pytest.mark.parametrize("failure", [ConfigError("bad"), OSError("unreadable"), RuntimeError("x")])
 def test_gui_flag_fails_closed_when_the_config_cannot_be_read(mocker, failure):
-    mocker.patch.object(server, "load_global_config", side_effect=failure)
+    mocker.patch.object(overrides_module, "load_global_config", side_effect=failure)
 
-    assert server._gui_enabled(None) is False
+    assert overrides_module.remote_gui_enabled(None) is False
 
 
 def test_gui_flag_follows_the_loaded_config(mocker):
     config = GlobalConfig(remote=RemoteConfig(ssh=RemoteSSHConfig(gui=True)))
-    mocker.patch.object(server, "load_global_config", return_value=(config, None))
+    mocker.patch.object(overrides_module, "load_global_config", return_value=(config, None))
 
-    assert server._gui_enabled(None) is True
+    assert overrides_module.remote_gui_enabled(None) is True
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_server_factory_hands_the_live_gui_flag_to_the_server(listener, mocker, enabled):
+    """A dropped `remote_gui_enabled` wiring leaves forwarding on or off for good."""
+    value, listen = listener
+    seen = mocker.patch.object(server, "remote_gui_enabled", return_value=enabled)
+    asyncio.run(server.serve_async(RemoteSSHConfig()))
+
+    instance = listen.call_args.kwargs["server_factory"]()
+
+    assert instance._gui_enabled is not None
+    assert instance._gui_enabled() is enabled
+    seen.assert_called_once_with(None)

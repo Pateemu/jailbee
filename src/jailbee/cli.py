@@ -10718,7 +10718,7 @@ def display_up_cmd(
         display_up,
         format_connection_info,
     )
-    from jailbee.tui import status_with_elapsed
+    from jailbee.tui import status_with_elapsed, warn
 
     _load_or_exit(config)
     gcfg = _load_global()
@@ -10729,6 +10729,11 @@ def display_up_cmd(
         error(str(e))
         raise typer.Exit(1) from e
     success("Shared display running")
+    if not gcfg.remote.ssh.gui:
+        warn(
+            "remote.ssh.gui is off, so SSH sessions cannot use the display "
+            "until it is enabled (`jb config edit --global`, then remote.ssh.gui)."
+        )
     for line in format_connection_info(connection_info(gcfg.remote.ssh.port)):
         info(line)
 

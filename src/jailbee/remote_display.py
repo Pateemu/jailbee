@@ -23,7 +23,7 @@ from jailbee.config import CONTAINER_USERNAME
 from jailbee.gui import SHARED_DISPLAY_DIR, display_state_dir
 from jailbee.incus import Incus, IncusError
 from jailbee.remote_ssh.display_grants import GRANT_HOST, clear_grants, record_grant
-from jailbee.runtime_mounts import DISPLAY_DEVICE
+from jailbee.runtime_mounts import DISPLAY_DEVICE, display_device_config
 from jailbee.stopping import stop_container
 
 if TYPE_CHECKING:
@@ -277,6 +277,8 @@ def connection_info(ssh_port: int) -> ConnectionInfo:
         hints=(
             "Windows: mstsc  |  macOS: Microsoft Remote Desktop  |  Linux: xfreerdp / Remmina",
             "Already connected over SSH? Add the forward live with ~C, then -L ...",
+            "The forward is accepted once this SSH key has launched a GUI app; "
+            "launch first, then connect — the launch waits for you.",
         ),
     )
 
@@ -292,14 +294,9 @@ def format_connection_info(info: ConnectionInfo) -> list[str]:
 
 
 def ensure_display_mount(incus: Incus, container: str) -> None:
-    """Add the shared directory to a running container that predates it."""
+    """Add the shared directory (read-only) to a running container that predates it."""
     try:
-        incus.config_device_add(
-            container,
-            DISPLAY_DEVICE,
-            "disk",
-            {"source": str(display_state_dir()), "path": SHARED_DISPLAY_DIR},
-        )
+        incus.config_device_add(container, DISPLAY_DEVICE, "disk", display_device_config())
     except IncusError as e:
         if "already exists" in str(e).lower():
             return

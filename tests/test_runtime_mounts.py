@@ -32,6 +32,12 @@ def _no_host_display_dir(monkeypatch, tmp_path_factory):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("state")))
 
 
+@pytest.fixture(autouse=True)
+def _gui_flag_off(mocker):
+    """`remote.ssh.gui` is off unless a test turns it on; the real config is never read."""
+    return mocker.patch("jailbee.runtime_mounts.remote_gui_enabled", return_value=False)
+
+
 @pytest.fixture
 def wayland_session(monkeypatch, mocker):
     """A Wayland host whose compositor socket is live on disk.
@@ -590,8 +596,9 @@ def test_a_disabled_socket_is_detached_on_the_next_boot(tmp_path):
 
 
 def test_display_socket_is_attached_when_the_host_directory_exists(
-    wayland_session, tmp_path, monkeypatch
+    wayland_session, tmp_path, monkeypatch, _gui_flag_off
 ):
+    _gui_flag_off.return_value = True
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     (tmp_path / "jailbee" / "display").mkdir(parents=True)
     cfg = make_cfg(tmp_path)
@@ -607,7 +614,18 @@ def test_display_socket_is_attached_when_the_host_directory_exists(
     assert calls["display-socket"][3] == {
         "source": str(tmp_path / "jailbee" / "display"),
         "path": "/run/jailbee-display",
+        "readonly": "true",
     }
+
+
+def test_display_socket_is_not_attached_while_remote_ssh_gui_is_off(
+    wayland_session, tmp_path, monkeypatch
+):
+    """The directory exists (an earlier `jb display up`) but the feature is off."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    (tmp_path / "jailbee" / "display").mkdir(parents=True)
+
+    assert "display-socket" not in _attached(make_cfg(tmp_path))
 
 
 def test_a_missing_display_directory_never_blocks_a_start(wayland_session, tmp_path, monkeypatch):
@@ -628,8 +646,9 @@ def test_detach_drops_the_display_socket():
 
 
 def test_display_socket_is_not_reported_as_disabled_in_config(
-    wayland_session, tmp_path, monkeypatch, capsys
+    wayland_session, tmp_path, monkeypatch, capsys, _gui_flag_off
 ):
+    _gui_flag_off.return_value = True
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     (tmp_path / "jailbee" / "display").mkdir(parents=True)
     _attached(make_cfg(tmp_path))

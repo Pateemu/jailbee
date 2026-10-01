@@ -56,6 +56,8 @@ def test_up_creates_provisions_and_publishes_the_port():
     assert incus.init.call_args.args[1] == rd.DISPLAY_CONTAINER
     devices = {c.args[1]: c.args[3] for c in incus.config_device_add.call_args_list}
     assert devices["shared"]["path"] == "/run/jailbee-display"
+    # weston creates the socket here, so the display container's own mount is writable.
+    assert "readonly" not in devices["shared"]
     assert devices["rdp"] == {
         "listen": "tcp:127.0.0.1:13389",
         "connect": "tcp:127.0.0.1:3389",
@@ -193,11 +195,30 @@ def test_the_recipe_is_two_steps_with_a_host_placeholder():
     assert "localhost:3389" in text
 
 
+def test_the_recipe_says_to_launch_before_connecting():
+    """The tunnel is accepted only once this key has launched an app."""
+    text = "\n".join(rd.format_connection_info(rd.connection_info(8022)))
+
+    assert "launch first, then connect" in text
+
+
 def test_ensure_display_mount_tolerates_an_existing_device():
     incus = MagicMock()
     incus.config_device_add.side_effect = IncusError("Device already exists")
 
     rd.ensure_display_mount(incus, "feat-1")  # must not raise
+
+
+def test_ensure_display_mount_is_read_only(tmp_path):
+    """A writable client mount lets one container replace the socket for all."""
+    incus = MagicMock()
+
+    rd.ensure_display_mount(incus, "feat-1")
+
+    args = incus.config_device_add.call_args.args
+    assert args[:3] == ("feat-1", "display-socket", "disk")
+    assert args[3]["readonly"] == "true"
+    assert args[3]["source"] == str(tmp_path / "jailbee" / "display")
 
 
 def test_prepare_records_a_grant_and_returns_when_a_client_is_connected():
