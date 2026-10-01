@@ -1,0 +1,97 @@
+"""The display target: host by default, shared only for a GUI-enabled SSH session."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from jailbee.gui import (
+    SHARED_DISPLAY_DIR,
+    SHARED_WAYLAND_SOCKET,
+    display_state_dir,
+    display_target,
+    gui_env,
+)
+from jailbee.remote_ssh.session import (
+    SSH_GUI_ENV,
+    SSH_KEY_FP_ENV,
+    child_environment,
+    is_shared_display_session,
+    session_fingerprint,
+    shared_display_port,
+)
+from tests.conftest import make_cfg
+
+
+def test_gui_env_without_a_target_is_the_host_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-1")
+    monkeypatch.setenv("DISPLAY", ":1")
+    cfg = make_cfg(tmp_path)
+    uid = cfg.container_user.uid
+
+    env = gui_env(cfg)
+
+    assert env["WAYLAND_DISPLAY"] == "wayland-1"
+    assert env["DISPLAY"] == ":1"
+    assert env["XDG_RUNTIME_DIR"] == f"/run/user/{uid}"
+    assert set(env) == {"HOME", "USER", "LOGNAME", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DISPLAY"}
+    assert gui_env(cfg, "host") == env
+
+
+def test_shared_target_points_at_the_shared_socket_and_has_no_x11(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DISPLAY", ":1")
+    cfg = make_cfg(tmp_path)
+
+    env = gui_env(cfg, "shared")
+
+    assert env["WAYLAND_DISPLAY"] == SHARED_WAYLAND_SOCKET
+    assert "DISPLAY" not in env
+    assert env["XDG_RUNTIME_DIR"] == f"/run/user/{cfg.container_user.uid}"
+    assert SHARED_WAYLAND_SOCKET.startswith(SHARED_DISPLAY_DIR + "/")
+
+
+def test_display_target_is_host_unless_the_session_is_marked() -> None:
+    assert display_target({}) == "host"
+    assert display_target({"JAILBEE_REMOTE_SSH": "1"}) == "host"
+    assert display_target({SSH_GUI_ENV: "8022"}) == "host"  # not an SSH session
+    assert display_target({"JAILBEE_SSH_SESSION": "1", SSH_GUI_ENV: "8022"}) == "shared"
+
+
+def test_display_state_dir_lives_under_the_jailbee_state_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    assert display_state_dir() == tmp_path / "jailbee" / "display"
+
+
+def test_child_environment_marks_a_gui_session_with_port_and_key() -> None:
+    env = child_environment({}, gui_port=8022, fingerprint="SHA256:abc")
+
+    assert env[SSH_GUI_ENV] == "8022"
+    assert env[SSH_KEY_FP_ENV] == "SHA256:abc"
+    assert is_shared_display_session(env) is True
+    assert shared_display_port(env) == 8022
+    assert session_fingerprint(env) == "SHA256:abc"
+
+
+def test_child_environment_never_inherits_the_gui_markers() -> None:
+    """Review focus 2: a marker in the server's own environment must not leak."""
+    base = {SSH_GUI_ENV: "8022", SSH_KEY_FP_ENV: "SHA256:stale"}
+
+    env = child_environment(base)
+
+    assert SSH_GUI_ENV not in env
+    assert SSH_KEY_FP_ENV not in env
+    assert is_shared_display_session(env) is False
+    assert shared_display_port(env) is None
+    assert session_fingerprint(env) is None
+
+
+def test_a_non_numeric_gui_marker_is_not_a_session() -> None:
+    assert shared_display_port({SSH_GUI_ENV: "yes"}) is None
+    assert is_shared_display_session({"JAILBEE_SSH_SESSION": "1", SSH_GUI_ENV: "yes"}) is False

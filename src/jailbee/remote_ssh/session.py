@@ -35,6 +35,14 @@ REMOTE_SESSION_ENV = "JAILBEE_REMOTE_SSH"
 # server's own working directory as a repo) rather than what is forbidden.
 SSH_SESSION_ENV = "JAILBEE_SSH_SESSION"
 SSH_EXCLUDED_REPOS_ENV = "JAILBEE_SSH_EXCLUDED_REPOS"
+# Set (to the SSH server's port) for a child of a server whose
+# `remote.ssh.gui` is on, and only then: `child_environment` removes any value
+# it inherits. It says GUI apps launched here belong on the shared RDP display
+# and tells the child which port to print in the connection recipe.
+SSH_GUI_ENV = "JAILBEE_SSH_GUI"
+# The authenticating key's fingerprint, so a launch can record a forwarding
+# grant for exactly that key (see `remote_ssh.display_grants`).
+SSH_KEY_FP_ENV = "JAILBEE_SSH_KEY_FP"
 
 
 def child_environment(
@@ -43,6 +51,8 @@ def child_environment(
     term: str | None = None,
     restricted: bool = True,
     excluded_repos: Sequence[str] = (),
+    gui_port: int | None = None,
+    fingerprint: str | None = None,
 ) -> dict[str, str]:
     """The environment for a child of the SSH server, built from ``base``.
 
@@ -56,6 +66,12 @@ def child_environment(
     env = dict(base)
     env[SSH_SESSION_ENV] = "1"
     env[SSH_EXCLUDED_REPOS_ENV] = json.dumps(list(excluded_repos))
+    env.pop(SSH_GUI_ENV, None)
+    env.pop(SSH_KEY_FP_ENV, None)
+    if gui_port is not None:
+        env[SSH_GUI_ENV] = str(gui_port)
+    if fingerprint is not None:
+        env[SSH_KEY_FP_ENV] = fingerprint
     if restricted:
         env[REMOTE_SESSION_ENV] = "1"
         env["LESSSECURE"] = "1"
@@ -76,6 +92,23 @@ def is_ssh_session(environ: Mapping[str, str] | None = None) -> bool:
     """True when this process descends from any SSH session, restricted or not."""
     env = os.environ if environ is None else environ
     return bool(env.get(SSH_SESSION_ENV)) or is_remote_session(env)
+
+
+def shared_display_port(environ: Mapping[str, str] | None = None) -> int | None:
+    """The SSH server port a GUI-enabled session was started under, or None."""
+    value = (os.environ if environ is None else environ).get(SSH_GUI_ENV, "")
+    return int(value) if value.isdigit() else None
+
+
+def is_shared_display_session(environ: Mapping[str, str] | None = None) -> bool:
+    """True for an SSH session whose GUI apps belong on the shared RDP display."""
+    env = os.environ if environ is None else environ
+    return is_ssh_session(env) and shared_display_port(env) is not None
+
+
+def session_fingerprint(environ: Mapping[str, str] | None = None) -> str | None:
+    """The SSH key fingerprint this session authenticated with, if known."""
+    return (os.environ if environ is None else environ).get(SSH_KEY_FP_ENV) or None
 
 
 def host_tree_refusal(action: str, hint: str | None = None) -> str:
