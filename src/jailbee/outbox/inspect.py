@@ -277,7 +277,10 @@ def _build_view(
                 if journal.actions:
                     block = "recorded publication progress prevents editing"
                     digest = issue_proposal_digest(
-                        key, raw, {n: files[n] for n in body_names if n in files}, journal,
+                        key,
+                        raw,
+                        {n: files[n] for n in body_names if n in files},
+                        journal,
                     )
                     if journal.digest != digest or journal.action_count != len(actions):
                         raise JournalError("proposal differs from recorded journal history")

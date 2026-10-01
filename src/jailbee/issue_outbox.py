@@ -271,8 +271,10 @@ def _load_proposals(
             key = journal_key(identity, name)
             journal = store.load(key)
             digest = issue_proposal_digest(
-                key, outbox.files[name],
-                {body: outbox.files[body] for body in manifest.body_files}, journal,
+                key,
+                outbox.files[name],
+                {body: outbox.files[body] for body in manifest.body_files},
+                journal,
             )
             if journal is not None:
                 if journal.digest != digest:
@@ -858,9 +860,12 @@ def _cleanup_manifest(
         container_identity(incus, container) != identity
         or any(body not in before for body in prepared.manifest.body_files)
         or issue_proposal_digest(
-            key, before.get(name, ""),
-            {body: before.get(body, "") for body in prepared.manifest.body_files}, journal,
-        ) != prepared.digest
+            key,
+            before.get(name, ""),
+            {body: before.get(body, "") for body in prepared.manifest.body_files},
+            journal,
+        )
+        != prepared.digest
     ):
         return f"{name}: proposal changed after publication; cleanup refused, journal retained"
     lines = [_log_line(name, action) for action in sorted(journal.actions, key=lambda a: a.index)]
@@ -882,8 +887,11 @@ def _cleanup_manifest(
         container_identity(incus, container) != identity
         or files.get(name) != before.get(name)
         or files.get("applied.log") != expected_log
-        or any(files.get(body) != before.get(body)
-               for body in prepared.manifest.body_files if body != "applied.log")
+        or any(
+            files.get(body) != before.get(body)
+            for body in prepared.manifest.body_files
+            if body != "applied.log"
+        )
     ):
         return f"{name}: proposal changed after publication; cleanup refused, journal retained"
     referenced = _referenced_elsewhere(fresh_outbox, name)
@@ -1004,8 +1012,10 @@ def apply_batch(
             except JournalError as exc:
                 return failed(name, None, False, str(exc))
             digest = issue_proposal_digest(
-                key, text,
-                {body: outbox.files.get(body, "") for body in prepared.manifest.body_files}, recorded_journal,
+                key,
+                text,
+                {body: outbox.files.get(body, "") for body in prepared.manifest.body_files},
+                recorded_journal,
             )
             if digest != prepared.digest:
                 return failed(
@@ -1316,7 +1326,10 @@ def drop_manifest(
             )
         journal = journal_store.load(key)
         recorded_digest = issue_proposal_digest(
-            key, text, {body: outbox.files[body] for body in body_files}, journal,
+            key,
+            text,
+            {body: outbox.files[body] for body in body_files},
+            journal,
         )
         if (
             journal is not None

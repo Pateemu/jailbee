@@ -117,14 +117,23 @@ def proposal_digest(
 
 def issue_receipt_line(manifest_name: str, action: JournalAction, timestamp: str) -> str:
     """Canonical issue receipt bytes, shared by writing and recovery proof."""
-    return json.dumps({
-        "timestamp": timestamp, "manifest": manifest_name, "index": action.index,
-        "repo": action.repo, "issue": action.issue, "url": action.url,
-    }, sort_keys=True)
+    return json.dumps(
+        {
+            "timestamp": timestamp,
+            "manifest": manifest_name,
+            "index": action.index,
+            "repo": action.repo,
+            "issue": action.issue,
+            "url": action.url,
+        },
+        sort_keys=True,
+    )
 
 
 def issue_proposal_digest(
-    key: JournalKey, manifest_text: str, body_files: Mapping[str, str],
+    key: JournalKey,
+    manifest_text: str,
+    body_files: Mapping[str, str],
     journal: IssueJournal | None,
 ) -> str:
     """Prove complete owned receipt suffixes reconstruct the original proposal.
@@ -134,12 +143,16 @@ def issue_proposal_digest(
     authorizes cleanup-only recovery. Partial or unproved suffixes stay changed.
     """
     raw_digest = proposal_digest(key.manifest_name, manifest_text, body_files)
-    if (journal is None or journal.identity != key.identity
+    if (
+        journal is None
+        or journal.identity != key.identity
         or journal.manifest_name != key.manifest_name
         or journal.action_count <= 0
         or tuple(a.index for a in journal.actions) != tuple(range(journal.action_count))
         or any(a.state != "applied" for a in journal.actions)
-        or "applied.log" not in body_files or raw_digest == journal.digest):
+        or "applied.log" not in body_files
+        or raw_digest == journal.digest
+    ):
         return raw_digest
     text = body_files["applied.log"]
     candidate = text
