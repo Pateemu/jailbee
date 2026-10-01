@@ -1908,3 +1908,34 @@ def test_disabled_publication_guard_never_looks_up_identity(mocker, tmp_path, ma
         pass
     assert incus.mock_calls == []
     assert not manager.root.exists()
+
+
+
+def test_publication_guard_rejects_identity_replaced_while_waiting(mocker, tmp_path, make_cfg):
+    from contextlib import contextmanager
+
+    from jailbee.outbox.io import PrManagement
+    from jailbee.outbox.models import OutboxChanged
+
+    incus = mocker.MagicMock()
+    incus.list_containers.return_value = [{"name": "c1", "created_at": "original"}]
+    manager = PrManagement(tmp_path / "locks")
+    events = []
+
+    @contextmanager
+    def lock(identity):
+        assert identity.created_at == "original"
+        events.append("enter")
+        incus.list_containers.return_value = [{"name": "c1", "created_at": "replacement"}]
+        try:
+            yield
+        finally:
+            events.append("exit")
+
+    mocker.patch.object(manager, "lock", side_effect=lock)
+    with pytest.raises(OutboxChanged, match="refresh required"):
+        with pr_flow.outbox_publication_guard(
+            make_cfg(tmp_path), incus, "c1", enabled=True, management=manager
+        ):
+            events.append("select")
+    assert events == ["enter", "exit"]

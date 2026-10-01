@@ -395,7 +395,7 @@ def outbox_publication_guard(
         yield
         return
 
-    from jailbee.outbox.models import OutboxError
+    from jailbee.outbox.models import OutboxChanged, OutboxError
     from jailbee.outbox_io import JournalError, container_identity
 
     try:
@@ -403,6 +403,13 @@ def outbox_publication_guard(
     except JournalError as exc:
         raise OutboxError(str(exc)) from exc
     with management.lock(identity):
+        # Acquiring the host lock may have waited across container replacement.
+        try:
+            fresh_identity = container_identity(incus, container)
+        except JournalError as exc:
+            raise OutboxChanged("container unavailable; refresh required") from exc
+        if fresh_identity != identity:
+            raise OutboxChanged("container changed; refresh required")
         yield
 
 
