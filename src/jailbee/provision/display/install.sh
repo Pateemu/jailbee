@@ -47,7 +47,15 @@ fi
 # is winpr-hash or winpr-hash<major> depending on the package.
 WINPR_HASH="$(dpkg -L winpr-utils | grep -E '/winpr-hash[0-9]*$' | head -n 1)"
 [ -n "$WINPR_HASH" ] || { echo "winpr-hash not found in winpr-utils" >&2; exit 1; }
-"$WINPR_HASH" -u "$JAILBEE_RDP_USER" -p "$JAILBEE_RDP_PASSWORD" > /etc/jailbee-display/SAM
+# winpr-hash prints the bare NT hash in this version, not a SAM line. A SAM line
+# is user:domain:LM:NT:::, so build it; keep a ready-made line if some version
+# prints one.
+NT_HASH="$("$WINPR_HASH" -u "$JAILBEE_RDP_USER" -p "$JAILBEE_RDP_PASSWORD")"
+case "$NT_HASH" in
+  *:*) SAM_LINE="$NT_HASH" ;;
+  *) SAM_LINE="$JAILBEE_RDP_USER:::$NT_HASH:::" ;;
+esac
+printf '%s\n' "$SAM_LINE" > /etc/jailbee-display/SAM
 chown "$RUN_USER" /etc/jailbee-display/SAM
 chmod 0600 /etc/jailbee-display/SAM
 

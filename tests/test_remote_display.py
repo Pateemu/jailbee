@@ -99,6 +99,8 @@ def test_provisioning_script_carries_both_files_and_the_identity():
     assert f"JAILBEE_RDP_PASSWORD={rd.RDP_PASSWORD}" in provisioning
     assert "WINPR_NTLM_SAM_FILE=/etc/jailbee-display/SAM" in provisioning
     assert "winpr-utils" in provisioning
+    # winpr-hash prints a bare hash; the SAM line user:::hash::: is built here.
+    assert '"$JAILBEE_RDP_USER:::$NT_HASH:::"' in provisioning
 
 
 def test_down_stops_and_revokes_every_grant(mocker):
