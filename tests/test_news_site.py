@@ -125,6 +125,45 @@ def test_the_newest_title_is_in_the_bar_of_every_page_and_the_home_page(
     assert "topbar__latest" not in (website / "index.html").read_text()
 
 
+def test_link_previews_get_a_sized_image_a_plain_title_and_the_right_type(
+    site: tuple[Path, Path],
+) -> None:
+    website, output = site
+    # A real 1200x630 PNG header is all the size reader looks at.
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + b"\x00\x00\x00\rIHDR"
+        + (1200).to_bytes(4, "big")
+        + (630).to_bytes(4, "big")
+    )
+    (website / "assets" / "feature.png").write_bytes(png)
+    _add(
+        website,
+        "2026-09-28-release.md",
+        META + "image: /assets/feature.png\nimage_alt: A hive\n",
+    )
+    _add(website, "2026-09-29-plain.md", "title: Plain\ndate: 2026-09-29\nsummary: s\n")
+    build(website, output)
+
+    article = (output / "news" / "release" / "index.html").read_text()
+    assert '<meta property="og:title" content="JailBee 1.5" />' in article
+    assert '<meta property="og:type" content="article" />' in article
+    assert '<meta property="article:published_time" content="2026-09-28" />' in article
+    assert 'property="og:image" content="https://jailbee.gisgro.io/assets/feature.png"' in article
+    assert 'property="og:image:width" content="1200"' in article
+    assert 'property="og:image:height" content="630"' in article
+    assert 'property="og:image:alt" content="A hive"' in article
+
+    plain = (output / "news" / "plain" / "index.html").read_text()
+    assert "/assets/img/jailbee-og.png" in plain  # the default card
+    assert 'property="og:image:alt" content="JailBee' in plain
+    assert "og:image:width" not in plain  # the fixture ships no default image to measure
+
+    index = (output / "news" / "index.html").read_text()
+    assert '<meta property="og:type" content="website" />' in index
+    assert "article:published_time" not in index
+
+
 def test_feature_image_and_metadata_are_escaped(site: tuple[Path, Path]) -> None:
     website, output = site
     _add(

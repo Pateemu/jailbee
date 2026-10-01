@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import re
 import shutil
+import struct
 import sys
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, time
@@ -25,6 +26,7 @@ WEBSITE = REPO / "website"
 SITE = REPO / "_site"
 URL = "https://jailbee.gisgro.io"
 DEFAULT_IMAGE = "/assets/img/jailbee-og.png"
+DEFAULT_IMAGE_ALT = "JailBee: one container per branch"
 _SITEMAP_NS = "http://www.sitemaps.org/schemas/sitemap/0.9"
 _ARTICLE_TAGS = {
     "a",
@@ -153,6 +155,39 @@ def _with_latest(header: str, post: Post | None, prefix: str) -> str:
     return header.replace(_NEWS_LINK, chip + _NEWS_LINK, 1)
 
 
+def _image_size(path: Path) -> tuple[int, int] | None:
+    """Pixel size of a PNG or JPEG, read from its header; None for anything else."""
+    if not path.is_file():
+        return None
+    data = path.read_bytes()
+    if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24:
+        return struct.unpack(">II", data[16:24])
+    if data.startswith(b"\xff\xd8"):
+        offset = 2
+        while offset + 9 < len(data):
+            if data[offset] != 0xFF:
+                break
+            marker = data[offset + 1]
+            if marker in range(0xC0, 0xD0) and marker not in (0xC4, 0xC8, 0xCC):
+                height, width = struct.unpack(">HH", data[offset + 5 : offset + 9])
+                return width, height
+            offset += 2 + struct.unpack(">H", data[offset + 2 : offset + 4])[0]
+    return None
+
+
+def _social_image(website_dir: Path, post: Post | None) -> dict[str, object]:
+    """What a link preview needs to know about the page's image."""
+    path = post.image if post and post.image else DEFAULT_IMAGE
+    alt = post.image_alt if post and post.image else DEFAULT_IMAGE_ALT
+    size = _image_size(website_dir / path.removeprefix("/"))
+    return {
+        "og_image": f"{URL}{path}",
+        "og_image_alt": alt,
+        "og_image_width": size[0] if size else None,
+        "og_image_height": size[1] if size else None,
+    }
+
+
 def _topbar(website_dir: Path, latest: Post | None = None) -> Markup:
     """The home page's top bar, rewritten for pages that are not at the root.
 
@@ -216,6 +251,9 @@ def build(website_dir: Path, site_dir: Path) -> None:
                 next=_archive_url(number + 1) if number < len(archives) else None,
                 canonical=f"{URL}{url}",
                 title="News — JailBee" if number == 1 else f"News, page {number} — JailBee",
+                og_title="JailBee News",
+                og_type="website",
+                **_social_image(website_dir, None),
                 **shared,
             ),
             encoding="utf-8",
@@ -230,7 +268,10 @@ def build(website_dir: Path, site_dir: Path) -> None:
                 body_html=_content(post, website_dir / "assets"),
                 canonical=f"{URL}/news/{post.slug}/",
                 title=f"{post.title} — JailBee",
-                og_image=f"{URL}{post.image or DEFAULT_IMAGE}",
+                og_title=post.title,
+                og_type="article",
+                published=post.date.isoformat(),
+                **_social_image(website_dir, post),
                 **shared,
             ),
             encoding="utf-8",
