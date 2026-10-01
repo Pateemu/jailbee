@@ -1724,7 +1724,7 @@ def list_cmd(
         fmt=fmt,
         fields=fields,
         console=console,
-        title="jailbee containers" if fmt == "table" else None,
+        title="🐝 jailbee containers" if fmt == "table" else None,
         empty_message="[dim](no containers found)[/dim]",
         sub_rows=submodule_sub_rows if show_submodules else None,
     )
