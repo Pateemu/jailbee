@@ -6,6 +6,9 @@ from pathlib import Path
 
 import pytest
 
+# Captured before fixtures replace it, so one test can drive the real reader.
+from jailbee.outbox.io import read_store as _strict_read_store
+
 
 def _write_gitdir(path: Path) -> None:
     (path / ".git").mkdir(parents=True)
@@ -1938,6 +1941,24 @@ def test_drop_delete_failure_keeps_settled_partial_journal(execution):
         _drop(execution, batch, archive_journal=True)
     assert isinstance(caught.value.__cause__, IncusError)
     assert execution["store"].load(key).actions[0].state == "applied"
+
+
+def test_drop_strict_read_transport_preserves_execution_cause(execution, mocker):
+    from jailbee.incus import IncusError
+    from jailbee.outbox import io
+    from jailbee.outbox.models import OutboxExecutionError
+
+    batch = execution["batch"]({"a.json": [_comment(), _comment()]})
+    key = _seed_execution(execution, batch)
+    failure = IncusError("transport down")
+    execution["incus"].exec.side_effect = failure
+    mocker.patch.object(io, "read_store", side_effect=_strict_read_store)
+    with pytest.raises(OutboxExecutionError) as caught:
+        _drop(execution, batch, archive_journal=True)
+    assert caught.value.__cause__ is failure
+    assert execution["store"].load(key).actions[0].state == "applied"
+    execution["remove"].assert_not_called()
+    assert "a.json" in execution["files"]
 
 
 def test_drop_refuses_changed_proposal_and_preserves_shared_bodies(execution):

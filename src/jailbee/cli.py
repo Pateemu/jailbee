@@ -12655,6 +12655,8 @@ def issue_drop_cmd(
     from jailbee import issue_outbox
     from jailbee.issue_manifest import IssueManifestError, parse_manifest
     from jailbee.lifecycle import _stdin_is_interactive, short_name
+    from jailbee.outbox.io import MutationExecutionError
+    from jailbee.outbox.models import OutboxExecutionError
     from jailbee.outbox_io import (
         JournalError,
         JournalStore,
@@ -12744,6 +12746,14 @@ def issue_drop_cmd(
             )
         except JournalError as e:
             error_plain(str(e))
+            raise typer.Exit(1) from e
+        except OutboxExecutionError as e:
+            # The typed domain failure keeps its cause; the journal is never
+            # archived before a checked deletion succeeds.
+            error_plain(f"{manifest_name}: could not drop ({e}); its journal was retained")
+            if isinstance(e, MutationExecutionError) and e.removed_names:
+                error_plain(f"Already removed before the failure: {', '.join(e.removed_names)}")
+            error_plain(f"Re-read the outbox and retry: jailbee issue drop {short} {manifest_name}")
             raise typer.Exit(1) from e
         # Shrink the snapshot as we go, so a body file shared by two of the
         # manifests being dropped doesn't look referenced by each of them in
