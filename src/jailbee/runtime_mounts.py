@@ -20,8 +20,9 @@ import time
 from pathlib import Path
 
 from jailbee.config import Config
-from jailbee.gui import host_is_wayland, host_wayland_socket
+from jailbee.gui import SHARED_DISPLAY_DIR, display_state_dir, host_is_wayland, host_wayland_socket
 from jailbee.incus import Incus, IncusError
+from jailbee.remote_ssh.overrides import remote_gui_enabled
 from jailbee.tui import info, warn
 
 WAYLAND_DEVICE = "wayland-socket"
@@ -46,6 +47,18 @@ _FIXED_SOCKET_BASENAMES: dict[str, str] = {
 
 # Every device this module attaches and detaches, session-independent.
 SOCKET_DEVICES: frozenset[str] = frozenset({WAYLAND_DEVICE, *_FIXED_SOCKET_BASENAMES})
+
+DISPLAY_DEVICE = "display-socket"
+"""Incus device name of the shared RDP display's directory mount.
+
+Not in `SOCKET_DEVICES`: its source is a jailbee state directory, not a file
+under the host's /run/user/<uid>. It is attached only when that directory
+exists (a missing source would make Incus refuse the whole start) *and*
+`remote.ssh.gui` is on, and always read-only (`display_device_config`).
+"""
+
+# Everything `detach_runtime_devices` removes.
+DETACHED_DEVICES: frozenset[str] = SOCKET_DEVICES | {DISPLAY_DEVICE}
 
 # Device names that belong to the gpg integration and must be skipped
 # when ``gpg.enabled`` is false.
@@ -90,6 +103,24 @@ started with plain `incus start`).
 Instance config outranks profile config in Incus, which is the precedence
 we want — with one exception, see `_pin_wayland_display`.
 """
+
+
+def display_device_config() -> dict[str, str]:
+    """The client containers' mount of the shared display directory.
+
+    Read-only on purpose. Every client shares the host user's idmap, so the
+    dev user in any container owns the 0700 directory; a writable mount would
+    let a compromised container delete or replace weston's socket with its own
+    and capture every other container's windows, keystrokes and clipboard.
+    Connecting to a socket needs no writable filesystem. The display
+    container's own mount (`remote_display._create`) stays writable: weston
+    creates the socket there.
+    """
+    return {
+        "source": str(display_state_dir()),
+        "path": SHARED_DISPLAY_DIR,
+        "readonly": "true",
+    }
 
 
 def _socket_devices() -> dict[str, str]:
@@ -190,6 +221,19 @@ DEFAULT_LOGIND_TIMEOUT_S = 15.0
 DEFAULT_LOGIND_POLL_INTERVAL_S = 0.25
 
 
+def _add_device(incus: Incus, name: str, device_name: str, device_config: dict[str, str]) -> None:
+    """Add one disk device, tolerating one that is already attached."""
+    try:
+        incus.config_device_add(name, device_name, "disk", device_config)
+    except IncusError as e:
+        # Most likely cause: device already exists from a previous
+        # attach (e.g. user ran `jailbee start` twice without intervening
+        # stop). Tolerate it — the existing mount is the right one.
+        if "already exists" in str(e).lower():
+            return
+        raise
+
+
 def attach_runtime_devices(
     cfg: Config,
     incus: Incus,
@@ -234,20 +278,10 @@ def attach_runtime_devices(
         device_config = {"source": path, "path": path}
         if device_name in READONLY_DEVICES:
             device_config["readonly"] = "true"
-        try:
-            incus.config_device_add(
-                name,
-                device_name,
-                "disk",
-                device_config,
-            )
-        except IncusError as e:
-            # Most likely cause: device already exists from a previous
-            # attach (e.g. user ran `jailbee start` twice without intervening
-            # stop). Tolerate it — the existing mount is the right one.
-            if "already exists" in str(e).lower():
-                continue
-            raise
+        _add_device(incus, name, device_name, device_config)
+
+    if display_state_dir().is_dir() and remote_gui_enabled():
+        _add_device(incus, name, DISPLAY_DEVICE, display_device_config())
 
     _pin_wayland_display(
         cfg,
@@ -279,7 +313,7 @@ def detach_runtime_devices(
     incus: Incus,
     name: str,
 ) -> None:
-    """Remove the four socket devices and the boot's ``WAYLAND_DISPLAY``.
+    """Remove every socket device (and the shared display mount) and the boot's ``WAYLAND_DISPLAY``.
     Tolerates devices that don't exist (defensive — call before `start` to
     ensure no leftover devices race with logind on the next boot).
 
@@ -289,7 +323,7 @@ def detach_runtime_devices(
     """
     _ = cfg  # kept for symmetry / future config-driven device list
     incus.config_unset(name, WAYLAND_DISPLAY_KEY)
-    for device_name in SOCKET_DEVICES:
+    for device_name in DETACHED_DEVICES:
         try:
             incus.config_device_remove(name, device_name)
         except IncusError as e:

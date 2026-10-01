@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from jailbee.apps import AppSpec
-from jailbee.gui import host_is_wayland
+from jailbee.gui import display_target, host_is_wayland
 
 if TYPE_CHECKING:
     from jailbee.config import Config
@@ -40,9 +40,10 @@ def builtin_specs(cfg: Config) -> list[AppSpec]:
         command = [BROWSER_BINARIES[(name, browser.source)]]
         env: dict[str, str] = {}
         if name == "chrome":
-            if host_is_wayland():
+            if host_is_wayland() or display_target() == "shared":
                 # Chrome defaults to X11 even with WAYLAND_DISPLAY set; the
-                # Ozone backend has to be named explicitly.
+                # Ozone backend has to be named explicitly. The shared RDP
+                # compositor is Wayland whatever the host runs.
                 command.append("--ozone-platform=wayland")
             if browser.dark_mode:
                 command += ["--force-dark-mode", "--enable-features=WebContentsForceDark"]

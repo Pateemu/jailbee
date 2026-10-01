@@ -19,6 +19,7 @@ from jailbee.config import ConfigError
 from jailbee.config.models_remote import RemoteCommandPolicy, RemoteConfig, RemoteSSHConfig
 from jailbee.db.models import RegisteredRepo
 from jailbee.global_config import GlobalConfig, default_global_config_path
+from jailbee.remote_ssh import overrides as overrides_module
 from jailbee.remote_ssh import server
 from jailbee.remote_ssh.keys import ssh_paths
 from jailbee.remote_ssh.pty import ChildSpec, PTYError
@@ -410,6 +411,7 @@ def test_dispatch_uses_current_python_literal_argv_and_selected_cwd(
             argv=expected_argv,
             cwd=repo if has_repo else fallback,
             requires_pty=requires_pty,
+            fingerprint=FINGERPRINT,
         ),
     )
     configured.assert_called_once_with(default_global_config_path())
@@ -1358,6 +1360,20 @@ def test_startup_names_allowlisted_host_commands_that_stay_refused(listener, cap
     )
 
 
+def test_startup_does_not_call_a_gui_launcher_refused_when_gui_is_on(listener, caplog, monkeypatch):
+    monkeypatch.delenv("JAILBEE_REMOTE_SSH", raising=False)
+    config = RemoteSSHConfig(
+        exec=True,
+        gui=True,
+        commands=RemoteCommandPolicy(mode="allowlist", allow=["ls", "chrome", "gui"]),
+    )
+
+    with caplog.at_level(logging.INFO, logger=server.__name__):
+        asyncio.run(server.serve_async(config))
+
+    assert "allowlisted but refused while host restrictions are on: gui" in caplog.text
+
+
 def test_process_factory_passes_the_run_update_watch(listener, mocker):
     # A plain Mock: the factory's coroutine is never awaited here.
     handle = mocker.patch.object(server, "handle_process", new=Mock())
@@ -1488,9 +1504,9 @@ def test_an_upgrade_drains_live_sessions_before_hanging_up(listener, mocker):
     live_sets: list[set] = []
     real_server = server.JailbeeSSHServer
 
-    def capture(live=None):
+    def capture(live=None, gui_enabled=None):
         live_sets.append(live)
-        return real_server(live)
+        return real_server(live, gui_enabled)
 
     mocker.patch.object(server, "JailbeeSSHServer", side_effect=capture)
 
@@ -1510,3 +1526,116 @@ def test_an_upgrade_drains_live_sessions_before_hanging_up(listener, mocker):
 
     asyncio.run(run())
     conn.close.assert_called_once_with()
+
+
+def test_gui_session_hands_port_and_fingerprint_to_the_child(child, mocker, repo):
+    ssh = RemoteSSHConfig(exec=True, commands=RemoteCommandPolicy(mode="full"), gui=True, port=8022)
+    mocker.patch.object(
+        server,
+        "load_global_config",
+        return_value=(GlobalConfig(remote=RemoteConfig(ssh=ssh)), []),
+    )
+
+    session("--repo project ls")
+
+    spec = child.call_args.args[1]
+    assert spec.gui_port == ssh.port
+    assert spec.fingerprint == FINGERPRINT
+
+
+def test_non_gui_session_has_no_gui_port_but_keeps_the_fingerprint(child, mocker, repo):
+    ssh = RemoteSSHConfig(exec=True, commands=RemoteCommandPolicy(mode="full"), gui=False)
+    mocker.patch.object(
+        server,
+        "load_global_config",
+        return_value=(GlobalConfig(remote=RemoteConfig(ssh=ssh)), []),
+    )
+
+    session("--repo project ls")
+
+    spec = child.call_args.args[1]
+    assert spec.gui_port is None
+    assert spec.fingerprint == FINGERPRINT
+
+
+def _gui_server(connection, enabled=True):
+    instance = server.JailbeeSSHServer(gui_enabled=lambda: enabled)
+    instance.connection_made(connection)
+    return instance
+
+
+def test_forwarding_is_allowed_to_a_granted_destination(connection, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    from jailbee.remote_ssh.display_grants import record_grant
+
+    record_grant(FINGERPRINT, "127.0.0.1", 13389, "feat-1")
+    connection.set_extra_info(jailbee_key_fingerprint=FINGERPRINT)
+
+    assert _gui_server(connection).connection_requested("127.0.0.1", 13389, "::1", 50000) is True
+
+
+def test_forwarding_is_refused_for_another_key(connection, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    from jailbee.remote_ssh.display_grants import record_grant
+
+    record_grant("SHA256:someone-else", "127.0.0.1", 13389, "feat-1")
+    connection.set_extra_info(jailbee_key_fingerprint=FINGERPRINT)
+
+    assert _gui_server(connection).connection_requested("127.0.0.1", 13389, "::1", 50000) is False
+
+
+def test_forwarding_is_refused_when_the_feature_is_off(connection, tmp_path, monkeypatch):
+    """Review focus 1: turning remote.ssh.gui off revokes running grants."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    from jailbee.remote_ssh.display_grants import record_grant
+
+    record_grant(FINGERPRINT, "127.0.0.1", 13389, "feat-1")
+    connection.set_extra_info(jailbee_key_fingerprint=FINGERPRINT)
+
+    assert (
+        _gui_server(connection, enabled=False).connection_requested("127.0.0.1", 13389, "::1", 1)
+        is False
+    )
+
+
+def test_a_connection_without_an_authenticated_key_gets_no_forwarding(connection):
+    assert _gui_server(connection).connection_requested("127.0.0.1", 13389, "::1", 1) is False
+
+
+def test_a_grant_is_useless_without_an_authenticated_key(connection, tmp_path, monkeypatch):
+    """Defense in depth: no fingerprint means no match, with or without the explicit guard."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    from jailbee.remote_ssh.display_grants import record_grant
+
+    record_grant(FINGERPRINT, "127.0.0.1", 13389, "feat-1")
+    connection.set_extra_info(jailbee_key_fingerprint=None)
+
+    assert _gui_server(connection).connection_requested("127.0.0.1", 13389, "::1", 1) is False
+
+
+@pytest.mark.parametrize("failure", [ConfigError("bad"), OSError("unreadable"), RuntimeError("x")])
+def test_gui_flag_fails_closed_when_the_config_cannot_be_read(mocker, failure):
+    mocker.patch.object(overrides_module, "load_global_config", side_effect=failure)
+
+    assert overrides_module.remote_gui_enabled(None) is False
+
+
+def test_gui_flag_follows_the_loaded_config(mocker):
+    config = GlobalConfig(remote=RemoteConfig(ssh=RemoteSSHConfig(gui=True)))
+    mocker.patch.object(overrides_module, "load_global_config", return_value=(config, None))
+
+    assert overrides_module.remote_gui_enabled(None) is True
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_server_factory_hands_the_live_gui_flag_to_the_server(listener, mocker, enabled):
+    """A dropped `remote_gui_enabled` wiring leaves forwarding on or off for good."""
+    _, listen = listener
+    seen = mocker.patch.object(server, "remote_gui_enabled", return_value=enabled)
+    asyncio.run(server.serve_async(RemoteSSHConfig()))
+
+    instance = listen.call_args.kwargs["server_factory"]()
+
+    assert instance._gui_enabled is not None
+    assert instance._gui_enabled() is enabled
+    seen.assert_called_once_with(None)

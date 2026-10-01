@@ -535,6 +535,28 @@ def test_post_create_gui_launches_warns_without_a_session(tmp_path, mocker):
     launcher.assert_not_called()
 
 
+def test_post_create_gui_launches_in_a_gui_ssh_session_ignores_the_host_display(
+    tmp_path, mocker, monkeypatch
+):
+    """The shared display needs no host graphical session."""
+    from jailbee.incus import Incus
+    from tests.conftest import make_cfg
+
+    monkeypatch.setenv("JAILBEE_SSH_SESSION", "1")
+    monkeypatch.setenv("JAILBEE_SSH_GUI", "8022")
+    cfg = make_cfg(tmp_path, apps={"a": {"command": "/a", "autostart": True}})
+    mocker.patch("jailbee.autostart.has_graphical_session", return_value=False)
+    warn_mock = mocker.patch("jailbee.autostart.maybe_warn_no_gui")
+    launcher = mocker.patch("jailbee.apps.launch_autostart_apps")
+
+    from jailbee.cli import _post_create_gui_launches
+
+    _post_create_gui_launches(cfg, Incus(), "c1")
+
+    warn_mock.assert_not_called()
+    launcher.assert_called_once()
+
+
 def test_remote_apps_ls_still_inspects_a_mount_mode_container(tmp_path, mocker, monkeypatch):
     """`apps ls` only probes; it opens nothing inside the container, so the
     mount-mode refusal (for commands that enter) does not apply."""
@@ -556,3 +578,20 @@ def test_remote_apps_ls_still_inspects_a_mount_mode_container(tmp_path, mocker, 
 
     assert result.exit_code == 0, result.output
     assert "mount-mode" not in result.output
+
+
+def test_apps_run_reports_a_display_error_instead_of_a_traceback(tmp_path, mocker) -> None:
+    from jailbee.incus import Incus
+    from jailbee.remote_display import DisplayError
+    from tests.conftest import make_cfg
+
+    cfg = make_cfg(tmp_path, apps={"figma": {"command": "/opt/f/f"}})
+    mocker.patch("jailbee.cli._load_or_exit", return_value=cfg)
+    mocker.patch("jailbee.cli._resolve_attachable", return_value=(Incus(), "c1"))
+    mocker.patch("jailbee.apps.launch", side_effect=DisplayError("no client"))
+
+    result = runner.invoke(app, ["apps", "run", "figma", "--container", "c1"])
+
+    assert result.exit_code == 1
+    assert "no client" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)

@@ -10,6 +10,7 @@ import pytest
 from jailbee.config import load_config
 from jailbee.incus import IncusError
 from jailbee.runtime_mounts import (
+    DETACHED_DEVICES,
     GPG_DEVICES,
     SOCKET_DEVICES,
     WAYLAND_DEVICE,
@@ -23,6 +24,18 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 def _cfg():
     return load_config(FIXTURES / "full_config.yaml")
+
+
+@pytest.fixture(autouse=True)
+def _no_host_display_dir(monkeypatch, tmp_path_factory):
+    """Keep the host's real display directory out of every test."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("state")))
+
+
+@pytest.fixture(autouse=True)
+def _gui_flag_off(mocker):
+    """`remote.ssh.gui` is off unless a test turns it on; the real config is never read."""
+    return mocker.patch("jailbee.runtime_mounts.remote_gui_enabled", return_value=False)
 
 
 @pytest.fixture
@@ -287,7 +300,7 @@ def test_detach_removes_gpg_socket_even_when_gpg_disabled(tmp_path):
     detach_runtime_devices(cfg, incus, "feat-smoke")
 
     removed = {c.args[1] for c in incus.config_device_remove.call_args_list}
-    assert removed == set(SOCKET_DEVICES)
+    assert removed == set(DETACHED_DEVICES)
 
 
 def test_attach_returns_false_on_logind_timeout(wayland_session):
@@ -379,14 +392,14 @@ def test_attach_treats_exec_error_as_not_ready_yet(wayland_session):
     assert ok is True
 
 
-def test_detach_removes_all_four_socket_devices():
+def test_detach_removes_every_runtime_device():
     cfg = _cfg()
     incus = MagicMock()
 
     detach_runtime_devices(cfg, incus, "feat-smoke")
 
     removed = [c.args[1] for c in incus.config_device_remove.call_args_list]
-    assert set(removed) == set(SOCKET_DEVICES)
+    assert set(removed) == set(DETACHED_DEVICES)
 
 
 def test_detach_tolerates_devices_that_dont_exist():
@@ -397,7 +410,7 @@ def test_detach_tolerates_devices_that_dont_exist():
     # Should not raise.
     detach_runtime_devices(cfg, incus, "feat-smoke")
 
-    assert incus.config_device_remove.call_count == len(SOCKET_DEVICES)
+    assert incus.config_device_remove.call_count == len(DETACHED_DEVICES)
 
 
 def test_detach_reraises_other_errors():
@@ -580,3 +593,64 @@ def test_a_disabled_socket_is_detached_on_the_next_boot(tmp_path):
 
     removed = {call.args[1] for call in incus.config_device_remove.call_args_list}
     assert {"dbus-socket", "pulse-socket"} <= removed
+
+
+def test_display_socket_is_attached_when_the_host_directory_exists(
+    wayland_session, tmp_path, monkeypatch, _gui_flag_off
+):
+    _gui_flag_off.return_value = True
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    (tmp_path / "jailbee" / "display").mkdir(parents=True)
+    cfg = make_cfg(tmp_path)
+    incus = MagicMock()
+    incus.exec.return_value = f"{cfg.container_user.uid}\n"
+
+    attach_runtime_devices(
+        cfg, incus, "feat-smoke", timeout_s=1.0, poll_interval_s=0.01, sleep_fn=MagicMock()
+    )
+
+    calls = {c.args[1]: c.args for c in incus.config_device_add.call_args_list}
+    assert calls["display-socket"][2] == "disk"
+    assert calls["display-socket"][3] == {
+        "source": str(tmp_path / "jailbee" / "display"),
+        "path": "/run/jailbee-display",
+        "readonly": "true",
+    }
+
+
+def test_display_socket_is_not_attached_while_remote_ssh_gui_is_off(
+    wayland_session, tmp_path, monkeypatch
+):
+    """The directory exists (an earlier `jb display up`) but the feature is off."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    (tmp_path / "jailbee" / "display").mkdir(parents=True)
+
+    assert "display-socket" not in _attached(make_cfg(tmp_path))
+
+
+def test_a_missing_display_directory_never_blocks_a_start(wayland_session, tmp_path, monkeypatch):
+    """An absent source directory would make Incus refuse the whole start."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    attached = _attached(make_cfg(tmp_path))
+
+    assert "display-socket" not in attached
+
+
+def test_detach_drops_the_display_socket():
+    incus = MagicMock()
+
+    detach_runtime_devices(_cfg(), incus, "feat-smoke")
+
+    removed = {c.args[1] for c in incus.config_device_remove.call_args_list}
+    assert "display-socket" in removed
+
+
+def test_display_socket_is_not_reported_as_disabled_in_config(
+    wayland_session, tmp_path, monkeypatch, capsys, _gui_flag_off
+):
+    _gui_flag_off.return_value = True
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    (tmp_path / "jailbee" / "display").mkdir(parents=True)
+    _attached(make_cfg(tmp_path))
+
+    assert "display-socket" not in capsys.readouterr().out

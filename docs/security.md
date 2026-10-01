@@ -104,7 +104,8 @@ containers and moving commits can therefore affect host state. It withholds
 what would reach the host beyond that — the config editor (a config decides
 host mounts and this very policy), the diff pager (a pager can start a
 shell), "Open PR" and GUI app launches (a browser or window would open on
-the host's display). Every process the service starts is marked as remote
+the host's display; with `remote.ssh.gui` on, launches go to the shared RDP
+display instead). Every process the service starts is marked as remote
 (`JAILBEE_REMOTE_SSH=1`, inherited by everything it starts in turn) and runs
 with `LESSSECURE=1`. Every SSH session, restricted or not, also carries
 `JAILBEE_SSH_SESSION=1`, which keeps the dashboard to registered repos, the
@@ -116,9 +117,11 @@ refused in every mode, `full` and an allowlist naming them included:
 `config edit`/`init`, every `remote ...` command, `setup`, `init`, `apply`,
 `base build`/`prune`, `net install`/`refresh`/`unregister`, `net egress
 add`/`rm` (which accept the host's own and its LAN's addresses), `registry
-up`/`down`, the `account` commands that write, `mount`, `port to-container`,
-and the GUI launchers (`gui`, `ide`, the browsers, `apps run`). The startup
-log names any allowlisted command that stays refused this way, and every
+up`/`down`, `display up`/`down`, the `account` commands that write, `mount`,
+`port to-container`, and the GUI launchers (`gui`, `ide`, the browsers, `apps
+run`). With `remote.ssh.gui` on, `ide`, the browsers and `apps run` are
+permitted and draw on the shared display instead; `gui` stays host-only.
+The startup log names any allowlisted command that stays refused this way, and every
 public command is classified one way or the other by the test suite, so a
 new one cannot land unclassified.
 
@@ -143,8 +146,10 @@ The SSH protocol surface is also fail-closed:
 
 - public-key authentication is the only authentication method; password,
   keyboard-interactive, host-based and GSS authentication are disabled;
-- SFTP, SCP, agent forwarding, X11 forwarding, TCP and Unix-socket forwarding,
-  and remote listeners are disabled;
+- SFTP, SCP, agent forwarding, X11 forwarding, Unix-socket forwarding and
+  remote listeners are disabled, and so is TCP forwarding, with one exception:
+  while `remote.ssh.gui` is on, `127.0.0.1:13389` (the shared display, see
+  [Remote GUI](#remote-gui)) and only for a key that has launched an app;
 - client environment requests, including `SendEnv`, are accepted by the
   protocol but ignored: the client's environment never reaches the child
   process, which is built from the service's own environment;
@@ -188,11 +193,14 @@ One host resource stays reachable from inside a container on purpose: the
 Wayland display socket, attached whenever the host session is Wayland. Any
 process in the container — a remote session's shell included — can open a
 window on the host's screen with it, and JailBee's own GUI launchers are
-withheld remotely only because a window there helps no remote user. A
-Wayland client draws its own surfaces and cannot read or drive other
+withheld remotely (unless `remote.ssh.gui` is on) only because a window there
+helps no remote user. A Wayland client draws its own surfaces and cannot read or drive other
 windows, and no X11 socket is shared. The host's session D-Bus and
 PulseAudio sockets, which do reach further, are opt-in
-([`gui`](config.md#gui)).
+([`gui`](config.md#gui)). With `remote.ssh.gui` on, a second such resource
+exists: the shared display directory, mounted read-only into every container,
+through which any process can draw on the shared RDP display (see
+[Remote GUI](#remote-gui)).
 
 A server imports its routing and session marking when it starts, so one left
 running across an upgrade would enforce the old version's rules. It
@@ -213,6 +221,37 @@ route/repository/command identifiers, decision and exit status. It does not
 record key material, complete argv, environment values, terminal contents or
 user input. See [Installation](installation.md#optional-ssh-service) for key
 rotation, service status, journal inspection and recovery operations.
+
+### Remote GUI
+
+With `remote.ssh.gui: true`, GUI apps launched over SSH draw on a shared RDP
+display (see [Remote GUI over SSH](remote-gui.md)):
+
+- The weston compositor listens on the display container's loopback only, and
+  an Incus proxy device publishes it on the host's loopback
+  (`127.0.0.1:13389`) only. The bridge address refuses connections from the
+  host and from sibling containers.
+- weston's RDP backend has no credentials, so any local user of the host can
+  connect to `127.0.0.1:13389`. JailBee assumes a single-user workstation.
+- SSH access to that port is a forwarding grant bound to the SSH key that
+  launched an app, to that one destination, expiring after 24 hours, cleared
+  by `jb display down` and `jb display up --recreate`, and refused whenever
+  `remote.ssh.gui` is off when the forward is requested.
+- All containers share one screen and the RDP clipboard: one container can
+  draw over another's windows and read what is on the clipboard.
+- The shared display directory is mounted into the client containers
+  read-only, and only while `remote.ssh.gui` is on. Every client shares the
+  host user's idmap, so a writable mount would let a compromised container
+  delete or replace weston's socket with its own and capture every other
+  container's windows, keystrokes and clipboard; read-only means a container
+  cannot replace the socket. Connecting to the socket needs no write access,
+  so any process in a container can still open a window on the shared
+  display. That is the exposure below, and it is why containers are not
+  isolated from each other on this screen.
+- The display container uses the dev user's idmap, like the client containers,
+  so the shared socket is owned by the same host user.
+- With SSH repository exclusions active, the GUI launchers are refused over
+  SSH regardless of this setting.
 
 ### Running an agent without prompts
 

@@ -179,12 +179,13 @@ def allowed_command_paths(
     *,
     restrict_host: bool = True,
     scope: RemoteRepoScope | None = None,
+    gui: bool = False,
 ) -> frozenset[str]:
     """Return public leaf paths accepted by the common command decision."""
     allowed: set[str] = set()
     for path in known_command_paths():
         try:
-            policy_allows(path.split(), policy, restrict_host=restrict_host, scope=scope)
+            policy_allows(path.split(), policy, restrict_host=restrict_host, scope=scope, gui=gui)
         except RouteError:
             continue
         allowed.add(path)
@@ -241,7 +242,7 @@ def command_path(argv: Sequence[str]) -> str:
 #     (a config decides host mounts and this very policy), `remote ...`;
 #   - host installation and host-level infrastructure: `setup`, `init`,
 #     `apply`, `base build`/`prune`, `net install`/`refresh`/`unregister`,
-#     `net migrate`, `registry up`/`down`, `litellm up`/`down`/`login`/
+#     `net migrate`, `registry up`/`down`, `display up`/`down`, `litellm up`/`down`/`login`/
 #     `logout`/`logs`;
 #   - persistent network policy: `net egress add`/`rm` accept any address,
 #     the host's own and its LAN's included;
@@ -271,6 +272,8 @@ _HOST_COMMANDS: frozenset[str] = frozenset(
         "net egress rm",
         "registry up",
         "registry down",
+        "display up",
+        "display down",
         "litellm up",
         "litellm down",
         "litellm login",
@@ -296,6 +299,11 @@ _HOST_COMMANDS: frozenset[str] = frozenset(
     }
 )
 
+# The GUI app launchers that `remote.ssh.gui` turns from host commands into
+# container commands: with it on they draw on the shared RDP display, not on
+# the host's screen. `gui` (the Qt dashboard) is deliberately not here: it
+# always opens a window on the host.
+_GUI_APP_COMMANDS: frozenset[str] = frozenset({"ide", "chrome", "firefox", "browser", "apps run"})
 
 _CONTAINER_COMMANDS = frozenset(
     {
@@ -310,6 +318,7 @@ _CONTAINER_COMMANDS = frozenset(
         "config validate",
         "dashboard",
         "destroy",
+        "display status",
         "disk-usage",
         "dismiss",
         "doctor",
@@ -373,8 +382,13 @@ _CONTAINER_COMMANDS = frozenset(
 )
 
 
-def is_host_command(path: str) -> bool:
-    """True when canonical `path` is, or lies under, a `_HOST_COMMANDS` entry."""
+def is_host_command(path: str, *, gui: bool = False) -> bool:
+    """True when canonical `path` is, or lies under, a `_HOST_COMMANDS` entry.
+
+    With ``gui`` (`remote.ssh.gui`), the GUI app launchers are not.
+    """
+    if gui and path in _GUI_APP_COMMANDS:
+        return False
     return any(path == entry or path.startswith(entry + " ") for entry in _HOST_COMMANDS)
 
 
@@ -524,6 +538,7 @@ def policy_allows(
     restrict_host: bool = True,
     scope: RemoteRepoScope | None = None,
     allow_scoped_aggregates: bool = True,
+    gui: bool = False,
 ) -> str:
     """Return the public command path when the remote policy permits it.
 
@@ -539,6 +554,10 @@ def policy_allows(
     command a host path. Only
     `remote.ssh.restrict_host: false` (``restrict_host``) skips it, and not
     even that inside an already restricted session (`host_restricted`).
+
+    ``gui`` (`remote.ssh.gui`) turns the GUI app launchers into container
+    commands; the Qt dashboard launcher `gui` stays a host command, and an
+    allowlist still has to name the launcher.
     """
     from jailbee.cli_outbox import normalize_outbox_argv
 
@@ -644,11 +663,11 @@ def policy_allows(
     # A nested dashboard cannot claim the server-to-child transport option,
     # even when host access is deliberately unrestricted.
     if host_restricted(restrict_host):
-        if is_host_command(path):
+        if is_host_command(path, gui=gui):
             raise RouteError(
                 f"`{path}` manages the host itself, which a restricted remote session never does"
             )
-        if path not in _CONTAINER_COMMANDS:
+        if path not in _CONTAINER_COMMANDS and not (gui and path in _GUI_APP_COMMANDS):
             raise RouteError(f"remote Jailbee command is not classified: {path}")
         check_arguments(argv)
     return path
@@ -734,6 +753,7 @@ def route(
         restrict_host=config.restrict_host,
         scope=scope,
         allow_scoped_aggregates=True,
+        gui=config.gui,
     )
     root = resolve_repo(prefix, engine=engine, scope=scope)
     return Route("command", command_argv, prefix, root, False)

@@ -1005,3 +1005,32 @@ def test_unrestricted_pty_child_is_left_unmarked(spec, boundary, monkeypatch):
         "JAILBEE_SSH_SESSION": "1",
         "JAILBEE_SSH_EXCLUDED_REPOS": "[]",
     }
+
+
+def test_pipe_child_receives_the_gui_marker_and_key_fingerprint(spec, boundary, monkeypatch):
+    monkeypatch.setattr(runner.os, "environ", {"PATH": "/bin"})
+    boundary.create.return_value = pipe_child(status=0)
+
+    asyncio.run(run_child(SSHProcess(), replace(spec, gui_port=8022, fingerprint="SHA256:abc")))
+
+    env = boundary.create.call_args.kwargs["env"]
+    assert env["JAILBEE_SSH_GUI"] == "8022"
+    assert env["JAILBEE_SSH_KEY_FP"] == "SHA256:abc"
+
+
+def test_pty_child_receives_the_gui_marker_and_key_fingerprint(spec, boundary, monkeypatch):
+    boundary.fork.return_value = (0, -1)
+    monkeypatch.setattr(runner.os, "environ", {"PATH": "/bin"})
+    execute = Mock(side_effect=OSError("exec failed"))
+    monkeypatch.setattr(runner.os, "chdir", Mock())
+    monkeypatch.setattr(runner.os, "execvpe", execute)
+    monkeypatch.setattr(runner.os, "_exit", Mock(side_effect=ChildExited))
+
+    with pytest.raises(ChildExited):
+        asyncio.run(
+            run_child(SSHProcess("xterm"), replace(spec, gui_port=8022, fingerprint="SHA256:abc"))
+        )
+
+    env = execute.call_args.args[2]
+    assert env["JAILBEE_SSH_GUI"] == "8022"
+    assert env["JAILBEE_SSH_KEY_FP"] == "SHA256:abc"

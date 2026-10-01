@@ -10,12 +10,43 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Literal
 
 from jailbee.config import CONTAINER_USERNAME, Config
 
+DisplayTarget = Literal["host", "shared"]
 
-def gui_env(cfg: Config) -> dict[str, str]:
+SHARED_DISPLAY_DIR = "/run/jailbee-display"
+"""Where the shared display's directory is mounted in every container."""
+SHARED_WAYLAND_SOCKET = f"{SHARED_DISPLAY_DIR}/wayland-0"
+
+
+def display_state_dir() -> Path:
+    """Host directory holding the shared display's Wayland socket."""
+    from jailbee.db import state_dir
+
+    return state_dir() / "display"
+
+
+def display_target(environ: Mapping[str, str] | None = None) -> DisplayTarget:
+    """Where this process's GUI apps should draw: the host, or the shared RDP display.
+
+    ``shared`` only for an SSH session whose server has `remote.ssh.gui` on
+    (see `remote_ssh.session.child_environment`); everything else, every local
+    command included, keeps drawing on the host exactly as before.
+    """
+    from jailbee.remote_ssh.session import is_shared_display_session
+
+    return "shared" if is_shared_display_session(environ) else "host"
+
+
+def gui_env(cfg: Config, target: DisplayTarget = "host") -> dict[str, str]:
     """Environment vars for GUI apps inside the container.
+
+    ``target`` picks the display: the host's (default) or the shared RDP one,
+    which offers Wayland only.
 
     HOME, USER and LOGNAME must all be set explicitly: ``incus exec
     --user <uid>`` runs the process directly rather than through
@@ -27,14 +58,20 @@ def gui_env(cfg: Config) -> dict[str, str]:
     otherwise.
     """
     uid = cfg.container_user.uid
-    return {
+    env = {
         "HOME": f"/home/{CONTAINER_USERNAME}",
         "USER": CONTAINER_USERNAME,
         "LOGNAME": CONTAINER_USERNAME,
-        "WAYLAND_DISPLAY": host_wayland_socket(),
         "XDG_RUNTIME_DIR": f"/run/user/{uid}",
-        "DISPLAY": os.environ.get("DISPLAY", ":0"),
     }
+    if target == "shared":
+        # An absolute path is a valid WAYLAND_DISPLAY. No X11: the shared
+        # compositor offers Wayland only.
+        env["WAYLAND_DISPLAY"] = SHARED_WAYLAND_SOCKET
+        return env
+    env["WAYLAND_DISPLAY"] = host_wayland_socket()
+    env["DISPLAY"] = os.environ.get("DISPLAY", ":0")
+    return env
 
 
 def host_is_wayland() -> bool:

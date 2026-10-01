@@ -329,3 +329,107 @@ def test_launch_autostart_apps_continues_after_one_raises(tmp_path, mocker):
     assert launched == {"a", "b"}
     error_mock.assert_called_once()
     assert "'a'" in error_mock.call_args.args[0]
+
+
+_SESSION_VARS = ("JAILBEE_SSH_SESSION", "JAILBEE_SSH_GUI", "JAILBEE_SSH_KEY_FP")
+
+
+def _plain_spec():
+    from jailbee.apps import AppSpec
+
+    return AppSpec(name="x", command=["x"], cwd="home")
+
+
+def test_launch_on_the_host_is_unchanged(tmp_path, mocker, monkeypatch) -> None:
+    """The local path: no markers, no display preparation, host environment."""
+    from unittest.mock import MagicMock
+
+    from jailbee.apps import launch
+
+    for name in _SESSION_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-1")
+    prepare = mocker.patch("jailbee.remote_display.prepare_shared_display")
+    detached = mocker.patch("jailbee.gui.launch_detached")
+
+    launch(make_cfg(tmp_path), MagicMock(), "feat-1", _plain_spec())
+
+    prepare.assert_not_called()
+    assert detached.call_args.args[2]["WAYLAND_DISPLAY"] == "wayland-1"
+
+
+def test_launch_from_a_gui_ssh_session_prepares_and_uses_the_shared_display(
+    tmp_path, mocker, monkeypatch
+) -> None:
+    from unittest.mock import MagicMock
+
+    from jailbee.apps import launch
+
+    monkeypatch.setenv("JAILBEE_SSH_SESSION", "1")
+    monkeypatch.setenv("JAILBEE_SSH_GUI", "8022")
+    monkeypatch.setenv("JAILBEE_SSH_KEY_FP", "SHA256:abc")
+    prepare = mocker.patch("jailbee.remote_display.prepare_shared_display")
+    detached = mocker.patch("jailbee.gui.launch_detached")
+    incus = MagicMock()
+
+    launch(make_cfg(tmp_path), incus, "feat-1", _plain_spec())
+
+    prepare.assert_called_once()
+    assert prepare.call_args.args[:2] == (incus, "feat-1")
+    assert prepare.call_args.kwargs["fingerprint"] == "SHA256:abc"
+    assert prepare.call_args.kwargs["ssh_port"] == 8022
+    env = detached.call_args.args[2]
+    assert env["WAYLAND_DISPLAY"] == "/run/jailbee-display/wayland-0"
+    assert "DISPLAY" not in env
+
+
+def test_a_failed_preparation_launches_nothing(tmp_path, mocker, monkeypatch, capsys) -> None:
+    from unittest.mock import MagicMock
+
+    from jailbee.apps import launch
+    from jailbee.remote_display import DisplayError
+
+    monkeypatch.setenv("JAILBEE_SSH_SESSION", "1")
+    monkeypatch.setenv("JAILBEE_SSH_GUI", "8022")
+    mocker.patch(
+        "jailbee.remote_display.prepare_shared_display", side_effect=DisplayError("no client")
+    )
+    detached = mocker.patch("jailbee.gui.launch_detached")
+
+    with pytest.raises(DisplayError):
+        launch(make_cfg(tmp_path), MagicMock(), "feat-1", _plain_spec())
+
+    detached.assert_not_called()
+    assert "Launching" not in capsys.readouterr().out
+
+
+def test_launch_autostart_apps_stops_after_the_first_display_error(tmp_path, mocker) -> None:
+    """Each later app would wait out the same 120 s and fail the same way."""
+    from unittest.mock import MagicMock
+
+    from jailbee.apps import launch_autostart_apps
+    from jailbee.remote_display import DisplayError
+
+    cfg = make_cfg(
+        tmp_path,
+        apps={
+            "a": {"command": "/a", "autostart": True},
+            "b": {"command": "/b", "autostart": True},
+            "c": {"command": "/c", "autostart": True},
+        },
+    )
+    seen: list[str] = []
+
+    def fake_launch(cfg, incus, container, spec, args=None):
+        seen.append(spec.name)
+        raise DisplayError("no client")
+
+    mocker.patch("jailbee.apps.launch", side_effect=fake_launch)
+    error_mock = mocker.patch("jailbee.tui.error")
+
+    launch_autostart_apps(cfg, MagicMock(), "c1")
+
+    assert len(seen) == 1
+    messages = [c.args[0] for c in error_mock.call_args_list]
+    assert messages[0] == "no client"
+    assert sum("Skipping the remaining autostart apps" in m for m in messages) == 1

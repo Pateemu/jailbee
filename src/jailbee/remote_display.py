@@ -1,0 +1,341 @@
+"""The shared RDP display: one container, one weston, one screen for every app.
+
+``jailbee-display`` runs weston with the RDP backend on its own loopback; an
+Incus proxy device publishes that port on the host's loopback. A host
+directory holding weston's Wayland socket is mounted into this container and
+into every client container (`runtime_mounts`), so an app in any container
+draws on the one screen. Modelled on `registry.py`; everything goes through the
+`Incus` wrapper and no subprocess is called here.
+"""
+
+from __future__ import annotations
+
+import os
+import time
+from dataclasses import dataclass
+from enum import StrEnum
+from importlib import resources
+from typing import TYPE_CHECKING, Any
+
+import yaml
+
+from jailbee.config import CONTAINER_USERNAME
+from jailbee.gui import SHARED_DISPLAY_DIR, display_state_dir
+from jailbee.incus import Incus, IncusError
+from jailbee.remote_ssh.display_grants import GRANT_HOST, clear_grants, record_grant
+from jailbee.runtime_mounts import DISPLAY_DEVICE, display_device_config
+from jailbee.stopping import stop_container
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+DISPLAY_CONTAINER = "jailbee-display"
+DISPLAY_PROFILE = "jailbee-display-profile"
+DISPLAY_SERVICE = "jailbee-display.service"
+DISPLAY_BRIDGE = "jailbee-loose"
+RDP_PORT = 3389
+HOST_RDP_PORT = 13389
+RDP_PORT_ADDRESS = f"localhost:{RDP_PORT}"
+CLIENT_WAIT_SECONDS = 120.0
+CLIENT_POLL_SECONDS = 2.0
+# An established TCP connection precedes the TLS/RDP handshake and weston's
+# seat, so a connection must survive this long before it counts as a client.
+SEAT_SETTLE_SECONDS = 3.0
+
+_IMAGE = "images:ubuntu/26.04/cloud"
+_SERVICE_WAIT_SECONDS = 60
+_PROVISION_PKG = "jailbee.provision"
+_PROVISION_SUBDIR = "display"
+_UNIT_PATH = "/etc/systemd/system/jailbee-display.service"
+
+
+class DisplayError(RuntimeError):
+    """The shared display could not be prepared for a launch."""
+
+
+class DisplayStatus(StrEnum):
+    """Reported state of the jailbee-display container + its weston service."""
+
+    RUNNING = "running"
+    STOPPED = "stopped"
+    DEGRADED = "degraded"
+    MISSING = "missing"
+
+
+def _no_steps(_message: str) -> None:
+    """Default `on_step`: report nowhere."""
+
+
+def _present(incus: Incus) -> dict[str, Any] | None:
+    for c in incus.list_containers():
+        if c.get("name") == DISPLAY_CONTAINER:
+            return c
+    return None
+
+
+def _service_state(incus: Incus) -> str:
+    try:
+        return incus.exec(
+            DISPLAY_CONTAINER, ["systemctl", "is-active", DISPLAY_SERVICE], timeout=10
+        ).strip()
+    except IncusError as e:
+        return str(e)
+
+
+def display_status(incus: Incus) -> DisplayStatus:
+    entry = _present(incus)
+    if entry is None:
+        return DisplayStatus.MISSING
+    if entry.get("status") != "Running":
+        return DisplayStatus.STOPPED
+    return DisplayStatus.RUNNING if _service_state(incus) == "active" else DisplayStatus.DEGRADED
+
+
+def _display_profile_yaml(host_uid: int, host_gid: int) -> str:
+    """Same idmap as the client containers, so the shared socket's owner matches.
+
+    Unlike the registry mirror (`uid <uid> 0`), the compositor runs as the dev
+    user, not as container root.
+    """
+    profile = {
+        "name": DISPLAY_PROFILE,
+        "description": "idmap + network for the jailbee-display container",
+        "config": {"raw.idmap": f"uid {host_uid} {host_uid}\ngid {host_gid} {host_gid}"},
+        "devices": {"eth0": {"type": "nic", "name": "eth0", "network": DISPLAY_BRIDGE}},
+    }
+    return yaml.safe_dump(profile, sort_keys=False)
+
+
+def _ensure_profile(incus: Incus) -> None:
+    if not incus.profile_exists(DISPLAY_PROFILE):
+        incus.profile_create(DISPLAY_PROFILE)
+    incus.profile_set_yaml(DISPLAY_PROFILE, _display_profile_yaml(os.getuid(), os.getgid()))
+
+
+def _read_provision_text(filename: str) -> str:
+    return (
+        resources.files(_PROVISION_PKG).joinpath(_PROVISION_SUBDIR).joinpath(filename).read_text()
+    )
+
+
+def _provision(incus: Incus) -> None:
+    unit = _read_provision_text("jailbee-display.service")
+    install = _read_provision_text("install.sh")
+    script = (
+        "set -euo pipefail\n"
+        f"cat > /root/jailbee-display.service <<'JAILBEE_UNIT_EOF'\n{unit.rstrip()}\n"
+        "JAILBEE_UNIT_EOF\n"
+        f"cat > /root/install.sh <<'JAILBEE_INSTALL_EOF'\n{install.rstrip()}\n"
+        "JAILBEE_INSTALL_EOF\n"
+        "chmod +x /root/install.sh\n"
+        f"JAILBEE_UID={os.getuid()} JAILBEE_GID={os.getgid()} "
+        f"JAILBEE_USER={CONTAINER_USERNAME} /root/install.sh\n"
+    )
+    incus.exec(DISPLAY_CONTAINER, ["bash", "-c", script], timeout=600)
+
+
+def _create(incus: Incus, shared_dir: str) -> None:
+    incus.init(_IMAGE, DISPLAY_CONTAINER)
+    incus.profile_assign(DISPLAY_CONTAINER, ["default", DISPLAY_PROFILE])
+    incus.config_set(DISPLAY_CONTAINER, "boot.autostart", "true")
+    incus.config_device_add(
+        DISPLAY_CONTAINER, "shared", "disk", {"source": shared_dir, "path": SHARED_DISPLAY_DIR}
+    )
+    # weston listens on the container's own loopback only (the bridge is never
+    # an access path); this device publishes it on the host's loopback.
+    incus.config_device_add(
+        DISPLAY_CONTAINER,
+        "rdp",
+        "proxy",
+        {"listen": f"tcp:127.0.0.1:{HOST_RDP_PORT}", "connect": f"tcp:127.0.0.1:{RDP_PORT}"},
+    )
+    incus.start(DISPLAY_CONTAINER)
+
+
+def _provisioning_incomplete(incus: Incus) -> bool:
+    try:
+        out = incus.exec(
+            DISPLAY_CONTAINER,
+            ["bash", "-c", f"test -f {_UNIT_PATH} && echo present || echo absent"],
+            timeout=10,
+        )
+    except IncusError:
+        return False
+    return out.strip() == "absent"
+
+
+def _wait_for_service(
+    incus: Incus, on_step: Callable[[str], None], sleep_fn: Callable[[float], None]
+) -> str | None:
+    state = ""
+    for remaining in range(_SERVICE_WAIT_SECONDS, 0, -2):
+        state = _service_state(incus)
+        if state == "active":
+            return None
+        on_step(f"waiting for {DISPLAY_SERVICE} - {state}, {remaining}s left")
+        sleep_fn(2)
+    return f"{DISPLAY_SERVICE} is {state!r} after {_SERVICE_WAIT_SECONDS}s"
+
+
+def display_up(
+    incus: Incus,
+    *,
+    recreate: bool = False,
+    on_step: Callable[[str], None] = _no_steps,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> None:
+    """Create, start and provision the display container; idempotent."""
+    on_step("preparing the shared display directory and profile")
+    directory = display_state_dir()
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    directory.chmod(0o700)
+    if not incus.network_exists(DISPLAY_BRIDGE):
+        incus.network_create(DISPLAY_BRIDGE)
+    _ensure_profile(incus)
+    if recreate and _present(incus) is not None:
+        incus.delete(DISPLAY_CONTAINER, force=True)
+        clear_grants()
+    entry = _present(incus)
+    if entry is None:
+        on_step("creating the display container")
+        _create(incus, str(directory))
+        on_step("installing weston (this can take a minute)")
+        _provision(incus)
+    else:
+        if entry.get("status") != "Running":
+            incus.start(DISPLAY_CONTAINER)
+        if _provisioning_incomplete(incus):
+            on_step("finishing provisioning")
+            _provision(incus)
+    failure = _wait_for_service(incus, on_step, sleep_fn)
+    if failure is not None:
+        raise DisplayError(f"{failure}. Run `jailbee display up --recreate`.")
+
+
+def display_down(incus: Incus) -> None:
+    """Stop the display and revoke every forwarding grant."""
+    clear_grants()
+    entry = _present(incus)
+    if entry is None or entry.get("status") != "Running":
+        return
+    stop_container(incus, DISPLAY_CONTAINER, force_fallback=True, label="the shared display")
+
+
+def client_connected(incus: Incus) -> bool:
+    """Whether an RDP client is attached (weston has no input seat before one is)."""
+    try:
+        out = incus.exec(
+            DISPLAY_CONTAINER,
+            ["bash", "-c", f"ss -Htn state established '( sport = :{RDP_PORT} )' | wc -l"],
+            timeout=10,
+        )
+    except IncusError:
+        return False
+    return out.strip() not in ("", "0")
+
+
+def client_ready(
+    incus: Incus,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    settle_s: float = SEAT_SETTLE_SECONDS,
+) -> bool:
+    """A client that is connected now and still connected after the settle."""
+    if not client_connected(incus):
+        return False
+    sleep_fn(settle_s)
+    return client_connected(incus)
+
+
+def wait_for_client(
+    incus: Incus,
+    *,
+    timeout_s: float = CLIENT_WAIT_SECONDS,
+    poll_s: float = CLIENT_POLL_SECONDS,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> bool:
+    deadline = clock() + timeout_s
+    while True:
+        if client_ready(incus, sleep_fn):
+            return True
+        if clock() >= deadline:
+            return False
+        sleep_fn(poll_s)
+
+
+@dataclass(frozen=True)
+class ConnectionInfo:
+    ssh_command: str
+    rdp_address: str
+    hints: tuple[str, ...]
+
+
+def connection_info(ssh_port: int) -> ConnectionInfo:
+    return ConnectionInfo(
+        ssh_command=f"ssh -N -L {RDP_PORT}:127.0.0.1:{HOST_RDP_PORT} -p {ssh_port} jailbee@<host>",
+        rdp_address=RDP_PORT_ADDRESS,
+        hints=(
+            "Windows: mstsc  |  macOS: Microsoft Remote Desktop  |  Linux: xfreerdp / Remmina",
+            "Already connected over SSH? Add the forward live with ~C, then -L ...",
+            "The forward is accepted once this SSH key has launched a GUI app; "
+            "launch first, then connect — the launch waits for you.",
+        ),
+    )
+
+
+def format_connection_info(info: ConnectionInfo) -> list[str]:
+    """The recipe as plain lines: the CLI and the dashboard both show exactly this."""
+    return [
+        "1. Open the tunnel on your computer:",
+        f"     {info.ssh_command}",
+        f"2. Connect an RDP client to {info.rdp_address}",
+        *(f"   {hint}" for hint in info.hints),
+    ]
+
+
+def ensure_display_mount(incus: Incus, container: str) -> None:
+    """Add the shared directory (read-only) to a running container that predates it."""
+    try:
+        incus.config_device_add(container, DISPLAY_DEVICE, "disk", display_device_config())
+    except IncusError as e:
+        if "already exists" in str(e).lower():
+            return
+        raise
+
+
+def prepare_shared_display(
+    incus: Incus,
+    container: str,
+    *,
+    fingerprint: str | None,
+    ssh_port: int,
+    say: Callable[[str], None],
+    sleep_fn: Callable[[float], None] = time.sleep,
+    wait_seconds: float = CLIENT_WAIT_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
+    """Make the shared display ready for one launch from an SSH session.
+
+    Brings the display up if needed, mounts it into ``container``, grants the
+    session's key the tunnel, and (if no RDP client is attached yet, which an
+    app would fail without) prints the recipe and waits for one.
+    """
+    if fingerprint is None:
+        raise DisplayError(
+            "Cannot tell which SSH key this session used, so no tunnel can be opened."
+        )
+    if display_status(incus) is not DisplayStatus.RUNNING:
+        say("Starting the shared display...")
+        display_up(incus, on_step=say, sleep_fn=sleep_fn)
+    ensure_display_mount(incus, container)
+    record_grant(fingerprint, GRANT_HOST, HOST_RDP_PORT, container)
+    if client_ready(incus, sleep_fn):
+        return
+    for line in format_connection_info(connection_info(ssh_port)):
+        say(line)
+    say("Waiting for an RDP client...")
+    if not wait_for_client(incus, timeout_s=wait_seconds, sleep_fn=sleep_fn, clock=clock):
+        raise DisplayError(
+            f"No RDP client connected within {int(wait_seconds)}s. Open the tunnel, "
+            f"connect to {RDP_PORT_ADDRESS}, then launch again."
+        )

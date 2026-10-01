@@ -179,6 +179,38 @@ def probe(
     return "present" if out == "present" else "missing"
 
 
+def launch_env(
+    cfg: Config, incus: Incus, container: str, extra: dict[str, str] | None = None
+) -> dict[str, str]:
+    """The environment for a GUI launch in ``container``.
+
+    On the host this is `gui_env(cfg)`. From an SSH session whose server has
+    `remote.ssh.gui` on, the shared RDP display is prepared first (started,
+    mounted into ``container``, the session's key granted the tunnel, an RDP
+    client awaited) and the app is pointed at it. `DisplayError` propagates:
+    nothing is launched.
+    """
+    from jailbee.gui import display_target, gui_env
+    from jailbee.remote_ssh.session import session_fingerprint, shared_display_port
+    from jailbee.tui import info
+
+    target = display_target()
+    port = shared_display_port()
+    # `display_target() == "shared"` already implies a port; checking it here
+    # narrows the type for `prepare_shared_display` without a fallback value.
+    if target == "shared" and port is not None:
+        from jailbee.remote_display import prepare_shared_display
+
+        prepare_shared_display(
+            incus,
+            container,
+            fingerprint=session_fingerprint(),
+            ssh_port=port,
+            say=info,
+        )
+    return {**gui_env(cfg, target), **(extra or {})}
+
+
 def launch(
     cfg: Config,
     incus: Incus,
@@ -189,7 +221,7 @@ def launch(
     """Start `spec` in `container`, detached, logging inside the container."""
     import shlex as _shlex
 
-    from jailbee.gui import gui_env, launch_detached
+    from jailbee.gui import launch_detached
     from jailbee.tui import info
 
     if spec.pool is not None:
@@ -224,12 +256,15 @@ def launch(
         # says which would win if one ever did.
         argv.append(cwd)
 
+    # Before the "Launching" line: a failed display preparation must print
+    # nothing about launching.
+    env = launch_env(cfg, incus, container, spec.env)
     log_path = app_log_path(spec.name)
     info(f"Launching {spec.name} in {container} (background, logs in container: {log_path})")
     launch_detached(
         container,
         cfg.container_user.uid,
-        {**gui_env(cfg), **spec.env},
+        env,
         " ".join(_shlex.quote(a) for a in argv),
         log_path,
         cwd=cwd,
@@ -251,7 +286,13 @@ def launch_autostart_apps(cfg: Config, incus: Incus, container: str) -> None:
     runs the container is already up, so there is no CLI invocation left to
     exit non-zero from; skipping the rest of the list would also silently
     drop every app after the failing one, which is worse than one warning.
+
+    A `DisplayError` (a GUI-enabled SSH session whose shared display could not
+    be prepared, e.g. no RDP client connected within the wait) is different:
+    every later app would wait out the same budget and fail the same way, so
+    the first one is reported and the remaining apps are skipped, once.
     """
+    from jailbee.remote_display import DisplayError
     from jailbee.tui import error
 
     for spec in resolve_apps(cfg):
@@ -259,5 +300,9 @@ def launch_autostart_apps(cfg: Config, incus: Incus, container: str) -> None:
             continue
         try:
             launch(cfg, incus, container, spec)
+        except DisplayError as e:
+            error(str(e))
+            error("Skipping the remaining autostart apps: the shared display is not ready.")
+            return
         except ValueError as e:
             error(str(e))

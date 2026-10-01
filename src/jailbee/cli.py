@@ -2729,10 +2729,13 @@ def _post_create_gui_launches(cfg: "Config", incus: "IncusType", container: str)
     """
     from jailbee.apps import launch_autostart_apps, resolve_apps
     from jailbee.autostart import has_graphical_session, maybe_warn_no_gui
+    from jailbee.gui import display_target
 
     if not any(s.autostart for s in resolve_apps(cfg)):
         return
-    if not has_graphical_session():
+    # A GUI-enabled SSH session draws on the shared RDP display, so the host's
+    # own WAYLAND_DISPLAY/DISPLAY (the SSH service's environment) is irrelevant.
+    if display_target() != "shared" and not has_graphical_session():
         maybe_warn_no_gui()
         return
     launch_autostart_apps(cfg, incus, container)
@@ -10727,6 +10730,89 @@ def registry_status_cmd(config: ConfigOption = None) -> None:
     info(f"Registry mirror: {status.value}")
 
 
+display_app = typer.Typer(
+    name="display",
+    help="Shared RDP display for GUI apps launched over SSH.",
+    no_args_is_help=True,
+)
+app.add_typer(display_app)
+
+
+@display_app.command("up")
+def display_up_cmd(
+    recreate: Annotated[
+        bool,
+        typer.Option("--recreate", help="Delete the display container and provision it again."),
+    ] = False,
+    config: ConfigOption = None,
+) -> None:
+    """Start the shared RDP display and print how to connect to it."""
+    from jailbee.incus import Incus, IncusError
+    from jailbee.remote_display import (
+        DisplayError,
+        connection_info,
+        display_up,
+        format_connection_info,
+    )
+    from jailbee.tui import status_with_elapsed, warn
+
+    _load_or_exit(config)
+    gcfg = _load_global()
+    try:
+        with status_with_elapsed("starting the shared display") as status:
+            display_up(Incus(), recreate=recreate, on_step=status.update)
+    except (IncusError, DisplayError) as e:
+        error(str(e))
+        raise typer.Exit(1) from e
+    success("Shared display running")
+    if not gcfg.remote.ssh.gui:
+        warn(
+            "remote.ssh.gui is off, so SSH sessions cannot use the display "
+            "until it is enabled (`jb config edit --global`, then remote.ssh.gui)."
+        )
+    for line in format_connection_info(connection_info(gcfg.remote.ssh.port)):
+        info(line)
+
+
+@display_app.command("down")
+def display_down_cmd(config: ConfigOption = None) -> None:
+    """Stop the shared RDP display and revoke SSH forwarding to it."""
+    from jailbee.incus import Incus, IncusError
+    from jailbee.remote_display import display_down
+
+    _load_or_exit(config)
+    try:
+        display_down(Incus())
+    except IncusError as e:
+        error(str(e))
+        raise typer.Exit(1) from e
+    success("Shared display stopped")
+
+
+@display_app.command("status")
+def display_status_cmd(config: ConfigOption = None) -> None:
+    """Show the shared display's status and, when running, how to connect."""
+    from jailbee.incus import Incus, IncusError
+    from jailbee.remote_display import (
+        DisplayStatus,
+        connection_info,
+        display_status,
+        format_connection_info,
+    )
+
+    _load_or_exit(config)
+    gcfg = _load_global()
+    try:
+        status = display_status(Incus())
+    except IncusError as e:
+        error(str(e))
+        raise typer.Exit(1) from e
+    info(f"Shared display: {status.value}")
+    if status is DisplayStatus.RUNNING:
+        for line in format_connection_info(connection_info(gcfg.remote.ssh.port)):
+            info(line)
+
+
 litellm_app = typer.Typer(
     name="litellm",
     help="LiteLLM proxy for coding agents on other providers' models.",
@@ -13120,12 +13206,16 @@ def _launch_or_exit(
     already reports as "missing".
     """
     from jailbee.apps import launch
+    from jailbee.remote_display import DisplayError
 
     try:
         launch(cfg, incus, container, spec, args)
     except ValueError as e:
         error(str(e))
         raise typer.Exit(2) from e
+    except DisplayError as e:
+        error(str(e))
+        raise typer.Exit(1) from e
 
 
 @apps_app.command("run")
@@ -15432,6 +15522,15 @@ def exec_cmd(
             "works for anything long-running.",
         ),
     ] = False,
+    gui: Annotated[
+        bool,
+        typer.Option(
+            "--gui",
+            help="With --detach: the command is a GUI app. In a GUI-enabled SSH session "
+            "it draws on the shared RDP display (started and awaited first); elsewhere "
+            "this changes nothing.",
+        ),
+    ] = False,
     config: ConfigOption = None,
 ) -> None:
     """Run a command in the container as the dev user.
@@ -15441,12 +15540,17 @@ def exec_cmd(
         jailbee exec smoke -- pnpm test
         jailbee exec smoke --cwd home -- ls -la
         jailbee exec smoke -d -- firefox
+        jailbee exec smoke -d --gui -- firefox
     """
     import shlex
 
     from jailbee.config import CONTAINER_USERNAME
     from jailbee.incus import Incus
     from jailbee.lifecycle import container_repo_dir, resolve_container_name
+
+    if gui and not detach:
+        error("--gui only applies to a detached launch; add --detach (-d).")
+        raise typer.Exit(2)
 
     cfg = _load_or_exit(config)
     incus = Incus()
@@ -15478,7 +15582,9 @@ def exec_cmd(
         import uuid
         from datetime import datetime
 
+        from jailbee.apps import launch_env
         from jailbee.gui import launch_detached
+        from jailbee.remote_display import DisplayError
 
         # A timestamp alone has one-second resolution and launch_detached
         # opens the log with `>` (truncate) — two `-d` execs against the
@@ -15486,6 +15592,17 @@ def exec_cmd(
         # double-launch) would silently clobber each other's output. The
         # uuid suffix makes every invocation's path distinct regardless of
         # timing.
+        # Only an explicit `--gui` launch prepares the shared display: a
+        # detached `make test` is not a GUI app and must neither start the
+        # display nor wait for an RDP client. Outside a GUI-enabled SSH session
+        # `launch_env` returns the plain host environment, so `--gui` is
+        # harmless there.
+        if gui:
+            try:
+                env = launch_env(cfg, incus, resolved)
+            except DisplayError as e:
+                error(str(e))
+                raise typer.Exit(1) from e
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         log_path = f"/tmp/jailbee-exec-{stamp}-{uuid.uuid4().hex[:8]}.log"
         # A login shell in both paths, so `~/.local/bin` is on PATH whether

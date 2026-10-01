@@ -13,12 +13,16 @@ bad config file would be.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from pydantic import ValidationError
 
 from jailbee.config import ConfigError
 from jailbee.config.models_remote import CommandMode, RemoteSSHConfig
+from jailbee.global_config import default_global_config_path, load_global_config
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -139,3 +143,21 @@ def describe_overrides(overrides: ServeOverrides) -> str | None:
     elif overrides.allow is not None:
         parts.append(f"commands.allow=[{', '.join(overrides.allow)}]")
     return "overrides (not from global.yaml): " + ", ".join(parts)
+
+
+def remote_gui_enabled(overrides: ServeOverrides | None = None) -> bool:
+    """`remote.ssh.gui` as the next request would see it; any failure is off.
+
+    Read from the global config on every call, so toggling the flag needs no
+    service restart. The server (forwarding, sessions) and the container start
+    path (`runtime_mounts`) share this one reader and its fail-closed rule.
+    """
+    try:
+        global_config, _ = load_global_config(default_global_config_path())
+        current = global_config.remote.ssh
+        if overrides is not None:
+            current = apply_ssh_overrides(current, overrides)
+    except Exception:
+        log.warning("remote.ssh.gui could not be read; treating it as off", exc_info=True)
+        return False
+    return current.gui
