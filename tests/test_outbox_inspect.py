@@ -283,9 +283,7 @@ def test_recorded_pr_is_display_context_not_revision_authority(tmp_path, manifes
     snapshots = (store("pr", {"001.json": json.dumps(payload)}),)
     journals = JournalStore(tmp_path / "journals")
     canonical = build_views(IDENTITY, snapshots, journal_store=journals)[0]
-    contextual = build_views(
-        IDENTITY, snapshots, journal_store=journals, recorded_pr=73
-    )[0]
+    contextual = build_views(IDENTITY, snapshots, journal_store=journals, recorded_pr=73)[0]
 
     assert canonical.actions[0].target == ("" if manifest_pr is None else "42")
     assert contextual.actions[0].target == ("73" if manifest_pr is None else "42")
