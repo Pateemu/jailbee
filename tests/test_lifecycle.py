@@ -9537,21 +9537,57 @@ def test_agent_cell_is_a_dash_without_a_live_session():
     assert _agent_spec().cell(_running()) == "[dim]—[/dim]"
 
 
-def test_agent_compact_cell_omits_agent_name_and_keeps_state_and_duration():
-    c = _running(agent_status=(_agent("waiting", since=_AGENT_NOW - timedelta(minutes=4)),))
+@pytest.mark.parametrize(
+    ("state", "seconds", "expected"),
+    [
+        ("waiting", 4 * 60, "◆ 4m"),
+        ("busy", 12, "● 12s"),
+        ("idle", 3 * 3600 + 59 * 60, "○ 3h"),
+        ("idle", 30 * 3600, "○ 30h"),
+    ],
+)
+def test_agent_compact_cell_is_a_state_glyph_and_the_coarsest_duration(state, seconds, expected):
+    c = _running(agent_status=(_agent(state, since=_AGENT_NOW - timedelta(seconds=seconds)),))
 
-    assert _plain(_agent_spec("agent_compact").cell(c)) == "waiting 4m"
+    assert _plain(_agent_spec("agent_compact").cell(c)) == expected
 
 
-def test_agent_compact_cell_counts_multiple_sessions_and_agents():
+def test_agent_compact_cell_has_no_agent_name_and_no_session_count():
+    c = _running(
+        agent_status=(_agent("waiting", since=_AGENT_NOW - timedelta(minutes=4), count=2),)
+    )
+
+    assert _plain(_agent_spec("agent_compact").cell(c)) == "◆ 4m"
+
+
+def test_agent_compact_cell_shows_one_glyph_per_distinct_state():
     c = _running(
         agent_status=(
-            _agent("waiting", since=_AGENT_NOW - timedelta(minutes=4), count=2),
+            _agent("waiting", since=_AGENT_NOW - timedelta(minutes=4)),
             _agent("busy", agent="codex", since=_AGENT_NOW - timedelta(seconds=12)),
+            _agent("busy", agent="aider", since=_AGENT_NOW - timedelta(seconds=3)),
         )
     )
 
-    assert _plain(_agent_spec("agent_compact").cell(c)) == "waiting 4m·2, busy 12s"
+    assert _plain(_agent_spec("agent_compact").cell(c)) == "◆ 4m ● 12s"
+
+
+def test_agent_compact_cell_colours_the_glyph_by_state():
+    def cell(state: str) -> str:
+        return _agent_spec("agent_compact").cell(
+            _running(agent_status=(_agent(state, since=_AGENT_NOW),))
+        )
+
+    assert "[yellow]" in cell("waiting")
+    assert "[green]" in cell("busy")
+    assert "[dim]" in cell("idle")
+
+
+def test_agent_compact_cell_shows_an_unknown_state_literally():
+    """The state is raw text from a file the container wrote."""
+    c = _running(agent_status=(_agent("[red]x", since=None),))
+
+    assert _plain(_agent_spec("agent_compact").cell(c)) == "? [red]x"
 
 
 def test_agent_compact_is_dashboard_only_and_not_default_with_full_agent():
