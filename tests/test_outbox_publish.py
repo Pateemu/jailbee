@@ -42,6 +42,30 @@ def env(mocker, make_cfg, tmp_path):
         ),
     }
 
+    import subprocess
+
+    run_shell = subprocess.run
+    directory = tmp_path / "mutation-outbox"
+    directory.mkdir()
+
+    def mutate(container, command, text, **kwargs):
+        kind = "issue" if command[4].endswith("issue-outbox") else "pr"
+        snapshot = snapshots[kind]
+        for path in directory.iterdir():
+            path.unlink()
+        for name, content in snapshot.files:
+            (directory / name).write_text(content)
+        for name in snapshot.rejected:
+            (directory / name).write_bytes(b"\xff")
+        command = list(command)
+        command[4] = str(directory)
+        result = run_shell(command, input=text, text=True, capture_output=True, check=True).stdout
+        files = {p.name: p.read_text() for p in directory.iterdir() if p.name not in snapshot.rejected}
+        snapshots[kind] = store(kind, files, rejected=snapshot.rejected)
+        return result
+
+    incus.exec_with_input.side_effect = mutate
+
     def read(i, c, k, **kw):
         return snapshots[k]
 
@@ -355,9 +379,9 @@ def test_issue_publishes_all_selected_actions_and_keeps_shared_body(env, capsys)
         "Follow-up",
         "Independent",
     ]
-    removed = next(c.args[1] for c in env[1].exec.call_args_list if c.args[1][0] == "rm")
-    assert any(n.endswith("/001.json") for n in removed)
-    assert not any(n.endswith(("/002.json", "/body.md")) for n in removed)
+    assert "001.json" not in env[2]["issue"].as_dict()
+    assert "002.json" in env[2]["issue"].as_dict()
+    assert env[2]["issue"].as_dict()["body.md"] == "Original body"
     assert "fully applied" in capsys.readouterr().out
     assert env[3].load(journal_key(IDENTITY, "001.json")) is None
     assert env[3].load(journal_key(IDENTITY, "002.json")) is None

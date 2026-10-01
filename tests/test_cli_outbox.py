@@ -205,6 +205,29 @@ def publication_env(env, mocker, tmp_path):
     from jailbee.outbox import io
     from jailbee.outbox.io import PrManagement
 
+    import subprocess
+
+    run_shell = subprocess.run
+    directory = tmp_path / "mutation-outbox"
+    directory.mkdir()
+
+    def mutate(container, command, text, **kwargs):
+        kind = "issue" if command[4].endswith("issue-outbox") else "pr"
+        snapshot = env[2][kind]
+        for path in directory.iterdir():
+            path.unlink()
+        for name, content in snapshot.files:
+            (directory / name).write_text(content)
+        for name in snapshot.rejected:
+            (directory / name).write_bytes(b"\xff")
+        command = list(command)
+        command[4] = str(directory)
+        result = run_shell(command, input=text, text=True, capture_output=True, check=True).stdout
+        files = {p.name: p.read_text() for p in directory.iterdir() if p.name not in snapshot.rejected}
+        env[2][kind] = store(kind, files, rejected=snapshot.rejected)
+        return result
+
+    env[1].exec_with_input.side_effect = mutate
     mocker.patch.object(io, "read_store", side_effect=lambda i, c, k, **kw: env[2][k])
     mocker.patch.object(
         issue_outbox, "read_text_outbox", side_effect=lambda *a, **kw: env[2]["issue"].as_dict()
@@ -288,7 +311,10 @@ def test_apply_real_domain_orchestration(publication_env, mocker, kind, mode):
         assert "fully applied" in result.output
     else:
         review.assert_called_once()
-    if mode == "yes":
+    if mode == "yes" and kind == "issue":
+        assert "001.json" not in env[2][kind].as_dict()
+        assert "002.json" in env[2][kind].as_dict()
+    elif mode == "yes":
         removed = next(
             call.args[1] for call in env[1].exec.call_args_list if call.args[1][0] == "rm"
         )

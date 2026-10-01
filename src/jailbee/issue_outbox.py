@@ -38,6 +38,9 @@ from jailbee.issue_manifest import (
     StateAction,
     parse_manifest,
 )
+from jailbee.outbox import io as store_io
+from jailbee.outbox.cleanup import exclusive_body_names
+from jailbee.outbox.models import OutboxExecutionError, StoreSnapshot
 from jailbee.outbox_io import (
     ContainerIdentity,
     IssueJournal,
@@ -48,7 +51,6 @@ from jailbee.outbox_io import (
     OutboxReadError,
     append_applied_log,
     container_identity,
-    delete_outbox_files,
     journal_has_uncertainty,
     journal_key,
     proposal_digest,
@@ -718,7 +720,7 @@ def _now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _referenced_elsewhere(outbox: OutboxSnapshot, exclude_name: str) -> frozenset[str] | None:
+def _referenced_elsewhere(outbox: StoreSnapshot, exclude_name: str) -> frozenset[str] | None:
     """Body files other manifests in `outbox` still reference, or None if unknown.
 
     Returns `None` — "cannot tell, so keep everything" — the instant any
@@ -728,13 +730,16 @@ def _referenced_elsewhere(outbox: OutboxSnapshot, exclude_name: str) -> frozense
     fail safe, not silently drop what might be someone else's still-pending
     proposal text.
     """
+    if outbox.rejected:
+        return None
+    files = outbox.as_dict()
     referenced: set[str] = set()
-    for name in outbox.manifest_names:
+    for name in OutboxSnapshot(files).manifest_names:
         if name == exclude_name:
             continue
         try:
-            other = parse_manifest(name, outbox.files[name], outbox.files)
-        except IssueManifestError:
+            other = parse_manifest(name, files[name], files)
+        except (IssueManifestError, RecursionError):
             return None
         referenced.update(other.body_files)
     return frozenset(referenced)
@@ -861,16 +866,23 @@ def _cleanup_manifest(
         )
 
     try:
-        fresh_outbox = read_issue_outbox(incus, container, uid=uid)
-    except OutboxReadError as exc:
+        fresh_outbox = store_io.read_store(incus, container, "issue", uid=uid)
+    except OutboxExecutionError as exc:
         return f"{name}: logged, but the outbox could not be re-read to clean it up ({exc})"
+    files = fresh_outbox.as_dict()
+    if container_identity(incus, container) != identity or proposal_digest(
+        name, files.get(name, ""), {body: files.get(body, "") for body in prepared.manifest.body_files}
+    ) != prepared.digest:
+        return f"{name}: proposal changed after publication; cleanup refused, journal retained"
     referenced = _referenced_elsewhere(fresh_outbox, name)
     names = [name]
     if referenced is not None:
-        names.extend(sorted(f for f in prepared.manifest.body_files if f not in referenced))
+        names.extend(exclusive_body_names(prepared.manifest.body_files, files, referenced))
     try:
-        delete_outbox_files(incus, container, directory, names, uid=uid)
-    except IncusError as exc:
+        store_io.mutate_store(incus, container, "issue", uid=uid, expected=files,
+            new_manifest=None, delete_names=tuple(names), forbidden_progress=None,
+            rejected_names=fresh_outbox.rejected)
+    except (IncusError, OutboxExecutionError) as exc:
         return (
             f"{name}: applied and logged, but its outbox files could not be "
             f"deleted ({exc}); a re-run will retry safely"
@@ -1250,7 +1262,8 @@ def drop_manifest(
             raise JournalError(
                 f"{manifest_name}: the container's identity changed; re-read it before dropping"
             )
-        fresh = read_issue_outbox(incus, container, uid=uid)
+        strict = store_io.read_store(incus, container, "issue", uid=uid)
+        fresh = OutboxSnapshot(strict.as_dict())
         if fresh.files.get(manifest_name) != outbox.files.get(manifest_name):
             raise JournalError(
                 f"{manifest_name}: the outbox changed since it was read; re-read it before dropping"
@@ -1300,12 +1313,14 @@ def drop_manifest(
                 "archive_journal=True to archive its settled progress instead"
             )
 
-        referenced = _referenced_elsewhere(fresh, manifest_name)
+        referenced = _referenced_elsewhere(strict, manifest_name)
         names = [manifest_name]
         if referenced is not None:
-            names.extend(sorted(f for f in body_files if f not in referenced))
+            names.extend(exclusive_body_names(body_files, fresh.files, referenced))
 
-        delete_outbox_files(incus, container, _outbox_directory(), names, uid=uid)
+        store_io.mutate_store(incus, container, "issue", uid=uid, expected=fresh.files,
+            new_manifest=None, delete_names=tuple(names), forbidden_progress=None,
+            rejected_names=strict.rejected)
 
         if archive_journal and journal is not None and journal.actions:
             journal_store.archive(key)
