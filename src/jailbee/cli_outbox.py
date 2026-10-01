@@ -123,6 +123,17 @@ def _run(
         raise typer.Exit(status)
 
 
+def browser_read_only() -> bool:
+    """Browser policy for UI wiring: never supply mutation callbacks over SSH.
+
+    This includes unrestricted SSH sessions. Mutations must use explicit
+    drop/apply commands so the router checks each command's permissions.
+    """
+    from jailbee.remote_ssh.session import is_ssh_session
+
+    return is_ssh_session()
+
+
 @app.command()
 def browse(
     ctx: typer.Context,
@@ -130,9 +141,14 @@ def browse(
     config: ConfigOption = None,
 ) -> None:
     """Overview (also off-TTY). Unambiguous spelling for subcommand-name containers."""
-    from jailbee.outbox.commands import show_overview
+    from jailbee.outbox.commands import print_lines, show_overview
     from jailbee.outbox_io import JournalStore
 
+    if browser_read_only():
+        print_lines((
+            "Outbox browser is read-only over SSH. Use explicit outbox drop or "
+            "outbox apply commands when permitted by the remote command policy.",
+        ))
     _run(
         ctx,
         config,
