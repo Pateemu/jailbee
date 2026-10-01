@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from jailbee.config import CONTAINER_USERNAME
-from jailbee.gui import SHARED_DISPLAY_DIR, display_state_dir
+from jailbee.gui import display_state_dir
 from jailbee.incus import Incus, IncusError
 from jailbee.remote_ssh.display_grants import GRANT_HOST, clear_grants, record_grant
 from jailbee.runtime_mounts import DISPLAY_DEVICE, display_device_config
@@ -33,6 +33,13 @@ DISPLAY_CONTAINER = "jailbee-display"
 DISPLAY_PROFILE = "jailbee-display-profile"
 DISPLAY_SERVICE = "jailbee-display.service"
 DISPLAY_BRIDGE = "jailbee-loose"
+# Where the shared directory is mounted INSIDE the display container. Not under
+# /run: this device is part of the container's config, so Incus mounts it at
+# start, before systemd puts a fresh tmpfs over /run and hides it (weston then
+# fails with "XDG_RUNTIME_DIR ... is not a directory"). Client containers get
+# `SHARED_DISPLAY_DIR` attached after boot, so for them /run is fine. Keep in
+# step with the paths in provision/display/jailbee-display.service.
+DISPLAY_CONTAINER_DIR = "/srv/jailbee-display"
 RDP_PORT = 3389
 HOST_RDP_PORT = 13389
 RDP_PORT_ADDRESS = f"localhost:{RDP_PORT}"
@@ -148,7 +155,7 @@ def _create(incus: Incus, shared_dir: str) -> None:
     incus.profile_assign(DISPLAY_CONTAINER, ["default", DISPLAY_PROFILE])
     incus.config_set(DISPLAY_CONTAINER, "boot.autostart", "true")
     incus.config_device_add(
-        DISPLAY_CONTAINER, "shared", "disk", {"source": shared_dir, "path": SHARED_DISPLAY_DIR}
+        DISPLAY_CONTAINER, "shared", "disk", {"source": shared_dir, "path": DISPLAY_CONTAINER_DIR}
     )
     # weston listens on the container's own loopback only (the bridge is never
     # an access path); this device publishes it on the host's loopback.

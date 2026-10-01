@@ -5216,11 +5216,15 @@ launch comes first and the tunnel and RDP client connect while it waits.
     once, with no display start and no wait. `jb exec <name> -d --gui --
     xterm` goes through the display as in step 3.
 
-Not yet verified on a real host: the shared directory mount under `/run` in
-the display container surviving a boot; whether the few-second settle delay is
-long enough for an RDP seat to exist; the TCP forward through asyncssh with a
-real RDP client; weston cold provisioning; and the remote dashboard menu in a
-pty. The display container image is `images:ubuntu/26.04/cloud`, while the
-original spike used Ubuntu 24.04 with weston 13: check the installed weston
-version, and that the `--rdp-tls-key`, `--rdp-tls-cert` and `--shell=desktop`
-flags in the unit still work with it.
+Not yet verified on a real host: whether the few-second settle delay is long
+enough for an RDP seat to exist; the TCP forward through asyncssh with a real
+RDP client; and the remote dashboard menu in a pty. The display container
+image is `images:ubuntu/26.04/cloud` (weston 14.0.2 there; the original spike
+used Ubuntu 24.04 with weston 13): confirm the `--rdp-tls-key`, `--rdp-tls-cert`
+and `--shell=desktop` flags in the unit work with it.
+
+Found on a real host: a `disk` device in the display container's own config is
+mounted by Incus before systemd puts a fresh tmpfs over `/run`, which hides it.
+The display container therefore mounts the shared directory at
+`/srv/jailbee-display` (not under `/run`); client containers get theirs
+attached after boot and keep `/run/jailbee-display`.

@@ -57,7 +57,10 @@ def test_up_creates_provisions_and_publishes_the_port():
     incus.init.assert_called_once()
     assert incus.init.call_args.args[1] == rd.DISPLAY_CONTAINER
     devices = {c.args[1]: c.args[3] for c in incus.config_device_add.call_args_list}
-    assert devices["shared"]["path"] == "/run/jailbee-display"
+    # Not under /run: systemd mounts a tmpfs over it after Incus has mounted
+    # the device, which hides the shared directory from weston.
+    assert devices["shared"]["path"] == "/srv/jailbee-display"
+    assert not devices["shared"]["path"].startswith("/run")
     # weston creates the socket here, so the display container's own mount is writable.
     assert "readonly" not in devices["shared"]
     assert devices["rdp"] == {
