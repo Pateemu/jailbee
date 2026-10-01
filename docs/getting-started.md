@@ -198,10 +198,11 @@ What turning it on gets you:
   shared skills directory of every enabled agent that has one (claude, codex,
   gemini, opencode), so the in-container agents can drive `jailbee` commands
   for you.
-- **AI-written PRs.** `jailbee pr <name>` asks the in-container Claude for
-  the title, body, and branch name (`--no-ai` opts out per call). It runs on
-  Sonnet by default (`claude.ai_pr_model`), and follows your project's own
-  PR-writing rules if you state them in `claude.pr_prompt`.
+- **AI-written PRs.** `jailbee pr <name>` asks the container's own agent —
+  the one the repo autostarts, or whichever `pr.agent` names — for the title,
+  body, and branch name (`--no-ai` opts out per call). Claude runs on Sonnet by
+  default (`pr.model`), and the agent follows your project's own PR-writing
+  rules if you state them in `pr.prompt`.
 
 With `autostart: true`, every container comes up with Claude already
 running in a tmux window; `jailbee tmux <name>` drops you straight into it.
@@ -210,7 +211,8 @@ runs. Before leaning on it, read
 [Running an agent without prompts](security.md#running-an-agent-without-prompts)
 — it spells out exactly what an agent in that mode can and cannot reach,
 including the parts of the shared state layer it *can*. See
-[`config.md`](config.md#claude) for every `claude.*` key.
+[`config.md`](config.md#claude) for every `claude.*` key and
+[`pr`](config.md#pr) for how `jailbee pr` picks the agent that writes PRs.
 
 ## Next steps
 

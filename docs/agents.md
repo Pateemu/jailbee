@@ -199,6 +199,7 @@ append/reset semantics.
 | `shared` | list of `{subpath, path, type, seed, private}` | `[]` | Bind mounts from `<shared_dir>/<subpath>` to `<path>` inside the container. `type: dir` (default) or `type: file`; `seed` (file only) is written once if the target doesn't already exist; `private` (dir only) names subpaths inside the mount that stay per container — see §5. |
 | `egress_allow` | list[string] | `[]` | Hosts added to the strict-mode allowlist when this agent is enabled. Same `host[:port]`/CIDR grammar as top-level [`egress_allow`](config.md#egress_allow). |
 | `env` | map[string, string] | `{}` | Env vars passed to the install/update step *and* the autostart launch step. |
+| `headless` | string \| null | preset | One-shot command line that runs the agent once and prints its answer — what [`jailbee pr`](config.md#pr) uses to write PR text. Run in a `bash -lc` login shell in the repo directory; the prompt is in `$JAILBEE_PR_PROMPT` and the model (empty when none applies) in `$JAILBEE_PR_MODEL` — read both from the environment, never interpolate them. Presets set it for `claude`, `codex`, `gemini` and `opencode`; leave unset for an agent with no one-shot mode, and `pr.agent: auto` skips it. |
 | `skills_dir` | string \| null | preset | Container-side directory the agent reads user-level skills from (`~/.codex/skills`, …). When set and covered by a `shared` mount, `jailbee new`/`apply` copy the [bundled skills](#10-the-bundled-jailbee-skills) into the shared copy of it. Leave unset for an agent with no skills mechanism. |
 | `global_instructions` | `{dir, file}` \| null | preset | Where the agent reads host-wide instructions; `dir` is mounted read-only and must not overlap a `shared` mount in either direction, nor be `/`, `/etc`, `/usr`, `/home` or the home directory. `dir` is absolute or `~`-relative without `.`/`..` segments; `file` is a bare file name. Neither may contain a NUL byte. Only Claude's preset sets it today. |
 | `install_jailbee_skills` | bool | `true` | `false` keeps this agent's shared skills directory untouched by jailbee's bundled skills. Does nothing when `skills_dir` is unset or no `shared` mount covers it. A disabled agent gets nothing either way. |
@@ -470,16 +471,17 @@ Claude carries every generic field from the table in
 [Writing your own agent](#4-writing-your-own-agent) — `enabled`,
 `autostart`, `command`, `install`/`update`, `auto_update`, `install_network`,
 `shared`, `egress_allow`, `env`, `skills_dir`, `install_jailbee_skills` —
-plus Claude-only fields for its deeper integration (AI-generated PR
-descriptions, plugin marketplace egress, agent view, onboarding seeding):
+plus Claude-only fields for its deeper integration (plugin marketplace
+egress, agent view, onboarding seeding):
 
 - `plugins_enabled`
 - `agent_view`
-- `ai_pr_description`
-- `ai_pr_branch`
-- `pr_prompt`
-- `ai_pr_model`
-- `ai_pr_timeout`
+- `seed_onboarding`
+
+The AI-written PR descriptions are not Claude-only any more: they are the
+agent-neutral [`pr:` block](config.md#pr), whose `pr.agent` picks which agent
+runs (`auto` = the repo's own). Claude's `headless` command is what `jailbee pr`
+runs for it, and `claude-jb` runs the same command through the LiteLLM wrapper.
 
 Full field-by-field descriptions for these live in the
 [`claude` section of Configuration reference](config.md#claude) — that

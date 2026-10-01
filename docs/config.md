@@ -1334,6 +1334,7 @@ to share" rule, and a worked example live in
 | `shared` | list of `{subpath, path, type, seed}` | `[]` | Bind mounts from `<shared_dir>/<subpath>` to `<path>`. `type: dir` (default) or `file`; `seed` (file only) is written once if the target is absent. |
 | `egress_allow` | list[string] | `[]` | Strict-mode allowlist entries added while this agent is enabled. Same grammar as top-level [`egress_allow`](#egress_allow). |
 | `env` | map[string, string] | `{}` | Env vars passed to the install/update step and the autostart launch step. |
+| `headless` | string \| null | preset | One-shot command line `jailbee pr` runs to write PR text (see [`pr`](#pr)): run in a `bash -lc` login shell in the repo directory, with the prompt in `$JAILBEE_PR_PROMPT` and the model (empty when none applies) in `$JAILBEE_PR_MODEL`. Read both from the environment — never interpolate them. Presets set it for `claude`, `codex`, `gemini` and `opencode`; `aider` and `grok` have none. |
 | `skills_dir` | string \| null | preset | Container-side directory the agent reads user-level skills from (`~/.codex/skills`, …). When set and covered by a `shared` mount, `jailbee new`/`apply` copy the bundled jailbee skills into the shared copy of it — see [the bundled skills](agents.md#10-the-bundled-jailbee-skills). The four skill-capable presets set it; leave unset for an agent with no skills mechanism. Rejected at load if empty or carrying a `.` / `..` segment — the value is joined onto a host-side path. |
 | `install_jailbee_skills` | bool | `true` | `false` keeps this agent's shared skills directory untouched by jailbee's bundled skills. Does nothing when `skills_dir` is unset or no `shared` mount covers it. A disabled agent gets nothing either way. The pre-1.0 `claude.install_gie_skills` name was retired in 1.1.0: a config still using it fails to load with an error naming this key. |
 
@@ -1384,11 +1385,6 @@ out.
 | `claude.auto_update` | bool | `true` | When `true`, `jailbee new` runs `claude update` inside the container so the shared install advances to the latest release. When `false`, an existing install is left untouched, but a missing one is still installed. Has no effect when `claude.enabled: false`. |
 | `claude.agent_view` | bool | `false` | When `false`, containers get `CLAUDE_CODE_DISABLE_AGENT_VIEW=1`, which turns off Claude Code's agent view (`claude agents`, `--bg`, `/background`) and its on-demand background daemon. The daemon's `daemon.lock` lives in the `~/.claude` every container of the repo shares, so daemons in two containers take it from each other and background jobs die. Set to `true` if you run one container of the repo at a time. Takes effect on `jailbee apply`. Has no effect when `claude.enabled: false`. See [agents.md](agents.md#what-the-containers-of-a-repo-share). |
 | `claude.seed_onboarding` | bool | `true` | When `true` (requires `claude.enabled: true`), `jailbee init` / `jailbee apply` mark a **fresh** `<shared_dir>/claude/.claude.json` as already onboarded (`hasCompletedOnboarding`) and accept the trust dialog for the repo's in-container path, but only when this repo's credential group (see [`credentials`](#credentials)) already holds a login. Claude Code's first-run wizard is gated on that flag alone and never inspects the mounted credential, so without this every new container — and every scratch directory, which has no repo config to inherit state from — asks for a `/login` the shared credential has already answered. With no shared login there is nothing to adopt and the wizard runs as before, which is what walks the user through the login that does have to happen. A config home Claude Code has already written is never touched. Has no effect when `claude.enabled: false`. |
-| `claude.ai_pr_description` | bool | `true` | When `true` (and `claude.enabled` is `true`), `jailbee pr` generates the PR title and body by invoking Claude inside the container, showing a spinner while it runs. Falls back to commit-subject title + placeholder body on any Claude failure with a warning. Pass `--no-ai` to opt out per-invocation without changing config. Has no effect when `claude.enabled: false`. |
-| `claude.ai_pr_branch` | bool | `true` | When `true` (and `claude.enabled` is `true`), `jailbee pr` asks the in-container Claude to propose a convention-following PR head branch name when opening a **new** PR. Has no effect when `claude.enabled: false`. |
-| `claude.ai_pr_model` | string \| null | `"sonnet"` | Model passed to `claude --model` when generating the PR text. Writing a description is a bounded job, and pinning it means the generation does not compete for the same budget as the coding work that just happened in the container. Accepts an alias (`sonnet`, `opus`, `haiku`) or a full model ID; `null` omits the flag so the container's own default model applies. `haiku` works but has a smaller context window, so a large cumulative diff may not fit. Rejected at load if it is not a single whitespace-free token. Has no effect when `claude.enabled: false` or `claude.ai_pr_description: false`. |
-| `claude.pr_prompt` | string \| null | `null` | Project-specific PR-writing instructions, usually a YAML block scalar in a repo's `.jailbee/config.yaml`. Embedded in JailBee's own prompt as a delimited section that **outranks** the generic title/body guidance, so a project can dictate the shape of its descriptions — but it is placed before the JSON response contract, which it cannot override. Whitespace-only is treated as unset; capped at 20 000 characters. Has no effect when `claude.enabled: false` or `claude.ai_pr_description: false`. |
-| `claude.ai_pr_timeout` | int | `600` | Seconds `jailbee pr` gives the in-container Claude to produce the PR text before falling back to a placeholder. Generation is an agentic run, not one model call — it reads the log, the cumulative diff, the PR template, the branch's spec and the CI config across a dozen-plus turns, so the cost scales with the repository, not just with the diff. Measured in JailBee's own repo on a 21-file/+940 diff: 109 s. Raise it for a large tree, or when `claude.pr_prompt` asks for work that takes longer. Must be positive — to switch generation off use `claude.ai_pr_description: false`. Has no effect when `claude.enabled: false` or `claude.ai_pr_description: false`. |
 
 Example global config:
 
@@ -1398,17 +1394,56 @@ claude:
   plugins_enabled: true
 ```
 
-### Encoding a project's PR standard
+### `pr`
+
+How `jailbee pr` writes a pull request's title, body and head branch name.
+These settings used to hang off the Claude agent (`claude.ai_pr_*`,
+`claude.pr_prompt`); they describe `jailbee pr`, not Claude, so they moved. The
+old spelling still loads — each key is folded into `pr:` before the layers merge
+(so a repo's old key still beats the global `pr:`), with a deprecation notice
+naming the file — and is removed in 2.0.0.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `pr.agent` | string | `auto` | Which in-container agent writes the PR text. `auto` picks the repo's own agent (see below). Name an agent (`claude`, `codex`, …) to pin it, or `claude-jb` to run Claude through the [LiteLLM wrapper](#litellm). A pinned agent must be enabled and have a `headless` command; if it cannot be used `jailbee pr` says what to change and falls back to a placeholder — it never quietly uses another agent. Settable in `global.yaml` and per repo. |
+| `pr.ai_description` | bool | `true` | When `true`, `jailbee pr` generates the PR title and body from the branch's commits and diff, showing a spinner while it runs. Falls back to a commit-subject title + placeholder body on any failure, with a warning. Pass `--no-ai` to opt out per invocation. |
+| `pr.ai_branch` | bool | `true` | When `true`, `jailbee pr` asks the agent to propose a convention-following head branch name when opening a **new** PR. Has no effect when `pr.ai_description: false`. |
+| `pr.model` | string \| null | agent's own | Model passed as `--model`. Left **unset**, Claude (and `claude-jb`) use `sonnet` — writing a description is a bounded job, and pinning it keeps generation from competing for the budget of the coding work — and every other agent uses its own default. Accepts an alias or a full model ID. An explicit `null` omits the flag on every agent, so the container's default model applies. `haiku` works but has a smaller context window. Rejected at load if it is not a single whitespace-free token. |
+| `pr.prompt` | string \| null | `null` | Project-specific PR-writing instructions, usually a YAML block scalar in a repo's `.jailbee/config.yaml`. Embedded in JailBee's own prompt as a delimited section that **outranks** the generic title/body guidance, so a project can dictate the shape of its descriptions — but it is placed before the JSON response contract, which it cannot override. Whitespace-only is treated as unset; capped at 20 000 characters. |
+| `pr.timeout` | int | `600` | Seconds `jailbee pr` gives the agent to produce the PR text before falling back to a placeholder. Generation is an agentic run, not one model call — it reads the log, the cumulative diff, the PR template, the branch's spec and the CI config across a dozen-plus turns, so the cost scales with the repository, not just with the diff. Measured in JailBee's own repo on a 21-file/+940 diff: 109 s. Raise it for a large tree, or when `pr.prompt` asks for slower work. Must be positive — to switch generation off use `pr.ai_description: false`. |
+
+**What `auto` picks.** Among the enabled agents, the ones with `autostart` on
+first, then every enabled one; inside each group Claude first and then by name;
+the first with a `headless` command wins. So a repo that autostarts codex gets
+codex to write its PRs, a repo with only Claude enabled gets Claude, and a repo
+whose autostart agent has no one-shot mode (aider) still falls back to Claude if
+it is enabled. When `litellm.autostart` is on, Claude runs as `claude-jb`, as it
+does in the autostart window. With no usable agent at all, AI generation is
+simply off — not an error. A pinned agent that is unusable *is* reported.
+
+Only Claude is exercised in production. The `codex`, `gemini` and `opencode`
+`headless` commands are taken from each tool's docs and have never been run
+against a live agent; if one is wrong, override it for that agent
+(`agents.<name>.headless`) — see [agents.md](agents.md#4-writing-your-own-agent).
+
+```yaml
+# ~/.config/jailbee/global.yaml — every repo, unless it says otherwise
+pr:
+  agent: codex
+  timeout: 900
+```
+
+#### Encoding a project's PR standard
 
 `jailbee pr` already reads `.github/pull_request_template.md`, the spec or
 issue a branch implements, and `CONTRIBUTING.md` / `CLAUDE.md` / `AGENTS.md`
-before writing anything. `claude.pr_prompt` is for the rules that live in
+before writing anything. `pr.prompt` is for the rules that live in
 none of those files — commit them to the repo's `.jailbee/config.yaml` so
 every container generates descriptions the same way:
 
 ```yaml
-claude:
-  pr_prompt: |
+pr:
+  prompt: |
     Body sections, in this order and with these exact headings:
       ## Why      — the user-visible problem, one paragraph, no implementation
       ## What     — bullets, each naming the file or symbol it changed
@@ -1419,7 +1454,7 @@ claude:
 
 These instructions win over JailBee's generic guidance where the two
 disagree, which is why the block cannot break generation: the response
-format Claude has to return is stated after it and stays JailBee's.
+format the agent has to return is stated after it and stays JailBee's.
 
 The claude shared caches are not present in the `shared_caches:` default
 list — they are auto-added by `Config.effective_shared_caches()` when

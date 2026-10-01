@@ -921,7 +921,7 @@ branch). Passing `--as` skips the lookup entirely — it already says you want a
 separate PR. The lookup is best-effort: no `gh`, no network or an origin that
 is not on GitHub simply means the ordinary create path runs.
 
-Without this, the AI-proposed head branch name (`claude.ai_pr_branch`) would
+Without this, the AI-proposed head branch name (`pr.ai_branch`) would
 publish the work under a *new* branch and `gh pr create` would happily open a
 duplicate PR for it.
 

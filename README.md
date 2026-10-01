@@ -92,7 +92,7 @@ sped up and say so on screen; nothing else is edited.
   never read. The Anthropic hosts are added to the strict-mode allowlist
   automatically, JailBee's own skills teach the in-container Claude to drive
   `jailbee`, and `jailbee pr` writes the PR title and body — to your repo's own
-  standard, if you state one in `claude.pr_prompt`. Start it
+  standard, if you state one in `pr.prompt`. Start it
   automatically in a tmux window and the container is ready for an
   unattended run the moment it boots — with permission prompts turned off
   (`--dangerously-skip-permissions`), because the boundary is the container

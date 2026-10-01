@@ -10,6 +10,19 @@ before editing `## Unreleased`.
 
 ### Added
 
+- **`jailbee pr` can use any agent, not just Claude.** A new `pr:` block
+  (`agent`, `ai_description`, `ai_branch`, `model`, `prompt`, `timeout`) says
+  how the PR title, body and branch name are written. `pr.agent: auto`, the
+  default, uses the repo's own agent: the one it autostarts (Claude preferred,
+  and `claude-jb` when `litellm.autostart` is on), so a repo that runs codex
+  gets codex. Name an agent to pin it — in `global.yaml` for every repo, or per
+  repo. A pinned agent that cannot be used is reported rather than quietly
+  swapped for another. Agents opt in through the new `agents.<name>.headless`
+  setting, the one-shot command line `jailbee pr` runs; presets exist for
+  `claude`, `codex`, `gemini` and `opencode` (only Claude's is exercised in
+  production), while `aider` and `grok` have none. Claude's behaviour is
+  unchanged, including its `sonnet` default for PR text.
+
 - **Host-wide agent instructions.** Write `~/.config/jailbee/AGENTS.md` once on
   the host and every container of every repo with Claude enabled gets it
   read-only as Claude Code's managed-policy memory
@@ -199,6 +212,11 @@ before editing `## Unreleased`.
 
 ### Deprecated
 
+- `agents.claude.ai_pr_description`, `ai_pr_branch`, `ai_pr_model`,
+  `ai_pr_timeout` and `pr_prompt` (and the same keys under the legacy `claude:`
+  block) move to `pr.ai_description`, `pr.ai_branch`, `pr.model`, `pr.timeout`
+  and `pr.prompt`. The old spelling still loads, per file and with a notice
+  naming that file, and is removed in 2.0.0.
 - `github.api_tokens`, `credentials.repos`, and repo-scope egress overrides
   stored in `state.sqlite` are deprecated and will be removed in 2.0.0.
   `jailbee config migrate --apply` moves these values into the host-local

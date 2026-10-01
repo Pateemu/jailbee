@@ -1625,7 +1625,20 @@ jailbee shell feat-noaismoke
 cd ~/SampleApp && echo x > x.txt && git add . && git commit -m "wip no-ai" && exit
 jailbee pr feat-noaismoke --no-ai  # uses commit subject + placeholder
 jailbee destroy feat-noaismoke --force
-# Opt out permanently: set claude.ai_pr_description: false in config.
+# Opt out permanently: set pr.ai_description: false in config.
+
+# Another agent writes the text: enable codex (or any agent with a `headless`
+# command), pin it in global.yaml, and watch which agent the spinner names.
+#   pr:
+#     agent: codex
+jailbee new feat/codexpr
+jailbee shell feat-codexpr
+cd ~/SampleApp && echo x > x.txt && git add . && git commit -m "wip codex" && exit
+jailbee pr feat-codexpr            # spinner and any warning say "codex", not "Claude"
+jailbee destroy feat-codexpr --force
+# A pinned agent that is off must be reported, not replaced:
+#   pr: {agent: gemini}   with agents.gemini unset
+jailbee pr feat-codexpr --description   # warns: set agents.gemini.enabled
 
 # Adoption: a `jailbee new --pr` (review) container no longer refuses `jailbee pr`
 # outright — it asks whether to push the container's commits to that PR's
@@ -1698,7 +1711,7 @@ jailbee destroy feat-prsmoke --force
 # Cleanup (closes nothing on GitHub — close/delete the smoke PR manually).
 git push origin --delete feat/prsmoke   # requires explicit user approval
 
-# AI-generated head branch name (requires claude.enabled + claude.ai_pr_branch):
+# AI-generated head branch name (requires an enabled agent with `headless` + pr.ai_branch):
 jailbee new dev-7           # generic container/branch name
 jailbee shell dev-7
 cd ~/SampleApp && echo x > x.txt && git add . && git commit -m "wip" && exit

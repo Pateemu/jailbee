@@ -1200,29 +1200,35 @@ submodule, resolved against the submodule's own repo and remote.
 head is fixed, so a different branch name would leave the PR untouched.
 `--pr` and `--as` together are a usage error (exit 2).
 
-When `claude.enabled` and `claude.ai_pr_description` are on (both default), a new
-PR's **title and body are written by the container's Claude CLI**, and
-`claude.ai_pr_branch` proposes a convention-following head branch name (confirmed
-interactively). Opt out with `--no-ai`, or override per field with
-`--title`/`--body`/`--as`. Updating an existing PR leaves the description alone
-unless you pass `--description` (regenerate with Claude), `--title`/`--body`, or
-accept the prompt — which is offered only for a PR JailBee itself created.
+When `pr.ai_description` is on (the default) and the container has an agent with
+a one-shot (`headless`) mode, a new PR's **title and body are written by that
+agent**, and `pr.ai_branch` proposes a convention-following head branch name
+(confirmed interactively). Which agent is `pr.agent`: `auto` (default) is the
+repo's own — the autostart agent, Claude preferred, `claude-jb` when
+`litellm.autostart` is on; name one (`codex`, `claude-jb`, ...) to pin it. A
+pinned agent that is not enabled or has no `headless` command is reported and the
+placeholder is used — never another agent. Opt out with `--no-ai`, or override per
+field with `--title`/`--body`/`--as`. Updating an existing PR leaves the
+description alone unless you pass `--description` (regenerate with the agent),
+`--title`/`--body`, or accept the prompt — which is offered only for a PR JailBee
+itself created.
 `--force` force-pushes (with lease) a rebased/amended branch.
 
 The generation reads the branch's commits and cumulative diff, plus
 `.github/pull_request_template.md`, the spec or issue the branch implements, and
-`CONTRIBUTING.md` / `CLAUDE.md` / `AGENTS.md`. It runs on `claude.ai_pr_model`
-(default `sonnet`; `null` inherits the container's default model). A repo can
-state its own PR conventions in `claude.pr_prompt` — those instructions outrank
-JailBee's generic guidance about the title and body.
+`CONTRIBUTING.md` / `CLAUDE.md` / `AGENTS.md`. It runs on `pr.model` (left unset:
+`sonnet` for Claude and `claude-jb`, the agent's own default for any other;
+an explicit `null` inherits the container's default model). A repo can state its
+own PR conventions in `pr.prompt` — those instructions outrank JailBee's generic
+guidance about the title and body.
 
 It is explicitly told **not** to run the project's tests, build, linters or
 installers, and to describe how the change was tested from the commits and the
 CI config instead — the run has a fixed budget while a test suite's cost belongs
-to the repository. `claude.ai_pr_timeout` (default 600 s) bounds the whole run;
+to the repository. `pr.timeout` (default 600 s) bounds the whole run;
 on expiry `jailbee pr` warns and falls back to a placeholder title/body, which
 you can replace later with `jailbee pr --description`. Raise the timeout for a
-large tree, or when `claude.pr_prompt` asks for slower work.
+large tree, or when `pr.prompt` asks for slower work.
 
 ## The PR review outbox — `jailbee review`
 
@@ -1262,10 +1268,10 @@ last resort is the placeholder text. **`--no-ai` does not disable the
 outbox** — a manifest is text that already exists, not an AI run, so
 `--no-ai` only turns off the *generation* step. On an update, a pending
 outbox description also outranks `--description`: `jailbee pr -d` with a
-manifest pending applies the manifest and never calls Claude; `--no-outbox`
+manifest pending applies the manifest and never calls an agent; `--no-outbox`
 is what forces the regeneration `-d` asks for.
 
-One more consequence worth calling out: `claude.ai_pr_branch: false`
+One more consequence worth calling out: `pr.ai_branch: false`
 normally keeps the head branch name as the container's own, but it no
 longer suppresses a rename when the outbox manifest itself proposes a
 branch — the manifest's proposal is confirmed like an AI one regardless of

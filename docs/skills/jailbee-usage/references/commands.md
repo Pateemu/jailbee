@@ -1063,15 +1063,18 @@ Requires `gh` authenticated on the host. No NAME + a TTY → picker.
 | `--retarget` / `--no-retarget` | Move (or don't) the container's base branch to the stacked PR's base after opening it. Default: ask on a TTY, otherwise skip and print the command. Only acted on when a stacked PR is opened. |
 | `--pr N` | Push to existing PR N instead of opening a new one, when the container's branch is not named like N's head branch. Mutually exclusive with `--as` (exit 2). Refuses a closed/merged or fork PR; retargeting from another number takes a confirmation. |
 | `--yes` / `-y` | Answer the confirmations asked on a `jailbee new --pr` container: the one-time publish choice (adopt PR #N's head — its meaning before `--stacked` existed) and the `--force` overwrite gate. Required when there is no TTY, unless `--stacked` settles the choice. |
-| `--no-ai` | Skip AI generation of the title/body (even when `claude.ai_pr_description` is on); keep the container branch name as-is. Does **not** ignore a description already written in the container's outbox — that is `--no-outbox`. |
+| `--no-ai` | Skip AI generation of the title/body (even when `pr.ai_description` is on); keep the container branch name as-is. Does **not** ignore a description already written in the container's outbox — that is `--no-outbox`. |
 | `--no-outbox` | Ignore a PR description written in the container's outbox. See [PR review outbox](#pr-review-outbox). |
 | `--force` | Force-push the PR head with `--force-with-lease` (rebased/amended branch); refuses if the remote moved. Requires an explicit NAME. On a PR JailBee did not create it first asks to confirm overwriting that head (`--yes` skips; no TTY → error). |
 | `--web` | Open the PR in the browser afterwards. |
 | `-b` / `--branch <b>` | Override branch detection. |
 
-When `claude.enabled` + `claude.ai_pr_description` (both default on), a new PR's
-title/body come from the container's Claude CLI; `claude.ai_pr_branch` similarly
-proposes the head branch name (confirmed interactively). On an existing PR the
+When `pr.ai_description` is on (the default) and the container has an agent with a
+`headless` command, a new PR's title/body come from that agent — `pr.agent`,
+default `auto` = the repo's own autostart agent (Claude preferred, `claude-jb` when
+`litellm.autostart` is on); a pinned agent that cannot be used is reported, never
+swapped. `pr.ai_branch` similarly proposes the head branch name (confirmed
+interactively). On an existing PR the
 description is left untouched unless you pass `--description`, `--title`/`--body`,
 or accept the interactive prompt — which is only offered for a PR JailBee itself
 created.
@@ -1079,19 +1082,21 @@ created.
 Generation reads the commits and cumulative diff, `.github/pull_request_template.md`,
 the spec or issue the branch implements, and `CONTRIBUTING.md` / `CLAUDE.md` /
 `AGENTS.md`, and links a referenced issue with `Closes #N` when it can reach
-`gh`. It runs on `claude.ai_pr_model` (default `sonnet`; `null` inherits the
-container's default). `claude.pr_prompt` adds project-specific instructions that
+`gh`. It runs on `pr.model` (unset: `sonnet` for Claude/`claude-jb`, the agent's
+own default for others; `null` inherits the container's default). `pr.prompt` adds project-specific instructions that
 outrank JailBee's generic title/body rules — see the config-schema reference in
 the `jailbee-repo-setup` skill.
 
 The prompt forbids running the project's tests, build, linters or installers —
 testing is described from the commits and the CI config, because the run's budget
-is fixed while a suite's cost is the repository's. `claude.ai_pr_timeout`
+is fixed while a suite's cost is the repository's. `pr.timeout`
 (default 600 s) bounds the run; on expiry you get a warning plus a placeholder
 description, fixable afterwards with `jailbee pr --description`. The warning also
 names the container and the session id of the attempt, so you can see how far it
 got: `jailbee shell <name>`, then `claude --resume <id>` — Claude writes its
-transcript as it works, so a run that ran out of budget is still on disk.
+transcript as it works, so a run that ran out of budget is still on disk. (Only
+Claude and `claude-jb` leave one; for any other agent the warning just says to
+raise `pr.timeout`.)
 
 ## PR review outbox
 
@@ -1164,7 +1169,7 @@ it. Omit `MANIFEST` to drop everything pending in the container.
   applying it asks once, `Replace PR #N's description with the one
   <manifest> proposes? [y/N]`. Off a TTY the answer is no. Declining
   consumes nothing — `jailbee review apply` still publishes it.
-- **`claude.ai_pr_branch: false` does not suppress a rename the manifest
+- **`pr.ai_branch: false` does not suppress a rename the manifest
   itself proposes.** The branch field in a `description` action is
   confirmed like an AI-proposed name regardless of that toggle.
 - After a successful create or update, if non-description actions
@@ -1386,7 +1391,7 @@ cannot reuse the container-side submodule-default logic, which hardcodes
 `origin` for its own callers.
 
 Head branch (the name pushed to the submodule's upstream): `--as` > Claude's
-proposal (`claude.ai_pr_branch`, confirmed interactively) > the branch the
+proposal (`pr.ai_branch`, confirmed interactively) > the branch the
 commits were read from (`--branch`, else the submodule's current branch in
 the container). A detached submodule with no `--branch` still publishes (from
 its `HEAD` ref) but needs `--as` or the AI to name the branch; without either,
