@@ -95,6 +95,36 @@ Profile selection order is `claude-jb --profile NAME`, then
 `--profile` is consumed by the wrapper, not passed to Claude Code. Use plain
 `claude` for native access, not `--profile native`.
 
+### Profile instructions
+
+A profile may carry `instructions`: model-policy text that `claude-jb` appends
+to Claude Code's system prompt in sessions of that profile. Use it for guidance
+that depends on what the tiers map to. The host-wide `~/.config/jailbee/AGENTS.md`
+cannot do this, because plain `claude` reads it too.
+
+```yaml
+litellm:
+  profiles:
+    codex:
+      instructions: |
+        Every tier here runs a GPT-6 model, not a Claude one. Use the opus tier
+        for planning and review, sonnet for edits and haiku for lookups.
+```
+
+- A higher layer replaces the text whole (a repo's `litellm.profiles.codex.instructions`
+  beats the host's); `null` removes it. Texts are never concatenated across layers.
+- It is at most 64 KiB, and an empty string is rejected.
+- It reaches sessions started **after `jailbee apply`**; unlike `AGENTS.md`, it is
+  rendered into `/etc/jailbee/litellm.json` only by `apply` and `new`.
+- Order in the prompt: the host-wide `AGENTS.md` (as managed memory), then the
+  profile's text, then your own `--append-system-prompt` /
+  `--append-system-prompt-file`. `claude-jb` merges your flags into one argument
+  after the profile's text; with no profile text they pass through unchanged.
+  Everything after `--` is passed to Claude Code untouched.
+- Plain `claude` and profiles without `instructions` are unaffected. It is
+  guidance to the model, not enforcement, and the container cannot change it.
+- `jailbee config edit` edits it in a multi-line prompt (Ctrl-S commits).
+
 `claude-jb` gives Claude Code one model name per tier of the selected profile,
 and the name comes from the profile and tier, not from the route:
 `jb.<profile>.<level>`, where the level is `most-capable` (Fable), `capable`

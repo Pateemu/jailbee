@@ -2466,7 +2466,7 @@ keys that change the provider, endpoint or credential, such as `model`,
 fields). A route's `egress`, like `litellm.egress`, reaches the proxy's allowlist
 whenever `jailbee apply` restarts an instance for another reason; an edit that
 changes nothing else needs `jailbee litellm up`. Profiles also accept `account` (from `accounts`; required when the
-profile maps a `chatgpt/` route) and `effort` as the default session effort. `jailbee litellm up` renders changes
+profile maps a `chatgpt/` route) and `effort` as the default session effort, and `instructions` (model-policy text appended to Claude Code's system prompt; see [Profile instructions](litellm.md#profile-instructions)). `jailbee litellm up` renders changes
 and restarts the instance if needed; `jailbee apply` also re-renders the proxy
 and restarts the instances whose routes changed (`--no-restart` defers it), and
 synchronizes the gateway file/key into each running dev container.
