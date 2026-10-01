@@ -722,3 +722,85 @@ def test_publishing_itself_stays_allowed(argv, monkeypatch) -> None:
     monkeypatch.delenv("JAILBEE_REMOTE_SSH", raising=False)
 
     assert policy_allows(argv, FULL)
+
+
+@pytest.mark.parametrize("leaf", ["browse", "ls", "show", "drop", "apply"])
+def test_outbox_leaves_follow_policy(leaf):
+    argv = ("outbox", leaf)
+    if leaf in {"show", "drop", "apply"}:
+        argv += ("box", "pr/a.json")
+    assert command_path(argv) == f"outbox {leaf}"
+    assert policy_allows(argv, FULL) == f"outbox {leaf}"
+    assert policy_allows(argv, RemoteCommandPolicy(mode="allowlist", allow=[f"outbox {leaf}"])) == f"outbox {leaf}"
+
+
+@pytest.mark.parametrize("argv", [("outbox",), ("outbox", "feature"), ("outbox", "lss"), ("outbox", "browse", "apply")])
+def test_outbox_shorthand_is_browse_not_help(argv):
+    assert command_path(argv) == "outbox browse"
+    assert command_leaf(argv)[0] == "outbox browse"
+    assert policy_allows(argv, FULL) == "outbox browse"
+    with pytest.raises(RouteError, match="not allowed: outbox browse"):
+        policy_allows(argv, RemoteCommandPolicy(mode="allowlist", allow=["outbox apply"]))
+    with pytest.raises(RouteError, match="disabled"):
+        policy_allows(argv, RemoteCommandPolicy())
+
+
+@pytest.mark.parametrize("options", [("--yes",), ("-y",), ("-yy",), ("--yes=true",), ("--yes=false",), ("-fy",)])
+def test_outbox_apply_never_skips_confirmation(options):
+    argv = ("outbox", "apply", "box", "pr/a.json", *options)
+    for policy in (FULL, RemoteCommandPolicy(mode="allowlist", allow=["outbox apply"])):
+        with pytest.raises(RouteError):
+            policy_allows(argv, policy)
+    with pytest.raises(RouteError):
+        check_arguments(argv)
+
+
+@pytest.mark.parametrize("argv", [
+    ("outbox", "feature", "-c/x"),
+    ("outbox", "browse", "--config=/x"),
+    ("outbox", "apply", "box", "pr/a.json", "-yc/x"),
+    ("outbox", "--config", "ls", "apply", "box", "pr/a.json", "-y"),
+    ("outbox", "--config=/x", "feature"),
+    ("outbox", "-c/x"),
+])
+def test_outbox_host_config_is_denied(argv):
+    with pytest.raises(RouteError):
+        policy_allows(argv, FULL)
+    with pytest.raises(RouteError):
+        check_arguments(argv)
+
+
+@pytest.mark.parametrize("argv", [("outbox",), ("outbox", "feature"), ("outbox", "ls", "--all-repos"), ("outbox", "show", "secret-box", "pr/a.json"), ("outbox", "drop", "box", "pr/a.json"), ("outbox", "apply", "box", "pr/a.json")])
+def test_outbox_exclusions_remain_fail_closed(argv):
+    with pytest.raises(RouteError, match="unavailable when SSH repository exclusions"):
+        policy_allows(argv, FULL, scope=RemoteRepoScope(frozenset({"secret"})))
+
+
+def test_outbox_group_help_remains_available():
+    policy = RemoteCommandPolicy(mode="allowlist", allow=["outbox apply"])
+    assert policy_allows(("outbox", "--help"), policy) == "outbox"
+    assert policy_allows(("outbox", "apply", "--help"), policy) == "outbox apply"
+
+
+@pytest.mark.parametrize("options", [("--yes",), ("-y",), ("-yy",)])
+def test_outbox_confirmation_denial_uses_real_parameter_source(options):
+    from typer._click.core import ParameterSource
+
+    argv = ("outbox", "apply", "box", "pr/a.json", *options)
+    _, command = command_leaf(argv)
+    with command.make_context("apply", list(argv[2:])) as ctx:
+        assert ctx.params["yes"] is True
+        assert ctx.get_parameter_source("yes") is ParameterSource.COMMANDLINE
+    with pytest.raises(RouteError, match="may not set --yes: outbox apply"):
+        policy_allows(argv, FULL)
+
+
+def test_outbox_normalized_argument_is_not_an_option():
+    assert policy_allows(("outbox", "browse", "--", "--config=/x"), FULL) == "outbox browse"
+    assert policy_allows(("outbox", "apply", "box", "pr/a.json", "--dry-run", "--force"), FULL) == "outbox apply"
+
+
+def test_outbox_shorthand_route_preserves_argv(engine, repo, configured_ssh):
+    result = route("--repo project outbox feature", configured_ssh, engine=engine)
+    assert result.argv == ("outbox", "feature")
+    assert result.repo_root == repo
