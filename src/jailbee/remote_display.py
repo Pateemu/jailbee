@@ -38,6 +38,9 @@ HOST_RDP_PORT = 13389
 RDP_PORT_ADDRESS = f"localhost:{RDP_PORT}"
 CLIENT_WAIT_SECONDS = 120.0
 CLIENT_POLL_SECONDS = 2.0
+# An established TCP connection precedes the TLS/RDP handshake and weston's
+# seat, so a connection must survive this long before it counts as a client.
+SEAT_SETTLE_SECONDS = 3.0
 
 _IMAGE = "images:ubuntu/26.04/cloud"
 _SERVICE_WAIT_SECONDS = 60
@@ -231,18 +234,33 @@ def client_connected(incus: Incus) -> bool:
     return out.strip() not in ("", "0")
 
 
+def client_ready(
+    incus: Incus,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    settle_s: float = SEAT_SETTLE_SECONDS,
+) -> bool:
+    """A client that is connected now and still connected after the settle."""
+    if not client_connected(incus):
+        return False
+    sleep_fn(settle_s)
+    return client_connected(incus)
+
+
 def wait_for_client(
     incus: Incus,
     *,
     timeout_s: float = CLIENT_WAIT_SECONDS,
     poll_s: float = CLIENT_POLL_SECONDS,
     sleep_fn: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
 ) -> bool:
-    for _ in range(max(1, int(timeout_s / poll_s))):
-        if client_connected(incus):
+    deadline = clock() + timeout_s
+    while True:
+        if client_ready(incus, sleep_fn):
             return True
+        if clock() >= deadline:
+            return False
         sleep_fn(poll_s)
-    return client_connected(incus)
 
 
 @dataclass(frozen=True)
@@ -297,6 +315,7 @@ def prepare_shared_display(
     say: Callable[[str], None],
     sleep_fn: Callable[[float], None] = time.sleep,
     wait_seconds: float = CLIENT_WAIT_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
 ) -> None:
     """Make the shared display ready for one launch from an SSH session.
 
@@ -313,12 +332,12 @@ def prepare_shared_display(
         display_up(incus, on_step=say, sleep_fn=sleep_fn)
     ensure_display_mount(incus, container)
     record_grant(fingerprint, GRANT_HOST, HOST_RDP_PORT, container)
-    if client_connected(incus):
+    if client_ready(incus, sleep_fn):
         return
     for line in format_connection_info(connection_info(ssh_port)):
         say(line)
     say("Waiting for an RDP client...")
-    if not wait_for_client(incus, timeout_s=wait_seconds, sleep_fn=sleep_fn):
+    if not wait_for_client(incus, timeout_s=wait_seconds, sleep_fn=sleep_fn, clock=clock):
         raise DisplayError(
             f"No RDP client connected within {int(wait_seconds)}s. Open the tunnel, "
             f"connect to {RDP_PORT_ADDRESS}, then launch again."

@@ -15,7 +15,7 @@ fi
 RUN_USER="$(getent passwd "$JAILBEE_UID" | cut -d: -f1)"
 
 install -d -m 0700 -o "$RUN_USER" /etc/jailbee-display
-if [ ! -f /etc/jailbee-display/tls.key ]; then
+if [ ! -f /etc/jailbee-display/tls.key ] || [ ! -f /etc/jailbee-display/tls.crt ]; then
   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj /CN=jailbee-display \
     -keyout /etc/jailbee-display/tls.key -out /etc/jailbee-display/tls.crt 2>/dev/null
   chown "$RUN_USER" /etc/jailbee-display/tls.key /etc/jailbee-display/tls.crt

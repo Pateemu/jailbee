@@ -101,6 +101,19 @@ def test_down_stops_and_revokes_every_grant(mocker):
     assert display_grants.is_allowed("SHA256:a", "127.0.0.1", 13389) is False
 
 
+@pytest.mark.parametrize("listing", [[], [{"name": rd.DISPLAY_CONTAINER, "status": "Stopped"}]])
+def test_down_revokes_every_grant_when_the_display_is_not_running(mocker, listing):
+    incus = MagicMock()
+    incus.list_containers.return_value = listing
+    stop = mocker.patch("jailbee.remote_display.stop_container")
+    display_grants.record_grant("SHA256:a", "127.0.0.1", 13389, "feat-1")
+
+    rd.display_down(incus)
+
+    stop.assert_not_called()
+    assert display_grants.is_allowed("SHA256:a", "127.0.0.1", 13389) is False
+
+
 def test_client_connected_reads_established_connections():
     incus = MagicMock()
     incus.exec.return_value = "1\n"
@@ -113,20 +126,63 @@ def test_client_connected_reads_established_connections():
     assert rd.client_connected(incus) is False
 
 
-def test_wait_for_client_polls_until_connected():
+class _Clock:
+    """A fake clock that only moves when the injected sleep is called."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+    def __call__(self):
+        return self.now
+
+
+def test_wait_for_client_polls_until_connected_and_settled():
     incus = MagicMock()
-    incus.exec.side_effect = ["0\n", "0\n", "1\n"]
-    sleeps = []
+    incus.exec.side_effect = ["0\n", "0\n", "1\n", "1\n"]
+    clock = _Clock()
 
-    assert rd.wait_for_client(incus, timeout_s=10, poll_s=1, sleep_fn=sleeps.append) is True
-    assert sleeps == [1, 1]
+    assert rd.wait_for_client(incus, timeout_s=10, poll_s=1, sleep_fn=clock.sleep, clock=clock)
+    assert clock.sleeps == [1, 1, rd.SEAT_SETTLE_SECONDS]
 
 
-def test_wait_for_client_gives_up():
+def test_a_connection_that_drops_during_the_settle_is_not_ready():
+    incus = MagicMock()
+    incus.exec.side_effect = ["1\n", "0\n"]
+    clock = _Clock()
+
+    assert rd.client_ready(incus, clock.sleep) is False
+    assert clock.sleeps == [rd.SEAT_SETTLE_SECONDS]
+
+
+def test_a_stable_connection_is_ready_after_the_settle():
+    incus = MagicMock()
+    incus.exec.return_value = "1\n"
+    clock = _Clock()
+
+    assert rd.client_ready(incus, clock.sleep) is True
+    assert clock.sleeps == [rd.SEAT_SETTLE_SECONDS]
+
+
+def test_wait_for_client_continues_after_a_dropped_connection():
+    incus = MagicMock()
+    incus.exec.side_effect = ["1\n", "0\n", "1\n", "1\n"]
+    clock = _Clock()
+
+    assert rd.wait_for_client(incus, timeout_s=30, poll_s=1, sleep_fn=clock.sleep, clock=clock)
+
+
+def test_wait_for_client_gives_up_at_the_deadline():
     incus = MagicMock()
     incus.exec.return_value = "0\n"
+    clock = _Clock()
 
-    assert rd.wait_for_client(incus, timeout_s=3, poll_s=1, sleep_fn=lambda _s: None) is False
+    assert not rd.wait_for_client(incus, timeout_s=3, poll_s=1, sleep_fn=clock.sleep, clock=clock)
+    assert clock.sleeps == [1, 1, 1]
 
 
 def test_the_recipe_is_two_steps_with_a_host_placeholder():
@@ -147,7 +203,7 @@ def test_ensure_display_mount_tolerates_an_existing_device():
 def test_prepare_records_a_grant_and_returns_when_a_client_is_connected():
     incus = MagicMock()
     incus.list_containers.return_value = _running()
-    incus.exec.side_effect = ["active\n", "1\n"]  # service state, then client count
+    incus.exec.side_effect = ["active\n", "1\n", "1\n"]  # service, client, settled
     said = []
 
     rd.prepare_shared_display(
@@ -170,6 +226,7 @@ def test_prepare_without_a_client_prints_the_recipe_waits_and_fails():
     incus.list_containers.return_value = _running()
     incus.exec.side_effect = lambda *a, **k: "active\n" if "systemctl" in a[1] else "0\n"
     said = []
+    clock = _Clock()
 
     with pytest.raises(rd.DisplayError, match="RDP client"):
         rd.prepare_shared_display(
@@ -178,11 +235,13 @@ def test_prepare_without_a_client_prints_the_recipe_waits_and_fails():
             fingerprint="SHA256:a",
             ssh_port=8022,
             say=said.append,
-            sleep_fn=lambda _s: None,
+            sleep_fn=clock.sleep,
             wait_seconds=3,
+            clock=clock,
         )
 
     assert any("ssh -N -L" in line for line in said)
+    assert clock.sleeps == [rd.CLIENT_POLL_SECONDS, rd.CLIENT_POLL_SECONDS]
 
 
 def test_prepare_refuses_a_session_with_no_known_key():
