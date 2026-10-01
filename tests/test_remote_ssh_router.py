@@ -927,3 +927,11 @@ def test_explicit_outbox_mutation_remains_allowed_without_browser_privileges(lea
             policy_allows([*argv, "-y"], policy)
     else:
         assert policy_allows([*argv, "-y"], policy) == "outbox drop"
+
+
+def test_display_up_and_down_manage_the_host_and_status_does_not():
+    from jailbee.remote_ssh.router import is_host_command
+
+    assert is_host_command("display up") is True
+    assert is_host_command("display down") is True
+    assert is_host_command("display status") is False

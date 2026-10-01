@@ -10694,6 +10694,76 @@ def registry_status_cmd(config: ConfigOption = None) -> None:
     info(f"Registry mirror: {status.value}")
 
 
+display_app = typer.Typer(
+    name="display",
+    help="Shared RDP display for GUI apps launched over SSH.",
+    no_args_is_help=True,
+)
+app.add_typer(display_app)
+
+
+@display_app.command("up")
+def display_up_cmd(
+    recreate: Annotated[
+        bool,
+        typer.Option("--recreate", help="Delete the display container and provision it again."),
+    ] = False,
+    config: ConfigOption = None,
+) -> None:
+    """Start the shared RDP display and print how to connect to it."""
+    from jailbee.incus import Incus, IncusError
+    from jailbee.remote_display import (
+        DisplayError,
+        connection_info,
+        display_up,
+        format_connection_info,
+    )
+    from jailbee.tui import status_with_elapsed
+
+    _load_or_exit(config)
+    gcfg = _load_global()
+    try:
+        with status_with_elapsed("starting the shared display") as status:
+            display_up(Incus(), recreate=recreate, on_step=status.update)
+    except (IncusError, DisplayError) as e:
+        error(str(e))
+        raise typer.Exit(1) from e
+    success("Shared display running")
+    for line in format_connection_info(connection_info(gcfg.remote.ssh.port)):
+        info(line)
+
+
+@display_app.command("down")
+def display_down_cmd(config: ConfigOption = None) -> None:
+    """Stop the shared RDP display and revoke SSH forwarding to it."""
+    from jailbee.incus import Incus
+    from jailbee.remote_display import display_down
+
+    _load_or_exit(config)
+    display_down(Incus())
+    success("Shared display stopped")
+
+
+@display_app.command("status")
+def display_status_cmd(config: ConfigOption = None) -> None:
+    """Show the shared display's status and, when running, how to connect."""
+    from jailbee.incus import Incus
+    from jailbee.remote_display import (
+        DisplayStatus,
+        connection_info,
+        display_status,
+        format_connection_info,
+    )
+
+    _load_or_exit(config)
+    gcfg = _load_global()
+    status = display_status(Incus())
+    info(f"Shared display: {status.value}")
+    if status is DisplayStatus.RUNNING:
+        for line in format_connection_info(connection_info(gcfg.remote.ssh.port)):
+            info(line)
+
+
 litellm_app = typer.Typer(
     name="litellm",
     help="LiteLLM proxy for coding agents on other providers' models.",

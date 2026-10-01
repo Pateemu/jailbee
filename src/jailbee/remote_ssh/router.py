@@ -241,7 +241,7 @@ def command_path(argv: Sequence[str]) -> str:
 #     (a config decides host mounts and this very policy), `remote ...`;
 #   - host installation and host-level infrastructure: `setup`, `init`,
 #     `apply`, `base build`/`prune`, `net install`/`refresh`/`unregister`,
-#     `net migrate`, `registry up`/`down`, `litellm up`/`down`/`login`/
+#     `net migrate`, `registry up`/`down`, `display up`/`down`, `litellm up`/`down`/`login`/
 #     `logout`/`logs`;
 #   - persistent network policy: `net egress add`/`rm` accept any address,
 #     the host's own and its LAN's included;
@@ -271,6 +271,8 @@ _HOST_COMMANDS: frozenset[str] = frozenset(
         "net egress rm",
         "registry up",
         "registry down",
+        "display up",
+        "display down",
         "litellm up",
         "litellm down",
         "litellm login",
@@ -310,6 +312,7 @@ _CONTAINER_COMMANDS = frozenset(
         "config validate",
         "dashboard",
         "destroy",
+        "display status",
         "disk-usage",
         "dismiss",
         "doctor",
