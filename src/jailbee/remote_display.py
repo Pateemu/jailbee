@@ -96,11 +96,20 @@ def _display_profile_yaml(host_uid: int, host_gid: int) -> str:
 
     Unlike the registry mirror (`uid <uid> 0`), the compositor runs as the dev
     user, not as container root.
+
+    ``security.nesting`` is required for the same reason as on the registry
+    mirror: on hosts with ``kernel.apparmor_restrict_unprivileged_userns=1``
+    systemd 256+ in the container hangs at ``(sd-mkuserns)``, so networkd and
+    resolved never come up - no DHCPv4 lease, no resolv.conf, and the first
+    ``apt-get`` fails with "Temporary failure resolving".
     """
     profile = {
         "name": DISPLAY_PROFILE,
         "description": "idmap + network for the jailbee-display container",
-        "config": {"raw.idmap": f"uid {host_uid} {host_uid}\ngid {host_gid} {host_gid}"},
+        "config": {
+            "raw.idmap": f"uid {host_uid} {host_uid}\ngid {host_gid} {host_gid}",
+            "security.nesting": "true",
+        },
         "devices": {"eth0": {"type": "nic", "name": "eth0", "network": DISPLAY_BRIDGE}},
     }
     return yaml.safe_dump(profile, sort_keys=False)

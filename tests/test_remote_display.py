@@ -25,6 +25,8 @@ def test_profile_uses_the_clients_idmap_and_the_loose_bridge():
     profile = yaml.safe_load(rd._display_profile_yaml(1234, 5678))
 
     assert profile["config"]["raw.idmap"] == "uid 1234 1234\ngid 5678 5678"
+    # Without nesting, systemd 256+ hangs at (sd-mkuserns): no DHCP, no DNS.
+    assert profile["config"]["security.nesting"] == "true"
     assert profile["devices"]["eth0"]["network"] == "jailbee-loose"
 
 
