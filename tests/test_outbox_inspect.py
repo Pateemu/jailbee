@@ -116,7 +116,12 @@ def test_bad_pr_sidecar_is_unknown_not_empty(tmp_path, sidecar):
 
 
 @pytest.mark.parametrize("name", ["one space.json", " leading .json", "one pr=7 space.json"])
-@pytest.mark.parametrize("suffix", ["pr=42 actions=1 urls=https://receipt", "broken"])
+@pytest.mark.parametrize("suffix", [
+    "pr=42 actions=1 urls=https://receipt",
+    "broken",
+    "pr=42 actions=broken urls=https://x pr=7 actions=1 urls=https://y",
+    "pr=42 actions=1 urls=https://x pr=7 actions=1 urls=https://y",
+])
 def test_whitespace_receipt_blocks_exact_proposal(tmp_path, name, suffix):
     from jailbee.outbox.delete import DeleteSelection, plan_delete
 
@@ -131,6 +136,59 @@ def test_whitespace_receipt_blocks_exact_proposal(tmp_path, name, suffix):
     with pytest.raises(OutboxError):
         plan_delete(container, ProposalId("pr", name), DeleteSelection(action=0))
     assert view.raw_text == files[name]
+
+
+@pytest.mark.parametrize("other", [
+    "one.json longer.json",
+    "one.json pr=7 longer.json",
+    "one.json pr=7 actions=notes.json",
+    " one.json pr=7 longer.json",
+])
+def test_longer_receipt_filename_is_not_selected_name(tmp_path, other):
+    text = pr_files()["001.json"]
+    files = {"one.json": text, other: text, "applied.log": f"now {other} pr=42 actions=1 urls=x"}
+    views = build_views(IDENTITY, (store("pr", files),), journal_store=JournalStore(tmp_path))
+    selected = next(v for v in views if v.id.name == "one.json")
+    logged = next(v for v in views if v.id.name == other)
+    assert selected.state == "pending"
+    assert selected.edit_block is None and selected.error is None
+    assert logged.edit_block and logged.error
+
+
+def test_receipt_shaped_filename_ambiguity_never_authorizes_replay(tmp_path):
+    from jailbee.outbox.inspect import pr_progress_evidence
+
+    short = "one.json"
+    long = "one.json pr=42 actions=broken urls=notes.json"
+    files = {
+        short: pr_files()["001.json"],
+        long: pr_files()["001.json"],
+        "applied.log": f"now {long} pr=7 actions=1 urls=https://y",
+    }
+    snapshot = store("pr", files)
+    for name in (short, long):
+        evidence = pr_progress_evidence(snapshot, name, 1)
+        assert evidence.edit_block and evidence.error
+        assert ("applied.log", files["applied.log"]) in evidence.inputs
+
+
+def test_suffix_shaped_url_preserves_valid_sidecar_and_revision(tmp_path):
+    from jailbee.outbox.inspect import pr_progress_evidence
+
+    files = pr_files() | {
+        "001.json.progress.json": '{"applied":[0],"urls":{"0":"https://receipt"}}',
+        "applied.log": "now 001.json pr=42 actions=1 urls=https://x pr=7 actions=1 urls=https://y",
+    }
+    evidence = pr_progress_evidence(store("pr", files), "001.json", 1)
+    assert evidence.error is None
+    assert evidence.applied == frozenset({0})
+    assert evidence.receipts == ((0, "https://receipt"),)
+    journals = JournalStore(tmp_path)
+    first = build_views(IDENTITY, (store("pr", files),), journal_store=journals)[0]
+    files["applied.log"] += "changed"
+    second = build_views(IDENTITY, (store("pr", files),), journal_store=journals)[0]
+    assert first.state == "applied"
+    assert first.revision != second.revision
 
 
 @pytest.mark.parametrize("bad", ["deep-progress", "surrogate-body"])

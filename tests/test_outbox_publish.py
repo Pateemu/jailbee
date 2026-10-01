@@ -48,41 +48,62 @@ def env(mocker, make_cfg, tmp_path):
     directory = tmp_path / "mutation-outbox"
     directory.mkdir()
 
-    def mutate(container, command, text, **kwargs):
-        kind = "issue" if command[4].endswith("issue-outbox") else "pr"
+    def sync(kind):
         snapshot = snapshots[kind]
         for path in directory.iterdir():
             path.unlink()
         for name, content in snapshot.files:
-            (directory / name).write_text(content)
+            (directory / name).write_bytes(content.encode("utf-8"))
         for name in snapshot.rejected:
             (directory / name).write_bytes(b"\xff")
+
+    def save(kind):
+        snapshot = snapshots[kind]
+        files = {
+            p.name: p.read_bytes().decode("utf-8")
+            for p in directory.iterdir()
+            if p.name not in snapshot.rejected
+        }
+        snapshots[kind] = store(kind, files, rejected=snapshot.rejected)
+
+    def mutate(container, command, text, **kwargs):
+        assert command[:4] == ["bash", "-c", io._MUTATE_SCRIPT, "bash"]
+        kind = "issue" if command[4].endswith("issue-outbox") else "pr"
+        sync(kind)
         command = list(command)
         command[4] = str(directory)
         result = run_shell(command, input=text, text=True, capture_output=True, check=True).stdout
-        files = {
-            p.name: p.read_text() for p in directory.iterdir() if p.name not in snapshot.rejected
-        }
-        snapshots[kind] = store(kind, files, rejected=snapshot.rejected)
+        save(kind)
         return result
 
     incus.exec_with_input.side_effect = mutate
 
     def execute(container, command, **kwargs):
-        if command[0] == "bash" and command[-1].endswith("progress.json"):
-            files = snapshots["pr"].as_dict()
-            files[command[-1].rsplit("/", 1)[-1]] = command[4]
-            snapshots["pr"] = store("pr", files, rejected=snapshots["pr"].rejected)
-        elif command[0] == "bash" and command[-1].endswith("applied.log"):
-            files = snapshots["pr"].as_dict()
-            files["applied.log"] = files.get("applied.log", "") + command[4] + "\n"
-            snapshots["pr"] = store("pr", files, rejected=snapshots["pr"].rejected)
-        return ""
+        assert command[:2] == ["bash", "-c"]
+        command = list(command)
+        if command[4].endswith("issue-outbox"):
+            # Issue receipts carry the directory and base64 payload, not a log path.
+            kind = "issue"
+            command[4] = str(directory)
+        elif command[-1].endswith(("progress.json", "applied.log")):
+            kind = "pr"
+            command[-1] = str(directory / command[-1].rsplit("/", 1)[-1])
+        else:
+            raise AssertionError(command)
+        sync(kind)
+        result = run_shell(command, text=True, capture_output=True, check=True).stdout
+        save(kind)
+        return result
 
     incus.exec.side_effect = execute
 
     def read(i, c, k, **kw):
-        return snapshots[k]
+        sync(k)
+        command = [
+            "bash", "-c", io._READ_SCRIPT, "bash", str(directory),
+            str(io.FILE_LIMIT), str(io.SNAPSHOT_LIMIT),
+        ]
+        return io._decode(k, run_shell(command, text=True, capture_output=True, check=True).stdout)
 
     mocker.patch.object(service, "read_store", side_effect=read)
     mocker.patch.object(io, "read_store", side_effect=read)
@@ -146,19 +167,25 @@ def env(mocker, make_cfg, tmp_path):
     return cfg, incus, snapshots, journals, mutations, labels, fetch, manager
 
 
-def test_existing_whitespace_receipt_refuses_actual_selected_replay(env):
+@pytest.mark.parametrize("name", ["one space.json", " leading .json", "one pr=7 space.json"])
+@pytest.mark.parametrize("suffix", [
+    "pr=42 actions=1 urls=https://receipt",
+    "pr=42 actions=broken urls=https://x pr=7 actions=1 urls=https://y",
+    "pr=42 actions=1 urls=https://x pr=7 actions=1 urls=https://y",
+])
+def test_existing_whitespace_receipt_refuses_actual_selected_replay(env, name, suffix):
     from jailbee.outbox.publish import PublishOptions, publish_selected
 
     files = env[2]["pr"].as_dict()
-    files["one space.json"] = files.pop("001.json")
-    files["applied.log"] = "now one space.json pr=42 actions=1 urls=https://receipt\n"
+    files[name] = files.pop("001.json")
+    files["applied.log"] = f"now {name} {suffix}\n"
     env[2]["pr"] = store("pr", files)
     assert (
         publish_selected(
             env[0],
             env[1],
             IDENTITY.full_name,
-            ProposalId("pr", "one space.json"),
+            ProposalId("pr", name),
             journal_store=env[3],
             options=PublishOptions(),
             confirm=lambda count: True,
@@ -167,6 +194,29 @@ def test_existing_whitespace_receipt_refuses_actual_selected_replay(env):
     )
     env[4]["pr_comment"].assert_not_called()
     env[1].exec_with_input.assert_not_called()
+    assert env[2]["pr"].as_dict() == files
+
+
+@pytest.mark.parametrize("other", [
+    "001.json longer.json",
+    "001.json pr=7 longer.json",
+    "001.json pr=7 actions=notes.json",
+    " 001.json pr=7 longer.json",
+])
+def test_longer_receipt_filename_does_not_block_actual_selected_publication(env, other):
+    files = env[2]["pr"].as_dict()
+    files[other] = files["001.json"]
+    history = f"now {other} pr=42 actions=1 urls=https://old\n"
+    files["applied.log"] = history
+    env[2]["pr"] = store("pr", files)
+
+    assert selected(env, "pr") == 0
+    assert env[4]["pr_comment"].call_count == 2
+    remaining = env[2]["pr"].as_dict()
+    assert "001.json" not in remaining
+    assert remaining[other] == files[other]
+    assert remaining["applied.log"].startswith(history)
+    assert "001.json pr=42 actions=2" in remaining["applied.log"]
 
 
 def selected(
@@ -420,6 +470,11 @@ def test_issue_publishes_all_selected_actions_and_keeps_shared_body(env, capsys)
     assert "001.json" not in env[2]["issue"].as_dict()
     assert "002.json" in env[2]["issue"].as_dict()
     assert env[2]["issue"].as_dict()["body.md"] == "Original body"
+    receipts = [json.loads(line) for line in env[2]["issue"].as_dict()["applied.log"].splitlines()]
+    assert [(r["manifest"], r["index"], r["issue"]) for r in receipts] == [
+        ("001.json", 0, 73), ("001.json", 1, 42), ("001.json", 2, 42),
+    ]
+    assert all(r["repo"] == "acme/repo" and r["url"] for r in receipts)
     assert "fully applied" in capsys.readouterr().out
     assert env[3].load(journal_key(IDENTITY, "001.json")) is None
     assert env[3].load(journal_key(IDENTITY, "002.json")) is None

@@ -90,10 +90,16 @@ def pr_progress_evidence(
     # split the name: existing histories can include leading or embedded spaces.
     for line in files.get("applied.log", "").splitlines():
         _, separator, remainder = line.partition(" ")
-        record = re.fullmatch(r"(.*) pr=([^ ]+) actions=([0-9]+) urls=(.+)", remainder)
-        exact = record is not None and record.group(1) == name
-        malformed_match = remainder == name or remainder.startswith(name + " ")
-        if separator and (exact or (record is None and malformed_match)):
+        prefix = name + " "
+        matching_name = remainder == name or remainder.startswith(prefix)
+        suffix = remainder[len(prefix):] if remainder.startswith(prefix) else ""
+        exact = re.fullmatch(r"pr=([^ ]+) actions=([0-9]+) urls=(.+)", suffix) is not None
+        # Validate the selected name's suffix independently: URL text may contain
+        # another receipt-shaped suffix. A longer filename containing `pr=` is
+        # unrelated unless this boundary itself also looks like receipt fields.
+        matching_fields = re.match(r"pr=[^ ]* actions=[^ ]*(?: urls=|$)", suffix) is not None
+        other_record = re.fullmatch(r"(.*) pr=([^ ]+) actions=([0-9]+) urls=(.+)", remainder)
+        if separator and matching_name and (exact or matching_fields or other_record is None):
             inputs.append(("applied.log", line))
             block = "recorded publication evidence prevents editing"
             if not exact:
