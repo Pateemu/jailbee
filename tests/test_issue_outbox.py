@@ -1191,7 +1191,7 @@ def test_apply_replaces_an_empty_old_digest_only_inside_lock(execution, mocker):
     batch = execution["batch"]({"a.json": [_comment()]})
     key = journal_key(batch.identity, "a.json")
     store = execution["store"]
-    store.create(key, "0" * 64, 1)
+    store.create(key, "0" * 64, 2)
     archive = store.archive
 
     def checked_archive(key):
@@ -1556,3 +1556,191 @@ def test_drop_preserves_shared_bodies_referenced_by_a_manifest_added_since_the_r
     assert _drop(execution, batch) == ("a.json",)
 
     assert "shared.md" in execution["files"]
+
+
+@pytest.mark.parametrize("change", ["manifest", "body", "identity", "progress"])
+def test_apply_rechecks_after_waiting_for_selected_locks(execution, mocker, change):
+    from contextlib import contextmanager
+
+    from jailbee.outbox_io import journal_key
+
+    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "body.md"}
+    batch = execution["batch"]({"a.json": [action]}, extras={"body.md": "Approved"})
+    store = execution["store"]
+    key = journal_key(batch.identity, "a.json")
+    store.create(key, batch.manifests[0].digest, 1)
+    lock = store.lock
+    waited = False
+
+    @contextmanager
+    def wait_then_lock(selected):
+        nonlocal waited
+        if not waited:
+            waited = True
+            if change == "manifest":
+                execution["files"]["a.json"] += "\n"
+            elif change == "body":
+                execution["files"]["body.md"] = "Changed"
+            elif change == "identity":
+                execution["incus"].list_containers.return_value[0]["created_at"] = "replacement"
+            else:
+                store.mark_prepared(key, 0, repo="acme/app")
+        with lock(selected):
+            yield
+
+    mocker.patch.object(store, "lock", side_effect=wait_then_lock)
+    report = _apply(execution, batch)
+    assert report.failure is not None
+    assert all(not mutation.called for mutation in execution["mutations"].values())
+    execution["remove"].assert_not_called()
+    if change == "progress":
+        assert store.load(key).actions[0].state == "uncertain"
+
+
+def test_apply_holds_all_sorted_selected_locks_through_cleanup(execution, mocker):
+    from contextlib import contextmanager
+
+    from jailbee import issue_outbox
+    from tests.test_outbox_io import _other_process_can_lock
+
+    batch = execution["batch"]({"z.json": [_comment()], "a.json": [_comment()]})
+    store = execution["store"]
+    lock = store.lock
+    entered = []
+
+    @contextmanager
+    def observe(key):
+        with lock(key):
+            entered.append(key.manifest_name)
+            yield
+
+    mocker.patch.object(store, "lock", side_effect=observe)
+
+    def check():
+        paths = list(store.root.rglob("*.lock"))
+        assert len(paths) == 2
+        assert all(not _other_process_can_lock(path) for path in paths)
+
+    def read(*args, **kwargs):
+        check()
+        return issue_outbox.OutboxSnapshot(dict(execution["files"]))
+
+    mocker.patch.object(issue_outbox, "read_issue_outbox", side_effect=read)
+    for boundary in (execution["log"], execution["remove"], execution["mutations"]["add_comment"]):
+        original = boundary.side_effect
+        receipt = boundary.return_value
+
+        def checked(*args, _original=original, _receipt=receipt, **kwargs):
+            check()
+            return _original(*args, **kwargs) if _original else _receipt
+
+        boundary.side_effect = checked
+    assert _apply(execution, batch).failure is None
+    assert entered[:2] == ["a.json", "z.json"]
+
+
+@pytest.mark.parametrize("change", ["body", "identity", "journal"])
+def test_drop_refuses_changed_body_identity_or_recorded_digest(execution, change):
+    from jailbee.outbox_io import JournalError
+
+    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "body.md"}
+    batch = execution["batch"]({"a.json": [action]}, extras={"body.md": "Approved"})
+    if change == "body":
+        execution["files"]["body.md"] = "Changed"
+    elif change == "identity":
+        execution["incus"].list_containers.return_value[0]["created_at"] = "replacement"
+    else:
+        old = replace(batch, manifests=(replace(batch.manifests[0], digest="0" * 64),))
+        _seed_execution(execution, old)
+    with pytest.raises(JournalError):
+        _drop(execution, batch, archive_journal=True)
+    execution["remove"].assert_not_called()
+    assert "a.json" in execution["files"]
+
+
+def test_drop_holds_one_lock_across_fresh_read_progress_delete_and_archive(execution, mocker):
+    from jailbee import issue_outbox
+    from tests.test_outbox_io import _other_process_can_lock
+
+    batch = execution["batch"]({"a.json": [_comment(), _comment()]})
+    _seed_execution(execution, batch)
+    store = execution["store"]
+    seen = []
+
+    for owner, method in ((issue_outbox, "container_identity"), (issue_outbox, "read_issue_outbox"),
+                          (store, "load"), (issue_outbox, "delete_outbox_files"), (store, "archive")):
+        original = getattr(owner, method)
+
+        def checked(*args, _original=original, _method=method, **kwargs):
+            (path,) = store.root.rglob("*.lock")
+            assert not _other_process_can_lock(path)
+            seen.append(_method)
+            return _original(*args, **kwargs)
+
+        mocker.patch.object(owner, method, side_effect=checked)
+    assert _drop(execution, batch, archive_journal=True) == ("a.json",)
+    assert seen == ["container_identity", "read_issue_outbox", "load", "delete_outbox_files", "archive"]
+
+
+@pytest.mark.parametrize("change", ["manifest", "body"])
+def test_apply_rejects_edit_in_fresh_read_window(execution, mocker, change):
+    from jailbee import issue_outbox
+
+    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "body.md"}
+    batch = execution["batch"]({"a.json": [action]}, extras={"body.md": "Approved"})
+
+    def read(*args, **kwargs):
+        if change == "manifest":
+            execution["files"]["a.json"] += "\n"
+        else:
+            execution["files"]["body.md"] = "Changed"
+        return issue_outbox.OutboxSnapshot(dict(execution["files"]))
+
+    mocker.patch.object(issue_outbox, "read_issue_outbox", side_effect=read)
+    assert _apply(execution, batch).failure is not None
+    assert all(not mutation.called for mutation in execution["mutations"].values())
+    execution["remove"].assert_not_called()
+
+
+def test_preflight_allows_empty_journal_with_old_digest_and_action_count(preflight):
+    from jailbee.outbox_io import journal_key
+
+    key = journal_key(preflight["identity"], "a.json")
+    preflight["store"].create(key, "0" * 64, 2)
+    batch = preflight["prepare"]({"a.json": [_create()]})
+    assert batch.manifests[0].journal is None
+    assert batch.manifests[0].actions[0].status == "pending"
+    assert preflight["store"].load(key).action_count == 2
+
+
+@pytest.mark.parametrize("change", ["identity", "progress"])
+def test_drop_rechecks_after_lock_wait_without_losing_progress(execution, mocker, change):
+    from contextlib import contextmanager
+
+    from jailbee.outbox_io import JournalError, journal_key
+
+    batch = execution["batch"]({"a.json": [_comment()]})
+    store = execution["store"]
+    key = journal_key(batch.identity, "a.json")
+    store.create(key, batch.manifests[0].digest, 1)
+    lock = store.lock
+    waited = False
+
+    @contextmanager
+    def wait_then_lock(selected):
+        nonlocal waited
+        if not waited:
+            waited = True
+            if change == "identity":
+                execution["incus"].list_containers.return_value[0]["created_at"] = "replacement"
+            else:
+                store.mark_prepared(key, 0, repo="acme/app")
+        with lock(selected):
+            yield
+
+    mocker.patch.object(store, "lock", side_effect=wait_then_lock)
+    with pytest.raises(JournalError):
+        _drop(execution, batch, archive_journal=True)
+    execution["remove"].assert_not_called()
+    if change == "progress":
+        assert store.load(key).actions[0].state == "uncertain"
