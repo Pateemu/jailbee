@@ -113,6 +113,28 @@ describe the change accurately.
   [`references/manifest-schema.md`](references/manifest-schema.md). Read it
   before writing a manifest by hand; do not guess at field names or shapes.
 
+New containers already have both `~/.jailbee/pr-outbox/` and
+`~/.jailbee/issue-outbox/`, created as the container user before agents run.
+This does not retroactively create them in older containers; idempotent
+`mkdir -p ~/.jailbee/pr-outbox ~/.jailbee/issue-outbox` is permitted when
+staging there. Inspection never bootstraps missing stores.
+
+## Human inspection and approval
+
+Tell the human they can inspect on the **host** with `jb outbox <container>`
+(or `jb outbox browse <container>`) and
+`jb outbox show <container> pr/NNN-topic.json`. A container named `ls` needs
+`jb outbox browse ls`. The local Qt dashboard also has native Outbox
+inspection; SSH browsing is read-only.
+
+For human approval on the host, `jb outbox apply <container>
+pr/NNN-topic.json --revision TOKEN` publishes all pending actions in that
+one manifest, not only a highlighted comment. `TOKEN` comes from inspection;
+a changed proposal requires refresh and renewed inspection. The original
+`jb review apply <container>` remains available. These are instructions to
+the human, **not permission for you to run publication commands**. Continue
+to stage files only; never call host apply or direct `gh` mutations yourself.
+
 ## When you're done
 
 Tell the user, verbatim: run `jb review apply <container>` on the host —

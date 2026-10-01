@@ -328,6 +328,9 @@ def test_card_context_menu_submenus_dispatch_leaf_verb(qtbot):
             return
         root = popup.actions()
         root_labels.extend(action.text() for action in root)
+        outbox = next(action for action in root if action.text() == "Outbox")
+        assert outbox.menu() is None
+        outbox.trigger()
         pr_action = next((action for action in root if action.text() == "PR →"), None)
         if pr_action is not None and (pr := pr_action.menu()) is not None:
             pr_labels.extend(action.text() for action in pr.actions())
@@ -336,9 +339,9 @@ def test_card_context_menu_submenus_dispatch_leaf_verb(qtbot):
 
     QTimer.singleShot(0, interact)
     view._on_context("p-foo", QPoint(0, 0))
-    assert root_labels[:4] == ["Attach tmux", "Open shell", "PR →", "Git →"]
+    assert root_labels[:5] == ["Attach tmux", "Open shell", "Outbox", "PR →", "Git →"]
     assert pr_labels == ["Open PR", "Create/update PR"]
-    assert seen == [("pr --open", "p-foo")]
+    assert seen == [("outbox browse", "p-foo"), ("pr --open", "p-foo")]
 
 
 def _orphan_groups():

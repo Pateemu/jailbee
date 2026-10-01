@@ -11,6 +11,7 @@ rest are fire and forget — see :data:`LaunchMode`.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -33,7 +34,7 @@ if TYPE_CHECKING:
 LaunchMode = Literal["terminal", "output", "detached"]
 
 _TERMINAL_VERBS: frozenset[str] = frozenset(
-    {"shell", "tmux", "merge", "review apply", "issue apply"}
+    {"shell", "tmux", "merge", "review apply", "issue apply", "outbox browse"}
 )
 
 # Verbs that warrant a confirmation dialog before dispatching.
@@ -143,6 +144,33 @@ def build_action(
         argv += extra_flags
     return ActionCommand(
         argv=argv, launch=launch_mode(verb), confirm=confirm, cwd=target.cwd(), verb=verb
+    )
+
+
+def build_outbox_publish(
+    container: str, proposal: str, revision: str, target: RepoTarget
+) -> ActionCommand:
+    """Publish one inspected manifest; only the terminal may approve mutations."""
+    from jailbee.outbox.models import ProposalId
+
+    selected = ProposalId.parse(proposal)
+    if re.fullmatch(r"[0-9a-f]{64}", revision) is None:
+        raise ValueError("invalid outbox revision; refresh required")
+    return ActionCommand(
+        [
+            "jailbee",
+            "outbox",
+            "apply",
+            container,
+            str(selected),
+            "--revision",
+            revision,
+            *target.flags(),
+        ],
+        "terminal",
+        False,
+        target.cwd(),
+        "outbox apply",
     )
 
 

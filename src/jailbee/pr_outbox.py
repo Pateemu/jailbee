@@ -18,8 +18,8 @@ before it is shown, let alone published.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
-import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, assert_never
@@ -30,13 +30,28 @@ from jailbee import git, pr
 from jailbee.config import CONTAINER_USERNAME
 from jailbee.github_repo import github_slug
 from jailbee.incus import Incus, IncusError
+from jailbee.outbox.cleanup import exclusive_body_names
+from jailbee.outbox.io import PrManagement
+from jailbee.outbox.models import (
+    OutboxChanged,
+    OutboxError,
+    OutboxExecutionError,
+    ProposalId,
+    StoreSnapshot,
+)
+from jailbee.outbox_io import (
+    ContainerIdentity,
+    JournalError,
+    JournalStore,
+    container_identity,
+    read_text_outbox,
+)
 from jailbee.outbox_io import OutboxReadError as OutboxReadError
-from jailbee.outbox_io import read_text_outbox
 from jailbee.pr_ai import PrText
 from jailbee.tui import console, error_plain, info, warn, warn_plain
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
 
     from jailbee.config import Config
     from jailbee.pr import PrInfo
@@ -177,7 +192,11 @@ def _resolve_body(name: str, index: int, item: dict[str, Any], bodies: Mapping[s
             raise ManifestError(f"{name} action {index}: body must be a string")
         body = body_val
 
-    if len(body.encode()) > MAX_BODY_BYTES:
+    try:
+        size = len(body.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise ManifestError(f"{name} action {index}: body is not valid UTF-8") from exc
+    if size > MAX_BODY_BYTES:
         raise ManifestError(
             f"{name} action {index}: body is larger than {MAX_BODY_BYTES // 1024} KB"
         )
@@ -382,6 +401,8 @@ def parse_manifest(name: str, text: str, bodies: Mapping[str, str]) -> Manifest:
 @dataclass(frozen=True)
 class Outbox:
     files: dict[str, str]
+    rejected: tuple[str, ...] = ()
+    identity: ContainerIdentity | None = None
 
     @property
     def manifest_names(self) -> list[str]:
@@ -391,10 +412,17 @@ class Outbox:
         )
 
 
-def read_outbox(incus: Incus, container: str, *, uid: int | None) -> Outbox:
-    """Read the whole outbox in one round-trip; never extracts to disk."""
-    return Outbox(
-        files=read_text_outbox(
+def read_outbox(incus: Incus, container: str, *, uid: int | None, strict: bool = False) -> Outbox:
+    """Bind the preview to its origin before any caller asks for confirmation."""
+    try:
+        identity = container_identity(incus, container)
+        if strict:
+            from jailbee.outbox.io import read_store
+
+            store = read_store(incus, container, "pr", uid=uid)
+            _same_identity(incus, container, identity)
+            return Outbox(store.as_dict(), store.rejected, identity)
+        files = read_text_outbox(
             incus,
             container,
             outbox_dir(),
@@ -402,7 +430,12 @@ def read_outbox(incus: Incus, container: str, *, uid: int | None) -> Outbox:
             max_file_bytes=MAX_MANIFEST_BYTES,
             warn_fn=warn,
         )
-    )
+        _same_identity(incus, container, identity)
+    except (JournalError, OutboxChanged, OutboxExecutionError, IncusError) as exc:
+        raise OutboxReadError(
+            f"{container}: cannot bind outbox preview ({exc}); refresh required"
+        ) from exc
+    return Outbox(files=files, identity=identity)
 
 
 # --------------------------------------------------------------------------
@@ -718,17 +751,6 @@ def action_summary(manifest: Manifest) -> str:
 
 _NO_URL = "(no url)"
 
-# Matches a `"body_file": "name"` field in a manifest's *raw* JSON text.
-# Deliberately a text scan rather than a second `parse_manifest` call:
-# `parse_manifest` resolves `body_file` into an inline `body` string and
-# throws the filename away, so once a `Manifest` exists there is nowhere
-# left to ask "which file did this come from" except the raw source.
-# Naive on purpose: it cannot tell a real `body_file` field from the same
-# text appearing inside some other string value, so it can only ever
-# over-count references. That failure mode is safe — an extra file kept
-# around costs nothing, where deleting one still in use would not.
-_BODY_FILE_RE = re.compile(r'"body_file"\s*:\s*"([^"]*)"')
-
 
 def _now_iso() -> str:
     """Current UTC time as `2026-09-09T12:34:56Z`, for `applied.log` lines."""
@@ -822,6 +844,19 @@ def read_progress(outbox: Outbox, manifest_name: str) -> Progress:
     if text is None:
         return Progress(applied=frozenset(), urls={})
     return _parse_progress_json(text)
+
+
+def _publication_progress(outbox: Outbox, name: str, action_count: int | None = None) -> Progress:
+    """Strict snapshots never use the tolerant legacy replay parser."""
+    if outbox.identity is None:
+        return read_progress(outbox, name)
+    from jailbee.outbox.inspect import pr_progress_evidence
+
+    store = StoreSnapshot("pr", tuple(sorted(outbox.files.items())), outbox.rejected, ())
+    evidence = pr_progress_evidence(store, name, action_count)
+    if evidence.error:
+        raise OutboxError(f"{name}: {evidence.error}")
+    return Progress(evidence.applied, {str(i): url for i, url in evidence.receipts})
 
 
 def pending_indices(manifest: Manifest, progress: Progress) -> list[int]:
@@ -1024,24 +1059,61 @@ def apply_manifest(
     return ApplyOutcome(applied=tuple(applied), urls=tuple(urls), failure=failure)
 
 
-def _orphaned_body_files(outbox: Outbox, exclude_name: str) -> list[str]:
-    """Non-manifest files in `outbox` that no manifest other than `exclude_name` references.
+def _body_references(text: str) -> set[str]:
+    """Decode references (including JSON escapes) without resolving body contents."""
+    raw = json.loads(text)
+    if not isinstance(raw, dict) or not isinstance(raw.get("actions"), list):
+        raise ValueError("invalid manifest reference scope")
+    result: set[str] = set()
+    actions = raw["actions"]
+    if len(actions) > MAX_ACTIONS:
+        raise ValueError("invalid manifest reference scope")
+    for action in actions:
+        if not isinstance(action, dict) or action.get("type") not in (
+            "review",
+            "reply",
+            "comment",
+            "description",
+        ):
+            raise ValueError("invalid action reference scope")
+        inputs = [action]
+        if action["type"] == "review":
+            comments = action.get("comments")
+            if not isinstance(comments, list) or len(comments) > MAX_LINE_COMMENTS:
+                raise ValueError("invalid review reference scope")
+            inputs.extend(comments)
+        # Extension dictionaries are ignored by the domain parser, not inputs.
+        for item in inputs:
+            if not isinstance(item, dict):
+                raise ValueError("invalid body reference scope")
+            name = item.get("body_file")
+            if name is not None:
+                if (
+                    not isinstance(name, str)
+                    or "/" in name
+                    or "\\" in name
+                    or _escapes_containment(name)
+                ):
+                    raise ValueError("invalid body reference")
+                result.add(name)
+    return result
 
-    Scans every *other* manifest's raw JSON text for `body_file` mentions
-    (see `_BODY_FILE_RE`) rather than parsing them, since parsing loses the
-    filename. A file referenced by nothing still standing — including one
-    orphaned by some earlier, unrelated cleanup — is safe to delete.
-    """
-    referenced_elsewhere: set[str] = set()
-    for name in outbox.manifest_names:
-        if name == exclude_name:
-            continue
-        referenced_elsewhere.update(_BODY_FILE_RE.findall(outbox.files.get(name, "")))
-    return sorted(
-        name
-        for name in outbox.files
-        if not name.endswith(".json") and name not in referenced_elsewhere
-    )
+
+def _orphaned_body_files(outbox: Outbox, exclude_name: str) -> list[str]:
+    """Only the completed proposal's exclusive references are cleanup candidates."""
+    if outbox.rejected:
+        return []
+    try:
+        candidates = _body_references(outbox.files[exclude_name])
+        referenced_elsewhere: set[str] = set()
+        for name in outbox.manifest_names:
+            if name != exclude_name:
+                # Invalid neighbors can conceal references: retain all candidates.
+                parse_manifest(name, outbox.files[name], outbox.files)
+                referenced_elsewhere.update(_body_references(outbox.files[name]))
+    except (KeyError, ValueError, RecursionError, ManifestError):
+        return []
+    return list(exclusive_body_names(candidates, outbox.files, referenced_elsewhere))
 
 
 def _delete_from_outbox(
@@ -1069,7 +1141,19 @@ def _delete_from_outbox(
     if with_sidecar:
         names.append(f"{name}.progress.json")
     names.extend(_orphaned_body_files(outbox, name))
-    incus.exec(container, ["rm", "-f", *(f"{outbox_dir()}/{n}" for n in names)], uid=uid)
+    from jailbee.outbox import io as store_io
+
+    store_io.mutate_store(
+        incus,
+        container,
+        "pr",
+        uid=uid,
+        expected=outbox.files,
+        new_manifest=None,
+        delete_names=tuple(names),
+        forbidden_progress=None,
+        rejected_names=outbox.rejected,
+    )
     return names
 
 
@@ -1127,7 +1211,7 @@ def finalize(
     manifest_path = f"{outbox_dir()}/{manifest.name}"
     sidecar_path = f"{manifest_path}.progress.json"
 
-    baseline = read_progress(outbox, manifest.name)
+    baseline = _publication_progress(outbox, manifest.name, len(manifest.actions))
     merged_applied = baseline.applied | set(outcome.applied)
     merged_urls = dict(baseline.urls)
     merged_urls.update(dict(zip((str(i) for i in outcome.applied), outcome.urls, strict=True)))
@@ -1165,8 +1249,43 @@ def finalize(
 
     if merged_applied == set(range(len(manifest.actions))):
         try:
-            _delete_from_outbox(incus, container, outbox, manifest.name, uid=uid, with_sidecar=True)
-        except IncusError as e:
+            from jailbee.outbox import io as store_io
+
+            fresh_store = store_io.read_store(incus, container, "pr", uid=uid)
+            if outbox.identity is not None:
+                _same_identity(incus, container, outbox.identity)
+            files = fresh_store.as_dict()
+            bodies = _body_references(outbox.files[manifest.name])
+            if files.get(manifest.name) != outbox.files[manifest.name] or any(
+                files.get(body) != outbox.files.get(body) for body in bodies
+            ):
+                raise OutboxChanged("proposal changed after publication; cleanup refused")
+            from jailbee.outbox.inspect import pr_progress_evidence
+
+            evidence = pr_progress_evidence(fresh_store, manifest.name, len(manifest.actions))
+            if evidence.error:
+                raise OutboxError(evidence.error)
+            recorded = Progress(evidence.applied, {str(i): url for i, url in evidence.receipts})
+            if recorded.applied != merged_applied or any(
+                recorded.urls.get(k) != v for k, v in merged_urls.items()
+            ):
+                raise OutboxChanged("publication progress changed; cleanup refused")
+            _delete_from_outbox(
+                incus,
+                container,
+                Outbox(files, fresh_store.rejected, outbox.identity),
+                manifest.name,
+                uid=uid,
+                with_sidecar=True,
+            )
+        except (
+            IncusError,
+            OutboxExecutionError,
+            ValueError,
+            KeyError,
+            RecursionError,
+            JournalError,
+        ) as e:
             raise FinalizeError(
                 f"manifest {manifest.name} is fully applied but could not be "
                 f"deleted ({e}); it will be cleaned up on a later run"
@@ -1174,7 +1293,13 @@ def finalize(
 
 
 def drop_manifest(
-    incus: Incus, container: str, outbox: Outbox, name: str, *, uid: int | None
+    incus: Incus,
+    container: str,
+    outbox: Outbox,
+    name: str,
+    *,
+    uid: int | None,
+    management: PrManagement | None = None,
 ) -> list[str]:
     """Delete manifest `name` from the container's outbox without applying it.
 
@@ -1195,16 +1320,29 @@ def drop_manifest(
     Raises `FinalizeError` if the deletion fails; the manifest is then still
     pending, exactly as it was.
     """
+    manager = management if management is not None else PrManagement()
     try:
-        return _delete_from_outbox(
-            incus,
-            container,
-            outbox,
-            name,
-            uid=uid,
-            with_sidecar=f"{name}.progress.json" in outbox.files,
-        )
-    except IncusError as e:
+        ProposalId("pr", name)
+        if outbox.identity is None:
+            raise OutboxChanged("preview identity is unavailable; refresh required")
+        identity = container_identity(incus, container)
+        if outbox.identity != identity:
+            raise OutboxChanged("container changed; refresh required")
+        with manager.lock(identity):
+            from jailbee.outbox import io as store_io
+
+            fresh = store_io.read_store(incus, container, "pr", uid=uid)
+            _same_identity(incus, container, identity)
+            _compare_preview(identity, outbox, fresh, (name,))
+            return _delete_from_outbox(
+                incus,
+                container,
+                Outbox(fresh.as_dict(), fresh.rejected, identity),
+                name,
+                uid=uid,
+                with_sidecar=f"{name}.progress.json" in fresh.as_dict(),
+            )
+    except (IncusError, JournalError, OutboxError, OutboxExecutionError) as e:
         raise FinalizeError(
             f"manifest {name} could not be deleted ({e}); it is still pending"
         ) from e
@@ -1338,6 +1476,44 @@ class OutboxPrText:
     text: PrText
     manifest: str
     index: int
+    identity: ContainerIdentity | None = None
+    digest: str | None = None
+    manifest_text: str | None = None
+    body_files: tuple[tuple[str, str], ...] = ()
+
+
+def description_source_digest(outbox: Outbox, name: str, index: int, text: PrText) -> str:
+    """Bind a selected description to strict proposal and publication evidence."""
+    from dataclasses import asdict
+
+    from jailbee.outbox.inspect import pr_progress_evidence
+    from jailbee.outbox_io import proposal_digest
+
+    if outbox.identity is None or name in outbox.rejected:
+        raise OutboxChanged("description identity unavailable; refresh required")
+    raw = outbox.files[name]
+    bodies = {n: outbox.files[n] for n in _body_references(raw)}
+    if set(bodies).intersection(outbox.rejected):
+        raise OutboxChanged("description body rejected; refresh required")
+    manifest = parse_manifest(name, raw, outbox.files)
+    store = StoreSnapshot("pr", tuple(sorted(outbox.files.items())), outbox.rejected, ())
+    progress = pr_progress_evidence(store, name, len(manifest.actions))
+    if progress.error or index not in pending_indices(
+        manifest, Progress(progress.applied, {str(i): u for i, u in progress.receipts})
+    ):
+        raise OutboxChanged("description progress changed or unavailable; refresh required")
+    if not isinstance(manifest.actions[index], DescriptionAction):
+        raise OutboxChanged("description index changed; refresh required")
+    evidence = asdict(progress) | {"applied": sorted(progress.applied)}
+    payload = {
+        "identity": asdict(outbox.identity),
+        "proposal": proposal_digest(name, raw, bodies),
+        "index": index,
+        "text": asdict(text),
+        "progress": evidence,
+        "rejected": sorted(outbox.rejected),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 def _description_title(action: DescriptionAction, fallback: str) -> str:
@@ -1458,7 +1634,7 @@ def pending_pr_text(
     line, once the PR is up.
     """
     try:
-        outbox = read_outbox(incus, container, uid=uid)
+        outbox = read_outbox(incus, container, uid=uid, strict=True)
     except OutboxReadError as e:
         warn(f"{e}; falling back to the usual PR text.")
         return None
@@ -1501,9 +1677,14 @@ def pending_pr_text(
             if manifest.repo not in known_slugs:
                 warn(f"Ignoring outbox manifest {name}: it targets {manifest.repo}, not {slug}.")
             continue
+        try:
+            progress = _publication_progress(outbox, name, len(manifest.actions))
+        except OutboxError as exc:
+            warn(f"Ignoring outbox manifest {name}: {exc}")
+            continue
         described = [
             (name, index, action)
-            for index in pending_indices(manifest, read_progress(outbox, name))
+            for index in pending_indices(manifest, progress)
             if isinstance(action := manifest.actions[index], DescriptionAction)
         ]
         if not _eligible_for(manifest, for_pr, numbered_only=numbered_only):
@@ -1551,15 +1732,18 @@ def pending_pr_text(
     # anyway, and `confirm_pr_branch_name` skips its prompt when the proposal
     # and the source branch agree.
     fallback_branch = source_branch or ""
-    return OutboxPrText(
-        text=PrText(
-            title=_description_title(action, fallback_branch or container),
-            body=action.body,
-            branch=_outbox_branch(action, fallback_branch, name),
-        ),
-        manifest=name,
-        index=index,
+    text = PrText(
+        title=_description_title(action, fallback_branch or container),
+        body=action.body,
+        branch=_outbox_branch(action, fallback_branch, name),
     )
+    try:
+        digest = description_source_digest(outbox, name, index, text) if outbox.identity else None
+        bodies = tuple(sorted((n, outbox.files[n]) for n in _body_references(outbox.files[name])))
+    except (OutboxChanged, ManifestError, ValueError, KeyError, RecursionError) as exc:
+        warn(f"Ignoring outbox manifest {name}: {exc}; refresh required")
+        return None
+    return OutboxPrText(text, name, index, outbox.identity, digest, outbox.files[name], bodies)
 
 
 # --------------------------------------------------------------------------
@@ -1741,6 +1925,8 @@ def _gate_manifests(
     *,
     force: bool,
     comments_only: bool,
+    manifest_names: Sequence[str] | None = None,
+    raise_errors: bool = False,
 ) -> tuple[list[Target], list[str], list[str]]:
     """Gate every pending manifest: (publishable targets, refusals, notes).
 
@@ -1773,17 +1959,19 @@ def _gate_manifests(
     targets: list[Target] = []
     refusals: list[str] = []
     notes: list[str] = []
-    for name in outbox.manifest_names:
+    for name in outbox.manifest_names if manifest_names is None else manifest_names:
         try:
             manifest = parse_manifest(name, outbox.files[name], outbox.files)
         except ManifestError as e:
+            if raise_errors:
+                raise OutboxError(str(e)) from e
             if comments_only:
                 notes.append(f"Ignoring outbox manifest {name}: {e}")
             else:
                 refusals.append(str(e))
             continue
         if comments_only:
-            progress = read_progress(outbox, name)
+            progress = _publication_progress(outbox, name, len(manifest.actions))
             if not _offerable_indices(manifest, progress):
                 if pending_indices(manifest, progress):
                     # Two lines, as with the `pr: null` deferral below: the
@@ -1797,6 +1985,8 @@ def _gate_manifests(
         try:
             target = resolve_target(cfg, incus, container, manifest, force=force)
         except GateError as e:
+            if raise_errors:
+                raise
             if comments_only:
                 # `StaleError` is the only refusal `--force` relaxes; every
                 # other `GateError` would refuse again identically.
@@ -1815,6 +2005,8 @@ def _gate_manifests(
             notes.append(_held_back(str(e), short, stale=False))
             continue
         if target.pr is None:
+            if raise_errors:
+                raise OutboxError("proposal awaits a recorded PR; create or adopt it first")
             # Unreachable under `comments_only`: `parse_manifest` refuses a
             # `pr: null` manifest that carries anything but a lone description,
             # and `_offerable_indices` has already skipped those above.
@@ -1831,6 +2023,30 @@ def _gate_manifests(
     return targets, refusals, notes
 
 
+def _same_identity(incus: Incus, container: str, identity: ContainerIdentity) -> None:
+    if container_identity(incus, container) != identity:
+        raise OutboxChanged("container changed; refresh required")
+
+
+def _views(identity: ContainerIdentity, store: StoreSnapshot) -> dict[str, str]:
+    from jailbee.outbox.inspect import build_views
+
+    return {
+        v.id.name: v.revision for v in build_views(identity, (store,), journal_store=JournalStore())
+    }
+
+
+def _compare_preview(
+    identity: ContainerIdentity, preview: Outbox, fresh: StoreSnapshot, names: Sequence[str]
+) -> None:
+    if preview.identity is not None and preview.identity != identity:
+        raise OutboxChanged("container changed; refresh required")
+    original = StoreSnapshot("pr", tuple(sorted(preview.files.items())), preview.rejected, ())
+    old, new = _views(identity, original), _views(identity, fresh)
+    if any(name not in old or old.get(name) != new.get(name) for name in names):
+        raise OutboxChanged("proposal changed; refresh required")
+
+
 def offer_pending_comments(
     cfg: Config,
     incus: Incus,
@@ -1843,6 +2059,118 @@ def offer_pending_comments(
     force: bool = False,
     dry_run: bool = False,
     can_prompt: bool = True,
+    manifest_names: Sequence[str] | None = None,
+    management: PrManagement | None = None,
+    expected_revision: str | None = None,
+    raise_errors: bool = False,
+) -> int:
+    """Serialize fresh PR inspection, confirmation, revalidation and publication.
+
+    Explicit selection fails closed. Legacy post-PR offers remain best-effort;
+    an integer pr_number chooses comments-only mode, never a PR-number filter.
+    Supplied previews are validated, not replaced with a different proposal.
+    expected_revision is the shared inspection token for a single selected manifest.
+    """
+    from jailbee.outbox import io as store_io
+    from jailbee.outbox.inspect import pr_progress_evidence
+
+    explicit = manifest_names is not None or expected_revision is not None
+    manager = management if management is not None else PrManagement()
+    try:
+        if raise_errors and (not explicit or pr_number is not None):
+            raise OutboxError("typed errors require selected PR publication")
+        if expected_revision is not None and (manifest_names is None or len(manifest_names) != 1):
+            raise OutboxError("expected_revision requires one selected manifest")
+        if not explicit and outbox is None:
+            outbox = read_outbox(incus, container, uid=cfg.container_user.uid)
+            if not outbox.manifest_names:
+                return 0
+        identity = container_identity(incus, container)
+        with manager.lock(identity):
+            store = store_io.read_store(incus, container, "pr", uid=cfg.container_user.uid)
+            _same_identity(incus, container, identity)
+            fresh = Outbox(store.as_dict(), store.rejected, identity)
+            candidates = outbox.manifest_names if outbox is not None else fresh.manifest_names
+            names = tuple(candidates if manifest_names is None else manifest_names)
+            if len(set(names)) != len(names):
+                raise OutboxError("duplicate selected manifest names")
+            for name in names:
+                ProposalId("pr", name)
+                if name not in fresh.files or name in fresh.rejected:
+                    raise OutboxChanged(f"{name}: proposal unavailable; refresh required")
+            if outbox is not None:
+                _compare_preview(identity, outbox, store, names)
+            revisions = _views(identity, store)
+            if expected_revision is not None and revisions[names[0]] != expected_revision:
+                raise OutboxChanged("proposal revision changed; refresh required")
+            eligible = []
+            evidence_failures = 0
+            for name in names:
+                # Validate strict evidence before converting it to legacy Progress.
+                try:
+                    count = len(parse_manifest(name, fresh.files[name], fresh.files).actions)
+                except (ManifestError, RecursionError):
+                    count = None
+                evidence = pr_progress_evidence(store, name, count)
+                if evidence.error:
+                    if explicit:
+                        raise OutboxError(f"{name}: {evidence.error}")
+                    warn_plain(f"held back: {name}: {evidence.error}")
+                    evidence_failures += int(pr_number is None)
+                else:
+                    eligible.append(name)
+            return evidence_failures + _offer_locked(
+                cfg,
+                incus,
+                container,
+                short,
+                pr_number=pr_number,
+                confirm=confirm,
+                outbox=fresh,
+                force=force,
+                dry_run=dry_run,
+                can_prompt=can_prompt,
+                manifest_names=eligible,
+                identity=identity,
+                management=manager,
+                selected_publication=explicit and pr_number is None,
+                raise_errors=raise_errors,
+            )
+    except (
+        OutboxReadError,
+        JournalError,
+        OutboxError,
+        OutboxExecutionError,
+        IncusError,
+        pr.PrError,
+        GateError,
+    ) as exc:
+        if raise_errors:
+            raise
+        if not explicit and pr_number is not None:
+            warn_plain(f"{exc}; nothing was offered.")
+            return 0
+        error_plain(str(exc))
+        return 1
+
+
+def _offer_locked(
+    cfg: Config,
+    incus: Incus,
+    container: str,
+    short: str,
+    *,
+    pr_number: int | None,
+    confirm: Callable[[int], bool],
+    outbox: Outbox,
+    force: bool = False,
+    dry_run: bool = False,
+    can_prompt: bool = True,
+    manifest_names: Sequence[str],
+    identity: ContainerIdentity,
+    management: PrManagement,
+    selected_publication: bool = False,
+    raise_errors: bool = False,
 ) -> int:
     """Show what `container` wants to publish, ask once, publish it.
 
@@ -1888,17 +2216,19 @@ def offer_pending_comments(
     """
     for_offer = pr_number is not None
     uid = cfg.container_user.uid
-    if outbox is None:
-        try:
-            outbox = read_outbox(incus, container, uid=uid)
-        except OutboxReadError as e:
-            warn(f"{e}; nothing was offered.")
-            return 0
     if not outbox.manifest_names:
         return 0
 
     targets, refusals, notes = _gate_manifests(
-        cfg, incus, container, outbox, short, force=force, comments_only=for_offer
+        cfg,
+        incus,
+        container,
+        outbox,
+        short,
+        force=force,
+        comments_only=for_offer,
+        manifest_names=manifest_names,
+        raise_errors=raise_errors,
     )
     for message in refusals:
         error_plain(message)
@@ -1907,13 +2237,13 @@ def offer_pending_comments(
     if not targets:
         # Refusals are failures; a deferral or a held-back manifest only means
         # the work belongs to another command, which is not a reason to fail.
-        return len(refusals)
+        return max(1, len(refusals)) if selected_publication else len(refusals)
 
     # Per target: the progress snapshot, and which of its pending indices this
     # run will publish (`None` = all of them, `jailbee review apply`'s mode).
     plans: list[tuple[Target, Progress, frozenset[int] | None]] = []
     for target in targets:
-        progress = read_progress(outbox, target.manifest.name)
+        progress = _publication_progress(outbox, target.manifest.name, len(target.manifest.actions))
         plans.append(
             (target, progress, _offerable_indices(target.manifest, progress) if for_offer else None)
         )
@@ -1929,7 +2259,29 @@ def offer_pending_comments(
         return len(refusals)
 
     for target, progress, idx in plans:
-        _print_plan(cfg, short, target, progress, indices=idx)
+        if selected_publication:
+            from jailbee.outbox.inspect import safe_text
+
+            # Full literal bodies are required for selected approval, not only
+            # the legacy offer's first-line preview. Use the freshly gated PR.
+            assert target.pr is not None
+            displayed = Manifest(
+                target.manifest.name,
+                target.manifest.repo,
+                target.pr.number,
+                target.manifest.head_sha,
+                target.manifest.actions,
+            )
+            console.print(f"Container: {safe_text(container)}", markup=False, highlight=False)
+            console.print(f"Head: {safe_text(target.pr.head_sha)}", markup=False, highlight=False)
+            for line in show_lines(displayed):
+                console.print(safe_text(line), markup=False, highlight=False, soft_wrap=True)
+            if progress.applied:
+                console.print(f"Already published (skipped): {sorted(progress.applied)}")
+            if target.stale:
+                console.print("The PR head has moved since this was written.")
+        else:
+            _print_plan(cfg, short, target, progress, indices=idx)
     _print_identity(cfg, total)
 
     if dry_run:
@@ -1951,6 +2303,31 @@ def offer_pending_comments(
         )
         return len(refusals)
 
+    from jailbee.outbox import io as store_io
+
+    # Recheck every planned proposal before the first mutation, not just its count.
+    fresh_store = store_io.read_store(incus, container, "pr", uid=uid)
+    _same_identity(incus, container, identity)
+    _compare_preview(identity, outbox, fresh_store, [t.manifest.name for t, _, _ in plans])
+    refreshed_plans = []
+    for target, progress, idx in plans:
+        refreshed = resolve_target(cfg, incus, container, target.manifest, force=force)
+        if (
+            refreshed.pr is None
+            or target.pr is None
+            or refreshed.pr.number != target.pr.number
+            or refreshed.scope != target.scope
+        ):
+            raise OutboxChanged("PR target changed; refresh required")
+        refreshed_plans.append((refreshed, progress, idx))
+    if selected_publication:
+        # Remote target reads can run arbitrary time: keep local evidence fresh
+        # across that window too, and retain newly arrived neighbor references.
+        fresh_store = store_io.read_store(incus, container, "pr", uid=uid)
+        _compare_preview(identity, outbox, fresh_store, [t.manifest.name for t, _, _ in plans])
+    _same_identity(incus, container, identity)
+    plans = refreshed_plans
+    outbox = Outbox(fresh_store.as_dict(), fresh_store.rejected, identity)
     failures = len(refusals)
     for position, (target, progress, idx) in enumerate(plans):
         outcome = apply_manifest(cfg, incus, container, target, progress, uid=uid, indices=idx)
@@ -1962,24 +2339,19 @@ def offer_pending_comments(
             # The GitHub side is settled but the container could not be told.
             # Publishing the next manifest would post more that nothing can
             # record — the very thing the sidecar exists to prevent.
+            if raise_errors:
+                raise OutboxExecutionError(str(e)) from e
             error_plain(str(e))
             stop = True
         if outcome.failure is not None:
+            if raise_errors:
+                warn_plain(
+                    f"{target.manifest.name} is still pending; re-running skips what landed."
+                )
+                raise OutboxExecutionError(f"{target.manifest.name}: {outcome.failure}")
             error_plain(f"{target.manifest.name}: {outcome.failure}")
             warn_plain(f"{target.manifest.name} is still pending; re-running skips what landed.")
             stop = True
-        # `finalize` deletes a spent manifest together with the body files no
-        # *other* manifest in this snapshot references. Drop the spent one from
-        # the snapshot so a `.md` shared by two completed manifests doesn't
-        # look referenced by each of them in turn and outlive them both — the
-        # same hazard `jailbee review drop` guards against.
-        if not pending_indices(
-            target.manifest,
-            Progress(applied=progress.applied | set(outcome.applied), urls={}),
-        ):
-            outbox = Outbox(
-                files={k: v for k, v in outbox.files.items() if k != target.manifest.name}
-            )
         if stop:
             failures += 1
             left = [t.manifest.name for t, _, _ in plans[position + 1 :]]

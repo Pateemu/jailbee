@@ -596,3 +596,196 @@ def test_delete_outbox_files_rejects_paths_before_any_deletion(mocker, name):
     with pytest.raises(ValueError):
         outbox_io.delete_outbox_files(incus, "box", "/outbox", ["ok.json", name], uid=None)
     incus.exec.assert_not_called()
+
+
+@pytest.mark.parametrize("count", [3, 10**30])
+@pytest.mark.parametrize("owned_log", [False, True])
+def test_persisted_declared_count_never_allocates_inspection_or_preparation(
+    tmp_path, mocker, make_cfg, count, owned_log
+):
+    from jailbee import issue_github, issue_outbox
+    from jailbee.outbox.inspect import build_views
+    from jailbee.outbox_io import issue_receipt_line
+    from tests.outbox_support import store
+
+    name = "one.json"
+    action = (
+        {"type": "comment", "repo": ".", "issue": 7, "body_file": "applied.log"}
+        if owned_log
+        else {"type": "comment", "repo": ".", "issue": 7, "body": "Original"}
+    )
+    text = json.dumps({"version": 1, "actions": [action]})
+    files = {name: text, **({"applied.log": "Original"} if owned_log else {})}
+    key = journal_key(_identity(), name)
+    journals = JournalStore(tmp_path / "journals")
+    bodies = {"applied.log": "Original"} if owned_log else {}
+    original_digest = proposal_digest(name, text, bodies)
+    journals.create(key, original_digest, count)
+    journals.mark_prepared(key, 0, repo="acme/app")
+    journal = journals.mark_applied(key, 0, repo="acme/app", url="https://receipt", issue=7)
+    if owned_log:
+        files["applied.log"] += (
+            issue_receipt_line(name, journal.actions[0], "2026-10-01T12:00:00Z") + "\n"
+        )
+    fresh = JournalStore(journals.root)
+    assert fresh.load(key).action_count == count
+    views = build_views(key.identity, (store("issue", files),), journal_store=fresh)
+    assert views[0].state == "uncertain"
+    assert views[0].error and views[0].edit_block
+    cfg = make_cfg(tmp_path)
+    incus = mocker.Mock()
+    incus.list_containers.return_value = [
+        {"name": key.identity.full_name, "created_at": key.identity.created_at}
+    ]
+    mocker.patch.object(
+        issue_outbox, "read_issue_outbox", return_value=issue_outbox.OutboxSnapshot(files)
+    )
+    mocker.patch.object(
+        issue_outbox,
+        "resolve_repo_targets",
+        return_value={".": issue_outbox.RepoTarget(".", cfg.repo_root, "acme/app")},
+    )
+    remote = mocker.patch.object(
+        issue_github, "current_login", side_effect=AssertionError("remote reached")
+    )
+    with pytest.raises(
+        issue_outbox.IssueGateError, match=r"count differs|changed after recorded progress"
+    ):
+        issue_outbox.prepare_batch(
+            cfg, incus, key.identity.full_name, (name,), uid=1000, journal_store=fresh
+        )
+    remote.assert_not_called()
+    assert fresh.load(key).digest == original_digest
+
+
+def _settled_log_journal(original, count=2):
+    from jailbee.outbox_io import IssueJournal, issue_receipt_line
+
+    name = "one space pr=7.json"
+    key = journal_key(_identity(), name)
+    bodies = {"applied.log": original, "other.md": "Other"}
+    text = '{"version":1,"actions":[]}'
+    actions = tuple(
+        JournalAction(i, "applied", "acme/app", "https://receipt", 7) for i in range(count)
+    )
+    journal = IssueJournal(key.identity, name, proposal_digest(name, text, bodies), count, actions)
+    block = "".join(issue_receipt_line(name, a, "2026-10-01T12:00:00Z") + "\n" for a in actions)
+    return key, text, bodies, journal, block
+
+
+@pytest.mark.parametrize("original", ["", "Original", "Original\n", "äö\r\nEnd"])
+@pytest.mark.parametrize("repetitions", [1, 3])
+def test_owned_issue_log_proof_restores_exact_original_digest(original, repetitions):
+    from jailbee.outbox_io import issue_proposal_digest
+
+    key, text, bodies, journal, block = _settled_log_journal(original)
+    changed = bodies | {"applied.log": original + block * repetitions}
+    assert proposal_digest(key.manifest_name, text, changed) != journal.digest
+    assert issue_proposal_digest(key, text, changed, journal) == journal.digest
+    assert changed["applied.log"] == original + block * repetitions
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "identity",
+        "name",
+        "partial",
+        "uncertain",
+        "prepared",
+        "empty",
+        "count",
+        "huge-count",
+        "order",
+        "duplicate-index",
+        "missing-index",
+        "manifest",
+        "other-body",
+        "original",
+        "append",
+        "prepend",
+        "insert",
+        "url",
+        "issue",
+        "repo",
+        "index",
+        "timestamp",
+        "format",
+        "extra-field",
+        "incomplete",
+    ],
+)
+def test_owned_issue_log_proof_rejects_unproven_changes(change):
+    from dataclasses import replace
+
+    from jailbee.outbox_io import issue_proposal_digest
+
+    key, text, bodies, journal, block = _settled_log_journal("Original")
+    changed = bodies | {"applied.log": "Original" + block}
+    if change == "identity":
+        key = replace(key, identity=replace(key.identity, created_at="other"))
+    elif change == "name":
+        journal = replace(journal, manifest_name="other.json")
+    elif change in ("partial", "empty"):
+        journal = replace(journal, actions=journal.actions[:1] if change == "partial" else ())
+    elif change in ("uncertain", "prepared"):
+        journal = replace(
+            journal, actions=(replace(journal.actions[0], state=change), journal.actions[1])
+        )
+    elif change in ("count", "huge-count"):
+        journal = replace(journal, action_count=3 if change == "count" else 10**30)
+    elif change == "order":
+        journal = replace(journal, actions=tuple(reversed(journal.actions)))
+    elif change in ("duplicate-index", "missing-index"):
+        journal = replace(
+            journal,
+            actions=(
+                journal.actions[0],
+                replace(journal.actions[1], index=0 if change == "duplicate-index" else 2),
+            ),
+        )
+    elif change == "manifest":
+        text += "\n"
+    elif change == "other-body":
+        changed["other.md"] += "Changed"
+    elif change in ("original", "append", "prepend", "insert"):
+        changed["applied.log"] = {
+            "original": "Changed" + block,
+            "append": "Original" + block + "external\n",
+            "prepend": "external\nOriginal" + block,
+            "insert": "Original" + block + "external\n" + block,
+        }[change]
+    elif change == "incomplete":
+        changed["applied.log"] = "Original" + block.splitlines(keepends=True)[0]
+    else:
+        lines = block.splitlines()
+        record = json.loads(lines[-1])
+        if change == "format":
+            lines[-1] = json.dumps(record, separators=(",", ":"))
+        else:
+            record.update(
+                {
+                    "url": {"url": "https://other"},
+                    "issue": {"issue": 99},
+                    "repo": {"repo": "other/app"},
+                    "index": {"index": True},
+                    "timestamp": {"timestamp": "2026-99-99T00:00:00Z"},
+                    "extra-field": {"extra": "unproven"},
+                }[change]
+            )
+            lines[-1] = json.dumps(record, sort_keys=True)
+        changed["applied.log"] = "Original" + "\n".join(lines) + "\n"
+    if change in ("order", "duplicate-index", "missing-index"):
+        from jailbee.outbox_io import issue_receipt_line
+
+        # Keep bytes canonical for this journal so only completeness rejects it.
+        mutated_block = "".join(
+            issue_receipt_line(key.manifest_name, action, "2026-10-01T12:00:00Z") + "\n"
+            for action in journal.actions
+        )
+        changed["applied.log"] = "Original" + mutated_block
+        assert len(journal.actions) == journal.action_count
+        assert journal.digest == proposal_digest(key.manifest_name, text, bodies)
+    raw = proposal_digest(key.manifest_name, text, changed)
+    assert issue_proposal_digest(key, text, changed, journal) == raw
+    assert raw != journal.digest

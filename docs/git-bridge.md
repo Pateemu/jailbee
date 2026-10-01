@@ -988,6 +988,97 @@ can't leak via git commits. See [`config.md`](config.md#github) for the
 full field reference, the `0600` permission requirement, and the
 `jailbee doctor` checks.
 
+## Unified proposal management
+
+`jb outbox` brings PR and issue proposals into one view without moving files
+or changing manifest schemas. Physical stores remain
+`/home/dev/.jailbee/pr-outbox/` and `/home/dev/.jailbee/issue-outbox/` inside
+the container (`~/.jailbee/pr-outbox/` and `~/.jailbee/issue-outbox/` for its
+user). New containers bootstrap both directories as the container user,
+before agents run, including with `--no-clone` or `--no-autostart`. Existing
+containers are not retroactively repaired; an agent may use idempotent
+`mkdir -p` there. Inspection never creates missing directories and makes no
+`gh` or network calls.
+
+```bash
+jb outbox                          # terminal overview and drill-down
+jb outbox smoke                    # shorthand for outbox browse smoke
+jb outbox browse ls                # escape a container/subcommand collision
+jb outbox ls --all-repos -o json
+jb outbox show smoke pr/001-review.json -o json
+jb outbox drop smoke pr/001-review.json --action 0 --comment 1
+jb outbox drop smoke issue/001-triage.json --action 0 --with-dependents
+```
+
+Logical IDs are `pr/<filename>.json` and `issue/<filename>.json`, not paths
+and not GitHub IDs. Action and inline review-comment selectors are
+**zero-based**. `--comment` requires `--action` on a PR `review` action.
+With neither selector, `drop` deletes the whole manifest; removing the last
+action deletes it too. Deleting an issue `create` with `issue_ref`
+dependents is refused unless `--with-dependents` explicitly includes them.
+The terminal browser asks about that cascade, then confirms the exact scope;
+Qt shows the expanded scope in its confirmation dialog. Referenced body
+files are retained while another pending manifest in the same store still
+uses them. Surviving JSON fields are preserved, not rebuilt from defaults.
+
+Selective deletion is an edit, allowed only before any recorded publication
+progress. PR progress sidecars/receipts and issue journals block edits;
+malformed or unreadable evidence is not treated as empty. For a whole issue
+manifest with settled progress only, `--archive-journal` permits local
+deletion. First run `jb outbox show <container> issue/<manifest>.json` and
+inspect its receipts and pending actions before approving whole-manifest
+archival deletion. Direct `outbox drop` previews deletion scope, not receipts
+or action content. Uncertain outcomes must first be reconciled with the
+existing `jb issue resolve` command. There is no general text editor in the
+browser.
+
+`show` includes the revision token, raw JSON, full proposed text and available
+receipts. `ls`/`show` support `-o json` (also `--format`/`--output`) for
+structured inspection. A stopped or inaccessible container is
+**unavailable**, not empty; missing stores and rejected unsafe files are
+reported separately. Overview exits 2 if any container is unavailable,
+while still emitting its structured result.
+
+A human on the host can approve exactly one manifest:
+
+```bash
+jb outbox apply smoke pr/001-review.json --revision TOKEN
+jb outbox apply smoke issue/001-triage.json --revision TOKEN
+```
+
+`TOKEN` is the revision from inspection. `--revision` on `drop` or `apply`
+refuses a changed proposal, including a changed referenced body or progress
+evidence: refresh and inspect again, do not blindly reuse child indices.
+The browsers carry that revision automatically. Publication always covers
+**all pending actions in the selected manifest**, even when an action or
+comment is highlighted; there is no publish-all-across-manifests operation.
+Existing repository/PR/head gates, issue `expected` checks, host identity,
+confirmation, receipts, resume and cleanup rules remain authoritative.
+`--force` overrides PR stale anchors only and is invalid for issues.
+`--yes` skips confirmation only; `--dry-run` publishes nothing but publication
+preflight can still read GitHub, unlike inspection.
+
+The terminal browser offers containers, proposals, actions and comments,
+with Back, Refresh and Exit at each level. Without a TTY, the shorthand
+prints an overview rather than prompting. Dashboard **Outbox...** opens this
+browser; the local Qt dashboard instead opens a native non-modal tree with
+plain, read-only proposal text, Refresh and Delete selected. Qt publication
+opens a host terminal running the exact selected `outbox apply` with its
+revision; that terminal owns the authoritative approval. Launching it is
+not evidence of publication. Refresh after returning. Closing during load
+hides the dialog while its owned worker finishes; shutdown waits for workers
+rather than terminating them.
+
+Over remote SSH the browser is always read-only, even in unrestricted mode.
+Shorthand is policy-checked as `outbox browse`; use explicit `outbox drop`
+or `outbox apply` commands for mutations, each subject to remote command and
+host-protection policy. Native Qt is not an SSH browser.
+
+The existing `jb review ls/show/apply/drop`, `jb issue
+ls/show/apply/drop/resolve`, `jb pr` and `jb submodule pr` workflows remain
+available. The unified interface does not authorize agents to publish:
+agents stage proposals; humans inspect and approve on the host.
+
 ## Issue management
 
 A container's `gh` can read GitHub but never write to it (see [GitHub CLI

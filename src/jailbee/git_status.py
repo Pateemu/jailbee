@@ -495,13 +495,34 @@ UNMERGED=$(git ls-files --unmerged 2>/dev/null \
   | cut -f2 | sort -u | wc -l | tr -d '[:space:]')
 case "$UNMERGED" in '' | *[!0-9]*) UNMERGED="?" ;; esac
 
-# --- field 13: manifests waiting in the container's PR outbox ---
-PENDING=$(ls -1 "$OUTBOX_DIR"/*.json 2>/dev/null | wc -l | tr -d '[:space:]')
-case "$PENDING" in '' | *[!0-9]*) PENDING="?" ;; esac
+count_outbox_manifests() {
+    # Check ancestors before treating an absent store as empty: a failed
+    # lookup under an unsearchable directory is unknown, not absence.
+    directory="$1"
+    while :; do
+        [ ! -L "$directory" ] || { printf '?'; return; }
+        if [ -e "$directory" ]; then
+            [ -d "$directory" ] && [ -x "$directory" ] \
+                || { printf '?'; return; }
+        fi
+        [ "$directory" != / ] || break
+        directory="${directory%/*}"
+        [ -n "$directory" ] || directory=/
+    done
+    [ -e "$1" ] || { printf '0'; return; }
+    [ -r "$1" ] && [ -x "$1" ] || { printf '?'; return; }
+    count=0
+    for candidate in "$1"/*.json; do
+        case "$candidate" in *.progress.json) continue ;; esac
+        [ -f "$candidate" ] && [ ! -L "$candidate" ] || continue
+        count=$((count + 1))
+    done
+    printf '%s' "$count"
+}
 
-# --- field 14: manifests waiting in the container's issue outbox ---
-PENDING_ISSUES=$(ls -1 "$ISSUE_OUTBOX_DIR"/*.json 2>/dev/null | wc -l | tr -d '[:space:]')
-case "$PENDING_ISSUES" in '' | *[!0-9]*) PENDING_ISSUES="?" ;; esac
+# --- fields 13-14: manifest counts, not pending GitHub action counts ---
+PENDING=$(count_outbox_manifests "$OUTBOX_DIR")
+PENDING_ISSUES=$(count_outbox_manifests "$ISSUE_OUTBOX_DIR")
 
 printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' \
   "$WT" "$COMMITTED" "$COUNT" "$CONFLICT" "$SUB_COMMITTED_STRUCT" "$SUB_WT_STRUCT" \

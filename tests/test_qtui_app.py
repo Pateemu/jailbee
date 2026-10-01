@@ -668,6 +668,182 @@ def _controller_with_group(
     return controller
 
 
+def test_outbox_action_opens_native_not_terminal(mocker, tmp_path):
+    from jailbee.dashboard import RepoTarget
+
+    controller = _controller_with_group(mocker, tmp_path)
+    native = mocker.patch.object(controller, "_open_outbox", create=True)
+    terminal = mocker.patch("jailbee.qtui.app.detect_terminal")
+    controller.on_action("outbox browse", "p-foo")
+    native.assert_called_once_with(
+        RepoTarget(tmp_path, tmp_path / ".jailbee" / "config.yaml"), "p-foo"
+    )
+    terminal.assert_not_called()
+
+
+@pytest.mark.parametrize("marker", ["JAILBEE_SSH_SESSION", "JAILBEE_REMOTE_SSH"])
+def test_outbox_over_any_ssh_keeps_terminal_browser(mocker, tmp_path, monkeypatch, marker):
+    from jailbee.qtui.terminal import TerminalSpec
+
+    monkeypatch.setenv(marker, "1")
+    controller = _controller_with_group(mocker, tmp_path)
+    native = mocker.patch.object(controller, "_open_outbox", create=True)
+    mocker.patch("jailbee.qtui.app.detect_terminal", return_value=TerminalSpec("xterm", ["-e"]))
+    spawn = mocker.Mock()
+    mocker.patch.object(qapp, "subprocess", spawn)
+    controller.on_action("outbox browse", "p-foo")
+    native.assert_not_called()
+    assert spawn.Popen.call_args.args[0][:6] == [
+        "xterm",
+        "-e",
+        "jailbee",
+        "outbox",
+        "browse",
+        "p-foo",
+    ]
+
+
+def test_outbox_publish_command_and_dialog_lifetime(qtbot, mocker, tmp_path):
+    from PySide6.QtCore import Signal
+
+    from jailbee.dashboard import RepoTarget
+    from jailbee.qtui.terminal import TerminalSpec
+
+    class Dialog(QDialog):
+        changed = Signal()
+        publishRequested = Signal(str, str)  # noqa: N815 - mirrors the Qt signal contract
+        retired = Signal()
+        closing = False
+
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+
+        def publication_started(self):
+            self.started = True
+
+    controller = _controller_with_group(mocker, tmp_path)
+    factory = mocker.patch.object(qapp, "OutboxDialog", side_effect=Dialog, create=True)
+    mocker.patch("jailbee.qtui.app.detect_terminal", return_value=TerminalSpec("xterm", ["-e"]))
+    spawn = mocker.Mock()
+    mocker.patch.object(qapp, "subprocess", spawn)
+    target = RepoTarget(tmp_path, None)
+    controller._open_outbox(target, "p-foo")
+    dialog = next(iter(controller._outboxes.values()))
+    qtbot.addWidget(dialog)
+    controller._open_outbox(target, "p-foo")
+    assert factory.call_count == 1
+    dialog.publishRequested.emit("issue/001.json", "a" * 64)
+    assert spawn.Popen.call_args.args[0] == [
+        "xterm",
+        "-e",
+        "jailbee",
+        "outbox",
+        "apply",
+        "p-foo",
+        "issue/001.json",
+        "--revision",
+        "a" * 64,
+    ]
+    assert spawn.Popen.call_args.kwargs == {"start_new_session": True, "cwd": tmp_path}
+    assert dialog.started
+    controller._worker.force.assert_not_called()  # Launch is not a receipt.
+    dialog.changed.emit()
+    controller._worker.force.assert_called_once()
+    dialog.retired.emit()
+    assert not controller._outboxes
+
+
+@pytest.mark.parametrize("with_config", [True, False])
+def test_outbox_publish_builder_validates_tokens_and_preserves_target(tmp_path, with_config):
+    from jailbee.dashboard import RepoTarget
+    from jailbee.qtui.actions import build_outbox_publish
+
+    target = RepoTarget(tmp_path, tmp_path / "config.yaml" if with_config else None)
+    action = build_outbox_publish("p-foo", "issue/001.json", "a" * 64, target)
+    assert action.argv == [
+        "jailbee",
+        "outbox",
+        "apply",
+        "p-foo",
+        "issue/001.json",
+        "--revision",
+        "a" * 64,
+        *(["--config", str(tmp_path / "config.yaml")] if with_config else []),
+    ]
+    assert action.launch == "terminal" and not action.confirm
+    assert action.cwd == tmp_path
+    for proposal, revision in [("../bad", "a" * 64), ("issue/001.json", "--yes")]:
+        with pytest.raises(ValueError):
+            build_outbox_publish("p-foo", proposal, revision, target)
+
+
+def test_outbox_publish_missing_terminal_warns_without_launch(mocker, tmp_path):
+    from jailbee.dashboard import RepoTarget
+
+    controller = _controller_with_group(mocker, tmp_path)
+    mocker.patch("jailbee.qtui.app.detect_terminal", return_value=None)
+    warning = mocker.patch.object(QMessageBox, "warning")
+    spawn = mocker.Mock()
+    mocker.patch.object(qapp, "subprocess", spawn)
+    controller._publish_outbox(RepoTarget(tmp_path, None), "p-foo", "issue/001.json", "a" * 64)
+    warning.assert_called_once()
+    spawn.Popen.assert_not_called()
+
+
+def test_controller_retains_closing_dialog_until_blocked_delete_completes(
+    qtbot, mocker, make_cfg, tmp_path
+):
+    from threading import Event
+
+    from jailbee.dashboard import RepoTarget
+    from jailbee.outbox_io import JournalStore
+    from jailbee.qtui import outbox
+    from tests.outbox_support import IDENTITY
+    from tests.test_qtui_outbox import select, views
+
+    cfg = make_cfg(tmp_path)
+    mocker.patch.object(outbox.config_api, "load_repo_config", return_value=cfg)
+    mocker.patch.object(outbox.commands, "resolve_target", return_value=(cfg, IDENTITY.full_name))
+    mocker.patch.object(outbox, "Incus", return_value=mocker.Mock())
+    mocker.patch.object(outbox, "JournalStore", return_value=JournalStore(tmp_path / "journals"))
+    mocker.patch.object(outbox.service, "load_container", return_value=views(tmp_path))
+    entered, release = Event(), Event()
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert release.wait(3)
+        return ()
+
+    mocker.patch.object(outbox.service, "execute_delete", side_effect=blocked)
+    mocker.patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes)
+    window = MainWindow(git_enabled=False, interval=3)
+    qtbot.addWidget(window)
+    worker = mocker.Mock()
+    controller = qapp.AppController(window, worker, interval=3)
+    target = RepoTarget(cfg.repo_root, None)
+    controller._open_outbox(target, IDENTITY.full_name)
+    dialog = next(iter(controller._outboxes.values()))
+    qtbot.waitUntil(lambda: not dialog.busy)
+    select(dialog, action=0, comment=0)
+    try:
+        dialog.delete_selected()
+        qtbot.waitUntil(entered.is_set)
+        dialog.close()
+        controller._open_outbox(target, IDENTITY.full_name)
+        assert list(controller._outboxes.values()) == [dialog]
+        release.set()
+        qtbot.waitUntil(lambda: not controller._outboxes)
+        worker.force.assert_called_once()
+        controller._open_outbox(target, IDENTITY.full_name)
+        new = next(iter(controller._outboxes.values()))
+        assert new is not dialog
+        qtbot.waitUntil(lambda: not new.busy)
+        new.close()
+    finally:
+        release.set()
+        qtbot.waitUntil(lambda: not dialog.busy)
+
+
 def test_on_action_net_loose_asks_for_a_duration_and_passes_it(mocker, tmp_path):
     controller = _controller_with_group(mocker, tmp_path)
     mocker.patch(
@@ -1540,6 +1716,101 @@ def test_run_wires_config_edit_signal(mocker):
     controller = mocker.Mock()
     qapp._wire(window, mocker.Mock(), controller)
     window.configEditRequested.connect.assert_called_once_with(controller.on_config_edit)
+
+
+@pytest.mark.parametrize("operation", ["load", "delete"])
+def test_run_persistence_error_still_joins_outbox_and_stops_refresh(
+    qtbot, mocker, make_cfg, tmp_path, operation
+):
+    from threading import Event, Thread
+
+    from jailbee.dashboard import RepoTarget
+    from jailbee.db.models import GuiState
+    from jailbee.db.view_prefs import ViewState
+    from jailbee.outbox_io import JournalStore
+    from jailbee.qtui import outbox
+    from tests.outbox_support import IDENTITY
+    from tests.test_qtui_outbox import select, views
+
+    cfg = make_cfg(tmp_path)
+    view = views(tmp_path)
+    entered, release, completed = Event(), Event(), Event()
+    controllers, requests, notifications = [], [], []
+    original_controller = qapp.AppController
+    mocker.patch.object(qapp, "QApplication")
+    fake_app = qapp.QApplication.instance.return_value
+    mocker.patch.object(qapp, "collect_repo_roots", return_value=[tmp_path])
+    window = MainWindow(git_enabled=False, interval=3)
+    qtbot.addWidget(window)
+    mocker.patch.object(qapp, "MainWindow", return_value=window)
+    mocker.patch.object(window, "show")  # Never open a user-display window.
+    refresh_thread = mocker.patch.object(qapp, "QThread").return_value
+    worker = mocker.patch.object(qapp, "RefreshWorker").return_value
+    worker.gather_once.return_value = []
+    mocker.patch.object(qapp, "PRIME_INTERVAL_SECONDS", 0)
+    mocker.patch("jailbee.db.get_engine", return_value=mocker.sentinel.engine)
+    mocker.patch.object(qapp, "seed_view_state", return_value=ViewState())
+    mocker.patch.object(qapp, "dashboard_config_migration_notice", return_value=None)
+    mocker.patch("jailbee.db.gui_state.load_gui_state", return_value=GuiState())
+    failure = OSError("disk full")
+    mocker.patch("jailbee.db.gui_state.save_gui_state", side_effect=failure)
+    mocker.patch.object(outbox.config_api, "load_repo_config", return_value=cfg)
+    mocker.patch.object(outbox.commands, "resolve_target", return_value=(cfg, IDENTITY.full_name))
+    mocker.patch.object(outbox, "Incus", return_value=mocker.Mock())
+    mocker.patch.object(outbox, "JournalStore", return_value=JournalStore(tmp_path / "journals"))
+    read = mocker.patch.object(outbox.service, "load_container", return_value=view)
+    mutation = mocker.patch.object(outbox.service, "execute_delete", return_value=())
+    mocker.patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes)
+
+    def controller_factory(*args, **kwargs):
+        controller = original_controller(*args, **kwargs)
+        controllers.append(controller)
+        return controller
+
+    mocker.patch.object(qapp, "AppController", side_effect=controller_factory)
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert release.wait(3)
+        completed.set()
+        return view if operation == "load" else ()
+
+    def event_loop():
+        controller = controllers[0]
+        controller._open_outbox(RepoTarget(cfg.repo_root, None), IDENTITY.full_name)
+        dialog = next(iter(controller._outboxes.values()))
+        qtbot.waitUntil(lambda: not dialog.busy)
+        dialog.changed.connect(lambda: notifications.append(QThread.currentThread()))
+        if operation == "load":
+            read.side_effect = blocked
+            dialog.refresh()
+        else:
+            mutation.side_effect = blocked
+            select(dialog, action=0, comment=0)
+            dialog.delete_selected()
+        qtbot.waitUntil(entered.is_set)
+        requests.append(dialog._request)
+        return 0
+
+    fake_app.exec.side_effect = event_loop
+    releaser = Thread(target=lambda: (entered.wait(3) and release.wait(0.1)) or release.set())
+    releaser.start()
+    try:
+        with pytest.raises(OSError) as caught:
+            qapp.run(mocker.Mock(), None, interval=3, git_interval=10, no_git=True)
+        assert caught.value is failure
+        assert completed.is_set()
+        assert not requests[0].isRunning()
+        assert not controllers[0]._outboxes
+        assert len(notifications) == (1 if operation == "delete" else 0)
+        assert all(thread is QThread.currentThread() for thread in notifications)
+        worker.request_stop.assert_called_once()
+        refresh_thread.quit.assert_called_once()
+        refresh_thread.wait.assert_called_once_with(2000)
+    finally:
+        release.set()
+        releaser.join(3)
+        controllers[0]._finish_outboxes()
 
 
 def test_run_fills_the_window_before_showing_it(mocker):

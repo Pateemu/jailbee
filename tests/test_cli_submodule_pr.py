@@ -58,6 +58,13 @@ def _setup(mocker, tmp_path, *, candidates=None, state_record=None, mock_state_r
     mocker.patch("jailbee.cli._load_or_exit", return_value=cfg_mock)
 
     incus_mock = mocker.MagicMock()
+    incus_mock.list_containers.return_value = [
+        {"name": "sampleapp-feat-foo", "created_at": "2026-09-30T12:00:00Z"}
+    ]
+    cfg_mock.container_user.uid = 1000
+    # Legacy flow tests synthesize text, not a revision-bearing store. Strict
+    # source revalidation is exercised separately against real snapshots.
+    mocker.patch("jailbee.pr_flow.validate_outbox_source")
     incus_mock.config_get.side_effect = lambda name, key: {
         "user.jailbee.base_branch": "main",
         "user.jailbee.branch": "feat/foo",
@@ -720,7 +727,9 @@ def test_submodule_pr_outbox_offer_runs_after_outcome_and_consumption(mocker, tm
 
     assert result.exit_code == 0, result.output
     assert events == [("render", 123), ("record", None), ("offer", 123)]
-    offer.assert_called_once_with(cfg, incus, "sampleapp-feat-foo", "feat-foo", number=123)
+    offer.assert_called_once_with(
+        cfg, incus, "sampleapp-feat-foo", "feat-foo", number=123, management=mocker.ANY
+    )
 
 
 def test_submodule_pr_outbox_offer_failure_exits_after_the_successful_outcome(mocker, tmp_path):
@@ -1053,12 +1062,12 @@ def test_an_explicit_path_skips_the_picker_but_still_confirms(mocker, tmp_path):
 
 
 def test_the_container_picker_runs_when_no_name_is_given(mocker, tmp_path):
-    _setup(mocker, tmp_path, candidates=[_candidate("lib/a")])
+    _, incus, _ = _setup(mocker, tmp_path, candidates=[_candidate("lib/a")])
     _happy(mocker)
     mocker.patch("jailbee.lifecycle._stdin_is_interactive", return_value=True)
     # _setup already patched this; re-patch so the call kwargs are inspectable.
     resolve = mocker.patch(
-        "jailbee.cli._resolve_existing", return_value=(mocker.MagicMock(), "sampleapp-feat-foo")
+        "jailbee.cli._resolve_existing", return_value=(incus, "sampleapp-feat-foo")
     )
     mocker.patch("jailbee.tui.pick_submodule", return_value="lib/a")
     mocker.patch("typer.confirm", return_value=True)
@@ -1070,11 +1079,11 @@ def test_the_container_picker_runs_when_no_name_is_given(mocker, tmp_path):
 
 
 def test_an_explicit_container_name_does_not_prompt(mocker, tmp_path):
-    _setup(mocker, tmp_path, candidates=[_candidate("lib/a")])
+    _, incus, _ = _setup(mocker, tmp_path, candidates=[_candidate("lib/a")])
     _happy(mocker)
     mocker.patch("jailbee.lifecycle._stdin_is_interactive", return_value=True)
     resolve = mocker.patch(
-        "jailbee.cli._resolve_existing", return_value=(mocker.MagicMock(), "sampleapp-feat-foo")
+        "jailbee.cli._resolve_existing", return_value=(incus, "sampleapp-feat-foo")
     )
     mocker.patch("jailbee.tui.pick_submodule", return_value="lib/a")
     mocker.patch("typer.confirm", return_value=True)
@@ -1184,3 +1193,253 @@ def test_the_plan_does_not_claim_a_draft_change_on_the_update_path(mocker, tmp_p
     assert "update the existing PR" in result.output
     assert "draft" not in result.output.lower()
     assert "ready for review" not in result.output
+
+
+@pytest.mark.parametrize(
+    "outcome", ["create", "existing", "update", "failed_create", "failed_edit", "cancel", "changed"]
+)
+def test_submodule_publication_guard_covers_selection_to_comments(
+    mocker, tmp_path, make_cfg, outcome
+):
+    from contextlib import contextmanager
+
+    from jailbee import pr_flow
+    from jailbee.outbox.io import PrManagement
+    from jailbee.outbox.models import OutboxChanged
+    from jailbee.pr import PrCreateError, PrEditError
+
+    _setup(
+        mocker,
+        tmp_path,
+        state_record=pr_flow.PrRecord(123, "feat/foo", True, False)
+        if outcome == "update"
+        else None,
+    )
+    _happy(mocker)
+    cfg = make_cfg(tmp_path)
+    mocker.patch("jailbee.cli._load_or_exit", return_value=cfg)
+    events, managers = [], []
+
+    @contextmanager
+    def lock(manager, identity):
+        assert identity.full_name == "sampleapp-feat-foo"
+        managers.append(manager)
+        events.append("enter")
+        try:
+            yield
+        finally:
+            events.append("exit")
+
+    mocker.patch.object(PrManagement, "lock", lock)
+    source = _outbox_source(branch="feat/foo")
+
+    def select(*args, **kwargs):
+        events.append("select")
+        if outcome == "cancel":
+            import typer
+
+            raise typer.Abort()
+        return source
+
+    mocker.patch("jailbee.pr_outbox.pending_pr_text", side_effect=select)
+
+    def validate(*args):
+        assert args[3] is source
+        events.append("validate")
+        if outcome == "changed":
+            raise OutboxChanged("refresh required")
+
+    mocker.patch.object(pr_flow, "validate_outbox_source", side_effect=validate)
+
+    def create(*args, **kwargs):
+        events.append("create")
+        if outcome == "failed_create":
+            raise PrCreateError("denied")
+        return _created(already=outcome in {"existing", "failed_edit"})
+
+    def edit(*args, **kwargs):
+        events.append("edit")
+        if outcome == "failed_edit":
+            raise PrEditError("denied")
+
+    mocker.patch("jailbee.pr.create_pr", side_effect=create)
+    mocker.patch("jailbee.pr.view_existing_pr", return_value=_created(already=True))
+    mocker.patch("jailbee.pr.edit_pr", side_effect=edit)
+    mocker.patch(
+        "jailbee.pr_outbox.record_consumed", side_effect=lambda *a, **k: events.append("consume")
+    )
+    updates = mocker.spy(pr_flow, "apply_pr_updates")
+
+    def offer(*args, **kwargs):
+        assert kwargs["management"] is managers[0]
+        events.append("offer")
+        return 0
+
+    mocker.patch("jailbee.pr_outbox.offer_pending_comments", side_effect=offer)
+    result = CliRunner().invoke(app, ["submodule", "pr", "feat-foo", "--no-ai"])
+    assert events[0] == "enter", (events, result.exception)
+    assert events[-1] == "exit"
+    assert events.count("select") == 1
+    assert events.index("enter") < events.index("select")
+    if outcome in {"cancel", "changed", "failed_create"}:
+        assert result.exit_code != 0
+        assert "consume" not in events
+        if outcome == "changed":
+            assert "create" not in events and "edit" not in events
+    else:
+        assert result.exit_code == 0, result.exception
+        mutation = "edit" if outcome in {"update", "existing", "failed_edit"} else "create"
+        assert events[events.index(mutation) - 1] == "validate"
+        assert events.index(mutation) < events.index("offer") < len(events) - 1
+        if outcome == "failed_edit":
+            assert "consume" not in events
+        else:
+            assert events.index(mutation) < events.index("consume") < events.index("offer")
+    if updates.call_count:
+        assert updates.call_args.kwargs["management"] is managers[0]
+        assert all(manager is managers[0] for manager in managers)
+        if outcome in {"existing", "failed_edit"}:
+            assert updates.call_args.kwargs["outbox_hint"] is source
+
+
+@pytest.mark.parametrize("change", ["manifest", "body", "progress", "identity"])
+def test_submodule_changed_source_after_prompt_never_publishes(mocker, tmp_path, make_cfg, change):
+    import json
+
+    from jailbee import pr_flow, pr_outbox
+    from jailbee.outbox_io import ContainerIdentity
+
+    validator = pr_flow.validate_outbox_source
+    _setup(mocker, tmp_path)
+    _happy(mocker)
+    mocker.patch.object(pr_flow, "validate_outbox_source", validator)
+    cfg = make_cfg(tmp_path)
+    mocker.patch("jailbee.cli._load_or_exit", return_value=cfg)
+    identity = ContainerIdentity("sampleapp-feat-foo", "2026-09-30T12:00:00Z")
+    raw = json.dumps(
+        {
+            "version": 1,
+            "repo": "acme/lib-a",
+            "pr": None,
+            "head_sha": None,
+            "actions": [
+                {
+                    "type": "description",
+                    "title": "Selected",
+                    "branch": "feat/foo",
+                    "body_file": "body.md",
+                }
+            ],
+        }
+    )
+    original = pr_outbox.Outbox({"d.json": raw, "body.md": "Original"}, identity=identity)
+    from jailbee.pr_ai import PrText
+
+    text = PrText("Selected", "Original", "feat/foo")
+    source = pr_outbox.OutboxPrText(
+        text,
+        "d.json",
+        0,
+        identity,
+        pr_outbox.description_source_digest(original, "d.json", 0, text),
+        raw,
+        (("body.md", "Original"),),
+    )
+    fresh = dict(original.files)
+
+    def prompt(proposed, branch):
+        if change == "manifest":
+            fresh["d.json"] = raw.replace("Selected", "Changed")
+        elif change == "body":
+            fresh["body.md"] = "Changed"
+        elif change == "progress":
+            fresh["d.json.progress.json"] = '{"applied":[0],"urls":{"0":"https://x/pull/123"}}'
+        return proposed
+
+    mocker.patch.object(pr_flow, "confirm_pr_branch_name", side_effect=prompt)
+    pending = mocker.patch("jailbee.pr_outbox.pending_pr_text", return_value=source)
+    reader = mocker.patch(
+        "jailbee.pr_outbox.read_outbox",
+        side_effect=lambda *a, **k: pr_outbox.Outbox(
+            fresh,
+            identity=ContainerIdentity(identity.full_name, "new")
+            if change == "identity"
+            else identity,
+        ),
+    )
+    create = mocker.patch("jailbee.pr.create_pr")
+    consumed = mocker.patch("jailbee.pr_outbox.record_consumed")
+    result = CliRunner().invoke(app, ["submodule", "pr", "feat-foo", "--no-ai"])
+    assert result.exit_code == 1, result.exception
+    assert "refresh required" in result.output
+    create.assert_not_called()
+    consumed.assert_not_called()
+    pending.assert_called_once()
+    assert reader.call_args.kwargs["strict"] is True
+
+
+@pytest.mark.parametrize("update", [False, True])
+def test_submodule_replacement_after_guard_check_cannot_select_new_identity(
+    mocker, tmp_path, make_cfg, update
+):
+    import json
+
+    from jailbee import pr_flow, pr_outbox
+    from jailbee.outbox_io import ContainerIdentity
+    from jailbee.pr_ai import PrText
+
+    validator = pr_flow.validate_outbox_source
+    _, incus, _ = _setup(
+        mocker,
+        tmp_path,
+        state_record=pr_flow.PrRecord(123, "feat/foo", True, False) if update else None,
+    )
+    _happy(mocker)
+    mocker.patch.object(pr_flow, "validate_outbox_source", validator)
+    cfg = make_cfg(tmp_path)
+    mocker.patch("jailbee.cli._load_or_exit", return_value=cfg)
+    replacement = ContainerIdentity("sampleapp-feat-foo", "replacement")
+    raw = json.dumps(
+        {
+            "version": 1,
+            "repo": "acme/lib-a",
+            "pr": 123 if update else None,
+            "head_sha": None,
+            "actions": [{"type": "description", "title": "B title", "body": "B body"}],
+        }
+    )
+    snapshot = pr_outbox.Outbox({"d.json": raw}, identity=replacement)
+    text = PrText("B title", "B body", "feat/foo")
+    source = pr_outbox.OutboxPrText(
+        text,
+        "d.json",
+        0,
+        replacement,
+        pr_outbox.description_source_digest(snapshot, "d.json", 0, text),
+        raw,
+    )
+    selected = []
+
+    def select(*args, **kwargs):
+        # This runs only after the real guard acquired and rechecked A.
+        incus.list_containers.return_value = [
+            {"name": replacement.full_name, "created_at": replacement.created_at}
+        ]
+        selected.append(source)
+        return source
+
+    mocker.patch("jailbee.pr_outbox.pending_pr_text", side_effect=select)
+    mocker.patch("jailbee.pr_outbox.read_outbox", return_value=snapshot)
+    create = mocker.patch("jailbee.pr.create_pr", return_value=_created())
+    mocker.patch("jailbee.pr.view_existing_pr", return_value=_created(already=True))
+    edit = mocker.patch("jailbee.pr.edit_pr")
+    consume = mocker.patch("jailbee.pr_outbox.record_consumed")
+    mocker.patch("jailbee.cli._offer_outbox_comments", return_value=0)
+    result = CliRunner().invoke(app, ["submodule", "pr", "feat-foo", "--no-ai"])
+    assert result.exit_code == 1, result.exception
+    assert isinstance(result.exception, SystemExit)
+    assert "refresh required" in result.output
+    assert selected == [source]
+    create.assert_not_called()
+    edit.assert_not_called()
+    consume.assert_not_called()

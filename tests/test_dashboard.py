@@ -1662,7 +1662,13 @@ def test_menu_actions_network_entries_ordered_after_chrome_before_restart():
 
 def test_menu_actions_running_includes_open_pr_when_pr_known():
     actions = dashboard.menu_actions(_ctx(pr_number=123))
-    assert [verb for _, verb in actions[:4]] == ["tmux", "shell", "pr --open", "pr"]
+    assert [verb for _, verb in actions[:5]] == [
+        "tmux",
+        "shell",
+        "outbox browse",
+        "pr --open",
+        "pr",
+    ]
 
 
 def test_menu_actions_stopped_includes_open_pr_when_pr_known():
@@ -1698,6 +1704,7 @@ def test_menu_actions_running_offers_the_workflow_verbs():
     assert verbs == [
         "tmux",
         "shell",
+        "outbox browse",
         "pr",
         "merge",
         "git pull",
@@ -1767,20 +1774,14 @@ def test_group_menu_actions_keeps_relative_order_and_unclassified_leaves():
     ]
 
 
-def test_menu_actions_mount_mode_groups_pending_pr_but_not_git():
-    actions = dashboard.menu_actions(
-        _ctx(mode="mount", git_status=_dirty(pending_pr_actions=2, pending_issue_actions=1))
+def test_menu_actions_mount_mode_keeps_outbox_without_git():
+    grouped = dashboard.group_menu_actions(
+        dashboard.menu_actions(_ctx(mode="mount")), include_network=True
     )
-    grouped = dashboard.group_menu_actions(actions, include_network=True)
+    assert ("Outbox", "outbox browse") in grouped
     assert [item.label for item in grouped if isinstance(item, dashboard.MenuGroup)] == [
-        "PR →",
-        "Network →",
+        "Network →"
     ]
-    assert grouped[0] == ("Attach tmux", "tmux")
-    assert grouped[2] == dashboard.MenuGroup(
-        "PR →", (("Apply 2 PR action(s) (review apply)", "review apply"),)
-    )
-    assert ("Apply 1 issue action(s) (issue apply)", "issue apply") in grouped
 
 
 def test_grouped_git_leaves_respect_known_clean_and_unknown_status():
@@ -1838,77 +1839,29 @@ def test_menu_actions_omits_pr_refresh_when_the_bridge_is_impossible():
         assert "git push --pr" not in [v for _, v in dashboard.menu_actions(ctx)]
 
 
-def test_menu_offers_apply_pr_actions_only_when_something_is_pending():
-    """A container can hold outbox manifests for a PR that does not exist yet,
-    so this entry lives outside the `pr_number is not None` guard — same
-    reason `_pr_cell`'s "✉N" marker does."""
-    pending = dashboard.menu_actions(_ctx(git_status=_dirty(pending_pr_actions=2)))
-    labels = [label for label, _ in pending]
-    assert any("Apply" in label and "PR action" in label for label in labels)
-    verb_by_label = dict(pending)
-    apply_label = next(label for label in labels if "Apply" in label and "PR action" in label)
-    assert verb_by_label[apply_label] == "review apply"
-
-    assert not any(
-        "Apply" in label and "PR action" in label
-        for label, _ in dashboard.menu_actions(_ctx(git_status=_dirty(pending_pr_actions=0)))
-    )
-    assert not any(
-        "Apply" in label and "PR action" in label
-        for label, _ in dashboard.menu_actions(_ctx(git_status=_dirty(pending_pr_actions=None)))
-    )
-    assert not any(
-        "Apply" in label and "PR action" in label for label, _ in dashboard.menu_actions(_ctx())
-    )
-
-
-def test_menu_offers_apply_issue_actions_only_when_something_is_pending():
-    """Mirrors `test_menu_offers_apply_pr_actions_only_when_something_is_pending`
-    for the issue outbox — a container can accumulate issue manifests
-    regardless of whether it has ever opened a PR."""
-    pending = dashboard.menu_actions(_ctx(git_status=_dirty(pending_issue_actions=2)))
-    labels = [label for label, _ in pending]
-    assert any("Apply" in label and "issue action" in label for label in labels)
-    verb_by_label = dict(pending)
-    apply_label = next(label for label in labels if "Apply" in label and "issue action" in label)
-    assert verb_by_label[apply_label] == "issue apply"
-
-    assert not any(
-        "Apply" in label and "issue action" in label
-        for label, _ in dashboard.menu_actions(_ctx(git_status=_dirty(pending_issue_actions=0)))
-    )
-    assert not any(
-        "Apply" in label and "issue action" in label
-        for label, _ in dashboard.menu_actions(_ctx(git_status=_dirty(pending_issue_actions=None)))
-    )
-    assert not any(
-        "Apply" in label and "issue action" in label for label, _ in dashboard.menu_actions(_ctx())
-    )
-
-
-def test_menu_offers_apply_issue_actions_directly_after_pr_actions():
+@pytest.mark.parametrize("count", [None, 0, 2])
+@pytest.mark.parametrize("mode", ["clone", "mount"])
+def test_menu_has_one_outbox_regardless_of_counts(count, mode):
     actions = dashboard.menu_actions(
-        _ctx(git_status=_dirty(pending_pr_actions=1, pending_issue_actions=1))
+        _ctx(mode=mode, git_status=_dirty(pending_pr_actions=count, pending_issue_actions=count))
     )
-    verbs = [v for _, v in actions]
-    assert verbs.index("review apply") < verbs.index("merge")
-    assert verbs.index("issue apply") == verbs.index("git diff") + 1
+    assert actions.count(("Outbox", "outbox browse")) == 1
+    assert not {"review apply", "issue apply"} & {v for _, v in actions}
+    for ctx in (_ctx(state="Stopped", mode=mode), _ctx(has_repo=False, mode=mode)):
+        assert "outbox browse" not in {v for _, v in dashboard.menu_actions(ctx)}
 
 
-def test_menu_offers_apply_pr_actions_on_a_running_mount_mode_container():
-    """The outbox lives at a fixed in-container path regardless of how the
-    repo got there — `pr_outbox.py` and the probe behind `pending_pr_actions`
-    have no mode check, unlike `git push`/`pr`/etc, which need
-    `sync.assert_container_publishable`'s own clone. Gating this entry on
-    `_bridge_possible` (which excludes mount mode) would hide the one route
-    to acting on manifests a mount-mode container can genuinely accumulate."""
-    verbs = [
-        verb
-        for _, verb in dashboard.menu_actions(
-            _ctx(mode="mount", git_status=_dirty(pending_pr_actions=1))
-        )
-    ]
-    assert "review apply" in verbs
+def test_outbox_dispatch_uses_target_config_and_no_pause(mocker, tmp_path):
+    run = mocker.patch.object(dashboard.subprocess, "run")
+    run.return_value.returncode = 0
+    pause = mocker.patch.object(dashboard, "_wait_for_return")
+    dashboard._dispatch_action(_dispatch_target(tmp_path), "outbox browse", "alpha-x")
+    run.assert_called_once_with(
+        ["jailbee", "outbox", "browse", "alpha-x", "--config", str(tmp_path / "config.yaml")],
+        check=False,
+        cwd=tmp_path,
+    )
+    pause.assert_not_called()
 
 
 def test_pr_refresh_is_dispatched_as_a_printing_verb():
@@ -1922,7 +1875,16 @@ def test_menu_actions_mount_mode_has_no_workflow_verbs():
     """A mount-mode container has no clone of its own, so every one of these
     would fail in `sync.assert_container_publishable`."""
     verbs = [v for _, v in dashboard.menu_actions(_ctx(mode="mount"))]
-    assert verbs == ["tmux", "shell", "net loose", "net egress ls", "restart", "stop", "destroy"]
+    assert verbs == [
+        "tmux",
+        "shell",
+        "outbox browse",
+        "net loose",
+        "net egress ls",
+        "restart",
+        "stop",
+        "destroy",
+    ]
 
 
 def test_menu_actions_stopped_has_no_workflow_verbs():
@@ -1967,7 +1929,15 @@ def test_menu_actions_job_log_precedes_the_pr_entries():
     verbs = [
         v for _, v in dashboard.menu_actions(_ctx(job_clearable=True, has_job=True, pr_number=7))
     ]
-    assert verbs[:6] == ["tmux", "shell", "job clear", "job log", "pr --open", "pr"]
+    assert verbs[:7] == [
+        "tmux",
+        "shell",
+        "outbox browse",
+        "job clear",
+        "job log",
+        "pr --open",
+        "pr",
+    ]
 
 
 def test_menu_actions_orphan_ignores_every_workflow_field():
@@ -4596,9 +4566,10 @@ def test_tui_command_is_an_alias_for_the_dashboard(mocker):
 
 def test_menu_actions_clear_job_entry_follows_session_when_clearable():
     actions = dashboard.menu_actions(_ctx(job_clearable=True))
-    assert actions[:3] == [
+    assert actions[:4] == [
         ("Attach tmux", "tmux"),
         ("Open shell", "shell"),
+        ("Outbox", "outbox browse"),
         ("Clear failed job", "job clear"),
     ]
 
@@ -4640,7 +4611,7 @@ def test_actions_for_container_offers_clear_for_a_failed_job(mocker):
 
     verbs = [verb for _, verb in dashboard.actions_for_container(groups, "p-foo")]
 
-    assert verbs[:4] == ["tmux", "shell", "job clear", "job log"]
+    assert verbs[:5] == ["tmux", "shell", "outbox browse", "job clear", "job log"]
 
 
 def test_actions_for_container_offers_clear_for_a_dead_worker(mocker):
@@ -4663,7 +4634,7 @@ def test_actions_for_container_offers_clear_for_a_dead_worker(mocker):
 
     verbs = [verb for _, verb in dashboard.actions_for_container(groups, "p-foo")]
 
-    assert verbs[:4] == ["tmux", "shell", "job clear", "job log"]
+    assert verbs[:5] == ["tmux", "shell", "outbox browse", "job clear", "job log"]
 
 
 def test_actions_for_container_no_clear_for_a_live_job(mocker):
@@ -5095,7 +5066,7 @@ def test_run_enters_pr_submenu_and_dispatches_leaf(mocker, tmp_path):
 
     rc = _drive_run(
         mocker,
-        [b"j", b"\r", b"\x1b[B", b"\x1b[B", b"\x1b[B", b"\r", b"\x1b[B", b"\r"],
+        [b"j", b"\r", b"\x1b[B", b"\x1b[B", b"\x1b[B", b"\x1b[B", b"\r", b"\x1b[B", b"\r"],
         groups=[group],
     )
 
@@ -5117,14 +5088,23 @@ def test_run_escape_backs_out_but_q_closes_submenu(mocker, tmp_path):
 
     _drive_run(
         mocker,
-        [b"j", b"\r", b"\x1b[B", b"\x1b[B", b"\x1b[B", b"\r", b"\x1b", b"\r", b"q"],
+        [b"j", b"\r", b"\x1b[B", b"\x1b[B", b"\x1b[B", b"\x1b[B", b"\r", b"\x1b", b"\r", b"q"],
         groups=[group],
     )
 
     overlays = [call.kwargs.get("overlay") for call in render.call_args_list]
     menus = [item for item in overlays if isinstance(item, dashboard.MenuState)]
-    assert [menu.active_group for menu in menus] == [None, None, None, None, "PR →", None, "PR →"]
-    assert menus[5].index == 3
+    assert [menu.active_group for menu in menus] == [
+        None,
+        None,
+        None,
+        None,
+        None,
+        "PR →",
+        None,
+        "PR →",
+    ]
+    assert menus[6].index == 4
     assert overlays[-1] is None
     child.assert_not_called()
 
@@ -5141,13 +5121,13 @@ def test_run_vanished_container_closes_submenu(mocker, tmp_path):
     def ready(*args, **kwargs):
         nonlocal turns
         turns += 1
-        if turns == 7:
+        if turns == 8:
             group.containers.clear()
         return ([True], [], [])
 
     mocker.patch.object(dashboard.select, "select", side_effect=ready)
     keys = itertools.chain(
-        [b"j", b"\r", b"\x1b[B", b"\x1b[B", b"\x1b[B", b"\r", b"\x1b[B", b"\x03"],
+        [b"j", b"\r", b"\x1b[B", b"\x1b[B", b"\x1b[B", b"\x1b[B", b"\r", b"\x1b[B", b"\x03"],
         itertools.repeat(b"\x03"),
     )
     mocker.patch.object(dashboard.os, "read", side_effect=lambda fd, n: next(keys))
@@ -7226,7 +7206,7 @@ def test_terminal_menu_drops_an_empty_pr_group_when_only_apply_remains():
         item.label if isinstance(item, dashboard.MenuGroup) else item[0]
         for item in dashboard._menu_entries(menu)
     ]
-    assert labels[0].startswith("Apply 2 PR action(s)")
+    assert labels[0] == "Outbox"
     assert "PR →" not in labels
 
 
@@ -9294,3 +9274,16 @@ def test_a_terminal_only_container_entry_never_reaches_the_shared_dispatcher(
     assert opened or spawned
     assert ["jailbee", verb, "alpha-x"] not in spawned
     assert all(argv[:2] != ["jailbee", verb] for argv in spawned)
+
+
+def test_outbox_dispatch_rechecks_ssh_policy(mocker, tmp_path):
+    from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
+    from jailbee.remote_ssh.router import RouteError
+
+    child = mocker.patch.object(dashboard.subprocess, "run")
+    policy = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="allowlist", allow=["git merge"]))
+    with pytest.raises(RouteError):
+        dashboard._dispatch_action(
+            _dispatch_target(tmp_path), "outbox browse", "alpha-x", over_ssh=True, ssh_policy=policy
+        )
+    child.assert_not_called()
