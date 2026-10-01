@@ -13083,12 +13083,16 @@ def _launch_or_exit(
     already reports as "missing".
     """
     from jailbee.apps import launch
+    from jailbee.remote_display import DisplayError
 
     try:
         launch(cfg, incus, container, spec, args)
     except ValueError as e:
         error(str(e))
         raise typer.Exit(2) from e
+    except DisplayError as e:
+        error(str(e))
+        raise typer.Exit(1) from e
 
 
 @apps_app.command("run")
@@ -15441,7 +15445,9 @@ def exec_cmd(
         import uuid
         from datetime import datetime
 
+        from jailbee.apps import launch_env
         from jailbee.gui import launch_detached
+        from jailbee.remote_display import DisplayError
 
         # A timestamp alone has one-second resolution and launch_detached
         # opens the log with `>` (truncate) — two `-d` execs against the
@@ -15449,6 +15455,13 @@ def exec_cmd(
         # double-launch) would silently clobber each other's output. The
         # uuid suffix makes every invocation's path distinct regardless of
         # timing.
+        # Only a detached launch can be a GUI one, so only it prepares the
+        # shared display (a no-op unless the session is a GUI-enabled SSH one).
+        try:
+            env = launch_env(cfg, incus, resolved)
+        except DisplayError as e:
+            error(str(e))
+            raise typer.Exit(1) from e
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         log_path = f"/tmp/jailbee-exec-{stamp}-{uuid.uuid4().hex[:8]}.log"
         # A login shell in both paths, so `~/.local/bin` is on PATH whether

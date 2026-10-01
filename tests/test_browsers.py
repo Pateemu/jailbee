@@ -108,3 +108,20 @@ def test_no_url_anywhere_stays_none(tmp_path):
 
 def test_a_disabled_browser_produces_no_spec(tmp_path):
     assert builtin_specs(make_cfg(tmp_path)) == []
+
+
+def test_chrome_gets_the_ozone_flag_in_a_shared_display_session(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("JAILBEE_SSH_SESSION", "1")
+    monkeypatch.setenv("JAILBEE_SSH_GUI", "8022")
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    cfg = make_cfg(tmp_path, browsers={"chrome": {"enabled": True}})
+    assert "--ozone-platform=wayland" in _spec(cfg, "chrome").command
+
+
+def test_chrome_on_an_x11_host_without_markers_has_no_ozone_flag(tmp_path, monkeypatch) -> None:
+    for name in ("JAILBEE_SSH_SESSION", "JAILBEE_SSH_GUI"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    cfg = make_cfg(tmp_path, browsers={"chrome": {"enabled": True}})
+    assert "--ozone-platform=wayland" not in _spec(cfg, "chrome").command

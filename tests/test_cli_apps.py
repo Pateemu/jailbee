@@ -556,3 +556,20 @@ def test_remote_apps_ls_still_inspects_a_mount_mode_container(tmp_path, mocker, 
 
     assert result.exit_code == 0, result.output
     assert "mount-mode" not in result.output
+
+
+def test_apps_run_reports_a_display_error_instead_of_a_traceback(tmp_path, mocker) -> None:
+    from jailbee.incus import Incus
+    from jailbee.remote_display import DisplayError
+    from tests.conftest import make_cfg
+
+    cfg = make_cfg(tmp_path, apps={"figma": {"command": "/opt/f/f"}})
+    mocker.patch("jailbee.cli._load_or_exit", return_value=cfg)
+    mocker.patch("jailbee.cli._resolve_attachable", return_value=(Incus(), "c1"))
+    mocker.patch("jailbee.apps.launch", side_effect=DisplayError("no client"))
+
+    result = runner.invoke(app, ["apps", "run", "figma", "--container", "c1"])
+
+    assert result.exit_code == 1
+    assert "no client" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)

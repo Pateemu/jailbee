@@ -74,3 +74,62 @@ def test_exec_detach_gives_each_launch_a_distinct_log_path(tmp_path, mocker):
     log_paths = [call.args[4] for call in detached.call_args_list]
     assert len(log_paths) == 2
     assert log_paths[0] != log_paths[1]
+
+
+def test_exec_detach_from_a_gui_session_prepares_the_shared_display(
+    tmp_path, mocker, monkeypatch
+) -> None:
+    from jailbee.incus import Incus
+    from tests.conftest import make_cfg
+
+    monkeypatch.setenv("JAILBEE_SSH_SESSION", "1")
+    monkeypatch.setenv("JAILBEE_SSH_GUI", "8022")
+    monkeypatch.setenv("JAILBEE_SSH_EXCLUDED_REPOS", "[]")
+    mocker.patch("jailbee.cli._load_or_exit", return_value=make_cfg(tmp_path))
+    mocker.patch("jailbee.lifecycle.resolve_container_name", return_value="c1")
+    mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
+    prepare = mocker.patch("jailbee.remote_display.prepare_shared_display")
+    detached = mocker.patch("jailbee.gui.launch_detached")
+    result = runner.invoke(app, ["exec", "-d", "c1", "--", "firefox"])
+    assert result.exit_code == 0
+    prepare.assert_called_once()
+    assert prepare.call_args.args[1] == "c1"
+    assert detached.call_args.args[2]["WAYLAND_DISPLAY"] == "/run/jailbee-display/wayland-0"
+    assert isinstance(prepare.call_args.args[0], Incus)
+
+
+def test_exec_foreground_never_prepares_the_display(tmp_path, mocker, monkeypatch) -> None:
+    from jailbee.incus import Incus
+    from tests.conftest import make_cfg
+
+    monkeypatch.setenv("JAILBEE_SSH_SESSION", "1")
+    monkeypatch.setenv("JAILBEE_SSH_GUI", "8022")
+    monkeypatch.setenv("JAILBEE_SSH_EXCLUDED_REPOS", "[]")
+    mocker.patch("jailbee.cli._load_or_exit", return_value=make_cfg(tmp_path))
+    mocker.patch("jailbee.lifecycle.resolve_container_name", return_value="c1")
+    mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
+    prepare = mocker.patch("jailbee.remote_display.prepare_shared_display")
+    mocker.patch.object(Incus, "exec_interactive", return_value=0)
+    runner.invoke(app, ["exec", "c1", "--", "true"])
+    prepare.assert_not_called()
+
+
+def test_exec_detach_reports_a_display_error_cleanly(tmp_path, mocker, monkeypatch) -> None:
+    from jailbee.remote_display import DisplayError
+    from tests.conftest import make_cfg
+
+    monkeypatch.setenv("JAILBEE_SSH_SESSION", "1")
+    monkeypatch.setenv("JAILBEE_SSH_GUI", "8022")
+    monkeypatch.setenv("JAILBEE_SSH_EXCLUDED_REPOS", "[]")
+    mocker.patch("jailbee.cli._load_or_exit", return_value=make_cfg(tmp_path))
+    mocker.patch("jailbee.lifecycle.resolve_container_name", return_value="c1")
+    mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
+    mocker.patch(
+        "jailbee.remote_display.prepare_shared_display", side_effect=DisplayError("no client")
+    )
+    detached = mocker.patch("jailbee.gui.launch_detached")
+    result = runner.invoke(app, ["exec", "-d", "c1", "--", "firefox"])
+    assert result.exit_code == 1
+    assert "no client" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert not detached.called

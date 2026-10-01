@@ -179,6 +179,35 @@ def probe(
     return "present" if out == "present" else "missing"
 
 
+def launch_env(
+    cfg: Config, incus: Incus, container: str, extra: dict[str, str] | None = None
+) -> dict[str, str]:
+    """The environment for a GUI launch in ``container``.
+
+    On the host this is `gui_env(cfg)`. From an SSH session whose server has
+    `remote.ssh.gui` on, the shared RDP display is prepared first (started,
+    mounted into ``container``, the session's key granted the tunnel, an RDP
+    client awaited) and the app is pointed at it. `DisplayError` propagates:
+    nothing is launched.
+    """
+    from jailbee.gui import display_target, gui_env
+    from jailbee.remote_ssh.session import session_fingerprint, shared_display_port
+    from jailbee.tui import info
+
+    target = display_target()
+    if target == "shared":
+        from jailbee.remote_display import prepare_shared_display
+
+        prepare_shared_display(
+            incus,
+            container,
+            fingerprint=session_fingerprint(),
+            ssh_port=shared_display_port() or 8022,
+            say=info,
+        )
+    return {**gui_env(cfg, target), **(extra or {})}
+
+
 def launch(
     cfg: Config,
     incus: Incus,
@@ -189,7 +218,7 @@ def launch(
     """Start `spec` in `container`, detached, logging inside the container."""
     import shlex as _shlex
 
-    from jailbee.gui import gui_env, launch_detached
+    from jailbee.gui import launch_detached
     from jailbee.tui import info
 
     if spec.pool is not None:
@@ -224,12 +253,15 @@ def launch(
         # says which would win if one ever did.
         argv.append(cwd)
 
+    # Before the "Launching" line: a failed display preparation must print
+    # nothing about launching.
+    env = launch_env(cfg, incus, container, spec.env)
     log_path = app_log_path(spec.name)
     info(f"Launching {spec.name} in {container} (background, logs in container: {log_path})")
     launch_detached(
         container,
         cfg.container_user.uid,
-        {**gui_env(cfg), **spec.env},
+        env,
         " ".join(_shlex.quote(a) for a in argv),
         log_path,
         cwd=cwd,
