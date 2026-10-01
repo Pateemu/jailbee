@@ -879,8 +879,11 @@ def execution(tmp_path, mocker):
         side_effect=lambda *a, **kw: issue_outbox.OutboxSnapshot(dict(files)),
     )
 
+    from jailbee.outbox_io import append_applied_log as real_append
+
     def append(incus, container, directory, lines, *, uid):
         events.append(("log", tuple(lines)))
+        real_append(incus, container, directory, lines, uid=uid)
 
     import subprocess
 
@@ -894,7 +897,21 @@ def execution(tmp_path, mocker):
         for path in directory.iterdir():
             path.unlink()
         for name, text in files.items():
-            (directory / name).write_text(text)
+            (directory / name).write_bytes(text.encode("utf-8"))
+
+    def save():
+        files.clear()
+        files.update({p.name: p.read_bytes().decode("utf-8") for p in directory.iterdir()})
+
+    def append_transport(container, command, **kwargs):
+        sync()
+        command = list(command)
+        command[4] = str(directory)
+        result = run_shell(command, text=True, capture_output=True, check=True).stdout
+        save()
+        return result
+
+    incus.exec.side_effect = append_transport
 
     def strict_read(*args, **kwargs):
         # Keep legacy read injections meaningful while exercising strict decoding.
@@ -922,8 +939,7 @@ def execution(tmp_path, mocker):
         result = run_shell(command, input=text, text=True, capture_output=True, check=True).stdout
         fields = result.split("\0")
         events.append(("delete", tuple(fields[3:-1])))
-        files.clear()
-        files.update({p.name: p.read_text() for p in directory.iterdir()})
+        save()
         return result
 
     log = mocker.patch.object(issue_outbox, "append_applied_log", side_effect=append, create=True)
@@ -1005,7 +1021,160 @@ def execution(tmp_path, mocker):
         "remove": remove,
         "mutations": mutations,
         "events": events,
+        "directory": directory,
     }
+
+
+@pytest.mark.parametrize("original", ["Original", "Original\n", "ääö\r\nTail"])
+@pytest.mark.parametrize("count", [1, 2])
+def test_applied_log_body_cleans_up_after_actual_owned_append(execution, original, count):
+    from jailbee.outbox_io import journal_key
+
+    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "applied.log"}
+    batch = execution["batch"]({"a.json": [action] * count}, extras={"applied.log": original})
+    result = _apply(execution, batch)
+    assert result.failure is None
+    assert [c.kwargs["body"] for c in execution["mutations"]["add_comment"].call_args_list] == [original] * count
+    remaining = execution["files"]
+    assert "a.json" not in remaining
+    assert remaining["applied.log"] == original + "\n".join(execution["log"].call_args.args[3]) + "\n"
+    assert execution["store"].load(journal_key(batch.identity, "a.json")) is None
+
+
+@pytest.mark.parametrize("original", ["Original", "äö\r\nTail"])
+@pytest.mark.parametrize("failure", ["delete", "after-append", "before-append"])
+def test_owned_log_body_fresh_prepare_retry_after_refused_delete(execution, mocker, make_cfg, tmp_path, original, failure):
+    from jailbee import issue_outbox
+    from jailbee.outbox_io import JournalStore, journal_key
+
+    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "applied.log"}
+    from jailbee.incus import IncusError
+
+    batch = execution["batch"]({"a.json": [action, action]}, extras={"applied.log": original})
+    original_transport = execution["incus"].exec_with_input.side_effect
+    append_transport = execution["incus"].exec.side_effect
+    if failure == "delete":
+        def refuse(*args, **kwargs):
+            execution["files"]["late.md"] = execution["files"].get("late.md", "") + "Changed inventory"
+            return original_transport(*args, **kwargs)
+        execution["incus"].exec_with_input.side_effect = refuse
+    else:
+        def interrupted(*args, **kwargs):
+            if failure == "after-append":
+                append_transport(*args, **kwargs)
+            raise IncusError("append interrupted")
+        execution["incus"].exec.side_effect = interrupted
+    assert _apply(execution, batch).failure is not None
+    assert "a.json" in execution["files"]
+    assert (execution["files"]["applied.log"] != original) == (failure != "before-append")
+    key = journal_key(batch.identity, "a.json")
+    original_journal = execution["store"].load(key)
+    assert original_journal.digest == batch.manifests[0].digest
+    execution["incus"].exec_with_input.side_effect = original_transport
+    execution["incus"].exec.side_effect = append_transport
+    execution["store"] = JournalStore(execution["store"].root)
+    cfg = make_cfg(tmp_path)
+    mocker.patch.object(issue_outbox, "resolve_repo_targets", return_value={".": batch.manifests[0].actions[0].repo})
+    mocker.patch("jailbee.issue_github.current_login", return_value="alice")
+    retry = issue_outbox.prepare_batch(cfg, execution["incus"], batch.container, ("a.json",), uid=1000, journal_store=execution["store"])
+    assert retry.manifests[0].digest == original_journal.digest
+    if failure == "delete":
+        execution["incus"].exec_with_input.side_effect = refuse
+        assert _apply(execution, retry).failure is not None
+        assert execution["mutations"]["add_comment"].call_count == 2
+        execution["incus"].exec_with_input.side_effect = original_transport
+        execution["store"] = JournalStore(execution["store"].root)
+        retry = issue_outbox.prepare_batch(cfg, execution["incus"], batch.container, ("a.json",), uid=1000, journal_store=execution["store"])
+    assert _apply(execution, retry).failure is None
+    assert execution["mutations"]["add_comment"].call_count == 2
+    assert "a.json" not in execution["files"]
+    assert execution["store"].load(key) is None
+
+
+@pytest.mark.parametrize("timing", ["remote", "before-append", "after-append"])
+@pytest.mark.parametrize("change", ["log", "manifest", "other-body", "identity"])
+def test_owned_log_cleanup_refuses_external_change(execution, timing, change):
+    from jailbee.outbox_io import journal_key
+
+    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "applied.log"}
+    batch = execution["batch"]({"a.json": [action, {**action, "body_file": "other.md"}]}, extras={"applied.log": "Original", "other.md": "Other"})
+    def alter():
+        if change == "identity":
+            execution["incus"].list_containers.return_value[0]["created_at"] = "replacement"
+        else:
+            execution["files"][{"log": "applied.log", "manifest": "a.json", "other-body": "other.md"}[change]] += "external\n"
+    if timing == "remote":
+        def publish(*args, **kwargs):
+            if execution["mutations"]["add_comment"].call_count == 2:
+                alter()
+            return execution["mutations"]["add_comment"].return_value
+        execution["mutations"]["add_comment"].side_effect = publish
+    else:
+        transport = execution["incus"].exec.side_effect
+        def append(*args, **kwargs):
+            if timing == "before-append":
+                alter()
+            result = transport(*args, **kwargs)
+            if timing == "after-append":
+                alter()
+            return result
+        execution["incus"].exec.side_effect = append
+    result = _apply(execution, batch)
+    assert result.failure is not None
+    assert "a.json" in execution["files"] and "other.md" in execution["files"]
+    assert execution["store"].load(journal_key(batch.identity, "a.json")).digest == batch.manifests[0].digest
+    execution["remove"].assert_not_called()
+    assert execution["mutations"]["add_comment"].call_count == 2
+
+
+def test_owned_log_inspection_revision_and_settled_drop(execution):
+    from jailbee.issue_outbox import OutboxSnapshot
+    from jailbee.outbox.inspect import build_views
+    from jailbee.outbox.models import StoreSnapshot
+
+    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "applied.log"}
+    batch = execution["batch"]({"a.json": [action]}, extras={"applied.log": "Original"})
+    transport = execution["incus"].exec_with_input.side_effect
+    def refuse(*args, **kwargs):
+        execution["files"]["late.md"] = "Keep"
+        return transport(*args, **kwargs)
+    execution["incus"].exec_with_input.side_effect = refuse
+    assert _apply(execution, batch).failure is not None
+    def view():
+        snapshot = StoreSnapshot("issue", tuple(execution["files"].items()), (), ())
+        return build_views(batch.identity, (snapshot,), journal_store=execution["store"])[0]
+    first = view()
+    assert first.state == "applied" and first.error is None
+    original = execution["files"]["applied.log"]
+    execution["files"]["applied.log"] += "external\n"
+    changed = view()
+    assert changed.state == "uncertain" and changed.revision != first.revision
+    execution["files"]["applied.log"] = original
+    execution["incus"].exec_with_input.side_effect = transport
+    current = replace(batch, outbox=OutboxSnapshot(dict(execution["files"])))
+    assert _drop(execution, current, archive_journal=True) == ("a.json",)
+    assert execution["files"]["applied.log"] == original
+
+
+def test_owned_log_retry_rejects_external_append_after_failed_cleanup(execution, mocker, make_cfg, tmp_path):
+    from jailbee import issue_outbox
+    from jailbee.outbox_io import JournalStore
+
+    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "applied.log"}
+    batch = execution["batch"]({"a.json": [action]}, extras={"applied.log": "Original"})
+    transport = execution["incus"].exec_with_input.side_effect
+    def refuse(*args, **kwargs):
+        execution["files"]["late.md"] = "Keep"
+        return transport(*args, **kwargs)
+    execution["incus"].exec_with_input.side_effect = refuse
+    assert _apply(execution, batch).failure is not None
+    execution["files"]["applied.log"] += "external\n"
+    fresh_store = JournalStore(execution["store"].root)
+    mocker.patch.object(issue_outbox, "resolve_repo_targets", return_value={".": batch.manifests[0].actions[0].repo})
+    with pytest.raises(issue_outbox.IssueGateError, match="changed after recorded progress"):
+        issue_outbox.prepare_batch(make_cfg(tmp_path), execution["incus"], batch.container, ("a.json",), uid=1000, journal_store=fresh_store)
+    assert "a.json" in execution["files"]
+    assert execution["mutations"]["add_comment"].call_count == 1
 
 
 def _apply(execution, batch):
@@ -1470,7 +1639,8 @@ def test_cleanup_logs_receipts_then_deletes_only_unshared_bodies_then_archives(e
     assert report.failure is None
     assert [event[0] for event in execution["events"]] == ["log", "delete", "archive"]
     assert execution["events"][1] == ("delete", ("a.json", "private.md"))
-    assert set(execution["files"]) == {"b.json", "shared.md", "unrelated.md"}
+    assert set(execution["files"]) == {"b.json", "shared.md", "unrelated.md", "applied.log"}
+    assert execution["files"]["applied.log"] == "\n".join(execution["log"].call_args.args[3]) + "\n"
     lines = execution["log"].call_args.args[3]
     assert len(lines) == 2
     for index, line in enumerate(lines):
@@ -1557,7 +1727,13 @@ def test_cleanup_retains_body_hidden_in_rejected_sibling(
             command, input=text, text=True, capture_output=True, check=True
         ).stdout
 
+    def append(container, command, **kwargs):
+        command = list(command)
+        command[4] = str(directory)
+        return subprocess.run(command, text=True, capture_output=True, check=True).stdout
+
     mocker.patch.object(io, "read_store", side_effect=read)
+    execution["incus"].exec.side_effect = append
     execution["incus"].exec_with_input.side_effect = mutate
     if route == "apply":
         assert _apply(execution, batch).failure is None
@@ -1580,7 +1756,10 @@ def test_issue_cleanup_preserves_metadata_body_references(execution, route, body
         assert _apply(execution, batch).failure is None
     else:
         assert _drop(execution, batch) == ("a.json",)
-    assert execution["files"][body] == sibling
+    if route == "apply" and body == "applied.log":
+        assert execution["files"][body] == sibling + "\n".join(execution["log"].call_args.args[3]) + "\n"
+    else:
+        assert execution["files"][body] == sibling
 
 
 @pytest.mark.parametrize("change", ["manifest", "body", "inventory"])

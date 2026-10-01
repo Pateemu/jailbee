@@ -596,3 +596,81 @@ def test_delete_outbox_files_rejects_paths_before_any_deletion(mocker, name):
     with pytest.raises(ValueError):
         outbox_io.delete_outbox_files(incus, "box", "/outbox", ["ok.json", name], uid=None)
     incus.exec.assert_not_called()
+
+
+def _settled_log_journal(original, count=2):
+    from jailbee.outbox_io import IssueJournal, issue_receipt_line
+
+    name = "one space pr=7.json"
+    key = journal_key(_identity(), name)
+    bodies = {"applied.log": original, "other.md": "Other"}
+    text = '{"version":1,"actions":[]}'
+    actions = tuple(JournalAction(i, "applied", "acme/app", "https://receipt", 7) for i in range(count))
+    journal = IssueJournal(key.identity, name, proposal_digest(name, text, bodies), count, actions)
+    block = "".join(issue_receipt_line(name, a, "2026-10-01T12:00:00Z") + "\n" for a in actions)
+    return key, text, bodies, journal, block
+
+
+@pytest.mark.parametrize("original", ["", "Original", "Original\n", "äö\r\nEnd"])
+@pytest.mark.parametrize("repetitions", [1, 3])
+def test_owned_issue_log_proof_restores_exact_original_digest(original, repetitions):
+    from jailbee.outbox_io import issue_proposal_digest
+
+    key, text, bodies, journal, block = _settled_log_journal(original)
+    changed = bodies | {"applied.log": original + block * repetitions}
+    assert proposal_digest(key.manifest_name, text, changed) != journal.digest
+    assert issue_proposal_digest(key, text, changed, journal) == journal.digest
+    assert changed["applied.log"] == original + block * repetitions
+
+
+@pytest.mark.parametrize("change", [
+    "identity", "name", "partial", "uncertain", "prepared", "empty", "count",
+    "manifest", "other-body", "original", "append", "prepend", "insert",
+    "url", "issue", "repo", "index", "timestamp", "format", "extra-field", "incomplete",
+])
+def test_owned_issue_log_proof_rejects_unproven_changes(change):
+    from dataclasses import replace
+
+    from jailbee.outbox_io import issue_proposal_digest
+
+    key, text, bodies, journal, block = _settled_log_journal("Original")
+    changed = bodies | {"applied.log": "Original" + block}
+    if change == "identity":
+        key = replace(key, identity=replace(key.identity, created_at="other"))
+    elif change == "name":
+        journal = replace(journal, manifest_name="other.json")
+    elif change in ("partial", "empty"):
+        journal = replace(journal, actions=journal.actions[:1] if change == "partial" else ())
+    elif change in ("uncertain", "prepared"):
+        journal = replace(journal, actions=(replace(journal.actions[0], state=change), journal.actions[1]))
+    elif change == "count":
+        journal = replace(journal, action_count=3)
+    elif change == "manifest":
+        text += "\n"
+    elif change == "other-body":
+        changed["other.md"] += "Changed"
+    elif change in ("original", "append", "prepend", "insert"):
+        changed["applied.log"] = {
+            "original": "Changed" + block, "append": "Original" + block + "external\n",
+            "prepend": "external\nOriginal" + block,
+            "insert": "Original" + block + "external\n" + block,
+        }[change]
+    elif change == "incomplete":
+        changed["applied.log"] = "Original" + block.splitlines(keepends=True)[0]
+    else:
+        lines = block.splitlines()
+        record = json.loads(lines[-1])
+        if change == "format":
+            lines[-1] = json.dumps(record, separators=(",", ":"))
+        else:
+            record.update({
+                "url": {"url": "https://other"}, "issue": {"issue": 99},
+                "repo": {"repo": "other/app"}, "index": {"index": True},
+                "timestamp": {"timestamp": "2026-99-99T00:00:00Z"},
+                "extra-field": {"extra": "unproven"},
+            }[change])
+            lines[-1] = json.dumps(record, sort_keys=True)
+        changed["applied.log"] = "Original" + "\n".join(lines) + "\n"
+    raw = proposal_digest(key.manifest_name, text, changed)
+    assert issue_proposal_digest(key, text, changed, journal) == raw
+    assert raw != journal.digest

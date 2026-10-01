@@ -115,6 +115,67 @@ def proposal_digest(
     return _hash_parts(tuple(parts))
 
 
+def issue_receipt_line(manifest_name: str, action: JournalAction, timestamp: str) -> str:
+    """Canonical issue receipt bytes, shared by writing and recovery proof."""
+    return json.dumps({
+        "timestamp": timestamp, "manifest": manifest_name, "index": action.index,
+        "repo": action.repo, "issue": action.issue, "url": action.url,
+    }, sort_keys=True)
+
+
+def issue_proposal_digest(
+    key: JournalKey, manifest_text: str, body_files: Mapping[str, str],
+    journal: IssueJournal | None,
+) -> str:
+    """Prove complete owned receipt suffixes reconstruct the original proposal.
+
+    No input is excluded from the digest. Only exact canonical, fully settled
+    journal receipt blocks may be removed, and only a matching original hash
+    authorizes cleanup-only recovery. Partial or unproved suffixes stay changed.
+    """
+    raw_digest = proposal_digest(key.manifest_name, manifest_text, body_files)
+    if (journal is None or journal.identity != key.identity
+        or journal.manifest_name != key.manifest_name
+        or journal.action_count <= 0
+        or tuple(a.index for a in journal.actions) != tuple(range(journal.action_count))
+        or any(a.state != "applied" for a in journal.actions)
+        or "applied.log" not in body_files or raw_digest == journal.digest):
+        return raw_digest
+    text = body_files["applied.log"]
+    candidate = text
+    while candidate.endswith("\n"):
+        end = len(candidate)
+        for action in reversed(journal.actions):
+            # The first appended JSON can abut original text without a newline.
+            # Derive its exact length from the durable fields and fixed timestamp.
+            template = issue_receipt_line(key.manifest_name, action, "2000-01-01T00:00:00Z") + "\n"
+            start = end - len(template)
+            if start < 0:
+                return raw_digest
+            record = candidate[start:end]
+            try:
+                value = json.loads(record)
+                if not isinstance(value, dict):
+                    return raw_digest
+                timestamp = value["timestamp"]
+                if not isinstance(timestamp, str):
+                    return raw_digest
+                parsed = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+                if parsed.strftime("%Y-%m-%dT%H:%M:%SZ") != timestamp:
+                    return raw_digest
+            except (ValueError, TypeError, KeyError, RecursionError):
+                return raw_digest
+            if record != issue_receipt_line(key.manifest_name, action, timestamp) + "\n":
+                return raw_digest
+            end = start
+        candidate = candidate[:end]
+        restored = dict(body_files)
+        restored["applied.log"] = candidate
+        if proposal_digest(key.manifest_name, manifest_text, restored) == journal.digest:
+            return journal.digest
+    return raw_digest
+
+
 def container_identity(incus: Incus, container: str) -> ContainerIdentity:
     """Return the full Incus name and raw, nonzero creation timestamp."""
     raw = next((item for item in incus.list_containers() if item.get("name") == container), None)

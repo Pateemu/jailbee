@@ -26,8 +26,8 @@ from jailbee.outbox_io import (
     ContainerIdentity,
     JournalError,
     JournalStore,
+    issue_proposal_digest,
     journal_key,
-    proposal_digest,
 )
 
 
@@ -276,8 +276,8 @@ def _build_view(
                 journal_evidence["journal"] = asdict(journal)
                 if journal.actions:
                     block = "recorded publication progress prevents editing"
-                    digest = proposal_digest(
-                        name, raw, {n: files[n] for n in body_names if n in files}
+                    digest = issue_proposal_digest(
+                        key, raw, {n: files[n] for n in body_names if n in files}, journal,
                     )
                     if journal.digest != digest or journal.action_count != len(actions):
                         raise JournalError("proposal differs from recorded journal history")

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Mapping, Sequence
 from contextlib import ExitStack
@@ -51,6 +50,8 @@ from jailbee.outbox_io import (
     OutboxReadError,
     append_applied_log,
     container_identity,
+    issue_proposal_digest,
+    issue_receipt_line,
     journal_has_uncertainty,
     journal_key,
     proposal_digest,
@@ -266,11 +267,13 @@ def _load_proposals(
                     f"{name} action {index}: forbidden repo path {action.repo!r}; "
                     f"known paths: {known}"
                 )
-        digest = proposal_digest(
-            name, outbox.files[name], {body: outbox.files[body] for body in manifest.body_files}
-        )
         try:
-            journal = store.load(journal_key(identity, name))
+            key = journal_key(identity, name)
+            journal = store.load(key)
+            digest = issue_proposal_digest(
+                key, outbox.files[name],
+                {body: outbox.files[body] for body in manifest.body_files}, journal,
+            )
             if journal is not None:
                 if journal.digest != digest:
                     if journal.actions:
@@ -814,17 +817,7 @@ def _create_or_replace_journal(
 
 def _log_line(manifest_name: str, action: JournalAction) -> str:
     """One `applied.log` entry: identifiers and a receipt URL, never body text."""
-    return json.dumps(
-        {
-            "timestamp": _now_iso(),
-            "manifest": manifest_name,
-            "index": action.index,
-            "repo": action.repo,
-            "issue": action.issue,
-            "url": action.url,
-        },
-        sort_keys=True,
-    )
+    return issue_receipt_line(manifest_name, action, _now_iso())
 
 
 def _cleanup_manifest(
@@ -856,7 +849,22 @@ def _cleanup_manifest(
         return f"{name}: applied, but its journal disappeared before cleanup could run"
     directory = _outbox_directory()
 
+    try:
+        before_store = store_io.read_store(incus, container, "issue", uid=uid)
+    except OutboxExecutionError as exc:
+        return f"{name}: applied, but the outbox could not be read before cleanup ({exc})"
+    before = before_store.as_dict()
+    if (
+        container_identity(incus, container) != identity
+        or any(body not in before for body in prepared.manifest.body_files)
+        or issue_proposal_digest(
+            key, before.get(name, ""),
+            {body: before.get(body, "") for body in prepared.manifest.body_files}, journal,
+        ) != prepared.digest
+    ):
+        return f"{name}: proposal changed after publication; cleanup refused, journal retained"
     lines = [_log_line(name, action) for action in sorted(journal.actions, key=lambda a: a.index)]
+    expected_log = before.get("applied.log", "") + "\n".join(lines) + "\n"
     try:
         append_applied_log(incus, container, directory, lines, uid=uid)
     except IncusError as exc:
@@ -872,12 +880,10 @@ def _cleanup_manifest(
     files = fresh_outbox.as_dict()
     if (
         container_identity(incus, container) != identity
-        or proposal_digest(
-            name,
-            files.get(name, ""),
-            {body: files.get(body, "") for body in prepared.manifest.body_files},
-        )
-        != prepared.digest
+        or files.get(name) != before.get(name)
+        or files.get("applied.log") != expected_log
+        or any(files.get(body) != before.get(body)
+               for body in prepared.manifest.body_files if body != "applied.log")
     ):
         return f"{name}: proposal changed after publication; cleanup refused, journal retained"
     referenced = _referenced_elsewhere(fresh_outbox, name)
@@ -992,10 +998,14 @@ def apply_batch(
                     f"{name}: manifest is no longer in the outbox",
                     kind="validation",
                 )
-            digest = proposal_digest(
-                name,
-                text,
-                {body: outbox.files.get(body, "") for body in prepared.manifest.body_files},
+            key = journal_key(batch.identity, name)
+            try:
+                recorded_journal = journal_store.load(key)
+            except JournalError as exc:
+                return failed(name, None, False, str(exc))
+            digest = issue_proposal_digest(
+                key, text,
+                {body: outbox.files.get(body, "") for body in prepared.manifest.body_files}, recorded_journal,
             )
             if digest != prepared.digest:
                 return failed(
@@ -1305,12 +1315,15 @@ def drop_manifest(
                 f"{manifest_name}: the outbox changed since it was read; re-read it before dropping"
             )
         journal = journal_store.load(key)
+        recorded_digest = issue_proposal_digest(
+            key, text, {body: outbox.files[body] for body in body_files}, journal,
+        )
         if (
             journal is not None
             and journal.actions
             and (
                 parsed is None
-                or journal.digest != digest
+                or journal.digest != recorded_digest
                 or journal.action_count != len(parsed.actions)
             )
         ):
