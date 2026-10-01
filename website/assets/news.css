@@ -11,6 +11,7 @@
 .news-article__header { margin-bottom: 2rem; }
 .news-article__body { margin: 2rem 0; overflow-wrap: break-word; }
 .news-article__body > * { margin-bottom: 1.2rem; }
+.news-article__body p { max-width: none; }
 .news-article__body pre { background: var(--surface); overflow-x: auto; padding: 1rem; border-radius: var(--radius); }
 .news-article__body img { border-radius: var(--radius); }
 @media (min-width: 700px) { .news-card:has(img) { grid-template-columns: minmax(0, 240px) minmax(0, 1fr); } }
