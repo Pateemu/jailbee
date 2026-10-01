@@ -275,6 +275,26 @@ def test_deep_json_is_invalid_without_hiding_neighbor_or_progress(tmp_path, kind
     assert changed.revision != bad.revision
 
 
+@pytest.mark.parametrize("manifest_pr", [None, 42])
+def test_recorded_pr_is_display_context_not_revision_authority(tmp_path, manifest_pr):
+    payload = json.loads(pr_files()["001.json"])
+    payload["pr"] = manifest_pr
+    payload["actions"] = [{"type": "description", "body": "Draft description"}]
+    snapshots = (store("pr", {"001.json": json.dumps(payload)}),)
+    journals = JournalStore(tmp_path / "journals")
+    canonical = build_views(IDENTITY, snapshots, journal_store=journals)[0]
+    contextual = build_views(
+        IDENTITY, snapshots, journal_store=journals, recorded_pr=73
+    )[0]
+
+    assert canonical.actions[0].target == ("" if manifest_pr is None else "42")
+    assert contextual.actions[0].target == ("73" if manifest_pr is None else "42")
+    assert canonical.state == ("awaiting-pr" if manifest_pr is None else "pending")
+    assert contextual.state == "pending"
+    assert contextual.revision == canonical.revision
+    assert not (tmp_path / "journals").exists()
+
+
 def test_inspection_never_resolves_remote_targets(tmp_path, mocker):
     mocker.patch("jailbee.pr.resolve_pr", side_effect=AssertionError("network"))
     for helper in ("current_login", "list_labels", "get_issue"):

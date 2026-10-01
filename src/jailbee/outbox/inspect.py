@@ -316,7 +316,6 @@ def _build_view(
         "bodies": [(n, files.get(n)) for n in sorted(body_names)],
         "progress": evidence,
         "rejected": relevant_rejected,
-        "recorded_pr": recorded_pr if store.kind == "pr" else None,
     }
     revision = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
     return ProposalView(ProposalId(store.kind, name), revision, raw, actions, state, error, block)
@@ -329,7 +328,11 @@ def build_views(
     journal_store: JournalStore,
     recorded_pr: int | None = None,
 ) -> tuple[ProposalView, ...]:
-    """Inspect supplied snapshots without target resolution or directory creation."""
+    """Inspect supplied snapshots without target resolution or directory creation.
+
+    recorded_pr is display context only and never contributes to revision:
+    publication must resolve and authorize its actual target through fresh gates.
+    """
     views = []
     for store in stores:
         names = set(store.as_dict()) | set(store.rejected)
