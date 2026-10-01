@@ -91,7 +91,17 @@
           <img src="assets/img/jailbee-mark.png" alt="" width="340" height="345" />
           <span>JailBee</span>
         </a>
-        <a class="topbar__link topbar__link--news" href="news/">News</a>
+        <a class="topbar__link topbar__link--news" href="news/">
+          <!-- Lucide newspaper, same set as the Docs icon. -->
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M15 18h-5M18 14h-8" />
+            <path
+              d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-4 0v-9a2 2 0 0 1 2-2h2"
+            />
+            <rect width="8" height="4" x="10" y="6" rx="1" />
+          </svg>
+          News
+        </a>
         <a class="topbar__link" href="docs/">
           <!-- Lucide book-open-text, the set the source box's icons come from. -->
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -548,6 +558,26 @@
       </div>
     </section>
 
+    <section id="remote">
+      <div class="wrap">
+        <h2>The same hive, from anywhere.</h2>
+        <p>
+          Switch on the optional SSH service and the host's containers are reachable from your
+          laptop: the dashboard, a restricted JailBee console, or single commands under a policy
+          you choose. Login is by key only — there is no host shell and no file transfer — and
+          anything that manages the host itself, from <code>config edit</code> to
+          <code>apply</code>, is refused over the wire.
+        </p>
+        <p>
+          Windows come too. With <code>remote.ssh.gui</code> on, <code>jb chrome</code>,
+          <code>jb ide</code> and the other launchers draw on one shared RDP display instead of
+          being turned away. Forward a single port through your SSH connection, open any RDP
+          client, and the windows from every container sit side by side on one screen. See
+          <a href="docs/remote-gui/">Remote GUI over SSH</a>.
+        </p>
+      </div>
+    </section>
+
     <section id="agents">
       <!-- Copy first, image second: at 800px up that puts the illustration on
            the right, mirroring #network, and stacked it means the section
@@ -580,6 +610,23 @@
           src="assets/img/hive-observation.jpg"
           alt="Isometric illustration: the same beehive brood box and server chassis, its front now a single sealed pane of glass rimmed in glowing amber; inside, four bees rebuild honeycomb amid drifting comb fragments, while the air outside the box is completely still."
         />
+      </div>
+    </section>
+
+    <section id="gateway">
+      <div class="wrap">
+        <h2>Claude Code, on other models.</h2>
+        <p>
+          <code>claude-jb</code> runs Claude Code against a LiteLLM proxy that JailBee keeps in its
+          own container, so the same agent can work on a ChatGPT subscription or on any provider
+          you have an API key for. Plain <code>claude</code> stays native, and the two run side
+          by side in one container. Each ChatGPT login gets its own proxy; a repo can remap
+          routes in its own config; a changed route reaches the running proxy without dropping
+          open sessions. The proxy's logins live in an Incus volume, never on the host
+          filesystem, and its network is limited to the hosts your routes need. Using a
+          subscription this way is unofficial — see the
+          <a href="docs/litellm/">LiteLLM guide</a> for the caveats.
+        </p>
       </div>
     </section>
 
