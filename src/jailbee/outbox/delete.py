@@ -8,6 +8,7 @@ from typing import Any
 
 from jailbee import issue_manifest as issues
 from jailbee import pr_outbox as prs
+from jailbee.outbox.cleanup import exclusive_body_names
 from jailbee.outbox.models import ContainerView, Kind, OutboxError, ProposalId, StoreSnapshot
 
 
@@ -63,7 +64,7 @@ def _whole_names(store: StoreSnapshot, name: str, raw: dict[str, Any] | None) ->
             referenced.update(_body_names(store.kind, _parse(store.kind, other, text, files)))
         except OutboxError:
             return (name,)
-    return (name, *sorted(_body_names(store.kind, raw) - referenced))
+    return (name, *exclusive_body_names(_body_names(store.kind, raw), files, referenced))
 
 
 def _index(value: int, count: int, label: str) -> None:

@@ -185,6 +185,27 @@ def test_whole_deletes_only_referenced_exclusive_bodies(tmp_path, last_action):
     assert plan.removed_actions == (0,)
 
 
+@pytest.mark.parametrize("kind", ["issue", "pr"])
+@pytest.mark.parametrize("body", ["002.json", "other.json.progress.json", "applied.log"])
+@pytest.mark.parametrize("last_action", [False, True])
+def test_body_cleanup_never_removes_manifest_or_history(tmp_path, kind, body, last_action):
+    files = issue_files() if kind == "issue" else pr_files()
+    raw = json.loads(files["001.json"])
+    raw["actions"] = raw["actions"][:1]
+    action = raw["actions"][0]
+    action.pop("body", None)
+    action["body_file"] = body
+    sibling = issue_files()["001.json"] if kind == "issue" else pr_files()["001.json"]
+    files.update({"001.json": json.dumps(raw), body: sibling, "002.json": sibling})
+    plan = plan_delete(
+        inspected(tmp_path, kind, files),
+        ProposalId(kind, "001.json"),
+        DeleteSelection(action=0) if last_action else DeleteSelection(),
+    )
+    assert plan.new_text is None
+    assert plan.delete_names == ("001.json",)
+
+
 @pytest.mark.parametrize("neighbor", ["shared", "invalid", "rejected", "unsafe-rejected"])
 def test_whole_retains_bodies_when_shared_or_exclusivity_unknown(tmp_path, neighbor):
     files = issue_files()
