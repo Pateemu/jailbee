@@ -35,7 +35,11 @@ if TYPE_CHECKING:
 
 
 def load_container(
-    cfg: Config, incus: Incus, container: str, *, journal_store: JournalStore,
+    cfg: Config,
+    incus: Incus,
+    container: str,
+    *,
+    journal_store: JournalStore,
     raise_errors: bool = False,
 ) -> ContainerView:
     """Inspect stores; explicit operations retain typed failures, overviews do not."""
