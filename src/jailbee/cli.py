@@ -10776,7 +10776,7 @@ def display_up_cmd(
 
 @display_app.command("down")
 def display_down_cmd(config: ConfigOption = None) -> None:
-    """Stop the shared RDP display and revoke SSH forwarding to it."""
+    """Stop the shared RDP display."""
     from jailbee.incus import Incus, IncusError
     from jailbee.remote_display import display_down
 

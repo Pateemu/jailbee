@@ -9,7 +9,6 @@ import yaml
 
 from jailbee import remote_display as rd
 from jailbee.incus import IncusError
-from jailbee.remote_ssh import display_grants
 
 
 @pytest.fixture(autouse=True)
@@ -103,29 +102,25 @@ def test_provisioning_script_carries_both_files_and_the_identity():
     assert "JAILBEE_RDP_" not in provisioning
 
 
-def test_down_stops_and_revokes_every_grant(mocker):
+def test_down_stops_a_running_display(mocker):
     incus = MagicMock()
     incus.list_containers.return_value = _running()
     stop = mocker.patch("jailbee.remote_display.stop_container")
-    display_grants.record_grant("SHA256:a", "127.0.0.1", 13389, "feat-1")
 
     rd.display_down(incus)
 
     stop.assert_called_once()
-    assert display_grants.is_allowed("SHA256:a", "127.0.0.1", 13389) is False
 
 
 @pytest.mark.parametrize("listing", [[], [{"name": rd.DISPLAY_CONTAINER, "status": "Stopped"}]])
-def test_down_revokes_every_grant_when_the_display_is_not_running(mocker, listing):
+def test_down_leaves_a_display_that_is_not_running_alone(mocker, listing):
     incus = MagicMock()
     incus.list_containers.return_value = listing
     stop = mocker.patch("jailbee.remote_display.stop_container")
-    display_grants.record_grant("SHA256:a", "127.0.0.1", 13389, "feat-1")
 
     rd.display_down(incus)
 
     stop.assert_not_called()
-    assert display_grants.is_allowed("SHA256:a", "127.0.0.1", 13389) is False
 
 
 def test_client_connected_reads_established_connections():
@@ -207,13 +202,6 @@ def test_the_recipe_is_two_steps_with_a_host_placeholder():
     assert "localhost:3389" in text
 
 
-def test_the_recipe_says_to_launch_before_connecting():
-    """The tunnel is accepted only once this key has launched an app."""
-    text = "\n".join(rd.format_connection_info(rd.connection_info(8022)))
-
-    assert "launch first, then connect" in text
-
-
 def test_the_recipe_says_any_login_works():
     """Clients prompt for credentials; weston's TLS-only mode ignores them."""
     text = "\n".join(rd.format_connection_info(rd.connection_info(8022)))
@@ -240,7 +228,7 @@ def test_ensure_display_mount_is_read_only(tmp_path):
     assert args[3]["source"] == str(tmp_path / "jailbee" / "display")
 
 
-def test_prepare_records_a_grant_and_returns_when_a_client_is_connected():
+def test_prepare_mounts_the_display_and_returns_when_a_client_is_connected():
     incus = MagicMock()
     incus.list_containers.return_value = _running()
     incus.exec.side_effect = ["active\n", "1\n", "1\n"]  # service, client, settled
@@ -249,13 +237,11 @@ def test_prepare_records_a_grant_and_returns_when_a_client_is_connected():
     rd.prepare_shared_display(
         incus,
         "feat-1",
-        fingerprint="SHA256:a",
         ssh_port=8022,
         say=said.append,
         sleep_fn=lambda _s: None,
     )
 
-    assert display_grants.is_allowed("SHA256:a", "127.0.0.1", 13389) is True
     incus.config_device_add.assert_called()  # the display mount
     assert said == []  # nothing to explain: the client is already there
 
@@ -272,7 +258,6 @@ def test_prepare_without_a_client_prints_the_recipe_waits_and_fails():
         rd.prepare_shared_display(
             incus,
             "feat-1",
-            fingerprint="SHA256:a",
             ssh_port=8022,
             say=said.append,
             sleep_fn=clock.sleep,
@@ -282,19 +267,3 @@ def test_prepare_without_a_client_prints_the_recipe_waits_and_fails():
 
     assert any("ssh -N -L" in line for line in said)
     assert clock.sleeps == [rd.CLIENT_POLL_SECONDS, rd.CLIENT_POLL_SECONDS]
-
-
-def test_prepare_refuses_a_session_with_no_known_key():
-    incus = MagicMock()
-    incus.list_containers.return_value = _running()
-    incus.exec.return_value = "active\n"
-
-    with pytest.raises(rd.DisplayError, match="SSH key"):
-        rd.prepare_shared_display(
-            incus,
-            "feat-1",
-            fingerprint=None,
-            ssh_port=8022,
-            say=lambda _l: None,
-            sleep_fn=lambda _s: None,
-        )

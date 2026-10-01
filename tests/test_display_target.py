@@ -15,10 +15,8 @@ from jailbee.gui import (
 )
 from jailbee.remote_ssh.session import (
     SSH_GUI_ENV,
-    SSH_KEY_FP_ENV,
     child_environment,
     is_shared_display_session,
-    session_fingerprint,
     shared_display_port,
 )
 from tests.conftest import make_cfg
@@ -69,27 +67,21 @@ def test_display_state_dir_lives_under_the_jailbee_state_dir(
     assert display_state_dir() == tmp_path / "jailbee" / "display"
 
 
-def test_child_environment_marks_a_gui_session_with_port_and_key() -> None:
-    env = child_environment({}, gui_port=8022, fingerprint="SHA256:abc")
+def test_child_environment_marks_a_gui_session_with_its_port() -> None:
+    env = child_environment({}, gui_port=8022)
 
     assert env[SSH_GUI_ENV] == "8022"
-    assert env[SSH_KEY_FP_ENV] == "SHA256:abc"
     assert is_shared_display_session(env) is True
     assert shared_display_port(env) == 8022
-    assert session_fingerprint(env) == "SHA256:abc"
 
 
 def test_child_environment_never_inherits_the_gui_markers() -> None:
-    """Review focus 2: a marker in the server's own environment must not leak."""
-    base = {SSH_GUI_ENV: "8022", SSH_KEY_FP_ENV: "SHA256:stale"}
-
-    env = child_environment(base)
+    """A marker in the server's own environment must not leak."""
+    env = child_environment({SSH_GUI_ENV: "8022"})
 
     assert SSH_GUI_ENV not in env
-    assert SSH_KEY_FP_ENV not in env
     assert is_shared_display_session(env) is False
     assert shared_display_port(env) is None
-    assert session_fingerprint(env) is None
 
 
 def test_a_non_numeric_gui_marker_is_not_a_session() -> None:

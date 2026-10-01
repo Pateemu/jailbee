@@ -46,9 +46,8 @@ class ChildSpec:
     restrict_host: bool = True
     excluded_repos: tuple[str, ...] = ()
     # `remote.ssh.gui`: the server's port when GUI apps belong on the shared
-    # RDP display, else None. And the key the session authenticated with.
+    # RDP display, else None.
     gui_port: int | None = None
-    fingerprint: str | None = None
 
 
 class _Reader(Protocol):
@@ -364,7 +363,6 @@ async def _run_pty(process: SSHServerProcess[bytes], spec: ChildSpec) -> int:
         restricted=spec.restrict_host,
         excluded_repos=spec.excluded_repos,
         gui_port=spec.gui_port,
-        fingerprint=spec.fingerprint,
     )
     pid, master = pty.fork()
     if pid == 0:
@@ -437,7 +435,6 @@ async def _run_pipes(process: SSHServerProcess[bytes], spec: ChildSpec) -> int:
                 restricted=spec.restrict_host,
                 excluded_repos=spec.excluded_repos,
                 gui_port=spec.gui_port,
-                fingerprint=spec.fingerprint,
             ),
             start_new_session=True,
         )

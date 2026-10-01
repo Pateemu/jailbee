@@ -18,7 +18,7 @@ from jailbee import __version__
 from jailbee.config import ConfigError
 from jailbee.db import state_dir
 from jailbee.global_config import default_global_config_path, load_global_config
-from jailbee.remote_ssh.display_grants import is_allowed
+from jailbee.remote_ssh.display_forward import is_display_forward
 from jailbee.remote_ssh.keys import AuthorizedKey, SSHKeyError, read_authorized_keys, ssh_paths
 from jailbee.remote_ssh.overrides import (
     ServeOverrides,
@@ -106,8 +106,8 @@ class JailbeeSSHServer(asyncssh.SSHServer):
         # up every connection on SIGTERM. It is `None` for tests and any other
         # caller that constructs a server directly.
         self._live = live
-        # `remote.ssh.gui`, re-read per request so turning it off revokes
-        # grants at once. `None` means never: forwarding stays refused.
+        # `remote.ssh.gui`, re-read per request so turning it off closes the
+        # display tunnel at once. `None` means never: forwarding stays refused.
         self._gui_enabled = gui_enabled
 
     def connection_made(self, conn: asyncssh.SSHServerConnection) -> None:
@@ -162,15 +162,15 @@ class JailbeeSSHServer(asyncssh.SSHServer):
     def connection_requested(
         self, dest_host: str, dest_port: int, orig_host: str, orig_port: int
     ) -> bool:
-        """Allow a tunnel only to a destination this very key was granted.
+        """Allow an authenticated key the tunnel to the shared display, only.
 
         Everything else stays refused: reverse, unix and any other TCP
         forwarding (`docs/security.md`).
         """
         if self._gui_enabled is None or not self._gui_enabled():
             return False
-        fingerprint = self._conn.get_extra_info("jailbee_key_fingerprint")
-        return fingerprint is not None and is_allowed(fingerprint, dest_host, dest_port)
+        authenticated = self._conn.get_extra_info("jailbee_key_fingerprint") is not None
+        return authenticated and is_display_forward(dest_host, dest_port)
 
     def server_requested(self, listen_host: str, listen_port: int) -> bool:
         return False
@@ -337,7 +337,6 @@ async def handle_process(
             restrict_host=config.restrict_host,
             excluded_repos=tuple(config.excluded_repos),
             gui_port=config.port if config.gui else None,
-            fingerprint=process.get_extra_info("jailbee_key_fingerprint"),
         )
         if selected.repo_root is None:
             spec.cwd.mkdir(parents=True, exist_ok=True)

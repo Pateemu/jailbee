@@ -30,9 +30,7 @@ again.
 
 ## Connect
 
-The forward is accepted only after your SSH key has launched a GUI app, so
-launch first, then connect: the launch prints this recipe and waits up to 120
-seconds for you (see [Launch](#launch)). On your own computer, in two steps:
+On your own computer, in two steps:
 
 ```bash
 ssh -N -L 3389:127.0.0.1:13389 -p <ssh port> jailbee@<host>
@@ -47,11 +45,12 @@ credentials (see [Security](security.md#remote-gui)). Accept the self-signed
 certificate the client warns about.
 
 Already in an SSH session? Add the forward to it with `~C`, then
-`-L 3389:127.0.0.1:13389`.
+`-L 3389:127.0.0.1:13389`. To have every session carry it, put
+`LocalForward 3389 127.0.0.1:13389` in the host's entry in `~/.ssh/config`.
 
-The forward is authorized per SSH key: it works for a key only after that key
-has launched a GUI app (the launch registers a grant), and only to
-`127.0.0.1:13389`.
+The server accepts the forward from any authorized key while `remote.ssh.gui`
+is on, and only to `127.0.0.1:13389`. You can connect before or after
+launching anything.
 
 ## Launch
 
@@ -71,9 +70,8 @@ apps are skipped, so `jb new` waits at most once.
 
 ## What it does not do
 
-- No real authentication. The RDP login is the fixed pair `jailbee` /
-  `jailbee`; access is limited by network reachability (see
-  [Security](security.md#remote-gui)).
+- No RDP authentication. Any login is accepted; access is limited by network
+  reachability and the SSH tunnel (see [Security](security.md#remote-gui)).
 - Window titles do not name the container; two Chrome windows from two
   containers look alike.
 - No GPU. Rendering is in software.
@@ -90,13 +88,12 @@ See [Remote GUI in the security model](security.md#remote-gui).
 ## Troubleshooting
 
 - `jb display status` shows whether the container and its service are running.
-- `jb display up --recreate` rebuilds the display container from scratch and
-  clears all forwarding grants.
-- `jb display down` stops it and clears all forwarding grants; the tunnel then
-  refuses new forwards.
-- A forward refused for a key that did launch an app: the grant expires after
-  24 hours, and is refused whenever `remote.ssh.gui` is off at request time.
-  Launch an app again to get a fresh one.
+- `jb display up --recreate` rebuilds the display container from scratch.
+- `jb display down` stops it; the tunnel still opens, but the RDP client then
+  finds nothing listening.
+- A refused forward (`administratively prohibited` in `ssh -v`) means
+  `remote.ssh.gui` was off when it was requested, or the forward named a
+  destination other than `127.0.0.1:13389` (`localhost` does not count).
 - "No seats available" from an app means no RDP client was connected when it
   started. Connect a client, then launch again.
 - A container that was already running when the feature was enabled gets the

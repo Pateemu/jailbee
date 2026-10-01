@@ -411,7 +411,6 @@ def test_dispatch_uses_current_python_literal_argv_and_selected_cwd(
             argv=expected_argv,
             cwd=repo if has_repo else fallback,
             requires_pty=requires_pty,
-            fingerprint=FINGERPRINT,
         ),
     )
     configured.assert_called_once_with(default_global_config_path())
@@ -1528,7 +1527,7 @@ def test_an_upgrade_drains_live_sessions_before_hanging_up(listener, mocker):
     conn.close.assert_called_once_with()
 
 
-def test_gui_session_hands_port_and_fingerprint_to_the_child(child, mocker, repo):
+def test_gui_session_hands_its_port_to_the_child(child, mocker, repo):
     ssh = RemoteSSHConfig(exec=True, commands=RemoteCommandPolicy(mode="full"), gui=True, port=8022)
     mocker.patch.object(
         server,
@@ -1538,12 +1537,10 @@ def test_gui_session_hands_port_and_fingerprint_to_the_child(child, mocker, repo
 
     session("--repo project ls")
 
-    spec = child.call_args.args[1]
-    assert spec.gui_port == ssh.port
-    assert spec.fingerprint == FINGERPRINT
+    assert child.call_args.args[1].gui_port == ssh.port
 
 
-def test_non_gui_session_has_no_gui_port_but_keeps_the_fingerprint(child, mocker, repo):
+def test_non_gui_session_has_no_gui_port(child, mocker, repo):
     ssh = RemoteSSHConfig(exec=True, commands=RemoteCommandPolicy(mode="full"), gui=False)
     mocker.patch.object(
         server,
@@ -1553,9 +1550,7 @@ def test_non_gui_session_has_no_gui_port_but_keeps_the_fingerprint(child, mocker
 
     session("--repo project ls")
 
-    spec = child.call_args.args[1]
-    assert spec.gui_port is None
-    assert spec.fingerprint == FINGERPRINT
+    assert child.call_args.args[1].gui_port is None
 
 
 def _gui_server(connection, enabled=True):
@@ -1564,32 +1559,25 @@ def _gui_server(connection, enabled=True):
     return instance
 
 
-def test_forwarding_is_allowed_to_a_granted_destination(connection, tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    from jailbee.remote_ssh.display_grants import record_grant
-
-    record_grant(FINGERPRINT, "127.0.0.1", 13389, "feat-1")
+def test_an_authenticated_key_may_forward_to_the_display(connection):
+    """No prior launch needed: any key that can log in may open the tunnel."""
     connection.set_extra_info(jailbee_key_fingerprint=FINGERPRINT)
 
     assert _gui_server(connection).connection_requested("127.0.0.1", 13389, "::1", 50000) is True
 
 
-def test_forwarding_is_refused_for_another_key(connection, tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    from jailbee.remote_ssh.display_grants import record_grant
-
-    record_grant("SHA256:someone-else", "127.0.0.1", 13389, "feat-1")
+@pytest.mark.parametrize(
+    ("host", "port"),
+    [("127.0.0.1", 13390), ("127.0.0.1", 22), ("localhost", 13389), ("10.0.0.1", 13389)],
+)
+def test_forwarding_anywhere_but_the_display_is_refused(connection, host, port):
     connection.set_extra_info(jailbee_key_fingerprint=FINGERPRINT)
 
-    assert _gui_server(connection).connection_requested("127.0.0.1", 13389, "::1", 50000) is False
+    assert _gui_server(connection).connection_requested(host, port, "::1", 50000) is False
 
 
-def test_forwarding_is_refused_when_the_feature_is_off(connection, tmp_path, monkeypatch):
-    """Review focus 1: turning remote.ssh.gui off revokes running grants."""
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    from jailbee.remote_ssh.display_grants import record_grant
-
-    record_grant(FINGERPRINT, "127.0.0.1", 13389, "feat-1")
+def test_forwarding_is_refused_when_the_feature_is_off(connection):
+    """Turning remote.ssh.gui off closes the tunnel for every new request."""
     connection.set_extra_info(jailbee_key_fingerprint=FINGERPRINT)
 
     assert (
@@ -1599,17 +1587,6 @@ def test_forwarding_is_refused_when_the_feature_is_off(connection, tmp_path, mon
 
 
 def test_a_connection_without_an_authenticated_key_gets_no_forwarding(connection):
-    assert _gui_server(connection).connection_requested("127.0.0.1", 13389, "::1", 1) is False
-
-
-def test_a_grant_is_useless_without_an_authenticated_key(connection, tmp_path, monkeypatch):
-    """Defense in depth: no fingerprint means no match, with or without the explicit guard."""
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    from jailbee.remote_ssh.display_grants import record_grant
-
-    record_grant(FINGERPRINT, "127.0.0.1", 13389, "feat-1")
-    connection.set_extra_info(jailbee_key_fingerprint=None)
-
     assert _gui_server(connection).connection_requested("127.0.0.1", 13389, "::1", 1) is False
 
 

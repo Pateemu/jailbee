@@ -186,12 +186,11 @@ def launch_env(
 
     On the host this is `gui_env(cfg)`. From an SSH session whose server has
     `remote.ssh.gui` on, the shared RDP display is prepared first (started,
-    mounted into ``container``, the session's key granted the tunnel, an RDP
-    client awaited) and the app is pointed at it. `DisplayError` propagates:
-    nothing is launched.
+    mounted into ``container``, an RDP client awaited) and the app is pointed
+    at it. `DisplayError` propagates: nothing is launched.
     """
     from jailbee.gui import display_target, gui_env
-    from jailbee.remote_ssh.session import session_fingerprint, shared_display_port
+    from jailbee.remote_ssh.session import shared_display_port
     from jailbee.tui import info
 
     target = display_target()
@@ -204,7 +203,6 @@ def launch_env(
         prepare_shared_display(
             incus,
             container,
-            fingerprint=session_fingerprint(),
             ssh_port=port,
             say=info,
         )

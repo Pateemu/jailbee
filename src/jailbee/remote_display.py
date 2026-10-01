@@ -22,7 +22,7 @@ import yaml
 from jailbee.config import CONTAINER_USERNAME
 from jailbee.gui import display_state_dir
 from jailbee.incus import Incus, IncusError
-from jailbee.remote_ssh.display_grants import GRANT_HOST, clear_grants, record_grant
+from jailbee.remote_ssh.display_forward import DISPLAY_FORWARD_HOST, DISPLAY_FORWARD_PORT
 from jailbee.runtime_mounts import DISPLAY_DEVICE, display_device_config
 from jailbee.stopping import stop_container
 
@@ -41,7 +41,7 @@ DISPLAY_BRIDGE = "jailbee-loose"
 # step with the paths in provision/display/jailbee-display.service.
 DISPLAY_CONTAINER_DIR = "/srv/jailbee-display"
 RDP_PORT = 3389
-HOST_RDP_PORT = 13389
+HOST_RDP_PORT = DISPLAY_FORWARD_PORT
 RDP_PORT_ADDRESS = f"localhost:{RDP_PORT}"
 CLIENT_WAIT_SECONDS = 120.0
 CLIENT_POLL_SECONDS = 2.0
@@ -210,7 +210,6 @@ def display_up(
     _ensure_profile(incus)
     if recreate and _present(incus) is not None:
         incus.delete(DISPLAY_CONTAINER, force=True)
-        clear_grants()
     entry = _present(incus)
     if entry is None:
         on_step("creating the display container")
@@ -229,8 +228,7 @@ def display_up(
 
 
 def display_down(incus: Incus) -> None:
-    """Stop the display and revoke every forwarding grant."""
-    clear_grants()
+    """Stop the display container."""
     entry = _present(incus)
     if entry is None or entry.get("status") != "Running":
         return
@@ -288,15 +286,16 @@ class ConnectionInfo:
 
 def connection_info(ssh_port: int) -> ConnectionInfo:
     return ConnectionInfo(
-        ssh_command=f"ssh -N -L {RDP_PORT}:127.0.0.1:{HOST_RDP_PORT} -p {ssh_port} jailbee@<host>",
+        ssh_command=(
+            f"ssh -N -L {RDP_PORT}:{DISPLAY_FORWARD_HOST}:{HOST_RDP_PORT} "
+            f"-p {ssh_port} jailbee@<host>"
+        ),
         rdp_address=RDP_PORT_ADDRESS,
         hints=(
             "Login: any user name and password; weston does not check them",
             "Windows: mstsc  |  macOS: Windows App (was Microsoft Remote Desktop)  |  "
             "Linux: xfreerdp / Remmina",
             "Already connected over SSH? Add the forward live with ~C, then -L ...",
-            "The forward is accepted once this SSH key has launched a GUI app; "
-            "launch first, then connect — the launch waits for you.",
         ),
     )
 
@@ -325,7 +324,6 @@ def prepare_shared_display(
     incus: Incus,
     container: str,
     *,
-    fingerprint: str | None,
     ssh_port: int,
     say: Callable[[str], None],
     sleep_fn: Callable[[float], None] = time.sleep,
@@ -334,19 +332,14 @@ def prepare_shared_display(
 ) -> None:
     """Make the shared display ready for one launch from an SSH session.
 
-    Brings the display up if needed, mounts it into ``container``, grants the
-    session's key the tunnel, and (if no RDP client is attached yet, which an
-    app would fail without) prints the recipe and waits for one.
+    Brings the display up if needed, mounts it into ``container``, and (if no
+    RDP client is attached yet, which an app would fail without) prints the
+    recipe and waits for one.
     """
-    if fingerprint is None:
-        raise DisplayError(
-            "Cannot tell which SSH key this session used, so no tunnel can be opened."
-        )
     if display_status(incus) is not DisplayStatus.RUNNING:
         say("Starting the shared display...")
         display_up(incus, on_step=say, sleep_fn=sleep_fn)
     ensure_display_mount(incus, container)
-    record_grant(fingerprint, GRANT_HOST, HOST_RDP_PORT, container)
     if client_ready(incus, sleep_fn):
         return
     for line in format_connection_info(connection_info(ssh_port)):

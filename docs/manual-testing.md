@@ -5178,32 +5178,31 @@ Host-only checks; they need a real Incus daemon, the SSH service with
 `remote.ssh.gui: true`, and an RDP client. Background:
 [Remote GUI over SSH](remote-gui.md).
 
-The tunnel is accepted only after the SSH key has launched an app, so the
-launch comes first and the tunnel and RDP client connect while it waits.
-
 1. `jb display up` from cold (no `jailbee-display` container). Expected: the
    image is pulled, weston installed, the service reported active, and the
-   connection recipe printed, including the "launch first, then connect"
-   line. With `remote.ssh.gui` off it also warns that SSH sessions cannot use
+   connection recipe printed. With `remote.ssh.gui` off it also warns that SSH sessions cannot use
    the display.
-2. `jb display status`. Expected: running, plus the same recipe.
+2. `jb display status`. Expected: running, plus the same recipe. Then, with
+   nothing launched yet, open the tunnel and connect the RDP client. Expected:
+   accepted, the empty weston desktop shows; disconnect again.
 3. In an SSH session, run `jb chrome` against a running container, with no
    RDP client connected. Expected: the recipe is printed, "Waiting for an RDP
    client..." and the launch waits (up to 120 s).
 4. While it waits, open the tunnel (`ssh -N -L 3389:127.0.0.1:13389 -p <port>
-   jailbee@<host>`) and connect an RDP client to `localhost:3389`. Expected:
-   the forward is accepted, a weston desktop with a panel appears, and a few
-   seconds later the launch proceeds and a Chrome window shows on the RDP
-   desktop.
+   jailbee@<host>`) and connect an RDP client to `localhost:3389`, Windows App
+   on macOS included, entering any login if asked. Expected: the forward is
+   accepted, a weston desktop with a panel appears, and a few seconds later the
+   launch proceeds and a Chrome window shows on the RDP desktop.
 5. Do the same from a second container. Expected: its window lands on the
    same screen.
 6. In the remote dashboard, choose a launch. Expected: with no client
    connected the recipe is printed and the launch waits; connecting a client
    lets it proceed.
-7. `jb display down`, then try a new forward with the same key. Expected: the
-   tunnel refuses it.
+7. `jb display down`, then connect the RDP client through the tunnel again.
+   Expected: the forward opens, but the RDP client fails to connect (nothing
+   listens on `127.0.0.1:13389`).
 8. Set `remote.ssh.gui: false` (no service restart), run `jb chrome` over SSH.
-   Expected: refused, and a forward with a previously granted key is refused.
+   Expected: refused, and a new forward is refused too.
 9. From the host and from a sibling container, `nc -vz <display container
    bridge address> 3389`. Expected: refused in both cases.
 10. In a client container, `rm /run/jailbee-display/wayland-0` and `touch

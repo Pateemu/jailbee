@@ -149,7 +149,7 @@ The SSH protocol surface is also fail-closed:
 - SFTP, SCP, agent forwarding, X11 forwarding, Unix-socket forwarding and
   remote listeners are disabled, and so is TCP forwarding, with one exception:
   while `remote.ssh.gui` is on, `127.0.0.1:13389` (the shared display, see
-  [Remote GUI](#remote-gui)) and only for a key that has launched an app;
+  [Remote GUI](#remote-gui)), for any authorized key;
 - client environment requests, including `SendEnv`, are accepted by the
   protocol but ignored: the client's environment never reaches the child
   process, which is built from the service's own environment;
@@ -234,10 +234,12 @@ display (see [Remote GUI over SSH](remote-gui.md)):
 - The RDP connection is TLS with a self-signed certificate and no Network
   Level Authentication; weston checks no login, so any local user of the host
   can connect to `127.0.0.1:13389`. JailBee assumes a single-user workstation.
-- SSH access to that port is a forwarding grant bound to the SSH key that
-  launched an app, to that one destination, expiring after 24 hours, cleared
-  by `jb display down` and `jb display up --recreate`, and refused whenever
-  `remote.ssh.gui` is off when the forward is requested.
+- Over SSH, any authorized key may forward to that one destination while
+  `remote.ssh.gui` is on; the flag is re-read for every forward request, so
+  turning it off refuses new tunnels at once (open ones run until they close).
+  The forward is not tied to a key that has launched an app: every authorized
+  key runs under the same server-wide policy and could launch one, so such a
+  binding would protect nothing.
 - All containers share one screen and the RDP clipboard: one container can
   draw over another's windows and read what is on the clipboard.
 - The shared display directory is mounted into the client containers

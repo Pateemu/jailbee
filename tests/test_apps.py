@@ -331,7 +331,7 @@ def test_launch_autostart_apps_continues_after_one_raises(tmp_path, mocker):
     assert "'a'" in error_mock.call_args.args[0]
 
 
-_SESSION_VARS = ("JAILBEE_SSH_SESSION", "JAILBEE_SSH_GUI", "JAILBEE_SSH_KEY_FP")
+_SESSION_VARS = ("JAILBEE_SSH_SESSION", "JAILBEE_SSH_GUI")
 
 
 def _plain_spec():
@@ -367,7 +367,6 @@ def test_launch_from_a_gui_ssh_session_prepares_and_uses_the_shared_display(
 
     monkeypatch.setenv("JAILBEE_SSH_SESSION", "1")
     monkeypatch.setenv("JAILBEE_SSH_GUI", "8022")
-    monkeypatch.setenv("JAILBEE_SSH_KEY_FP", "SHA256:abc")
     prepare = mocker.patch("jailbee.remote_display.prepare_shared_display")
     detached = mocker.patch("jailbee.gui.launch_detached")
     incus = MagicMock()
@@ -376,7 +375,6 @@ def test_launch_from_a_gui_ssh_session_prepares_and_uses_the_shared_display(
 
     prepare.assert_called_once()
     assert prepare.call_args.args[:2] == (incus, "feat-1")
-    assert prepare.call_args.kwargs["fingerprint"] == "SHA256:abc"
     assert prepare.call_args.kwargs["ssh_port"] == 8022
     env = detached.call_args.args[2]
     assert env["WAYLAND_DISPLAY"] == "/run/jailbee-display/wayland-0"

@@ -176,7 +176,7 @@ def test_exec_detach_gui_on_the_host_uses_the_host_environment(
 ) -> None:
     from tests.conftest import make_cfg
 
-    for name in ("JAILBEE_SSH_SESSION", "JAILBEE_SSH_GUI", "JAILBEE_SSH_KEY_FP"):
+    for name in ("JAILBEE_SSH_SESSION", "JAILBEE_SSH_GUI"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-1")
     mocker.patch("jailbee.cli._load_or_exit", return_value=make_cfg(tmp_path))
