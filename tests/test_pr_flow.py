@@ -1910,7 +1910,6 @@ def test_disabled_publication_guard_never_looks_up_identity(mocker, tmp_path, ma
     assert not manager.root.exists()
 
 
-
 def test_publication_guard_rejects_identity_replaced_while_waiting(mocker, tmp_path, make_cfg):
     from contextlib import contextmanager
 
