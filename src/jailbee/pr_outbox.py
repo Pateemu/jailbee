@@ -1065,22 +1065,29 @@ def _body_references(text: str) -> set[str]:
     if not isinstance(raw, dict) or not isinstance(raw.get("actions"), list):
         raise ValueError("invalid manifest reference scope")
     result: set[str] = set()
-    pending: list[object] = [raw]
-    while pending:
-        item = pending.pop()
-        if isinstance(item, dict):
+    actions = raw["actions"]
+    if len(actions) > MAX_ACTIONS:
+        raise ValueError("invalid manifest reference scope")
+    for action in actions:
+        if not isinstance(action, dict) or action.get("type") not in (
+            "review", "reply", "comment", "description",
+        ):
+            raise ValueError("invalid action reference scope")
+        inputs = [action]
+        if action["type"] == "review":
+            comments = action.get("comments")
+            if not isinstance(comments, list) or len(comments) > MAX_LINE_COMMENTS:
+                raise ValueError("invalid review reference scope")
+            inputs.extend(comments)
+        # Extension dictionaries are ignored by the domain parser, not inputs.
+        for item in inputs:
+            if not isinstance(item, dict):
+                raise ValueError("invalid body reference scope")
             name = item.get("body_file")
             if name is not None:
-                if (
-                    not isinstance(name, str)
-                    or not name
-                    or any(c in name for c in ("/", "\\", "\0"))
-                ):
+                if not isinstance(name, str) or "/" in name or "\\" in name or _escapes_containment(name):
                     raise ValueError("invalid body reference")
                 result.add(name)
-            pending.extend(item.values())
-        elif isinstance(item, list):
-            pending.extend(item)
     return result
 
 
@@ -1263,7 +1270,7 @@ def finalize(
                 uid=uid,
                 with_sidecar=True,
             )
-        except (IncusError, OutboxExecutionError, OutboxError, JournalError) as e:
+        except (IncusError, OutboxExecutionError, ValueError, KeyError, RecursionError, JournalError) as e:
             raise FinalizeError(
                 f"manifest {manifest.name} is fully applied but could not be "
                 f"deleted ({e}); it will be cleaned up on a later run"

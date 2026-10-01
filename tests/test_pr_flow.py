@@ -1795,6 +1795,38 @@ def test_validate_missing_outbox_source_does_not_read(mocker, make_cfg, tmp_path
     assert incus.mock_calls == []
 
 
+@pytest.mark.parametrize("body_file", [None, " space pr=7 .md"])
+def test_staged_description_extensions_follow_actual_source_validation(mocker, make_cfg, tmp_path, body_file):
+    import json
+
+    from jailbee.outbox_io import ContainerIdentity
+    from jailbee.pr_flow import PrScope, validate_outbox_source
+    from jailbee.pr_outbox import Outbox, OutboxChanged, pending_pr_text
+
+    cfg = make_cfg(tmp_path)
+    action = {"type": "description", "body_file": body_file, "agent_metadata": {"body_file": 17}}
+    if body_file is None:
+        action["body"] = "Inline"
+    payload = {"version": 1, "repo": "acme/widgets", "pr": None, "actions": [action], "agent_metadata": {"nested": {"body_file": "extension.md"}}}
+    files = {"one.json": json.dumps(payload), "extension.md": "Extension", **({body_file: "Body"} if body_file else {})}
+    identity = ContainerIdentity("c", "created")
+    outbox = Outbox(files, identity=identity)
+    incus = mocker.Mock()
+    incus.config_get.return_value = "feature"
+    reader = mocker.patch("jailbee.pr_outbox.read_outbox", return_value=outbox)
+    mocker.patch("jailbee.git.get_remote_url", return_value="https://github.com/acme/widgets.git")
+    source = pending_pr_text(cfg, incus, "c", scope=PrScope(cfg.repo_root, cfg.upstream_remote, "", None), source_branch="feature", uid=1000)
+    assert source is not None
+    assert source.body_files == (((body_file, "Body"),) if body_file else ())
+    validate_outbox_source(cfg, incus, "c", source)
+    reader.return_value = Outbox(files | {"extension.md": "Changed ignored file"}, identity=identity)
+    validate_outbox_source(cfg, incus, "c", source)
+    if body_file:
+        reader.return_value = Outbox(files | {body_file: "Changed body"}, identity=identity)
+        with pytest.raises(OutboxChanged):
+            validate_outbox_source(cfg, incus, "c", source)
+
+
 def test_validate_synthetic_outbox_source_requires_revision(mocker, make_cfg, tmp_path):
     from jailbee.pr_flow import validate_outbox_source
     from jailbee.pr_outbox import OutboxChanged

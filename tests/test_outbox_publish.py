@@ -307,6 +307,24 @@ def test_ambiguous_longer_name_with_valid_sidecar_keeps_existing_progress_rules(
     assert remaining["applied.log"].startswith(files["applied.log"])
 
 
+@pytest.mark.parametrize("location", ["root", "action", "inline"])
+def test_actual_selected_publication_accepts_ignored_numeric_extensions(env, location):
+    payload = json.loads(env[2]["pr"].as_dict()["001.json"])
+    if location == "inline":
+        payload["actions"] = [{"type": "review", "body": "Review", "comments": [{"path": "a.py", "line": 1, "body": "Comment", "agent_metadata": {"body_file": 17}}]}]
+    else:
+        (payload if location == "root" else payload["actions"][0])["agent_metadata"] = {"body_file": 17}
+    files = env[2]["pr"].as_dict() | {"001.json": json.dumps(payload)}
+    env[2]["pr"] = store("pr", files)
+    assert selected(env, "pr") == 0
+    remaining = env[2]["pr"].as_dict()
+    assert "001.json" not in remaining
+    assert remaining["002.json"] == files["002.json"]
+    assert remaining["body.md"] == files["body.md"]
+    assert "001.json pr=42" in remaining["applied.log"]
+    assert (env[4]["review"].call_count if location == "inline" else env[4]["pr_comment"].call_count) == (1 if location == "inline" else 2)
+
+
 def selected(
     env, kind="issue", *, confirm=lambda count: True, revision=None, raise_errors=False, **options
 ):
