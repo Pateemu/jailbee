@@ -284,6 +284,7 @@ def launch_autostart_apps(cfg: Config, incus: Incus, container: str) -> None:
     exit non-zero from; skipping the rest of the list would also silently
     drop every app after the failing one, which is worse than one warning.
     """
+    from jailbee.remote_display import DisplayError
     from jailbee.tui import error
 
     for spec in resolve_apps(cfg):
@@ -291,5 +292,7 @@ def launch_autostart_apps(cfg: Config, incus: Incus, container: str) -> None:
             continue
         try:
             launch(cfg, incus, container, spec)
-        except ValueError as e:
+        except (ValueError, DisplayError) as e:
+            # DisplayError: a GUI-enabled SSH session whose shared display
+            # could not be prepared; contained like a missing launcher.
             error(str(e))

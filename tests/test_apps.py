@@ -401,3 +401,30 @@ def test_a_failed_preparation_launches_nothing(tmp_path, mocker, monkeypatch, ca
 
     detached.assert_not_called()
     assert "Launching" not in capsys.readouterr().out
+
+
+def test_launch_autostart_apps_continues_after_a_display_error(tmp_path, mocker) -> None:
+    from unittest.mock import MagicMock
+
+    from jailbee.apps import launch_autostart_apps
+    from jailbee.remote_display import DisplayError
+
+    cfg = make_cfg(
+        tmp_path,
+        apps={
+            "a": {"command": "/a", "autostart": True},
+            "b": {"command": "/b", "autostart": True},
+        },
+    )
+    seen: list[str] = []
+
+    def fake_launch(cfg, incus, container, spec, args=None):
+        seen.append(spec.name)
+        if spec.name == "a":
+            raise DisplayError("no client")
+
+    mocker.patch("jailbee.apps.launch", side_effect=fake_launch)
+
+    launch_autostart_apps(cfg, MagicMock(), "c1")
+
+    assert seen == ["a", "b"]
