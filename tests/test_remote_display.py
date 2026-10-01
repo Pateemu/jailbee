@@ -92,6 +92,8 @@ def test_provisioning_script_carries_both_files_and_the_identity():
     provisioning = next(s for s in scripts if "JAILBEE_INSTALL_EOF" in s)
     assert "--address=127.0.0.1" in provisioning
     assert "--shell=desktop" in provisioning
+    # weston's default 300 s idle timeout locks the shared screen.
+    assert "--idle-time=0" in provisioning
     assert "JAILBEE_UID=" in provisioning
     # weston 14 leaves FreeRDP 3's extended NLA on with no SAM file, so a client
     # asking for NLA is refused; the WinPR registry turns it off, leaving TLS.
