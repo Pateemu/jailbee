@@ -45,6 +45,10 @@ class ChildSpec:
     # remote session (see `session.child_environment`).
     restrict_host: bool = True
     excluded_repos: tuple[str, ...] = ()
+    # `remote.ssh.gui`: the server's port when GUI apps belong on the shared
+    # RDP display, else None. And the key the session authenticated with.
+    gui_port: int | None = None
+    fingerprint: str | None = None
 
 
 class _Reader(Protocol):
@@ -355,7 +359,12 @@ async def _run_pty(process: SSHServerProcess[bytes], spec: ChildSpec) -> int:
     # thread held at fork time. The child must do nothing but
     # chdir + execve + _exit.
     env = child_environment(
-        os.environ, term=term, restricted=spec.restrict_host, excluded_repos=spec.excluded_repos
+        os.environ,
+        term=term,
+        restricted=spec.restrict_host,
+        excluded_repos=spec.excluded_repos,
+        gui_port=spec.gui_port,
+        fingerprint=spec.fingerprint,
     )
     pid, master = pty.fork()
     if pid == 0:
@@ -424,7 +433,11 @@ async def _run_pipes(process: SSHServerProcess[bytes], spec: ChildSpec) -> int:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=child_environment(
-                os.environ, restricted=spec.restrict_host, excluded_repos=spec.excluded_repos
+                os.environ,
+                restricted=spec.restrict_host,
+                excluded_repos=spec.excluded_repos,
+                gui_port=spec.gui_port,
+                fingerprint=spec.fingerprint,
             ),
             start_new_session=True,
         )

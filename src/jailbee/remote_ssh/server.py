@@ -315,6 +315,8 @@ async def handle_process(
             requires_pty=selected.requires_pty,
             restrict_host=config.restrict_host,
             excluded_repos=tuple(config.excluded_repos),
+            gui_port=config.port if config.gui else None,
+            fingerprint=process.get_extra_info("jailbee_key_fingerprint"),
         )
         if selected.repo_root is None:
             spec.cwd.mkdir(parents=True, exist_ok=True)

@@ -410,6 +410,7 @@ def test_dispatch_uses_current_python_literal_argv_and_selected_cwd(
             argv=expected_argv,
             cwd=repo if has_repo else fallback,
             requires_pty=requires_pty,
+            fingerprint=FINGERPRINT,
         ),
     )
     configured.assert_called_once_with(default_global_config_path())
@@ -1510,3 +1511,33 @@ def test_an_upgrade_drains_live_sessions_before_hanging_up(listener, mocker):
 
     asyncio.run(run())
     conn.close.assert_called_once_with()
+
+
+def test_gui_session_hands_port_and_fingerprint_to_the_child(child, mocker, repo):
+    ssh = RemoteSSHConfig(exec=True, commands=RemoteCommandPolicy(mode="full"), gui=True, port=8022)
+    mocker.patch.object(
+        server,
+        "load_global_config",
+        return_value=(GlobalConfig(remote=RemoteConfig(ssh=ssh)), []),
+    )
+
+    session("--repo project ls")
+
+    spec = child.call_args.args[1]
+    assert spec.gui_port == ssh.port
+    assert spec.fingerprint == FINGERPRINT
+
+
+def test_non_gui_session_has_no_gui_port_but_keeps_the_fingerprint(child, mocker, repo):
+    ssh = RemoteSSHConfig(exec=True, commands=RemoteCommandPolicy(mode="full"), gui=False)
+    mocker.patch.object(
+        server,
+        "load_global_config",
+        return_value=(GlobalConfig(remote=RemoteConfig(ssh=ssh)), []),
+    )
+
+    session("--repo project ls")
+
+    spec = child.call_args.args[1]
+    assert spec.gui_port is None
+    assert spec.fingerprint == FINGERPRINT
