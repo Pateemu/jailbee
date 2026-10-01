@@ -783,9 +783,7 @@ def _real_drop_rig(mocker, make_cfg, tmp_path, files):
     cfg = make_cfg(tmp_path)
     container = f"{cfg.container_prefix}-feat-foo"
     incus = mocker.Mock()
-    incus.list_containers.return_value = [
-        {"name": container, "created_at": "2026-10-01T00:00:00Z"}
-    ]
+    incus.list_containers.return_value = [{"name": container, "created_at": "2026-10-01T00:00:00Z"}]
     mocker.patch("jailbee.cli._load_or_exit", return_value=cfg)
     mocker.patch("jailbee.cli._resolve_existing", return_value=(incus, container))
     directory = tmp_path / "issue-outbox"
@@ -815,7 +813,9 @@ def _real_drop_rig(mocker, make_cfg, tmp_path, files):
 
 
 @pytest.mark.parametrize("archive", [False, True])
-def test_drop_refused_checked_mutation_is_controlled_diagnostic(mocker, make_cfg, tmp_path, archive):
+def test_drop_refused_checked_mutation_is_controlled_diagnostic(
+    mocker, make_cfg, tmp_path, archive
+):
     from jailbee.outbox_io import (
         ContainerIdentity,
         JournalStore,
@@ -829,7 +829,7 @@ def test_drop_refused_checked_mutation_is_controlled_diagnostic(mocker, make_cfg
             {"type": "comment", "repo": ".", "issue": 42, "body": "second"},
         ]
     )
-    cfg, container, incus, directory, run_api = _real_drop_rig(
+    _cfg, container, incus, directory, run_api = _real_drop_rig(
         mocker, make_cfg, tmp_path, {"001.json": text}
     )
     key = journal_key(ContainerIdentity(container, "2026-10-01T00:00:00Z"), "001.json")
@@ -866,7 +866,7 @@ def test_drop_strict_transport_failure_is_controlled_diagnostic(mocker, make_cfg
     from jailbee.incus import IncusError
 
     text = _manifest_text()
-    cfg, container, incus, directory, run_api = _real_drop_rig(
+    _cfg, _container, incus, directory, run_api = _real_drop_rig(
         mocker, make_cfg, tmp_path, {"001.json": text}
     )
     from jailbee.outbox import io as store_io
