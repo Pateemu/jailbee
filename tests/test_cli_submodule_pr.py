@@ -6,6 +6,7 @@ import pytest
 from typer.testing import CliRunner
 
 from jailbee.cli import app
+from tests.conftest import mock_pr_agent
 
 runner = CliRunner()
 
@@ -53,8 +54,8 @@ def _setup(mocker, tmp_path, *, candidates=None, state_record=None, mock_state_r
     cfg_mock.repo_root = tmp_path
     cfg_mock.container_prefix = "sampleapp"
     cfg_mock.upstream_remote = "origin"
-    cfg_mock.claude.enabled = False
-    cfg_mock.claude.ai_pr_description = True
+    mock_pr_agent(cfg_mock, False)
+    cfg_mock.pr.ai_description = True
     mocker.patch("jailbee.cli._load_or_exit", return_value=cfg_mock)
 
     incus_mock = mocker.MagicMock()
@@ -625,9 +626,9 @@ def test_submodule_pr_no_outbox_forwards_false_and_preserves_the_ai_path(mocker,
     from jailbee.submodule_pr import SubPublishResult
 
     cfg, _incus, _record = _setup(mocker, tmp_path)
-    cfg.claude.enabled = True
-    cfg.claude.ai_pr_description = True
-    cfg.claude.ai_pr_branch = True
+    mock_pr_agent(cfg, True)
+    cfg.pr.ai_description = True
+    cfg.pr.ai_branch = True
     mocker.patch(
         "jailbee.submodule_pr.publish_submodule_branch",
         return_value=SubPublishResult(src_ref="r", publish_name="feat/foo", forced=False),

@@ -51,6 +51,7 @@ from jailbee.config.models_agents import (
     ClaudeAgentConfig,
     DockerRegistryMirrorRepoConfig,
     GithubConfig,
+    PrConfig,
 )
 from jailbee.config.models_apps import APP_NAME_RE, AppEntry
 from jailbee.config.models_behaviour import (
@@ -165,6 +166,7 @@ __all__ = [
     "NewConfig",
     "OptionalMount",
     "PoolSpec",
+    "PrConfig",
     "PullConfig",
     "PushConfig",
     "SharedCache",

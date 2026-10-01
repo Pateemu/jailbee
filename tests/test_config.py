@@ -1454,95 +1454,56 @@ def test_claude_install_jailbee_skills_override_false_via_yaml(tmp_path, mocker)
     assert cfg.claude.install_jailbee_skills is False
 
 
-def test_claude_pr_prompt_defaults_to_none(tmp_path, mocker):
-    """No `claude.pr_prompt` means jailbee's own prompt is used unchanged."""
+def test_pr_prompt_defaults_to_none(tmp_path, mocker):
+    """No `pr.prompt` means jailbee's own prompt is used unchanged."""
     mocker.patch("jailbee.config.loader.detect_default_branch", return_value="main")
     repo = _write_repo(tmp_path, name="myrepo")
     cfg = load_config(repo / ".jailbee" / "config.yaml")
-    assert cfg.claude.pr_prompt is None
+    assert cfg.pr.prompt is None
 
 
-def test_claude_pr_prompt_reads_a_multiline_block_from_repo_yaml(tmp_path, mocker):
+def test_pr_prompt_reads_a_multiline_block_from_repo_yaml(tmp_path, mocker):
     """A repo encodes its PR standard as a YAML block scalar."""
     mocker.patch("jailbee.config.loader.detect_default_branch", return_value="main")
     repo = _write_repo(
         tmp_path,
         name="myrepo",
-        config_yaml=(
-            "claude:\n"
-            "  enabled: true\n"
-            "  pr_prompt: |\n"
-            "    Use these headings:\n"
-            "    ## Motivation\n"
-            "    ## Risk\n"
-        ),
+        config_yaml=("pr:\n  prompt: |\n    Use these headings:\n    ## Motivation\n    ## Risk\n"),
     )
     cfg = load_config(repo / ".jailbee" / "config.yaml")
-    assert cfg.claude.pr_prompt == "Use these headings:\n## Motivation\n## Risk\n"
+    assert cfg.pr.prompt == "Use these headings:\n## Motivation\n## Risk\n"
 
 
-def test_claude_pr_prompt_rejects_an_oversized_value():
-    """A pathological value fails loudly at load instead of inside the container."""
-    from pydantic import ValidationError
-
-    from jailbee.config import ClaudeAgentConfig
-
-    with pytest.raises(ValidationError):
-        ClaudeAgentConfig(enabled=True, pr_prompt="x" * 20_001)
-
-
-def test_claude_ai_pr_model_defaults_to_sonnet(tmp_path, mocker):
-    """PR text is a bounded summarisation job — it does not need the Opus default."""
+def test_pr_model_defaults_to_unset(tmp_path, mocker):
+    """Unset, not `sonnet`: the default is per agent (see `pr_ai`), not a config value."""
     mocker.patch("jailbee.config.loader.detect_default_branch", return_value="main")
     repo = _write_repo(tmp_path, name="myrepo")
     cfg = load_config(repo / ".jailbee" / "config.yaml")
-    assert cfg.claude.ai_pr_model == "sonnet"
+    assert cfg.pr.model is None
+    assert "model" not in cfg.pr.model_fields_set
 
 
-def test_claude_ai_pr_model_accepts_a_pinned_model_id(tmp_path, mocker):
-    """The value passes through to `claude --model`, so full IDs must survive."""
+def test_pr_model_accepts_a_pinned_model_id(tmp_path, mocker):
+    """The value passes through to the agent's `--model`, so full IDs must survive."""
     mocker.patch("jailbee.config.loader.detect_default_branch", return_value="main")
     repo = _write_repo(
         tmp_path,
         name="myrepo",
-        config_yaml="claude:\n  enabled: true\n  ai_pr_model: claude-haiku-4-5\n",
+        config_yaml="pr:\n  model: claude-haiku-4-5\n",
     )
     cfg = load_config(repo / ".jailbee" / "config.yaml")
-    assert cfg.claude.ai_pr_model == "claude-haiku-4-5"
+    assert cfg.pr.model == "claude-haiku-4-5"
 
 
-def test_claude_ai_pr_model_null_inherits_the_container_default(tmp_path, mocker):
+def test_pr_model_null_is_an_explicit_inherit(tmp_path, mocker):
     mocker.patch("jailbee.config.loader.detect_default_branch", return_value="main")
-    repo = _write_repo(
-        tmp_path,
-        name="myrepo",
-        config_yaml="claude:\n  enabled: true\n  ai_pr_model: null\n",
-    )
+    repo = _write_repo(tmp_path, name="myrepo", config_yaml="pr:\n  model: null\n")
     cfg = load_config(repo / ".jailbee" / "config.yaml")
-    assert cfg.claude.ai_pr_model is None
+    assert cfg.pr.model is None
+    assert "model" in cfg.pr.model_fields_set
 
 
-def test_claude_ai_pr_model_rejects_extra_flags():
-    """A model name never contains whitespace; smuggling flags in must not work."""
-    from pydantic import ValidationError
-
-    from jailbee.config import ClaudeAgentConfig
-
-    with pytest.raises(ValidationError, match="ai_pr_model"):
-        ClaudeAgentConfig(enabled=True, ai_pr_model="sonnet --dangerously-skip-permissions")
-
-
-def test_claude_ai_pr_model_rejects_an_empty_string():
-    """Empty means "inherit the container default" — spell that `null`, not ''."""
-    from pydantic import ValidationError
-
-    from jailbee.config import ClaudeAgentConfig
-
-    with pytest.raises(ValidationError, match="ai_pr_model"):
-        ClaudeAgentConfig(enabled=True, ai_pr_model="   ")
-
-
-def test_claude_ai_pr_timeout_defaults_to_600(tmp_path, mocker):
+def test_pr_timeout_defaults_to_600(tmp_path, mocker):
     """Generation is an agentic run: 129s in this repo on a 21-file diff.
 
     The old hard-coded 180s left no room for a larger tree, and there was no
@@ -1551,32 +1512,28 @@ def test_claude_ai_pr_timeout_defaults_to_600(tmp_path, mocker):
     mocker.patch("jailbee.config.loader.detect_default_branch", return_value="main")
     repo = _write_repo(tmp_path, name="myrepo")
     cfg = load_config(repo / ".jailbee" / "config.yaml")
-    assert cfg.claude.ai_pr_timeout == 600
+    assert cfg.pr.timeout == 600
 
 
-def test_claude_ai_pr_timeout_is_raisable_from_repo_yaml(tmp_path, mocker):
+def test_pr_timeout_is_raisable_from_repo_yaml(tmp_path, mocker):
+    mocker.patch("jailbee.config.loader.detect_default_branch", return_value="main")
+    repo = _write_repo(tmp_path, name="myrepo", config_yaml="pr:\n  timeout: 1200\n")
+    cfg = load_config(repo / ".jailbee" / "config.yaml")
+    assert cfg.pr.timeout == 1200
+
+
+def test_pr_legacy_claude_spelling_still_loads_from_repo_yaml(tmp_path, mocker):
+    """The pre-`pr:` spelling, end to end through the loader."""
     mocker.patch("jailbee.config.loader.detect_default_branch", return_value="main")
     repo = _write_repo(
         tmp_path,
         name="myrepo",
-        config_yaml="claude:\n  enabled: true\n  ai_pr_timeout: 1200\n",
+        config_yaml="claude:\n  enabled: true\n  ai_pr_timeout: 1200\n  ai_pr_model: null\n",
     )
     cfg = load_config(repo / ".jailbee" / "config.yaml")
-    assert cfg.claude.ai_pr_timeout == 1200
-
-
-@pytest.mark.parametrize("bad", [0, -30])
-def test_claude_ai_pr_timeout_rejects_non_positive_values(bad):
-    """`timeout=0` expires instantly — a config error, not a way to disable AI.
-
-    Turning generation off is `ai_pr_description: false`.
-    """
-    from pydantic import ValidationError
-
-    from jailbee.config import ClaudeAgentConfig
-
-    with pytest.raises(ValidationError, match="ai_pr_timeout"):
-        ClaudeAgentConfig(enabled=True, ai_pr_timeout=bad)
+    assert cfg.pr.timeout == 1200
+    assert cfg.pr.model is None
+    assert "model" in cfg.pr.model_fields_set
 
 
 def test_config_rejects_the_retired_install_gie_skills_key(tmp_path, mocker):
@@ -2910,25 +2867,15 @@ def test_boot_config_rejects_unknown_keys():
         BootConfig.model_validate({"background": True, "restart": True})
 
 
-def test_claude_ai_pr_description_defaults_true_and_round_trips():
-    from jailbee.config import ClaudeAgentConfig
+def test_pr_ai_flags_default_true_and_round_trip():
+    from jailbee.config import PrConfig
 
-    assert ClaudeAgentConfig().ai_pr_description is True
-    assert ClaudeAgentConfig(ai_pr_description=False).ai_pr_description is False
-
-
-def test_claude_ai_pr_branch_defaults_true():
-    from jailbee.config import ClaudeAgentConfig
-
-    assert ClaudeAgentConfig().ai_pr_branch is True
-
-
-def test_claude_ai_pr_branch_roundtrips_false():
-    from jailbee.config import ClaudeAgentConfig
-
-    cfg = ClaudeAgentConfig(ai_pr_branch=False)
-    assert cfg.ai_pr_branch is False
-    assert cfg.model_dump()["ai_pr_branch"] is False
+    assert PrConfig().ai_description is True
+    assert PrConfig().ai_branch is True
+    assert PrConfig(ai_description=False).ai_description is False
+    cfg = PrConfig(ai_branch=False)
+    assert cfg.ai_branch is False
+    assert cfg.model_dump()["ai_branch"] is False
 
 
 # ---------- host_devices (declarative host-device passthrough)

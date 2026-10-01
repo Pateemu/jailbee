@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+CLAUDE = {"claude": {"enabled": True}}
+
 
 def _envelope(inner_text: str) -> str:
     """Wrap model text in Claude's --output-format json envelope."""
@@ -214,7 +216,7 @@ def test_prompt_forbids_running_the_projects_test_suite():
 
 
 def test_prompt_cost_guard_precedes_the_project_block():
-    """A project that really wants its suite run can say so in `pr_prompt`.
+    """A project that really wants its suite run can say so in `pr.prompt`.
 
     The project block outranks the generic guidance, so the guard has to sit
     above it for that override to be possible — and it must stay above the JSON
@@ -291,7 +293,7 @@ def test_project_prompt_and_fixed_title_clause_coexist():
 def test_generate_happy_path_builds_exec_and_parses(mocker, make_cfg, tmp_path):
     from jailbee.pr_ai import PrText, generate_pr_text
 
-    cfg = make_cfg(tmp_path)
+    cfg = make_cfg(tmp_path, agents=CLAUDE)
     incus = mocker.MagicMock()
     inner = json.dumps({"title": "feat: thing", "body": "did the thing"})
     incus.exec.return_value = _envelope(inner)
@@ -317,7 +319,7 @@ def test_generate_happy_path_builds_exec_and_parses(mocker, make_cfg, tmp_path):
     assert call.kwargs["uid"] == cfg.container_user.uid
     assert call.kwargs["gid"] == cfg.container_user.gid
     assert call.kwargs["cwd"] == "/home/dev/repo"
-    assert call.kwargs["timeout"] == cfg.claude.ai_pr_timeout
+    assert call.kwargs["timeout"] == cfg.pr.timeout
     # base branch and feature branch name appear in the env prompt
     env_prompt = call.kwargs["env"]["JAILBEE_PR_PROMPT"]
     assert "main" in env_prompt
@@ -330,7 +332,7 @@ def test_generate_returns_none_on_incus_error(mocker, make_cfg, tmp_path):
     from jailbee.incus import IncusError
     from jailbee.pr_ai import generate_pr_text
 
-    cfg = make_cfg(tmp_path)
+    cfg = make_cfg(tmp_path, agents=CLAUDE)
     incus = mocker.MagicMock()
     incus.exec.side_effect = IncusError("exit 127: claude: not found")
     mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
@@ -339,11 +341,11 @@ def test_generate_returns_none_on_incus_error(mocker, make_cfg, tmp_path):
 
 
 def test_generate_reports_why_the_container_claude_failed(mocker, make_cfg, tmp_path):
-    """Without the reason, a bad ai_pr_model reads as an unexplained failure."""
+    """Without the reason, a bad pr.model reads as an unexplained failure."""
     from jailbee.incus import IncusError
     from jailbee.pr_ai import generate_pr_text
 
-    cfg = make_cfg(tmp_path)
+    cfg = make_cfg(tmp_path, agents=CLAUDE)
     incus = mocker.MagicMock()
     incus.exec.side_effect = IncusError("exit 1: error: unknown model 'sonnnet'")
     mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
@@ -359,7 +361,7 @@ def test_generate_returns_none_on_timeout(mocker, make_cfg, tmp_path):
     from jailbee.incus import IncusTimeoutError
     from jailbee.pr_ai import generate_pr_text
 
-    cfg = make_cfg(tmp_path)
+    cfg = make_cfg(tmp_path, agents=CLAUDE)
     incus = mocker.MagicMock()
     incus.exec.side_effect = IncusTimeoutError("`incus exec c` timed out after 600s")
     mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
@@ -378,7 +380,7 @@ def test_generate_pins_the_session_id_it_can_later_name(mocker, make_cfg, tmp_pa
 
     from jailbee.pr_ai import generate_pr_text
 
-    cfg = make_cfg(tmp_path)
+    cfg = make_cfg(tmp_path, agents=CLAUDE)
     incus = mocker.MagicMock()
     incus.exec.return_value = _envelope(json.dumps({"title": "t", "body": "b"}))
     mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
@@ -396,7 +398,7 @@ def test_timeout_warning_names_the_container_session_and_budget(mocker, make_cfg
     from jailbee.incus import IncusTimeoutError
     from jailbee.pr_ai import generate_pr_text
 
-    cfg = make_cfg(tmp_path)
+    cfg = make_cfg(tmp_path, agents=CLAUDE)
     incus = mocker.MagicMock()
     incus.exec.side_effect = IncusTimeoutError("timed out after 600s")
     mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
@@ -409,7 +411,7 @@ def test_timeout_warning_names_the_container_session_and_budget(mocker, make_cfg
     session_id = incus.exec.call_args.kwargs["env"]["JAILBEE_PR_SESSION"]
     assert f"claude --resume {session_id}" in hint
     assert "jailbee shell feat-foo" in hint  # short name, not the prefixed one
-    assert f"{cfg.claude.ai_pr_timeout}s" in hint
+    assert f"{cfg.pr.timeout}s" in hint
 
 
 def test_non_timeout_failure_does_not_promise_a_transcript(mocker, make_cfg, tmp_path):
@@ -421,7 +423,7 @@ def test_non_timeout_failure_does_not_promise_a_transcript(mocker, make_cfg, tmp
     from jailbee.incus import IncusError
     from jailbee.pr_ai import generate_pr_text
 
-    cfg = make_cfg(tmp_path)
+    cfg = make_cfg(tmp_path, agents=CLAUDE)
     incus = mocker.MagicMock()
     incus.exec.side_effect = IncusError("bash: line 1: claude: command not found")
     mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
@@ -437,7 +439,7 @@ def test_non_timeout_failure_does_not_promise_a_transcript(mocker, make_cfg, tmp
 def test_generate_returns_none_on_unparseable_output(mocker, make_cfg, tmp_path):
     from jailbee.pr_ai import generate_pr_text
 
-    cfg = make_cfg(tmp_path)
+    cfg = make_cfg(tmp_path, agents=CLAUDE)
     incus = mocker.MagicMock()
     incus.exec.return_value = _envelope("the model refused to follow the format")
     mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
@@ -448,7 +450,7 @@ def test_generate_returns_none_on_unparseable_output(mocker, make_cfg, tmp_path)
 def test_generate_forwards_custom_timeout(mocker, make_cfg, tmp_path):
     from jailbee.pr_ai import generate_pr_text
 
-    cfg = make_cfg(tmp_path)
+    cfg = make_cfg(tmp_path, agents=CLAUDE)
     incus = mocker.MagicMock()
     incus.exec.return_value = _envelope(json.dumps({"title": "t", "body": "b"}))
     mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
@@ -458,7 +460,7 @@ def test_generate_forwards_custom_timeout(mocker, make_cfg, tmp_path):
     assert incus.exec.call_args.kwargs["timeout"] == 42
 
 
-def test_generate_uses_the_configured_ai_pr_timeout(mocker, make_cfg, tmp_path):
+def test_generate_uses_the_configured_pr_timeout(mocker, make_cfg, tmp_path):
     """The budget has to come from config, not from a literal in this module.
 
     It was hard-coded at 180s and neither `cli.py` call site passed a value, so
@@ -466,10 +468,8 @@ def test_generate_uses_the_configured_ai_pr_timeout(mocker, make_cfg, tmp_path):
     — the only symptom was a timeout warning and a placeholder description.
     """
     from jailbee.pr_ai import generate_pr_text
-    from tests.conftest import with_agent
 
-    cfg = make_cfg(tmp_path)
-    cfg = with_agent(cfg, "claude", ai_pr_timeout=900)
+    cfg = make_cfg(tmp_path, agents=CLAUDE, pr={"timeout": 900})
     incus = mocker.MagicMock()
     incus.exec.return_value = _envelope(json.dumps({"title": "t", "body": "b"}))
     mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
@@ -484,7 +484,7 @@ def test_generate_runs_through_login_shell(mocker, make_cfg, tmp_path):
 
     from jailbee.pr_ai import generate_pr_text
 
-    cfg = make_cfg(tmp_path)
+    cfg = make_cfg(tmp_path, agents=CLAUDE)
     incus = mocker.MagicMock()
     incus.exec.return_value = json.dumps(
         {"type": "result", "result": json.dumps({"title": "t", "body": "b"})}
@@ -504,10 +504,8 @@ def test_generate_runs_through_login_shell(mocker, make_cfg, tmp_path):
 
 def test_generate_selects_the_configured_model_via_env(mocker, make_cfg, tmp_path):
     from jailbee.pr_ai import generate_pr_text
-    from tests.conftest import with_agent
 
-    cfg = make_cfg(tmp_path)
-    cfg = with_agent(cfg, "claude", ai_pr_model="claude-haiku-4-5")
+    cfg = make_cfg(tmp_path, agents=CLAUDE, pr={"model": "claude-haiku-4-5"})
     incus = mocker.MagicMock()
     incus.exec.return_value = _envelope(json.dumps({"title": "t", "body": "b"}))
     mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
@@ -521,13 +519,11 @@ def test_generate_selects_the_configured_model_via_env(mocker, make_cfg, tmp_pat
     assert incus.exec.call_args.kwargs["env"]["JAILBEE_PR_MODEL"] == "claude-haiku-4-5"
 
 
-def test_generate_drops_the_model_flag_when_ai_pr_model_is_null(mocker, make_cfg, tmp_path):
+def test_generate_drops_the_model_flag_when_pr_model_is_null(mocker, make_cfg, tmp_path):
     """An empty env var makes the `${VAR:+...}` expansion vanish entirely."""
     from jailbee.pr_ai import generate_pr_text
-    from tests.conftest import with_agent
 
-    cfg = make_cfg(tmp_path)
-    cfg = with_agent(cfg, "claude", ai_pr_model=None)
+    cfg = make_cfg(tmp_path, agents=CLAUDE, pr={"model": None})
     incus = mocker.MagicMock()
     incus.exec.return_value = _envelope(json.dumps({"title": "t", "body": "b"}))
     mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
@@ -539,10 +535,8 @@ def test_generate_drops_the_model_flag_when_ai_pr_model_is_null(mocker, make_cfg
 
 def test_generate_threads_configured_pr_prompt_into_the_prompt(mocker, make_cfg, tmp_path):
     from jailbee.pr_ai import generate_pr_text
-    from tests.conftest import with_agent
 
-    cfg = make_cfg(tmp_path)
-    cfg = with_agent(cfg, "claude", pr_prompt="Always mention the JIRA id.")
+    cfg = make_cfg(tmp_path, agents=CLAUDE, pr={"prompt": "Always mention the JIRA id."})
     incus = mocker.MagicMock()
     incus.exec.return_value = _envelope(json.dumps({"title": "t", "body": "b"}))
     mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
@@ -573,7 +567,7 @@ def test_generate_runs_in_the_repo_root_by_default(mocker, tmp_path):
     incus = _generation_incus(mocker)
     mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
 
-    generate_pr_text(make_cfg(tmp_path), incus, "c1", branch="feat/x", base="main")
+    generate_pr_text(make_cfg(tmp_path, agents=CLAUDE), incus, "c1", branch="feat/x", base="main")
 
     assert incus.exec.call_args.kwargs["cwd"] == "/home/dev/repo"
 
@@ -586,7 +580,7 @@ def test_generate_runs_in_the_submodule_when_subpath_is_given(mocker, tmp_path):
     mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
 
     generate_pr_text(
-        make_cfg(tmp_path),
+        make_cfg(tmp_path, agents=CLAUDE),
         incus,
         "c1",
         branch="feat/x",
@@ -605,7 +599,7 @@ def test_generate_returns_the_parsed_text_with_a_subpath(mocker, tmp_path):
     mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
 
     result = generate_pr_text(
-        make_cfg(tmp_path),
+        make_cfg(tmp_path, agents=CLAUDE),
         incus,
         "c1",
         branch="feat/x",
@@ -614,3 +608,168 @@ def test_generate_returns_the_parsed_text_with_a_subpath(mocker, tmp_path):
     )
 
     assert result == PrText(title="t", body="b", branch="feat/x")
+
+
+# ---------------------------------------------------------------------------
+# generate_pr_text with a non-Claude agent / claude-jb / no agent
+# ---------------------------------------------------------------------------
+
+
+def _generate(mocker, tmp_path, *, agents, pr=None, litellm=None, exec_result=None):
+    from jailbee.pr_ai import generate_pr_text
+    from tests.conftest import make_cfg
+
+    cfg = make_cfg(tmp_path, agents=agents, pr=pr or {})
+    if litellm is not None:
+        from jailbee.config.models_litellm import LiteLLMConfig, LiteLLMRepoView
+
+        cfg._litellm_view = LiteLLMRepoView(config=LiteLLMConfig(**litellm))
+    incus = mocker.MagicMock()
+    incus.exec.return_value = (
+        exec_result
+        if exec_result is not None
+        else json.dumps({"title": "t", "body": "b", "branch": "feat/x"})
+    )
+    mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
+    result = generate_pr_text(cfg, incus, "c", branch="feat/x", base="main")
+    return cfg, incus, result
+
+
+def test_generate_runs_the_repos_autostart_agent_not_claude(mocker, tmp_path):
+    agents = {"claude": {"enabled": True}, "codex": {"enabled": True, "autostart": True}}
+
+    _, incus, result = _generate(mocker, tmp_path, agents=agents)
+
+    assert result is not None
+    shell_cmd = incus.exec.call_args.args[1][2]
+    assert shell_cmd.startswith("codex exec")
+    assert '"$JAILBEE_PR_PROMPT"' in shell_cmd
+    # Claude's `sonnet` alias means nothing to codex: it keeps its own default.
+    assert incus.exec.call_args.kwargs["env"]["JAILBEE_PR_MODEL"] == ""
+
+
+def test_generate_parses_a_plain_agent_reply_without_claudes_envelope(mocker, tmp_path):
+    reply = 'Here you go:\n```json\n{"title": "feat: x", "body": "why"}\n```\n'
+
+    _, _, result = _generate(
+        mocker,
+        tmp_path,
+        agents={"codex": {"enabled": True}},
+        pr={"agent": "codex"},
+        exec_result=reply,
+    )
+
+    assert result is not None
+    assert result.title == "feat: x"
+
+
+def test_generate_passes_an_explicit_model_to_a_non_claude_agent(mocker, tmp_path):
+    _, incus, _ = _generate(
+        mocker,
+        tmp_path,
+        agents={"codex": {"enabled": True}},
+        pr={"agent": "codex", "model": "gpt-5"},
+    )
+
+    assert incus.exec.call_args.kwargs["env"]["JAILBEE_PR_MODEL"] == "gpt-5"
+
+
+def test_generate_runs_claude_jb_when_litellm_autostarts(mocker, tmp_path):
+    _, incus, result = _generate(
+        mocker,
+        tmp_path,
+        agents={"claude": {"enabled": True, "autostart": True}},
+        litellm={"enabled": True, "autostart": True},
+        exec_result=_envelope(json.dumps({"title": "t", "body": "b"})),
+    )
+
+    assert result is not None
+    shell_cmd = incus.exec.call_args.args[1][2]
+    assert shell_cmd.startswith("claude-jb ")
+    assert "--output-format json" in shell_cmd
+    assert incus.exec.call_args.kwargs["env"]["JAILBEE_PR_MODEL"] == "sonnet"
+
+
+def test_generate_without_a_usable_agent_says_why_and_runs_nothing(mocker, tmp_path):
+    warn = mocker.patch("jailbee.pr_ai.warn")
+
+    _, incus, result = _generate(
+        mocker, tmp_path, agents={"claude": {"enabled": True}}, pr={"agent": "codex"}
+    )
+
+    assert result is None
+    incus.exec.assert_not_called()
+    warn.assert_called_once()
+    assert "agents.codex.enabled" in warn.call_args.args[0]
+
+
+def test_generate_with_no_agent_at_all_still_explains_itself(mocker, tmp_path):
+    warn = mocker.patch("jailbee.pr_ai.warn")
+
+    _, incus, result = _generate(mocker, tmp_path, agents={})
+
+    assert result is None
+    incus.exec.assert_not_called()
+    warn.assert_called_once()
+
+
+def test_failure_messages_name_the_agent_that_ran(mocker, tmp_path):
+    from jailbee.incus import IncusError
+    from jailbee.pr_ai import generate_pr_text
+    from tests.conftest import make_cfg
+
+    cfg = make_cfg(tmp_path, agents={"codex": {"enabled": True}}, pr={"agent": "codex"})
+    incus = mocker.MagicMock()
+    incus.exec.side_effect = IncusError("exit 127: codex: not found")
+    mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
+    warn = mocker.patch("jailbee.pr_ai.warn")
+
+    assert generate_pr_text(cfg, incus, "c", branch="feat/x", base="main") is None
+
+    assert "In-container codex could not generate" in warn.call_args.args[0]
+
+
+def test_a_timeout_of_a_non_claude_agent_promises_no_transcript(mocker, tmp_path):
+    from jailbee.incus import IncusTimeoutError
+    from jailbee.pr_ai import generate_pr_text
+    from tests.conftest import make_cfg
+
+    cfg = make_cfg(tmp_path, agents={"codex": {"enabled": True}}, pr={"agent": "codex"})
+    incus = mocker.MagicMock()
+    incus.exec.side_effect = IncusTimeoutError("timed out after 600s")
+    mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
+    warn = mocker.patch("jailbee.pr_ai.warn")
+
+    assert generate_pr_text(cfg, incus, "c", branch="feat/x", base="main") is None
+
+    everything = " ".join(c.args[0] for c in warn.call_args_list)
+    assert "--resume" not in everything
+    assert "transcript" not in everything
+    assert "pr.timeout" in everything
+    assert "600s" in everything
+
+
+def test_a_claude_timeout_points_at_pr_timeout_not_the_old_key(mocker, tmp_path):
+    from jailbee.incus import IncusTimeoutError
+    from jailbee.pr_ai import generate_pr_text
+    from tests.conftest import make_cfg
+
+    cfg = make_cfg(tmp_path, agents=CLAUDE)
+    incus = mocker.MagicMock()
+    incus.exec.side_effect = IncusTimeoutError("timed out after 600s")
+    mocker.patch("jailbee.lifecycle.container_repo_dir", return_value="/home/dev/repo")
+    warn = mocker.patch("jailbee.pr_ai.warn")
+
+    generate_pr_text(cfg, incus, "c", branch="feat/x", base="main")
+
+    everything = " ".join(c.args[0] for c in warn.call_args_list)
+    assert "pr.timeout" in everything
+    assert "ai_pr_timeout" not in everything
+
+
+def test_agent_label_names_the_resolved_agent(tmp_path):
+    from jailbee.pr_ai import agent_label
+    from tests.conftest import make_cfg
+
+    assert agent_label(make_cfg(tmp_path, agents={"codex": {"enabled": True}})) == "codex"
+    assert agent_label(make_cfg(tmp_path)) == "the agent"

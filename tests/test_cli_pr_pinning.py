@@ -30,7 +30,7 @@ def _setup_command(mocker, tmp_path, *, submodule, authored=False):
         tmp_path,
         shared_dir=tmp_path / "shared",
         container_prefix="sampleapp",
-        claude={"enabled": authored, "ai_pr_description": True},
+        agents={"claude": {"enabled": authored}},
     )
     mocker.patch.dict("os.environ", {"XDG_STATE_HOME": str(tmp_path / "state")})
     labels = {"user.jailbee.base_branch": "main", "user.jailbee.branch": "feat/foo"}

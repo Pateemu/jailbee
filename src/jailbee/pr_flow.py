@@ -285,7 +285,7 @@ def resolve_pr_text_and_head(
 ) -> HeadPlan:
     """Decide the PR head name and (on create) generate the title/body.
 
-    `ai_pr_branch` and `ai_pr_description` are INDEPENDENT toggles.
+    `pr.ai_branch` and `pr.ai_description` are INDEPENDENT toggles.
     `generate_pr_text` is a single call that yields title, body AND branch, so
     it runs when EITHER feature needs it and each part is applied only if its
     own flag is on.
@@ -298,9 +298,9 @@ def resolve_pr_text_and_head(
     description the container already wrote (`pr_outbox.pending_pr_text`) is
     used as `ai_text`, `generate_pr_text` is then never called, and the
     manifest's proposed branch feeds the same `confirm_pr_branch_name` decision
-    a Claude-proposed one feeds. Both PR commands enable it by default and
+    an agent-proposed one feeds. Both PR commands enable it by default and
     select descriptions for the active repository scope; `--no-outbox` opts out.
-    Neither `--no-ai` nor the `claude.*` toggles gate it: a manifest is not an
+    Neither `--no-ai` nor the `pr.*` toggles gate it: a manifest is not an
     AI run, it is text that already exists.
     """
     from jailbee import git as git_mod
@@ -320,8 +320,8 @@ def resolve_pr_text_and_head(
         error(f"--as '{as_name}' is not a valid branch name.")
         raise typer.Exit(2)
 
-    ai_on = cfg.claude.enabled and cfg.claude.ai_pr_description and not no_ai
-    branch_ai_on = cfg.claude.enabled and cfg.claude.ai_pr_branch and not no_ai
+    ai_on = pr_ai.ai_description_on(cfg, no_ai=no_ai)
+    branch_ai_on = pr_ai.ai_branch_on(cfg, no_ai=no_ai)
     need_text = not (title and body)  # explicit --title/--body win outright
     need_desc_ai = ai_on and need_text
     need_branch_ai = branch_ai_on and as_name is None
@@ -362,7 +362,7 @@ def resolve_pr_text_and_head(
             )
         if ai_text is None:
             warn(
-                f"{scope.prefix}Claude PR-text generation failed; using a "
+                f"{scope.prefix}{pr_ai.agent_label(cfg)} PR-text generation failed; using a "
                 f"placeholder. Edit the PR later with `{scope.command} --description`."
             )
 
@@ -625,21 +625,22 @@ def resolve_pr_description_update(
     want_regen = description
     if not want_regen and not foreign_head and _can_prompt() and ai_on:
         want_regen = typer.confirm(
-            f"Update {scope.prefix}the PR description with Claude?",
+            f"Update {scope.prefix}the PR description with {pr_ai.agent_label(cfg)}?",
             default=False,
         )
     if not want_regen:
         return None
     if not ai_on:
         warn(
-            f"Cannot regenerate {scope.prefix}the description without Claude "
-            "(needs claude.enabled + ai_pr_description, and no --no-ai). Skipping."
+            f"Cannot regenerate {scope.prefix}the description without an agent "
+            "(needs an enabled agent with a `headless` command, pr.ai_description, "
+            "and no --no-ai). Skipping."
         )
         return None
 
     from jailbee.tui import console
 
-    with console.status("Regenerating PR description with Claude…"):
+    with console.status(f"Regenerating PR description with {pr_ai.agent_label(cfg)}…"):
         text = pr_ai.generate_pr_text(
             cfg,
             incus,
@@ -651,7 +652,10 @@ def resolve_pr_description_update(
             subpath=scope.subpath,
         )
     if text is None:
-        warn(f"Claude PR-text generation failed; {scope.prefix}description left unchanged.")
+        warn(
+            f"{pr_ai.agent_label(cfg)} PR-text generation failed; "
+            f"{scope.prefix}description left unchanged."
+        )
         return None
     return DescriptionUpdate(title=text.title, body=text.body)
 

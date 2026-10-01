@@ -1,21 +1,22 @@
-"""In-container Claude bridge for generating PR title, body & branch name.
+"""In-container agent bridge for generating PR title, body & branch name.
 
-`jailbee pr` calls `generate_pr_text` after pushing the branch and
-before `gh pr create`, when `claude.enabled` and `claude.ai_pr_description`
-are on. It runs the container's own Claude CLI over the branch's commits and
-diff to produce a concise PR title, body, and a convention-following head
-branch name.
+`jailbee pr` calls `generate_pr_text` after pushing the branch and before
+`gh pr create`, when `pr.ai_description` is on and an agent can be found. It
+runs the container's own agent — the repo's autostart agent unless `pr.agent`
+names another — over the branch's commits and diff to produce a concise PR
+title, body, and a convention-following head branch name. `resolve_pr_agent`
+decides which agent; the command it runs is that agent's `headless` setting.
 
 Design rules this module obeys:
   - It NEVER calls `gh` — that stays in `pr.py`.
   - It NEVER calls `subprocess` directly — it goes through `Incus.exec`, so
     it stays unit-testable (the architecture rule for non-incus modules).
-  - It is strictly best-effort: every expected failure (Claude missing,
+  - It is strictly best-effort: every expected failure (agent missing,
     timeout, unparseable output) returns None so the caller falls back to a
     placeholder. It does not raise for those cases.
   - The prompt must never invite work whose cost the repository controls. The
-    run has a fixed timeout, and Claude has an unrestricted shell
-    (`--dangerously-skip-permissions`), so asking it to describe "how it was
+    run has a fixed timeout, and the agent has an unrestricted shell
+    (the presets' permission-skipping flags), so asking it to describe "how it was
     tested" made it run the project's own test suite — 59s of a 165s run in
     jailbee's repo, more than the whole budget in a larger one. Hence the
     explicit do-not-run clause in `_PROMPT_TEMPLATE`: keep it there.
@@ -106,6 +107,181 @@ class PrText:
     branch: str
 
 
+# Claude's own default for PR text: a bounded summarisation job that should not
+# compete with the coding work's budget. Every other agent has no such alias, so
+# it uses its own default unless `pr.model` names one.
+_CLAUDE_PR_MODEL = "sonnet"
+
+
+@dataclass(frozen=True)
+class PrAgent:
+    """The agent chosen to write PR text, resolved from `pr.agent` and `agents`."""
+
+    name: str
+    """What the user knows it as: an `agents` key, or `claude-jb`. Used in messages."""
+    headless: str
+    """The shell command line to run (the agent's `headless` setting)."""
+    model: str | None
+    """What to pass as `$JAILBEE_PR_MODEL`; None leaves the agent on its own default."""
+    resumable: bool
+    """Whether a timed-out run leaves a transcript `claude --resume` can open."""
+
+
+@dataclass(frozen=True)
+class PrAgentChoice:
+    """`resolve_pr_agent`'s answer: an agent, or why there isn't one.
+
+    `agent` and `problem` are both None for the ordinary "nothing configured"
+    state of `pr.agent: auto`, which is not an error: AI generation is simply
+    off. `problem` is set only for a choice the user made explicitly and that
+    cannot be honoured, which deserves to be said out loud.
+    """
+
+    agent: PrAgent | None
+    problem: str | None = None
+
+
+def _pr_model(cfg: Config, name: str) -> str | None:
+    """`pr.model` if the user set it (null included), else the agent's default."""
+    if "model" in cfg.pr.model_fields_set:
+        return cfg.pr.model
+    return _CLAUDE_PR_MODEL if name in ("claude", "claude-jb") else None
+
+
+def _usable(cfg: Config, name: str) -> PrAgent | None:
+    """`name` as a `PrAgent` if it is enabled and has a `headless` command."""
+    agent = cfg.agents.get(name)
+    if agent is None or not agent.enabled or not agent.headless:
+        return None
+    return PrAgent(
+        name=name,
+        headless=agent.headless,
+        model=_pr_model(cfg, name),
+        resumable=name == "claude",
+    )
+
+
+def _through_claude_jb(agent: PrAgent) -> PrAgent | None:
+    """`agent` (Claude) rerouted through the `claude-jb` wrapper, if its command allows."""
+    from jailbee.autostart import claude_jb_command
+
+    rewritten = claude_jb_command(agent.headless)
+    if rewritten is None:
+        return None
+    return PrAgent(
+        name="claude-jb",
+        headless=rewritten,
+        model=agent.model,  # the same value `claude` would have used
+        resumable=True,
+    )
+
+
+def _pinned(cfg: Config, name: str) -> PrAgentChoice:
+    """Resolve an explicit `pr.agent`; every way it can fail says what to change."""
+    if name == "claude-jb":
+        claude = _usable(cfg, "claude")
+        if claude is None:
+            return PrAgentChoice(
+                None,
+                "pr.agent is `claude-jb`, which runs the `claude` agent through "
+                "LiteLLM — it needs agents.claude.enabled and a `headless` command.",
+            )
+        jb = _through_claude_jb(claude)
+        if jb is None:
+            return PrAgentChoice(
+                None,
+                "pr.agent is `claude-jb`, but agents.claude.headless does not start "
+                "with `claude`, so it cannot be rerouted through `claude-jb`.",
+            )
+        return PrAgentChoice(jb)
+    from jailbee.agent_presets import AGENT_PRESETS
+
+    agent = cfg.agents.get(name)
+    if agent is None and name not in AGENT_PRESETS:
+        return PrAgentChoice(
+            None, f"pr.agent is `{name}`, but no agent of that name is configured."
+        )
+    # A shipped preset the config never mentions is just an agent that is off.
+    if agent is None or not agent.enabled:
+        return PrAgentChoice(
+            None, f"pr.agent is `{name}`, but it is not enabled — set agents.{name}.enabled."
+        )
+    chosen = _usable(cfg, name)
+    if chosen is None:
+        return PrAgentChoice(
+            None,
+            f"pr.agent is `{name}`, but it has no one-shot mode — set agents.{name}.headless "
+            "to a command that runs it once and prints its answer.",
+        )
+    return PrAgentChoice(chosen)
+
+
+def resolve_pr_agent(cfg: Config) -> PrAgentChoice:
+    """Pick the agent that writes this repo's PR text.
+
+    `pr.agent: auto` looks for the repo's own agent: among the enabled agents the
+    ones that `autostart` first, then all enabled ones; within a pool Claude
+    first, then by name; the first with a `headless` command wins. A repo whose
+    only agents autostart something with no one-shot mode (aider) therefore
+    still gets Claude, if Claude is enabled. With `litellm.autostart` on, Claude
+    is run as `claude-jb`, as it is in the autostart window.
+
+    An explicit `pr.agent` is honoured exactly or reported as a `problem`; it
+    never silently falls through to another agent.
+    """
+    from jailbee.autostart import litellm_autostart_on
+
+    wanted = cfg.pr.agent
+    if wanted != "auto":
+        return _pinned(cfg, wanted)
+
+    enabled = sorted(
+        (n for n, a in cfg.agents.items() if a.enabled), key=lambda n: (n != "claude", n)
+    )
+    pools = (
+        [n for n in enabled if cfg.agents[n].autostart],
+        enabled,
+    )
+    for pool in pools:
+        for name in pool:
+            agent = _usable(cfg, name)
+            if agent is None:
+                continue
+            if name == "claude" and litellm_autostart_on(cfg):
+                return PrAgentChoice(_through_claude_jb(agent) or agent)
+            return PrAgentChoice(agent)
+    return PrAgentChoice(None)
+
+
+def _ai_on(cfg: Config, flag: bool, no_ai: bool) -> bool:
+    """Shared body of the two switches: flag on, `--no-ai` absent, an agent to run.
+
+    A *pinned* agent that cannot be used still counts as available: turning AI
+    off silently would hide the misconfiguration the user just made, whereas
+    `generate_pr_text` says exactly what is wrong and falls back.
+    """
+    if not flag or no_ai:
+        return False
+    choice = resolve_pr_agent(cfg)
+    return choice.agent is not None or choice.problem is not None
+
+
+def ai_description_on(cfg: Config, *, no_ai: bool) -> bool:
+    """Whether `jailbee pr` should ask an agent for the title and body."""
+    return _ai_on(cfg, cfg.pr.ai_description, no_ai)
+
+
+def ai_branch_on(cfg: Config, *, no_ai: bool) -> bool:
+    """Whether `jailbee pr` should ask an agent to propose the head branch name."""
+    return _ai_on(cfg, cfg.pr.ai_branch, no_ai)
+
+
+def agent_label(cfg: Config) -> str:
+    """The resolved agent's name for messages — `the agent` when none resolves."""
+    agent = resolve_pr_agent(cfg).agent
+    return agent.name if agent is not None else "the agent"
+
+
 def generate_pr_text(
     cfg: Config,
     incus: Incus,
@@ -118,15 +294,15 @@ def generate_pr_text(
     timeout: int | None = None,
     subpath: str | None = None,
 ) -> PrText | None:
-    """Ask the in-container Claude CLI for a PR title and body.
+    """Ask the in-container agent (`resolve_pr_agent`) for a PR title and body.
 
-    Returns a PrText on success, or None on any expected failure (Claude
-    missing/non-zero exit, timeout, or output that can't be parsed into a
-    valid title+body). The caller logs a warning and falls back. Both `branch`
-    and `base` are interpolated into the prompt.
+    Returns a PrText on success, or None on any expected failure (no usable
+    agent, agent missing/non-zero exit, timeout, or output that can't be parsed
+    into a valid title+body). The caller logs a warning and falls back. Both
+    `branch` and `base` are interpolated into the prompt.
 
-    ``timeout`` defaults to `claude.ai_pr_timeout`; pass it only to override
-    the configured budget.
+    ``timeout`` defaults to `pr.timeout`; pass it only to override the
+    configured budget.
 
     ``subpath`` names a submodule, top-relative, whose directory the generation
     runs in — the prompt inspects *that* repository's commits, PR template and
@@ -135,43 +311,43 @@ def generate_pr_text(
     from jailbee.config import CONTAINER_USERNAME
     from jailbee.lifecycle import container_repo_dir, short_name
 
+    choice = resolve_pr_agent(cfg)
+    agent = choice.agent
+    if agent is None:
+        warn(choice.problem or "No in-container agent is available to write the PR text.")
+        return None
+
     repo_dir = container_repo_dir(cfg, incus, full_name)
     if subpath:
         repo_dir = f"{repo_dir}/{subpath}"
-    prompt = _build_prompt(branch, base, fixed_title, fixed_body, cfg.claude.pr_prompt)
-    # `claude` lives at ~/.local/bin/claude, which is not on the default
-    # `incus exec --user` PATH. Run it through a login shell (`bash -lc`) so
+    prompt = _build_prompt(branch, base, fixed_title, fixed_body, cfg.pr.prompt)
+    # The agent's `headless` command runs through a login shell (`bash -lc`) so
     # ~/.profile puts ~/.local/bin on PATH — the same pattern tmux/autostart
     # use. The prompt and the model are passed via env vars (not interpolated
-    # into the shell string) so their content can never be parsed as shell.
-    # `${VAR:+...}` drops the whole --model flag when the var is empty, which
-    # is how `ai_pr_model: null` inherits the container's own default model.
+    # into the shell string) so their content can never be parsed as shell; a
+    # command line that drops the `--model` flag when `$JAILBEE_PR_MODEL` is
+    # empty is how an unset model inherits the container's own default.
     #
-    # The session id is chosen HERE rather than read from Claude's reply: with
-    # `--output-format json` nothing reaches stdout until the run ends, so a
-    # timeout — the one failure where the transcript is worth reading — is
-    # exactly the case where the reply, and the id in it, never arrive.
-    # Pre-assigning it means the warning below can name a session that is
-    # already on disk in the container.
+    # The session id is chosen HERE rather than read from the agent's reply:
+    # with Claude's `--output-format json` nothing reaches stdout until the run
+    # ends, so a timeout — the one failure where the transcript is worth
+    # reading — is exactly the case where the reply, and the id in it, never
+    # arrive. Pre-assigning it means the warning below can name a session that
+    # is already on disk in the container. Agents that don't take one ignore it.
     session_id = str(uuid.uuid4())
-    budget = cfg.claude.ai_pr_timeout if timeout is None else timeout
-    shell_cmd = (
-        'claude ${JAILBEE_PR_MODEL:+--model "$JAILBEE_PR_MODEL"} '
-        '--session-id "$JAILBEE_PR_SESSION" '
-        '-p "$JAILBEE_PR_PROMPT" --output-format json --dangerously-skip-permissions'
-    )
+    budget = cfg.pr.timeout if timeout is None else timeout
     env = {
         "HOME": f"/home/{CONTAINER_USERNAME}",
         "USER": CONTAINER_USERNAME,
         "LOGNAME": CONTAINER_USERNAME,
         "JAILBEE_PR_PROMPT": prompt,
-        "JAILBEE_PR_MODEL": cfg.claude.ai_pr_model or "",
+        "JAILBEE_PR_MODEL": agent.model or "",
         "JAILBEE_PR_SESSION": session_id,
     }
     try:
         stdout = incus.exec(
             full_name,
-            ["bash", "-lc", shell_cmd],
+            ["bash", "-lc", agent.headless],
             uid=cfg.container_user.uid,
             gid=cfg.container_user.gid,
             cwd=repo_dir,
@@ -179,25 +355,28 @@ def generate_pr_text(
             timeout=budget,
         )
     except IncusTimeoutError as exc:
-        # A timeout is the one failure that leaves something to read: Claude
-        # writes its transcript as it goes, so the run that ran out of budget
-        # is on disk and resumable even though jailbee received no bytes.
-        # Naming the container and the session is the difference between a
-        # dead end and a diagnosis — `claude --resume` alone lists only the
-        # sessions of whatever directory it is run from.
-        warn(f"In-container Claude could not generate the PR text: {exc}")
-        warn(
-            f"That attempt left a transcript in the container. To see how far it got: "
-            f"`jailbee shell {short_name(cfg, full_name)}`, then "
-            f"`claude --resume {session_id}`. Raise `claude.ai_pr_timeout` "
-            f"(currently {budget}s) if it was simply still working."
-        )
+        warn(f"In-container {agent.name} could not generate the PR text: {exc}")
+        budget_hint = f"Raise `pr.timeout` (currently {budget}s) if it was simply still working."
+        if agent.resumable:
+            # A timeout is the one failure that leaves something to read: Claude
+            # writes its transcript as it goes, so the run that ran out of
+            # budget is on disk and resumable even though jailbee received no
+            # bytes. Naming the container and the session is the difference
+            # between a dead end and a diagnosis — `claude --resume` alone lists
+            # only the sessions of whatever directory it is run from.
+            warn(
+                f"That attempt left a transcript in the container. To see how far it got: "
+                f"`jailbee shell {short_name(cfg, full_name)}`, then "
+                f"`claude --resume {session_id}`. {budget_hint}"
+            )
+        else:
+            warn(budget_hint)
         return None
     except IncusError as exc:
         # The caller only learns that generation failed. Report why here: a
-        # rejected `claude.ai_pr_model` or a missing `claude` are otherwise
+        # rejected `pr.model` or a missing agent binary are otherwise
         # indistinguishable from the generic fallback message.
-        warn(f"In-container Claude could not generate the PR text: {exc}")
+        warn(f"In-container {agent.name} could not generate the PR text: {exc}")
         return None
     return _parse_pr_text(stdout, fixed_title, fixed_body, current_branch=branch)
 
@@ -238,9 +417,10 @@ def _parse_pr_text(
     *,
     current_branch: str,
 ) -> PrText | None:
-    """Parse `claude --output-format json` stdout into a PrText, or None.
+    """Parse an agent's stdout into a PrText, or None.
 
-    Peels the outer envelope (`{"result": "<text>"}`), then extracts the inner
+    Peels Claude's outer envelope (`{"result": "<text>"}`) when there is one —
+    any other agent's output passes through untouched — then extracts the inner
     JSON object from the model text (tolerating ```json fences and surrounding
     prose). Validates non-empty title/body and a sane title length. Explicit
     fixed_title/fixed_body always win over whatever the model produced. The

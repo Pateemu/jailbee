@@ -31,6 +31,7 @@ from jailbee.config.models_agents import (
     ClaudeAgentConfig,
     DockerRegistryMirrorRepoConfig,
     GithubConfig,
+    PrConfig,
 )
 from jailbee.config.models_apps import APP_NAME_RE, AppEntry
 from jailbee.config.models_behaviour import (
@@ -270,6 +271,16 @@ class Config(BaseModel):
             "`aider`, `opencode`, `grok`), or one you define yourself. A repo's entry "
             "deep-merges over a matching shipped preset rather than requiring every "
             "field spelled out. Applies to every repo unless a repo overrides it."
+        ),
+    )
+    pr: PrConfig = Field(
+        default=PrConfig(),
+        description=(
+            "How `jailbee pr` writes a pull request's title, body and head branch name: "
+            "which in-container agent does it (`agent`, default `auto` = the repo's own "
+            "agent), whether it does (`ai_description`, `ai_branch`), the model, the time "
+            "budget, and project-specific instructions (`prompt`). Applies to every repo "
+            "unless a repo overrides it field-by-field."
         ),
     )
     github: GithubConfig = Field(

@@ -461,9 +461,9 @@ def test_update_reuses_the_stored_head_and_never_generates(tmp_path, mocker):
 
 
 def test_as_name_wins_over_the_ai(tmp_path, mocker):
-    from tests.conftest import make_cfg, with_agent
+    from tests.conftest import make_cfg
 
-    cfg = with_agent(make_cfg(tmp_path), "claude", enabled=True)
+    cfg = make_cfg(tmp_path, agents={"claude": {"enabled": True}})
     mocker.patch("jailbee.pr_ai.generate_pr_text", return_value=_text())
     mocker.patch("jailbee.git.check_ref_format", return_value=True)
     plan = _plan(tmp_path, mocker, cfg=cfg, as_name="user/mine")
@@ -478,9 +478,9 @@ def test_invalid_as_name_exits_2(tmp_path, mocker):
 
 
 def test_no_ai_keeps_the_source_branch(tmp_path, mocker):
-    from tests.conftest import make_cfg, with_agent
+    from tests.conftest import make_cfg
 
-    cfg = with_agent(make_cfg(tmp_path), "claude", enabled=True)
+    cfg = make_cfg(tmp_path, agents={"claude": {"enabled": True}})
     gen = mocker.patch("jailbee.pr_ai.generate_pr_text")
     plan = _plan(tmp_path, mocker, cfg=cfg, no_ai=True)
     assert plan == pr_flow.HeadPlan(publish_name="feat/foo", ai_text=None)
@@ -488,9 +488,9 @@ def test_no_ai_keeps_the_source_branch(tmp_path, mocker):
 
 
 def test_ai_branch_off_keeps_the_source_branch_but_still_generates_text(tmp_path, mocker):
-    from tests.conftest import make_cfg, with_agent
+    from tests.conftest import make_cfg
 
-    cfg = with_agent(make_cfg(tmp_path), "claude", enabled=True, ai_pr_branch=False)
+    cfg = make_cfg(tmp_path, agents={"claude": {"enabled": True}}, pr={"ai_branch": False})
     mocker.patch("jailbee.pr_ai.generate_pr_text", return_value=_text())
     plan = _plan(tmp_path, mocker, cfg=cfg)
     assert plan.publish_name == "feat/foo"
@@ -498,9 +498,9 @@ def test_ai_branch_off_keeps_the_source_branch_but_still_generates_text(tmp_path
 
 
 def test_ai_description_off_still_proposes_a_branch(tmp_path, mocker):
-    from tests.conftest import make_cfg, with_agent
+    from tests.conftest import make_cfg
 
-    cfg = with_agent(make_cfg(tmp_path), "claude", enabled=True, ai_pr_description=False)
+    cfg = make_cfg(tmp_path, agents={"claude": {"enabled": True}}, pr={"ai_description": False})
     mocker.patch("jailbee.pr_ai.generate_pr_text", return_value=_text())
     mocker.patch("jailbee.pr_flow.confirm_pr_branch_name", side_effect=lambda p, s: p)
     plan = _plan(tmp_path, mocker, cfg=cfg)
@@ -508,14 +508,12 @@ def test_ai_description_off_still_proposes_a_branch(tmp_path, mocker):
 
 
 def test_both_toggles_off_skips_generation_entirely(tmp_path, mocker):
-    from tests.conftest import make_cfg, with_agent
+    from tests.conftest import make_cfg
 
-    cfg = with_agent(
-        make_cfg(tmp_path),
-        "claude",
-        enabled=True,
-        ai_pr_branch=False,
-        ai_pr_description=False,
+    cfg = make_cfg(
+        tmp_path,
+        agents={"claude": {"enabled": True}},
+        pr={"ai_branch": False, "ai_description": False},
     )
     gen = mocker.patch("jailbee.pr_ai.generate_pr_text")
     plan = _plan(tmp_path, mocker, cfg=cfg)
@@ -524,9 +522,9 @@ def test_both_toggles_off_skips_generation_entirely(tmp_path, mocker):
 
 
 def test_generation_failure_falls_back_to_the_source_branch(tmp_path, mocker):
-    from tests.conftest import make_cfg, with_agent
+    from tests.conftest import make_cfg
 
-    cfg = with_agent(make_cfg(tmp_path), "claude", enabled=True)
+    cfg = make_cfg(tmp_path, agents={"claude": {"enabled": True}})
     mocker.patch("jailbee.pr_ai.generate_pr_text", return_value=None)
     plan = _plan(tmp_path, mocker, cfg=cfg)
     assert plan == pr_flow.HeadPlan(publish_name="feat/foo", ai_text=None)
@@ -539,9 +537,9 @@ def test_generation_failure_on_a_submodule_names_the_submodule_command(tmp_path,
     --description` — closes the gap left untested after the shared-flow
     extraction (`scope.command` is a `PrScope` property, exercised elsewhere
     only via the superproject scope's default)."""
-    from tests.conftest import make_cfg, with_agent
+    from tests.conftest import make_cfg
 
-    cfg = with_agent(make_cfg(tmp_path), "claude", enabled=True)
+    cfg = make_cfg(tmp_path, agents={"claude": {"enabled": True}})
     mocker.patch("jailbee.pr_ai.generate_pr_text", return_value=None)
     warn = mocker.patch("jailbee.pr_flow.warn")
 
@@ -553,9 +551,9 @@ def test_generation_failure_on_a_submodule_names_the_submodule_command(tmp_path,
 
 
 def test_generation_passes_the_scope_subpath(tmp_path, mocker):
-    from tests.conftest import make_cfg, with_agent
+    from tests.conftest import make_cfg
 
-    cfg = with_agent(make_cfg(tmp_path), "claude", enabled=True)
+    cfg = make_cfg(tmp_path, agents={"claude": {"enabled": True}})
     gen = mocker.patch("jailbee.pr_ai.generate_pr_text", return_value=_text())
     mocker.patch("jailbee.pr_flow.confirm_pr_branch_name", side_effect=lambda p, s: p)
     _plan(tmp_path, mocker, cfg=cfg, scope=_sub_scope(tmp_path))
@@ -563,9 +561,9 @@ def test_generation_passes_the_scope_subpath(tmp_path, mocker):
 
 
 def test_no_source_branch_skips_generation(tmp_path, mocker):
-    from tests.conftest import make_cfg, with_agent
+    from tests.conftest import make_cfg
 
-    cfg = with_agent(make_cfg(tmp_path), "claude", enabled=True)
+    cfg = make_cfg(tmp_path, agents={"claude": {"enabled": True}})
     gen = mocker.patch("jailbee.pr_ai.generate_pr_text")
     plan = _plan(tmp_path, mocker, cfg=cfg, source_branch=None)
     assert plan == pr_flow.HeadPlan(publish_name=None, ai_text=None)
@@ -668,9 +666,9 @@ def test_explicit_title_and_body_skip_the_outbox_lookup(tmp_path, mocker):
 
 def test_the_outbox_survives_no_ai(tmp_path, mocker):
     """`--no-ai` skips the Claude run; a manifest is not a Claude run."""
-    from tests.conftest import make_cfg, with_agent
+    from tests.conftest import make_cfg
 
-    cfg = with_agent(make_cfg(tmp_path), "claude", enabled=True)
+    cfg = make_cfg(tmp_path, agents={"claude": {"enabled": True}})
     generate = mocker.patch("jailbee.pr_ai.generate_pr_text")
     mocker.patch("jailbee.pr_outbox.pending_pr_text", return_value=_outbox_source())
     mocker.patch("jailbee.pr_flow.confirm_pr_branch_name", side_effect=lambda p, s: p)
@@ -682,9 +680,9 @@ def test_the_outbox_survives_no_ai(tmp_path, mocker):
 
 
 def test_an_empty_outbox_falls_back_to_the_ai(tmp_path, mocker):
-    from tests.conftest import make_cfg, with_agent
+    from tests.conftest import make_cfg
 
-    cfg = with_agent(make_cfg(tmp_path), "claude", enabled=True)
+    cfg = make_cfg(tmp_path, agents={"claude": {"enabled": True}})
     mocker.patch("jailbee.pr_outbox.pending_pr_text", return_value=None)
     generate = mocker.patch("jailbee.pr_ai.generate_pr_text", return_value=_text())
     mocker.patch("jailbee.pr_flow.confirm_pr_branch_name", side_effect=lambda p, s: p)

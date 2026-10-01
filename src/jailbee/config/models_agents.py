@@ -263,10 +263,10 @@ class DockerRegistryMirrorRepoConfig(BaseModel):
         return v
 
 
-# `claude.pr_prompt` ships to the container as an environment variable inside
+# `pr.prompt` ships to the container as an environment variable inside
 # jailbee's own prompt. The cap is a sanity bound, not a model context limit:
-# it turns a pasted-in-by-accident file into a config error instead of a
-# `claude` invocation that fails opaquely and silently falls back.
+# it turns a pasted-in-by-accident file into a config error instead of an
+# agent invocation that fails opaquely and silently falls back.
 _MAX_PR_PROMPT_LEN = 20_000
 
 
@@ -468,6 +468,17 @@ class AgentConfig(BaseModel):
         description="Environment variables passed to both the install/update step and the "
         "autostart launch step.",
     )
+    headless: str | None = Field(
+        default=None,
+        description=(
+            "Shell command line that runs this agent once, non-interactively, and prints "
+            "its answer — what `jailbee pr` uses to write PR text. Run in a `bash -lc` "
+            "login shell in the repo directory. The prompt is in `$JAILBEE_PR_PROMPT` and "
+            "the model, empty when none applies, in `$JAILBEE_PR_MODEL`; read both from the "
+            "environment, never interpolate them. Presets set it for the agents with a "
+            "one-shot mode; leave unset for agents without one."
+        ),
+    )
     skills_dir: str | None = Field(
         default=None,
         description=(
@@ -497,6 +508,14 @@ class AgentConfig(BaseModel):
             "far (claude); leave unset otherwise."
         ),
     )
+
+    @field_validator("headless")
+    @classmethod
+    def _headless_not_blank(cls, v: str | None) -> str | None:
+        """A blank command would run nothing and report a confusing empty answer."""
+        if v is not None and not v.strip():
+            raise ValueError("headless must be a non-empty command line, or unset")
+        return v
 
     @field_validator("skills_dir")
     @classmethod
@@ -623,64 +642,100 @@ class ClaudeAgentConfig(AgentConfig):
             "never touched. Has no effect when `enabled` is false."
         ),
     )
-    ai_pr_description: bool = Field(
+
+
+class PrConfig(BaseModel):
+    """`pr:` — how `jailbee pr` writes a pull request's title, body and branch name.
+
+    Replaces the `ai_pr_*` / `pr_prompt` fields that used to hang off the Claude
+    agent: they describe `jailbee pr`, and which agent does the writing is now a
+    choice (`agent`), not an assumption.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    agent: str = Field(
+        default="auto",
+        description=(
+            "Which in-container agent writes the PR text. `auto` (default) picks the "
+            "repo's own agent: among the enabled agents the ones with `autostart` on, "
+            "else all enabled ones, Claude first and then the first with a `headless` "
+            "command — and `claude-jb` instead of `claude` when `litellm.autostart` is "
+            "on. Name an agent (`claude`, `codex`, ...) to pin it, or `claude-jb` to run "
+            "Claude through the LiteLLM wrapper. The agent must be enabled and have a "
+            "`headless` command; otherwise `jailbee pr` warns and falls back to a "
+            "placeholder."
+        ),
+    )
+    ai_description: bool = Field(
         default=True,
         description=(
-            "When true (default), `jailbee pr` asks the in-container Claude to generate "
+            "When true (default), `jailbee pr` asks the in-container agent to generate "
             "the PR title and body from the branch's commits and diff, falling back to a "
-            "placeholder on failure. Has no effect when `enabled` is false."
+            "placeholder on failure."
         ),
     )
-    ai_pr_branch: bool = Field(
+    ai_branch: bool = Field(
         default=True,
         description=(
-            "When true (default), `jailbee pr` asks the in-container Claude to propose a "
-            "convention-following PR head branch name when opening a new PR. Has no effect "
-            "when `enabled` or `ai_pr_description` is false."
+            "When true (default), `jailbee pr` asks the in-container agent to propose a "
+            "convention-following PR head branch name when opening a new PR. Has no "
+            "effect when `ai_description` is false."
         ),
     )
-    pr_prompt: str | None = Field(
+    prompt: str | None = Field(
         default=None,
         max_length=_MAX_PR_PROMPT_LEN,
         description=(
             "Project-specific PR-writing instructions, typically a YAML block scalar in a "
             "repo's `.jailbee/config.yaml`. Embedded in jailbee's own prompt as a section "
             "that outranks the generic guidance, without overriding the JSON response "
-            "contract. Capped at 20 000 characters. Has no effect when `enabled` or "
-            "`ai_pr_description` is false."
+            "contract. Capped at 20 000 characters. Has no effect when `ai_description` "
+            "is false."
         ),
     )
-    ai_pr_model: str | None = Field(
-        default="sonnet",
+    model: str | None = Field(
+        default=None,
         description=(
-            "Model passed to `claude --model` when generating PR text. Defaults to "
-            "`sonnet` so description generation doesn't compete with the coding work's own "
-            "budget. Accepts an alias or a full model ID; null inherits the container's "
-            "default model. Has no effect when `enabled` or `ai_pr_description` is false."
+            "Model passed to the agent's `--model` when generating PR text. Left unset, "
+            "Claude (and `claude-jb`) use `sonnet` so description generation doesn't "
+            "compete with the coding work's own budget, and every other agent uses its "
+            "own default. Accepts an alias or a full model ID; an explicit null inherits "
+            "the container's default model on every agent. Has no effect when "
+            "`ai_description` is false."
         ),
     )
-    ai_pr_timeout: int = Field(
+    timeout: int = Field(
         default=600,
         gt=0,
         description=(
-            "Seconds `jailbee pr` gives the in-container Claude to produce PR text before "
-            "falling back to a placeholder. Defaults to 600 — generation is an agentic run "
-            "whose cost scales with the repo, not just the diff. Raise it for a large tree. "
-            "Has no effect when `enabled` or `ai_pr_description` is false."
+            "Seconds `jailbee pr` gives the in-container agent to produce PR text before "
+            "falling back to a placeholder. Defaults to 600 — generation is an agentic "
+            "run whose cost scales with the repo, not just the diff. Raise it for a "
+            "large tree. Has no effect when `ai_description` is false."
         ),
     )
 
-    @field_validator("ai_pr_model")
+    @field_validator("agent")
+    @classmethod
+    def _agent_is_a_name(cls, v: str) -> str:
+        """`auto` or an agent name: the value picks a config entry, never a command."""
+        if not _AGENT_NAME_RE.fullmatch(v):
+            raise ValueError(
+                f"must be `auto` or an agent name (lowercase letters, digits and `-`), got {v!r}"
+            )
+        return v
+
+    @field_validator("model")
     @classmethod
     def _reject_non_model_value(cls, v: str | None) -> str | None:
         """A model name is a single token — reject anything that isn't one.
 
-        The value reaches `claude --model` through an environment variable, so
-        embedded flags could never be executed as such. The check exists to
-        turn a typo or a misunderstanding into a config error, rather than a
-        non-zero `claude` exit that `generate_pr_text` reports only as a failed
-        generation. Use `null`, not an empty string, to inherit the container's
-        own default model.
+        The value reaches the agent through an environment variable, so embedded
+        flags could never be executed as such. The check exists to turn a typo
+        or a misunderstanding into a config error, rather than a non-zero agent
+        exit that `generate_pr_text` reports only as a failed generation. Use
+        `null`, not an empty string, to inherit the container's own default
+        model.
         """
         if v is None:
             return None

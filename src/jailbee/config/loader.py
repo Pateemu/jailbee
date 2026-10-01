@@ -25,6 +25,7 @@ from jailbee.config.common import (
     normalize_credentials_key,
 )
 from jailbee.config.errors import ConfigError, ConfigNotFoundError
+from jailbee.config.legacy_pr import fold_legacy_pr_keys
 from jailbee.config.local_layer import (
     check_token_perms,
     local_config_path,
@@ -194,6 +195,10 @@ def resolve_agents_raw(raw: dict[str, object]) -> dict[str, object]:
     """
     from jailbee.agent_presets import AGENT_PRESETS, claude_preset
 
+    # Backstop for the merged mapping: the load path folds each layer on its own
+    # first (`_fold_legacy_pr_layers`), which is what keeps a later layer's old
+    # spelling from losing to an earlier layer's `pr:`. Idempotent.
+    raw, _ = fold_legacy_pr_keys(raw)
     result = {k: _copy(v) for k, v in raw.items()}
     raw_agents = result.pop("agents", {})
     if not isinstance(raw_agents, dict):
@@ -293,6 +298,50 @@ def _warn_legacy_chrome_layers(layers: Sequence[tuple[str, dict[str, object]]]) 
     for label, raw in layers:
         if isinstance(raw.get("chrome"), dict):
             _warn_legacy_chrome_block(label)
+
+
+@functools.cache
+def _warn_legacy_pr_keys(source: str) -> None:
+    """Print the `ai_pr_*` / `pr_prompt` notice once per process, per source file.
+
+    The sibling of `_warn_legacy_chrome_block`, cached and dismissible
+    (`jb dismiss legacy-pr-keys`) for the same reasons, and keyed on the file it
+    names. `tests/conftest.py` clears the cache between tests.
+    """
+    from jailbee.notices import Notice, emit
+
+    emit(
+        Notice(
+            key="legacy-pr-keys",
+            scope=source,
+            lines=(
+                f"`ai_pr_description`, `ai_pr_branch`, `ai_pr_model`, `ai_pr_timeout` and "
+                f"`pr_prompt` in {source} are deprecated and move to the `pr:` block "
+                f"(`ai_description`, `ai_branch`, `model`, `timeout`, `prompt`) — see "
+                f"docs/config.md. They keep working until {LEGACY_REMOVAL_VERSION}, "
+                "where they are removed.",
+            ),
+        )
+    )
+
+
+def _fold_legacy_pr_layers(
+    layers: Sequence[tuple[str, dict[str, object]]], *, emit_hint: bool
+) -> list[dict[str, object]]:
+    """Fold each layer's legacy PR keys into its own `pr:`, warning per file.
+
+    Per layer, before the merge: folded after it, a repo's `ai_pr_timeout` would
+    lose to a `pr.timeout` the global layer set, though the repo is the more
+    specific of the two. The notice lives here for the reason
+    `_warn_legacy_chrome_layers` does — this is where the file is still known.
+    """
+    out: list[dict[str, object]] = []
+    for label, raw in layers:
+        folded, changed = fold_legacy_pr_keys(raw)
+        if changed and emit_hint:
+            _warn_legacy_pr_keys(label)
+        out.append(folded)
+    return out
 
 
 @functools.cache
@@ -662,6 +711,9 @@ def load_config_from_layers(
     _check_retired_keys(repo_raw)
     if emit_hint:
         _warn_legacy_chrome_layers([(global_from, global_for_merge), (origin, repo_raw)])
+    global_for_merge, repo_raw = _fold_legacy_pr_layers(
+        [(global_from, global_for_merge), (origin, repo_raw)], emit_hint=emit_hint
+    )
     _check_pull_migration(global_for_merge, repo_raw, default_global_config_path(), path)
     _check_agents_spelling(global_for_merge, repo_raw, default_global_config_path(), path)
 
@@ -726,6 +778,7 @@ def load_config_from_layers(
     local_litellm = local_litellm_overlay(local_raw, local_from)
     if emit_hint:
         _warn_legacy_chrome_layers([(local_from, local_overlay)])
+    (local_overlay,) = _fold_legacy_pr_layers([(local_from, local_overlay)], emit_hint=emit_hint)
 
     before_apps = merged.get("apps")
     merged = deep_merge(merged, local_overlay)

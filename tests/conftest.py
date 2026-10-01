@@ -217,6 +217,32 @@ def with_agent(cfg: Config, name: str, **fields: Any) -> Config:
     return cfg.model_copy(update={"agents": {**cfg.agents, name: merged}})
 
 
+def mock_pr_agent(cfg: Any, enabled: bool) -> None:
+    """Make a MagicMock config resolve (or not resolve) a PR-writing agent.
+
+    `pr_ai.resolve_pr_agent` reads `cfg.pr.agent`, `cfg.agents` and
+    `cfg.litellm_view()`; on a bare MagicMock each of those is a truthy mock
+    that would resolve to some agent by accident. This pins them: `enabled`
+    gives an `auto`-resolved plain `claude`, otherwise there is no agent at all.
+    Set `cfg.pr.ai_description` / `cfg.pr.ai_branch` separately.
+    """
+    from types import SimpleNamespace
+
+    cfg.pr.agent = "auto"
+    cfg.pr.ai_description = True
+    cfg.pr.ai_branch = True
+    cfg.litellm_view.return_value.config.enabled = False
+    cfg.agents = (
+        {
+            "claude": SimpleNamespace(
+                enabled=True, autostart=False, headless='claude -p "$JAILBEE_PR_PROMPT"'
+            )
+        }
+        if enabled
+        else {}
+    )
+
+
 def _raw_container(name: str, *profiles: str) -> dict[str, Any]:
     """One entry as `incus list --format json --fast` returns it (state: null).
 
@@ -456,18 +482,21 @@ def _reset_deprecation_notices():
         _warn_legacy_chrome_block,
         _warn_legacy_credentials_block,
         _warn_legacy_per_repo_entry,
+        _warn_legacy_pr_keys,
     )
     from jailbee.paths import _warn_legacy_config_dir
 
     _warn_legacy_chrome_block.cache_clear()
     _warn_legacy_credentials_block.cache_clear()
     _warn_legacy_per_repo_entry.cache_clear()
+    _warn_legacy_pr_keys.cache_clear()
     _warn_legacy_config_dir.cache_clear()
     notices.reset_caches()
     yield
     _warn_legacy_chrome_block.cache_clear()
     _warn_legacy_credentials_block.cache_clear()
     _warn_legacy_per_repo_entry.cache_clear()
+    _warn_legacy_pr_keys.cache_clear()
     _warn_legacy_config_dir.cache_clear()
     notices.reset_caches()
 

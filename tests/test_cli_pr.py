@@ -6,6 +6,7 @@ import pytest
 from typer.testing import CliRunner
 
 from jailbee.cli import app
+from tests.conftest import mock_pr_agent
 
 
 def _publish_result(
@@ -91,8 +92,8 @@ def _setup(mocker, tmp_path, labels=None):
     # for the same reason: every test that does not opt in below takes the
     # "nothing to offer" path instead of reading a MagicMock.
     _mock_store(mocker, {})
-    cfg_mock.claude.enabled = False
-    cfg_mock.claude.ai_pr_description = True
+    mock_pr_agent(cfg_mock, False)
+    cfg_mock.pr.ai_description = True
     cfg_mock.upstream_remote = "origin"
     return cfg_mock, incus_mock
 
@@ -487,8 +488,8 @@ def test_create_pr_fresh_success_includes_branch(mocker, tmp_path):
 
 
 def _enable_ai(cfg_mock):
-    cfg_mock.claude.enabled = True
-    cfg_mock.claude.ai_pr_description = True
+    mock_pr_agent(cfg_mock, True)
+    cfg_mock.pr.ai_description = True
 
 
 def test_create_pr_uses_ai_text_when_enabled(mocker, tmp_path):
@@ -728,9 +729,9 @@ def test_a_failed_consumption_record_keeps_the_pr_url(mocker, tmp_path):
 
 def test_create_pr_ai_disabled_by_config(mocker, tmp_path):
     cfg_mock, _ = _setup(mocker, tmp_path)
-    cfg_mock.claude.enabled = True
-    cfg_mock.claude.ai_pr_description = False
-    cfg_mock.claude.ai_pr_branch = False  # both AI surfaces off == "AI disabled"
+    mock_pr_agent(cfg_mock, True)
+    cfg_mock.pr.ai_description = False
+    cfg_mock.pr.ai_branch = False  # both AI surfaces off == "AI disabled"
     mocker.patch(
         "jailbee.sync.publish_branch_from_container",
         return_value=_publish_result(),
@@ -748,7 +749,7 @@ def test_create_pr_ai_disabled_by_config(mocker, tmp_path):
 def test_create_pr_both_explicit_skips_generation(mocker, tmp_path):
     cfg_mock, _ = _setup(mocker, tmp_path)
     _enable_ai(cfg_mock)
-    cfg_mock.claude.ai_pr_branch = False  # branch AI off: both fields explicit -> no AI at all
+    cfg_mock.pr.ai_branch = False  # branch AI off: both fields explicit -> no AI at all
     mocker.patch(
         "jailbee.sync.publish_branch_from_container",
         return_value=_publish_result(),
@@ -947,7 +948,7 @@ def test_pr_update_uses_the_outbox_instead_of_offering_a_regeneration(mocker, tm
     from tests.conftest import flat_output
 
     cfg, _ = _update_setup(mocker, tmp_path)
-    cfg.claude.enabled = True
+    mock_pr_agent(cfg, True)
     mocker.patch("jailbee.lifecycle._stdin_is_interactive", return_value=True)
     confirm = mocker.patch("typer.confirm")
     gen = mocker.patch("jailbee.pr_ai.generate_pr_text")
@@ -982,7 +983,7 @@ def test_pr_update_no_outbox_restores_the_claude_offer(mocker, tmp_path):
     """`--no-outbox` skips the lookup and hands the decision back to the
     regeneration offer — it must not silence that offer as well."""
     cfg, _ = _update_setup(mocker, tmp_path)
-    cfg.claude.enabled = True
+    mock_pr_agent(cfg, True)
     mocker.patch("jailbee.lifecycle._stdin_is_interactive", return_value=True)
     confirm = mocker.patch("typer.confirm", return_value=False)
     pending = mocker.patch("jailbee.pr_outbox.pending_pr_text", return_value=None)
@@ -1071,7 +1072,7 @@ def test_pr_update_description_flag_without_ai_warns_and_skips(mocker, tmp_path)
     assert result.exit_code == 0, result.output
     gen.assert_not_called()
     edit.assert_not_called()
-    assert "cannot regenerate the description without claude" in result.output.lower()
+    assert "cannot regenerate the description without an agent" in result.output.lower()
 
 
 def test_pr_update_ready_toggles_state(mocker, tmp_path):
@@ -1116,9 +1117,9 @@ def test_pr_update_via_already_exists_fallback(mocker, tmp_path):
 
 def test_as_flag_overrides_name_and_skips_ai(mocker, tmp_path):
     cfg, incus = _setup(mocker, tmp_path)
-    cfg.claude.enabled = True
-    cfg.claude.ai_pr_branch = True
-    cfg.claude.ai_pr_description = False  # branch AI on, desc AI off -> --as skips all AI
+    mock_pr_agent(cfg, True)
+    cfg.pr.ai_branch = True
+    cfg.pr.ai_description = False  # branch AI on, desc AI off -> --as skips all AI
     gen = mocker.patch("jailbee.pr_ai.generate_pr_text")
     publish = mocker.patch(
         "jailbee.sync.publish_branch_from_container",
@@ -1142,9 +1143,9 @@ def test_ai_branch_used_non_tty(mocker, tmp_path):
     from jailbee.pr_ai import PrText
 
     cfg, incus = _setup(mocker, tmp_path)
-    cfg.claude.enabled = True
-    cfg.claude.ai_pr_branch = True
-    cfg.claude.ai_pr_description = True
+    mock_pr_agent(cfg, True)
+    cfg.pr.ai_branch = True
+    cfg.pr.ai_description = True
     mocker.patch(
         "jailbee.pr_ai.generate_pr_text",
         return_value=PrText(title="feat: nice", body="B", branch="user/nice"),
@@ -1174,7 +1175,7 @@ def test_reconcile_renames_local_branch(mocker, tmp_path):
         tmp_path,
         labels={"user.jailbee.base_branch": "main", "user.jailbee.branch": "dev-1"},
     )
-    cfg.claude.enabled = False  # no AI; publish name defaults to container branch
+    mock_pr_agent(cfg, False)  # no AI; publish name defaults to container branch
     mocker.patch(
         "jailbee.sync.publish_branch_from_container",
         return_value=_publish_result(publish_name="feat/foo", branch="dev-1"),
@@ -1241,8 +1242,8 @@ def test_update_path_reuses_stored_label_skips_ai(mocker, tmp_path):
             "user.jailbee.pr_author": "1",
         },
     )
-    cfg.claude.enabled = True
-    cfg.claude.ai_pr_branch = True
+    mock_pr_agent(cfg, True)
+    cfg.pr.ai_branch = True
     gen = mocker.patch("jailbee.pr_ai.generate_pr_text")
     publish = mocker.patch(
         "jailbee.sync.publish_branch_from_container",
@@ -1266,9 +1267,9 @@ def test_branch_ai_only_desc_off(mocker, tmp_path):
     from jailbee.pr_ai import PrText
 
     cfg, _ = _setup(mocker, tmp_path)
-    cfg.claude.enabled = True
-    cfg.claude.ai_pr_branch = True
-    cfg.claude.ai_pr_description = False
+    mock_pr_agent(cfg, True)
+    cfg.pr.ai_branch = True
+    cfg.pr.ai_description = False
     gen = mocker.patch(
         "jailbee.pr_ai.generate_pr_text",
         return_value=PrText(title="AI title", body="AI body", branch="user/ai"),
@@ -1300,9 +1301,9 @@ def test_desc_ai_only_branch_off(mocker, tmp_path):
     from jailbee.pr_ai import PrText
 
     cfg, _ = _setup(mocker, tmp_path)
-    cfg.claude.enabled = True
-    cfg.claude.ai_pr_branch = False
-    cfg.claude.ai_pr_description = True
+    mock_pr_agent(cfg, True)
+    cfg.pr.ai_branch = False
+    cfg.pr.ai_description = True
     gen = mocker.patch(
         "jailbee.pr_ai.generate_pr_text",
         return_value=PrText(title="AI title", body="AI body", branch="user/ai"),
@@ -1331,8 +1332,8 @@ def test_as_with_desc_ai(mocker, tmp_path):
     from jailbee.pr_ai import PrText
 
     cfg, _ = _setup(mocker, tmp_path)
-    cfg.claude.enabled = True
-    cfg.claude.ai_pr_description = True
+    mock_pr_agent(cfg, True)
+    cfg.pr.ai_description = True
     gen = mocker.patch(
         "jailbee.pr_ai.generate_pr_text",
         return_value=PrText(title="AI title", body="AI body", branch="user/ai"),
@@ -1362,8 +1363,8 @@ def test_pr_mount_mode_fails_before_ai(mocker, tmp_path):
     from jailbee.sync import SyncError
 
     cfg, _ = _setup(mocker, tmp_path)
-    cfg.claude.enabled = True
-    cfg.claude.ai_pr_branch = True
+    mock_pr_agent(cfg, True)
+    cfg.pr.ai_branch = True
     mocker.patch(
         "jailbee.sync.assert_container_publishable",
         side_effect=SyncError("container 'feat-foo' is in mount mode — ..."),
@@ -1384,9 +1385,9 @@ def test_create_stores_labels_in_safe_order(mocker, tmp_path):
     from jailbee.pr_ai import PrText
 
     cfg, incus = _setup(mocker, tmp_path)
-    cfg.claude.enabled = True
-    cfg.claude.ai_pr_branch = True
-    cfg.claude.ai_pr_description = True
+    mock_pr_agent(cfg, True)
+    cfg.pr.ai_branch = True
+    cfg.pr.ai_description = True
     mocker.patch(
         "jailbee.pr_ai.generate_pr_text",
         return_value=PrText(title="AI title", body="AI body", branch="user/ai"),
@@ -2075,8 +2076,8 @@ def test_pr_existing_pr_yes_skips_the_prompt(mocker, tmp_path):
 def test_pr_existing_pr_suppresses_ai_branch_naming(mocker, tmp_path):
     """An adopted head is fixed, so there is nothing for Claude to name."""
     cfg, _incus, publish = _branch_pr_setup(mocker, tmp_path, _existing_pr_info())
-    cfg.claude.enabled = True
-    cfg.claude.ai_pr_branch = True
+    mock_pr_agent(cfg, True)
+    cfg.pr.ai_branch = True
     gen = mocker.patch("jailbee.pr_ai.generate_pr_text")
 
     result = CliRunner().invoke(app, ["pr", "feat-foo", "--yes"])
@@ -2166,8 +2167,8 @@ def test_pr_force_on_a_found_pr_asks_for_confirmation(mocker, tmp_path):
 def test_pr_found_pr_description_is_not_offered_for_regeneration(mocker, tmp_path):
     """The author's text is never replaced without an explicit --description."""
     cfg, _incus, _publish = _branch_pr_setup(mocker, tmp_path, _existing_pr_info())
-    cfg.claude.enabled = True
-    cfg.claude.ai_pr_description = True
+    mock_pr_agent(cfg, True)
+    cfg.pr.ai_description = True
     # A TTY is what would make the offer appear at all — patch it so the
     # suppression, not the absence of a terminal, is what this test proves.
     mocker.patch("jailbee.lifecycle._stdin_is_interactive", return_value=True)

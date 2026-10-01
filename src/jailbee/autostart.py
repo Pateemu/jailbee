@@ -255,23 +255,38 @@ def inject_github_token(
     _apply_step(cfg, incus, container, step, repo_dir)
 
 
+def litellm_autostart_on(cfg: Config) -> bool:
+    """Whether this repo's containers run Claude through `claude-jb` (`litellm.autostart`)."""
+    litellm = cfg.litellm_view().config
+    return litellm.enabled and litellm.autostart
+
+
+def claude_jb_command(command: str) -> str | None:
+    """`command` with its leading `claude` swapped for `claude-jb`, or None.
+
+    Only when the first word is `claude` or a path to it: flags are kept, and a
+    command that starts with anything else (`env X=1 claude`, a wrapper script)
+    is not guessed at. Shared by the autostart window and `jailbee pr`, so the
+    two always agree on what "run Claude through the proxy" means.
+    """
+    first, _, rest = command.strip().partition(" ")
+    if PurePosixPath(first).name != "claude":
+        return None
+    return f"claude-jb {rest}".rstrip()
+
+
 def _agent_command(cfg: Config, name: str, command: str) -> str:
     """`claude-jb` in place of `claude` when this repo's `litellm.autostart` is on.
 
     Only the Claude agent, only with LiteLLM enabled, and only when the first
-    word is `claude` or a path to it: flags are kept, and a command that
-    starts with anything else (`env X=1 claude`, a wrapper script) is left
-    exactly as configured rather than guessed at. The profile comes from
-    `claude-jb`'s own selection (spec §6.1). `install_check` keeps probing
+    word is `claude` or a path to it (see `claude_jb_command`): a command that
+    starts with anything else is left exactly as configured. The profile comes
+    from `claude-jb`'s own selection (spec §6.1). `install_check` keeps probing
     `claude`: `claude-jb` is in the golden image, not installed per agent.
     """
-    litellm = cfg.litellm_view().config
-    if name != "claude" or not (litellm.enabled and litellm.autostart):
+    if name != "claude" or not litellm_autostart_on(cfg):
         return command
-    first, _, rest = command.strip().partition(" ")
-    if PurePosixPath(first).name != "claude":
-        return command
-    return f"claude-jb {rest}".rstrip()
+    return claude_jb_command(command) or command
 
 
 def agent_autostart_steps(cfg: Config) -> list[AutostartStep]:

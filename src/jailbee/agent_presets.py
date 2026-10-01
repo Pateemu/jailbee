@@ -76,6 +76,16 @@ AGENT_PRESETS: dict[str, dict[str, object]] = {
         # intermittently. Same reasoning as `grok` below. docs/agents.md
         # carries the recipe for pinning this back to strict.
         "install_network": "loose",
+        # One-shot mode for `jailbee pr`. `exec` runs a single non-interactive
+        # turn and prints the final message; the permissions flag is the
+        # equivalent of what the claude preset passes — the container is the
+        # sandbox. Taken from the codex-cli docs, not run against a live
+        # codex: re-check it against the agent when bumping the preset.
+        "headless": (
+            'codex exec ${JAILBEE_PR_MODEL:+--model "$JAILBEE_PR_MODEL"} '
+            "--dangerously-bypass-approvals-and-sandbox "
+            '"$JAILBEE_PR_PROMPT"'
+        ),
         # Also where the installer puts the binary: ~/.local/bin/codex is a
         # per-container symlink into ~/.codex/packages/standalone/current,
         # so the ~300MB payload is downloaded once per repo, not per branch.
@@ -133,6 +143,12 @@ AGENT_PRESETS: dict[str, dict[str, object]] = {
         "command": "gemini",
         "install": "npm i -g @google/gemini-cli",
         "update": "npm i -g @google/gemini-cli@latest",
+        # One-shot mode for `jailbee pr`: `-p` is the non-interactive prompt
+        # flag and `--yolo` skips tool confirmations (the container is the
+        # sandbox). From the upstream docs, not run against a live gemini-cli.
+        "headless": (
+            'gemini ${JAILBEE_PR_MODEL:+--model "$JAILBEE_PR_MODEL"} --yolo -p "$JAILBEE_PR_PROMPT"'
+        ),
         "shared": [{"subpath": "gemini", "path": "~/.gemini"}],
         # Where gemini-cli reads user-level skills (`~/.gemini/skills`), inside
         # the `~/.gemini` mount above.
@@ -182,6 +198,13 @@ AGENT_PRESETS: dict[str, dict[str, object]] = {
             f"{_OPENCODE_LINK}"
         ),
         "update": f"set -eo pipefail; {_OPENCODE_INSTALLER}; {_OPENCODE_LINK}",
+        # One-shot mode for `jailbee pr`: `opencode run` takes the message as an
+        # argument and exits when the turn ends. `--model` wants
+        # `provider/model`, which is the user's to put in `pr.model`. From the
+        # upstream docs, not run against a live opencode.
+        "headless": (
+            'opencode run ${JAILBEE_PR_MODEL:+--model "$JAILBEE_PR_MODEL"} "$JAILBEE_PR_PROMPT"'
+        ),
         # The installer fetches itself from opencode.ai, reads the current
         # version from `opencode.ai/update/api/latest/cli/npm`, and pulls the
         # ~88MB platform tarball from registry.npmjs.org. Both are CDN-fronted
@@ -248,6 +271,23 @@ def claude_preset() -> dict[str, object]:
         "command": "claude",
         "install": "__bundled__:ensure-claude.sh",
         "update": "__bundled__:ensure-claude.sh",
+        # One-shot mode for `jailbee pr`.
+        #
+        # `claude` lives at ~/.local/bin/claude, which is not on the default
+        # `incus exec --user` PATH; the command runs through a login shell
+        # (`bash -lc`) so ~/.profile puts it there. `${VAR:+...}` drops the whole
+        # --model flag when the var is empty, which is how an explicit
+        # `pr.model: null` inherits the container's own default model.
+        #
+        # `--session-id` is chosen by jailbee, not read from Claude's reply: with
+        # `--output-format json` nothing reaches stdout until the run ends, so a
+        # timeout — the one failure where the transcript is worth reading — is
+        # exactly the case where the reply, and the id in it, never arrive.
+        "headless": (
+            'claude ${JAILBEE_PR_MODEL:+--model "$JAILBEE_PR_MODEL"} '
+            '--session-id "$JAILBEE_PR_SESSION" '
+            '-p "$JAILBEE_PR_PROMPT" --output-format json --dangerously-skip-permissions'
+        ),
         "shared": [
             # Claude Code keeps per-process runtime state inside its config
             # home: the live-session registry (`sessions/`) and the background

@@ -106,13 +106,13 @@ def test_malformed_agents_block_error_names_the_config_path(tmp_path, mocker):
 
 
 def test_claude_entry_accepts_claude_only_fields():
-    cfg = ClaudeAgentConfig.model_validate({"enabled": True, "ai_pr_timeout": 900})
-    assert cfg.ai_pr_timeout == 900
+    cfg = ClaudeAgentConfig.model_validate({"enabled": True, "agent_view": True})
+    assert cfg.agent_view is True
 
 
 def test_generic_agent_rejects_claude_only_fields():
     with pytest.raises(ValueError):
-        AgentConfig.model_validate({"enabled": True, "ai_pr_timeout": 900})
+        AgentConfig.model_validate({"enabled": True, "agent_view": True})
 
 
 def test_generic_agent_accepts_install_jailbee_skills():
@@ -304,9 +304,9 @@ def test_bad_agent_name_is_an_error(tmp_path):
 
 
 def test_claude_property_reflects_agents_entry(tmp_path):
-    cfg = make_cfg(tmp_path, agents={"claude": {"enabled": True, "ai_pr_timeout": 900}})
+    cfg = make_cfg(tmp_path, agents={"claude": {"enabled": True, "agent_view": True}})
     assert cfg.claude.enabled is True
-    assert cfg.claude.ai_pr_timeout == 900
+    assert cfg.claude.agent_view is True
 
 
 def test_claude_property_defaults_disabled_when_absent(tmp_path):
