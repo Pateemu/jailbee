@@ -104,6 +104,8 @@ def _resolve_env(value: Any, model_name: object) -> Any:
     """
     if isinstance(value, str) and value.startswith(_ENV_PREFIX):
         name = value[len(_ENV_PREFIX) :]
+        if not name:
+            raise ValueError(f"deployment {model_name!r}: empty environment variable name")
         resolved = os.environ.get(name)
         if resolved is None:
             raise ValueError(f"deployment {model_name!r}: environment variable {name} is not set")
@@ -113,6 +115,24 @@ def _resolve_env(value: Any, model_name: object) -> Any:
     if isinstance(value, list):
         return [_resolve_env(v, model_name) for v in value]
     return value
+
+
+def _safe_failure(exc: Exception, what: str) -> ValueError:
+    """A message about `exc` that cannot echo a value: resolved secrets are in scope.
+
+    Pydantic's str() includes ``input_value=...``; keep only each error's location
+    and type, or just the exception class.
+    """
+    detail = type(exc).__name__
+    errors = getattr(exc, "errors", None)
+    if callable(errors):
+        try:
+            detail = "; ".join(
+                f"{'.'.join(str(p) for p in e.get('loc', ()))}: {e.get('type')}" for e in errors()
+            )
+        except Exception:  # a hostile errors() must not bring the value back
+            detail = type(exc).__name__
+    return ValueError(f"{what}: {detail}")
 
 
 def reconcile_router(router: Any, models: list[dict[str, Any]]) -> None:
@@ -133,14 +153,23 @@ def reconcile_router(router: Any, models: list[dict[str, Any]]) -> None:
                 **entry,
                 "litellm_params": _resolve_env(entry["litellm_params"], entry.get("model_name")),
             }
-        wanted[dep_id] = Deployment(**entry)
+        try:
+            wanted[dep_id] = Deployment(**entry)
+        except Exception as exc:  # the entry holds resolved secrets; see _safe_failure
+            raise _safe_failure(exc, f"deployment {entry.get('model_name')!r} is invalid") from None
     present = {
         info["id"] for item in router.model_list if (info := item.get("model_info") or {}).get("id")
     }
-    for deployment in wanted.values():
-        router.upsert_deployment(deployment)
+    for dep_id, deployment in wanted.items():
+        try:
+            router.upsert_deployment(deployment)
+        except Exception as exc:
+            raise ValueError(f"upsert of {dep_id!r} failed: {type(exc).__name__}") from None
     for dep_id in sorted(present - set(wanted)):
-        router.delete_deployment(dep_id)
+        try:
+            router.delete_deployment(dep_id)
+        except Exception as exc:
+            raise ValueError(f"delete of {dep_id!r} failed: {type(exc).__name__}") from None
 
 
 def _entry(model: object, table: dict[str, Any]) -> dict[str, Any] | None:
@@ -230,7 +259,7 @@ class JailbeeCallback(CustomLogger):  # type: ignore[misc]  # LiteLLM's base is 
         hot = self._pending
         try:
             reconcile_router(router, hot.models)
-        except Exception as exc:  # LiteLLM raises many types; any failure keeps the old state
+        except Exception as exc:  # reconcile_router's messages never carry a value
             self._pending = None
             self._ack(hot.digest, f"cannot apply the model list: {exc}")
             return

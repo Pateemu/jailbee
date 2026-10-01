@@ -4,9 +4,11 @@ Only the external CustomLogger base is stubbed; transform uses the real code.
 """
 
 import asyncio
+import copy
 import hashlib
 import importlib
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -377,7 +379,6 @@ def test_environ_references_are_resolved_before_the_upsert(cb, tmp_path, monkeyp
         "extra_headers": {"X-Other": "o", "X-Plain": "keep"},
         "stops": ["o", "plain", 3],
     }
-    assert params["api_key"] == "os.environ/MY_KEY"  # the hot file's data is not mutated
 
 
 def test_an_unset_variable_changes_nothing_and_names_the_variable(cb, tmp_path, monkeypatch):
@@ -397,14 +398,65 @@ def test_an_unset_variable_changes_nothing_and_names_the_variable(cb, tmp_path, 
     assert "s3cret" not in error
 
 
-def test_the_ack_never_contains_a_resolved_secret(cb, tmp_path, monkeypatch):
+def test_resolving_does_not_mutate_the_models_it_is_given(cb, monkeypatch):
     monkeypatch.setenv("MY_KEY", "s3cret")
-    monkeypatch.delenv("MISSING_KEY", raising=False)
     models = [
-        _keyed("jb:a", {"model": "m", "api_key": "os.environ/MY_KEY"}),
-        _keyed("jb:b", {"model": "m", "api_key": "os.environ/MISSING_KEY"}),
+        _keyed(
+            "jb:a", {"model": "m", "api_key": "os.environ/MY_KEY", "h": {"k": "os.environ/MY_KEY"}}
+        )
     ]
-    _write_hot(tmp_path, TABLE, models)
+    before = copy.deepcopy(models)
+    router = FakeRouter()
+    cb.reconcile_router(router, models)
+    assert router.params["jb:a"]["api_key"] == "s3cret"
+    assert models == before
+
+
+def test_an_empty_variable_name_is_reported_as_such(cb, tmp_path):
+    _write_hot(tmp_path, TABLE, [_keyed("jb:a", {"model": "m", "api_key": "os.environ/"})])
     handler = cb.JailbeeCallback()
     handler.reload_once(FakeRouter())
-    assert "s3cret" not in (tmp_path / "applied.json").read_text()
+    assert "empty environment variable name" in _ack(tmp_path)["error"]
+
+
+class _PydanticLikeError(Exception):
+    """str() and errors() both echo the offending input, as pydantic's ValidationError does."""
+
+    def __init__(self, value):
+        super().__init__(f"1 validation error\n  Input should be valid [input_value={value!r}]")
+        self._value = value
+
+    def errors(self):
+        return [{"loc": ("litellm_params", "api_key"), "type": "string_type", "input": self._value}]
+
+
+@pytest.mark.parametrize("phase", ["construct-str", "construct-errors", "upsert", "delete"])
+def test_the_ack_never_contains_a_resolved_secret(cb, tmp_path, monkeypatch, phase):
+    monkeypatch.setenv("MY_KEY", "s3cret")
+    stub = sys.modules["litellm.types.router"]
+
+    class Leaky(StubDeployment):
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            secret = kw["litellm_params"]["api_key"]
+            if phase == "construct-str":
+                raise ValueError(f"bad field, input_value={secret}")
+            if phase == "construct-errors":
+                raise _PydanticLikeError(secret)
+
+    class LeakyRouter(FakeRouter):
+        def upsert_deployment(self, deployment):
+            if phase == "upsert":
+                raise RuntimeError(f"rejected {deployment.litellm_params['api_key']}")
+
+        def delete_deployment(self, dep_id):
+            if phase == "delete":
+                raise RuntimeError(f"cannot delete, key {os.environ['MY_KEY']}")
+
+    monkeypatch.setattr(stub, "Deployment", Leaky)
+    _write_hot(tmp_path, TABLE, [_keyed("jb:a", {"model": "m", "api_key": "os.environ/MY_KEY"})])
+    handler = cb.JailbeeCallback()
+    handler.reload_once(LeakyRouter(["jb:old"]))
+    text = (tmp_path / "applied.json").read_text()
+    assert "s3cret" not in text
+    assert "cannot apply" in _ack(tmp_path)["error"]
