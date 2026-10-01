@@ -15485,6 +15485,15 @@ def exec_cmd(
             "works for anything long-running.",
         ),
     ] = False,
+    gui: Annotated[
+        bool,
+        typer.Option(
+            "--gui",
+            help="With --detach: the command is a GUI app. In a GUI-enabled SSH session "
+            "it draws on the shared RDP display (started and awaited first); elsewhere "
+            "this changes nothing.",
+        ),
+    ] = False,
     config: ConfigOption = None,
 ) -> None:
     """Run a command in the container as the dev user.
@@ -15494,12 +15503,17 @@ def exec_cmd(
         jailbee exec smoke -- pnpm test
         jailbee exec smoke --cwd home -- ls -la
         jailbee exec smoke -d -- firefox
+        jailbee exec smoke -d --gui -- firefox
     """
     import shlex
 
     from jailbee.config import CONTAINER_USERNAME
     from jailbee.incus import Incus
     from jailbee.lifecycle import container_repo_dir, resolve_container_name
+
+    if gui and not detach:
+        error("--gui only applies to a detached launch; add --detach (-d).")
+        raise typer.Exit(2)
 
     cfg = _load_or_exit(config)
     incus = Incus()
@@ -15541,13 +15555,17 @@ def exec_cmd(
         # double-launch) would silently clobber each other's output. The
         # uuid suffix makes every invocation's path distinct regardless of
         # timing.
-        # Only a detached launch can be a GUI one, so only it prepares the
-        # shared display (a no-op unless the session is a GUI-enabled SSH one).
-        try:
-            env = launch_env(cfg, incus, resolved)
-        except DisplayError as e:
-            error(str(e))
-            raise typer.Exit(1) from e
+        # Only an explicit `--gui` launch prepares the shared display: a
+        # detached `make test` is not a GUI app and must neither start the
+        # display nor wait for an RDP client. Outside a GUI-enabled SSH session
+        # `launch_env` returns the plain host environment, so `--gui` is
+        # harmless there.
+        if gui:
+            try:
+                env = launch_env(cfg, incus, resolved)
+            except DisplayError as e:
+                error(str(e))
+                raise typer.Exit(1) from e
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         log_path = f"/tmp/jailbee-exec-{stamp}-{uuid.uuid4().hex[:8]}.log"
         # A login shell in both paths, so `~/.local/bin` is on PATH whether

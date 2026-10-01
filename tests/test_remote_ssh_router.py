@@ -506,6 +506,7 @@ def test_a_remote_new_never_mounts_the_host_repo(argv) -> None:
         ("new", "feat", "main", "--shell"),
         ("new", "--", "--mount"),  # a branch named "--mount", not the option
         ("exec", "box", "--", "ls", "-c", "x"),  # the container command's own -c
+        ("exec", "-d", "--gui", "box", "--", "firefox"),  # GUI launch, shared display
         ("git", "pull", "box", "--ff-only"),
     ],
 )
