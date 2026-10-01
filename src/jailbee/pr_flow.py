@@ -418,7 +418,11 @@ def bind_outbox_source(management: PrManagement, source: OutboxPrText | None) ->
     from jailbee.outbox.models import OutboxChanged
 
     # Revision-free synthetic sources remain the strict validator's concern.
-    if source is not None and source.identity is not None and source.identity != management.identity:
+    if (
+        source is not None
+        and source.identity is not None
+        and source.identity != management.identity
+    ):
         raise OutboxChanged("description container changed during publication; refresh required")
 
 

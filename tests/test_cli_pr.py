@@ -3309,34 +3309,57 @@ def test_pr_real_lock_keeps_individual_delete_outside_receipt_window(
 
 
 @pytest.mark.parametrize("update", [False, True])
-def test_pr_replacement_after_guard_check_cannot_select_new_identity(mocker, tmp_path, make_cfg, update):
+def test_pr_replacement_after_guard_check_cannot_select_new_identity(
+    mocker, tmp_path, make_cfg, update
+):
+    import json
+
     from jailbee import pr_flow, pr_outbox
-    from jailbee.outbox.models import OutboxChanged
     from jailbee.outbox_io import ContainerIdentity
     from jailbee.pr_ai import PrText
-    import json
 
     validator = pr_flow.validate_outbox_source
     labels = {"user.jailbee.base_branch": "main", "user.jailbee.branch": "feat/foo"}
     if update:
-        labels.update({"user.jailbee.pr": "123", "user.jailbee.pr_branch": "feat/foo", "user.jailbee.pr_author": "true"})
+        labels.update(
+            {
+                "user.jailbee.pr": "123",
+                "user.jailbee.pr_branch": "feat/foo",
+                "user.jailbee.pr_author": "true",
+            }
+        )
     _, incus = _setup(mocker, tmp_path, labels=labels)
     mocker.patch("jailbee.sync.publish_branch_from_container", return_value=_publish_result())
     mocker.patch.object(pr_flow, "validate_outbox_source", validator)
     cfg = make_cfg(tmp_path)
     mocker.patch("jailbee.cli._load_or_exit", return_value=cfg)
     replacement = ContainerIdentity("sampleapp-feat-foo", "replacement")
-    raw = json.dumps({"version": 1, "repo": "acme/widgets", "pr": 123 if update else None,
-        "head_sha": None, "actions": [{"type": "description", "title": "B title", "body": "B body"}]})
+    raw = json.dumps(
+        {
+            "version": 1,
+            "repo": "acme/widgets",
+            "pr": 123 if update else None,
+            "head_sha": None,
+            "actions": [{"type": "description", "title": "B title", "body": "B body"}],
+        }
+    )
     snapshot = pr_outbox.Outbox({"d.json": raw}, identity=replacement)
     text = PrText("B title", "B body", "feat/foo")
-    source = pr_outbox.OutboxPrText(text, "d.json", 0, replacement,
-        pr_outbox.description_source_digest(snapshot, "d.json", 0, text), raw)
+    source = pr_outbox.OutboxPrText(
+        text,
+        "d.json",
+        0,
+        replacement,
+        pr_outbox.description_source_digest(snapshot, "d.json", 0, text),
+        raw,
+    )
     selected = []
 
     def select(*args, **kwargs):
         # This runs only after the real guard acquired and rechecked A.
-        incus.list_containers.return_value = [{"name": replacement.full_name, "created_at": replacement.created_at}]
+        incus.list_containers.return_value = [
+            {"name": replacement.full_name, "created_at": replacement.created_at}
+        ]
         selected.append(source)
         return source
 
@@ -3357,7 +3380,6 @@ def test_pr_replacement_after_guard_check_cannot_select_new_identity(mocker, tmp
     consume.assert_not_called()
 
 
-
 def test_nested_publication_guard_never_rebinds_identity_and_releases(mocker, tmp_path, make_cfg):
     from jailbee import pr_flow
     from jailbee.outbox.io import PrManagement
@@ -3373,7 +3395,9 @@ def test_nested_publication_guard_never_rebinds_identity_and_releases(mocker, tm
             pass
         incus.list_containers.return_value = [{"name": "c", "created_at": "B"}]
         with pytest.raises(OutboxChanged, match="refresh required"):
-            with pr_flow.outbox_publication_guard(cfg, incus, "c", enabled=True, management=manager):
+            with pr_flow.outbox_publication_guard(
+                cfg, incus, "c", enabled=True, management=manager
+            ):
                 pytest.fail("entered replacement guard")
         assert len(list(manager.root.glob("*.lock"))) == 1
     # Cleared state permits a later independent operation against B.
