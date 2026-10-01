@@ -41,10 +41,10 @@ ssh -N -L 3389:127.0.0.1:13389 -p <ssh port> jailbee@<host>
 then point an RDP client at `localhost:3389`. Any client works: `mstsc` on
 Windows, Windows App (formerly Microsoft Remote Desktop) on macOS, `xfreerdp` or
 Remmina on Linux.
-The client asks for a login: use username `jailbee` and password `jailbee`.
-weston's RDP backend does Network Level Authentication, which clients such as
-Windows App insist on, and that needs a user. The pair is fixed and documented
-on purpose; it is not a secret (see [Security](security.md#remote-gui)).
+If the client asks for a login, any user name and password will do: the
+display speaks TLS without Network Level Authentication and checks no
+credentials (see [Security](security.md#remote-gui)). Accept the self-signed
+certificate the client warns about.
 
 Already in an SSH session? Add the forward to it with `~C`, then
 `-L 3389:127.0.0.1:13389`.

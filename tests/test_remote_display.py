@@ -94,15 +94,13 @@ def test_provisioning_script_carries_both_files_and_the_identity():
     assert "--address=127.0.0.1" in provisioning
     assert "--shell=desktop" in provisioning
     assert "JAILBEE_UID=" in provisioning
-    # weston 14 does NLA and needs a SAM entry, or every client is refused.
-    assert f"JAILBEE_RDP_USER={rd.RDP_USER}" in provisioning
-    assert f"JAILBEE_RDP_PASSWORD={rd.RDP_PASSWORD}" in provisioning
-    # WinPR reads /etc/FreeRDP/FreeRDP/SAM (found with strace), not an env var.
+    # weston 14 leaves FreeRDP 3's extended NLA on with no SAM file, so a client
+    # asking for NLA is refused; the WinPR registry turns it off, leaving TLS.
     assert "install -d -m 0755 /etc/FreeRDP /etc/FreeRDP/FreeRDP" in provisioning
-    assert "/etc/FreeRDP/FreeRDP/SAM" in provisioning
-    assert "winpr-utils" in provisioning
-    # winpr-hash prints a bare hash; the SAM line user:::hash::: is built here.
-    assert '"$JAILBEE_RDP_USER:::$NT_HASH:::"' in provisioning
+    assert "/etc/FreeRDP/FreeRDP/HKLM.reg" in provisioning
+    assert "[HKEY_LOCAL_MACHINE\\Software\\FreeRDP\\FreeRDP\\Server]" in provisioning
+    assert '"ExtSecurity"=dword:00000000' in provisioning
+    assert "JAILBEE_RDP_" not in provisioning
 
 
 def test_down_stops_and_revokes_every_grant(mocker):
@@ -216,10 +214,11 @@ def test_the_recipe_says_to_launch_before_connecting():
     assert "launch first, then connect" in text
 
 
-def test_the_recipe_names_the_rdp_login():
+def test_the_recipe_says_any_login_works():
+    """Clients prompt for credentials; weston's TLS-only mode ignores them."""
     text = "\n".join(rd.format_connection_info(rd.connection_info(8022)))
 
-    assert f"{rd.RDP_USER} / {rd.RDP_PASSWORD}" in text
+    assert "any user name and password" in text
 
 
 def test_ensure_display_mount_tolerates_an_existing_device():

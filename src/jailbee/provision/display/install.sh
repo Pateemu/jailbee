@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Provision the jailbee-display container: weston, a self-signed TLS pair and
-# the systemd unit. Idempotent. Expects JAILBEE_UID, JAILBEE_GID, JAILBEE_USER,
-# JAILBEE_RDP_USER and JAILBEE_RDP_PASSWORD (the fixed RDP/NLA login).
+# the systemd unit. Idempotent. Expects JAILBEE_UID, JAILBEE_GID and
+# JAILBEE_USER.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 : "${JAILBEE_UID:?}" "${JAILBEE_GID:?}" "${JAILBEE_USER:?}"
-: "${JAILBEE_RDP_USER:?}" "${JAILBEE_RDP_PASSWORD:?}"
 
 # The container was started moments ago: DHCP and the bridge's dnsmasq may not
 # have answered yet. Wait for name resolution instead of failing the first
@@ -25,7 +24,7 @@ if [ -z "$network_up" ]; then
 fi
 
 apt-get update -qq
-apt-get install -y -qq weston openssl winpr-utils
+apt-get install -y -qq weston openssl
 
 if ! getent passwd "$JAILBEE_UID" >/dev/null; then
   getent group "$JAILBEE_GID" >/dev/null || groupadd -g "$JAILBEE_GID" "$JAILBEE_USER"
@@ -41,29 +40,19 @@ if [ ! -f /etc/jailbee-display/tls.key ] || [ ! -f /etc/jailbee-display/tls.crt 
   chmod 0600 /etc/jailbee-display/tls.key
 fi
 
-# weston 14 with FreeRDP 3 does Network Level Authentication and checks the
-# login against a WinPR SAM file; with no entry every client is refused with
-# "Could not find user in SAM database". Write the one fixed login. The binary
-# is winpr-hash or winpr-hash<major> depending on the package.
-WINPR_HASH="$(dpkg -L winpr-utils | grep -E '/winpr-hash[0-9]*$' | head -n 1)"
-[ -n "$WINPR_HASH" ] || { echo "winpr-hash not found in winpr-utils" >&2; exit 1; }
-# winpr-hash prints the bare NT hash in this version, not a SAM line. A SAM line
-# is user:domain:LM:NT:::, so build it; keep a ready-made line if some version
-# prints one.
-NT_HASH="$("$WINPR_HASH" -u "$JAILBEE_RDP_USER" -p "$JAILBEE_RDP_PASSWORD")"
-case "$NT_HASH" in
-  *:*) SAM_LINE="$NT_HASH" ;;
-  *) SAM_LINE="$JAILBEE_RDP_USER:::$NT_HASH:::" ;;
-esac
-# WinPR looks the login up in /etc/FreeRDP/FreeRDP/SAM (/etc/<vendor>/<product>/SAM),
-# not at WINPR_NTLM_SAM_FILE and not at /etc/winpr/SAM: strace of weston showed
-# openat("/etc/FreeRDP/FreeRDP/SAM") = ENOENT, after which weston reports
-# "Could not find user in SAM database". The directory must be traversable by
-# the service user, the file readable only by it.
+# weston 14 turns NLA off but leaves FreeRDP 3's extended NLA (HYBRID_EX) on,
+# and gives FreeRDP no SAM file, so a client that asks for NLA (Windows App
+# always does) is picked HYBRID_EX and then refused with "Could not find user
+# in SAM database" whatever the login. FreeRDP's server reads ExtSecurity from
+# WinPR's registry file, /etc/<vendor>/<product>/HKLM.reg; turning it off
+# leaves TLS, which every client also offers. No login is checked: the port is
+# loopback-only in this container, reached through the SSH tunnel.
 install -d -m 0755 /etc/FreeRDP /etc/FreeRDP/FreeRDP
-printf '%s\n' "$SAM_LINE" > /etc/FreeRDP/FreeRDP/SAM
-chown "$RUN_USER" /etc/FreeRDP/FreeRDP/SAM
-chmod 0600 /etc/FreeRDP/FreeRDP/SAM
+cat > /etc/FreeRDP/FreeRDP/HKLM.reg <<'REG'
+[HKEY_LOCAL_MACHINE\Software\FreeRDP\FreeRDP\Server]
+"ExtSecurity"=dword:00000000
+REG
+chmod 0644 /etc/FreeRDP/FreeRDP/HKLM.reg
 
 sed "s/__USER__/$RUN_USER/" /root/jailbee-display.service \
   > /etc/systemd/system/jailbee-display.service

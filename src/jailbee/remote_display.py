@@ -40,12 +40,6 @@ DISPLAY_BRIDGE = "jailbee-loose"
 # `SHARED_DISPLAY_DIR` attached after boot, so for them /run is fine. Keep in
 # step with the paths in provision/display/jailbee-display.service.
 DISPLAY_CONTAINER_DIR = "/srv/jailbee-display"
-# The one fixed RDP login. weston's RDP backend does NLA, which clients such as
-# Windows App insist on, and NLA needs a user; this is not a secret (the port is
-# reachable only through a key-bound SSH forward, and any local host user can
-# reach 127.0.0.1:13389 regardless). Documented in docs/remote-gui.md.
-RDP_USER = "jailbee"
-RDP_PASSWORD = "jailbee"
 RDP_PORT = 3389
 HOST_RDP_PORT = 13389
 RDP_PORT_ADDRESS = f"localhost:{RDP_PORT}"
@@ -151,8 +145,7 @@ def _provision(incus: Incus) -> None:
         "JAILBEE_INSTALL_EOF\n"
         "chmod +x /root/install.sh\n"
         f"JAILBEE_UID={os.getuid()} JAILBEE_GID={os.getgid()} "
-        f"JAILBEE_USER={CONTAINER_USERNAME} "
-        f"JAILBEE_RDP_USER={RDP_USER} JAILBEE_RDP_PASSWORD={RDP_PASSWORD} /root/install.sh\n"
+        f"JAILBEE_USER={CONTAINER_USERNAME} /root/install.sh\n"
     )
     incus.exec(DISPLAY_CONTAINER, ["bash", "-c", script], timeout=600)
 
@@ -298,7 +291,7 @@ def connection_info(ssh_port: int) -> ConnectionInfo:
         ssh_command=f"ssh -N -L {RDP_PORT}:127.0.0.1:{HOST_RDP_PORT} -p {ssh_port} jailbee@<host>",
         rdp_address=RDP_PORT_ADDRESS,
         hints=(
-            f"Login: {RDP_USER} / {RDP_PASSWORD}",
+            "Login: any user name and password; weston does not check them",
             "Windows: mstsc  |  macOS: Windows App (was Microsoft Remote Desktop)  |  "
             "Linux: xfreerdp / Remmina",
             "Already connected over SSH? Add the forward live with ~C, then -L ...",
