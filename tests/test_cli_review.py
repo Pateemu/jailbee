@@ -145,7 +145,9 @@ def _setup(mocker, tmp_path, *, files=None, rejected=(), warnings=()):
 
     def snapshot(*args, **kwargs):
         contents = {p.name: p.read_text() for p in directory.iterdir() if p.name not in rejected}
-        return StoreSnapshot("pr", tuple(sorted(contents.items())), tuple(rejected), tuple(warnings))
+        return StoreSnapshot(
+            "pr", tuple(sorted(contents.items())), tuple(rejected), tuple(warnings)
+        )
 
     mocker.patch.object(io, "read_store", side_effect=snapshot)
 
@@ -545,6 +547,7 @@ def test_apply_deletes_a_body_file_shared_by_two_completed_manifests(mocker, tmp
             _target("002-y.json"),
         ],
     )
+
     def publish(cfg, incus, container, target, progress, **kwargs):
         if target.manifest.name == "002-y.json":
             assert (tmp_path / "review-store" / "shared.md").read_text() == "the body"
@@ -874,7 +877,7 @@ def test_show_reports_a_malformed_manifest_without_crashing(mocker, tmp_path):
 
 
 def test_drop_deletes_without_publishing(mocker, tmp_path):
-    _, incus = _setup(mocker, tmp_path, files={"001-x.json": _manifest_text()})
+    _setup(mocker, tmp_path, files={"001-x.json": _manifest_text()})
     apply_mock = mocker.patch("jailbee.pr_outbox.apply_manifest")
 
     result = runner.invoke(app, ["review", "drop", "feat-foo", "-y"])
@@ -894,7 +897,7 @@ def test_drop_asks_first_and_keeps_the_manifest_on_no(mocker, tmp_path):
 
 
 def test_drop_takes_one_named_manifest(mocker, tmp_path):
-    _, incus = _setup(
+    _setup(
         mocker,
         tmp_path,
         files={"001-x.json": _manifest_text(), "002-y.json": _manifest_text()},
