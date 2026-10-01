@@ -2060,6 +2060,7 @@ def offer_pending_comments(
                 manifest_names=eligible,
                 identity=identity,
                 management=manager,
+                selected_publication=explicit and pr_number is None,
             )
     except (
         OutboxReadError,
@@ -2092,6 +2093,7 @@ def _offer_locked(
     manifest_names: Sequence[str],
     identity: ContainerIdentity,
     management: PrManagement,
+    selected_publication: bool = False,
 ) -> int:
     """Show what `container` wants to publish, ask once, publish it.
 
@@ -2157,7 +2159,7 @@ def _offer_locked(
     if not targets:
         # Refusals are failures; a deferral or a held-back manifest only means
         # the work belongs to another command, which is not a reason to fail.
-        return len(refusals)
+        return max(1, len(refusals)) if selected_publication else len(refusals)
 
     # Per target: the progress snapshot, and which of its pending indices this
     # run will publish (`None` = all of them, `jailbee review apply`'s mode).
@@ -2179,7 +2181,26 @@ def _offer_locked(
         return len(refusals)
 
     for target, progress, idx in plans:
-        _print_plan(cfg, short, target, progress, indices=idx)
+        if selected_publication:
+            from jailbee.outbox.inspect import safe_text
+
+            # Full literal bodies are required for selected approval, not only
+            # the legacy offer's first-line preview. Use the freshly gated PR.
+            assert target.pr is not None
+            displayed = Manifest(
+                target.manifest.name, target.manifest.repo, target.pr.number,
+                target.manifest.head_sha, target.manifest.actions,
+            )
+            console.print(f"Container: {safe_text(container)}", markup=False, highlight=False)
+            console.print(f"Head: {safe_text(target.pr.head_sha)}", markup=False, highlight=False)
+            for line in show_lines(displayed):
+                console.print(safe_text(line), markup=False, highlight=False, soft_wrap=True)
+            if progress.applied:
+                console.print(f"Already published (skipped): {sorted(progress.applied)}")
+            if target.stale:
+                console.print("The PR head has moved since this was written.")
+        else:
+            _print_plan(cfg, short, target, progress, indices=idx)
     _print_identity(cfg, total)
 
     if dry_run:
@@ -2218,6 +2239,11 @@ def _offer_locked(
         ):
             raise OutboxChanged("PR target changed; refresh required")
         refreshed_plans.append((refreshed, progress, idx))
+    if selected_publication:
+        # Remote target reads can run arbitrary time: keep local evidence fresh
+        # across that window too, and retain newly arrived neighbor references.
+        fresh_store = store_io.read_store(incus, container, "pr", uid=uid)
+        _compare_preview(identity, outbox, fresh_store, [t.manifest.name for t, _, _ in plans])
     _same_identity(incus, container, identity)
     plans = refreshed_plans
     outbox = Outbox(fresh_store.as_dict(), fresh_store.rejected, identity)
