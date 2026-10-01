@@ -255,10 +255,15 @@ def test_complete_name_prefix_receipt_refuses_ambiguous_publication(env, other):
 
 
 @pytest.mark.parametrize("longer_present", [False, True])
-@pytest.mark.parametrize("fields", [
-    "pr=42 urls=notes.json", "actions=broken urls=notes.json",
-    "pr=42 actions=broken url=notes.json", "unknown=notes.json",
-])
+@pytest.mark.parametrize(
+    "fields",
+    [
+        "pr=42 urls=notes.json",
+        "actions=broken urls=notes.json",
+        "pr=42 actions=broken url=notes.json",
+        "unknown=notes.json",
+    ],
+)
 def test_filename_shaped_receipt_values_never_prove_other_ownership(env, longer_present, fields):
     name = "001.json"
     longer = f"{name} {fields}"
@@ -282,10 +287,18 @@ def test_ambiguous_longer_name_with_valid_sidecar_keeps_existing_progress_rules(
     files[f"{name}.progress.json"] = '{"applied":[0],"urls":{"0":"https://old"}}'
     files["applied.log"] = f"now {name} pr=42 actions=1 urls=https://old\n"
     env[2]["pr"] = store("pr", files)
-    assert publish_selected(
-        env[0], env[1], IDENTITY.full_name, ProposalId("pr", name),
-        journal_store=env[3], options=PublishOptions(), confirm=lambda count: True,
-    ) == 0
+    assert (
+        publish_selected(
+            env[0],
+            env[1],
+            IDENTITY.full_name,
+            ProposalId("pr", name),
+            journal_store=env[3],
+            options=PublishOptions(),
+            confirm=lambda count: True,
+        )
+        == 0
+    )
     assert [c.args[2] for c in env[4]["pr_comment"].call_args_list] == ["Second action"]
     remaining = env[2]["pr"].as_dict()
     assert name not in remaining and f"{name}.progress.json" not in remaining
