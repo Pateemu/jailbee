@@ -177,6 +177,91 @@ before editing `## Unreleased`.
   reports a fine-grained PAT's expected read-only scope as an informational
   reminder, since it cannot verify a token's actual effective permissions.
 
+- **Claude Code on other providers' models: `claude-jb` and
+  `jailbee litellm`.** A LiteLLM proxy runs in a dedicated `jailbee-litellm`
+  container, and `claude-jb` (installed in the golden image) starts Claude Code
+  against it, while plain `claude` stays native. Enable it with
+  `litellm.enabled: true` in `global.yaml`, run `jailbee litellm up` and
+  `jailbee litellm login`, rebuild the image with `jailbee base build` and
+  `jailbee apply` each repo. The built-in `codex` profile maps Claude Code's
+  four tiers to ChatGPT-subscription models with fixed or minimum reasoning
+  effort; routes can instead use any LiteLLM provider with an API key kept in
+  `~/.config/jailbee/litellm/secrets.env`. Several ChatGPT accounts run side by
+  side, one proxy instance each, and a profile names the account that serves
+  it. A repo overrides routes, profiles, `default_profile` and `autostart` in its
+  host-local file; `litellm.autostart` starts the Claude window with
+  `claude-jb`; a profile's `instructions` are appended to the system prompt.
+  Route edits are loaded into the running proxy by `jailbee apply` without a
+  restart, so open sessions keep going. The proxy state lives in an Incus
+  volume, never on the host filesystem; its egress is default-deny and limited
+  to the hosts the routes need, and the install is pinned and hash-locked.
+  `jailbee litellm ls|status|logs|logout|down` and `jailbee doctor` inspect
+  it. ChatGPT-subscription use through LiteLLM is unofficial and at your own
+  risk. See [Claude Code through LiteLLM](https://jailbee.gisgro.io/docs/litellm/).
+
+- **A shared RDP display for GUI apps launched over SSH.** With
+  `remote.ssh.gui: true`, `jb ide`, `jb chrome`, `jb firefox`, `jb browser`,
+  `jb apps run` and `jb exec -d --gui` from an SSH session — and the same
+  launches from the remote dashboard — draw on a `jailbee-display` container
+  (weston, RDP backend) instead of being refused. `jb display up|down|status`
+  manage it; you forward its port through the existing SSH connection
+  (`-L 3389:127.0.0.1:13389`; the server admits that one destination for any
+  authorized key while the flag is on) and open it in any RDP client. There is
+  one screen and one clipboard for every container. The display checks no
+  credentials, so it relies on the tunnel; see
+  [Remote GUI over SSH](https://jailbee.gisgro.io/docs/remote-gui/). Off by
+  default; launches from a local terminal are unchanged.
+
+- **Browse and manage staged PR and issue proposals in one place.**
+  `jailbee outbox` opens a terminal browser over both outboxes of a container
+  (the Qt dashboard has a native window for it); `outbox ls`, `show` and
+  `drop` list, inspect and delete exactly, down to one action or one inline
+  review comment, and `outbox apply` publishes one manifest through the same
+  gates as `review apply` / `issue apply`. Inspection is local, read-only over
+  SSH and never calls GitHub. New containers create both outbox directories
+  before any agent runs. See
+  [Unified proposal management](https://jailbee.gisgro.io/docs/git-bridge/#unified-proposal-management).
+
+- **An optional, stable-address work network: `jb net migrate`.** The new
+  `jailbee-work` bridge gives containers a fixed address and switches strict and
+  loose mode by swapping ACLs on the NIC instead of replacing it, with loose
+  egress scoped to the container's own source address. Nothing changes on
+  upgrade: existing containers stay on the legacy bridge, and `jb net migrate`
+  asks before making the new network the default for future containers
+  (`--undo` reverts the default only). `jailbee apply` maintains both
+  generations. The work network is IPv4-only, and returning to strict does not
+  cut a connection that loose mode already established. Strict containers also
+  get a shared `jailbee-services` ACL, which is how they reach the LiteLLM
+  proxy. See
+  [work-network activation](https://jailbee.gisgro.io/docs/installation/#optional-work-network-activation-and-rollback).
+
+- **See what each container's agent is doing.** `jailbee ls`, both dashboards
+  and the Qt cards gain an `AGENT` column (and a compact `agent_compact`
+  variant with state marks and coarse durations) built from the agent's own
+  session files matched to live container processes; the Qt card shows the
+  reason as a tooltip. The dashboards also show `CPU` and `DOING`.
+
+- **`DIFF` and the commit counts in `jailbee ls` compare with the host's live
+  target branch.** `DIFF ±` is the direct diff of the container's committed tree
+  against the host's local target branch, falling back to its last-fetched
+  upstream ref (marked on `BASE`; nothing is fetched). `↑` and `↓` count the
+  commits unique to the container and to the target. The `LOCAL ±` and `L↑`
+  columns, which compare with the checked-out HEAD, stay opt-in.
+  `jailbee git diff` follows the same target.
+
+- **Terminal dashboard additions.** Create containers in the background; `D`
+  destroys the highlighted container after a confirmation; `!` opens an inline
+  command line that completes command paths, options and container names;
+  `Space` folds a repo; the container menu offers interactive `merge` and
+  `git retarget` ("Change base branch"); columns adapt to the terminal width;
+  egress overrides are managed from the **Network →** submenu; and empty repos
+  and per-repo visibility can be shown, hidden and remembered. The Qt dashboard shares the Git and
+  PR submenus and the visibility controls.
+
+- **`jailbee config edit` edits multi-line strings** such as a prompt or
+  profile instructions in a multi-line prompt (Ctrl-S commits), and writes them
+  back as YAML literal blocks.
+
 ### Changed
 
 - **The host's own agent skills are now opt-in.** `jailbee setup`'s skills
