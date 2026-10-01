@@ -153,10 +153,18 @@ def test_existing_whitespace_receipt_refuses_actual_selected_replay(env):
     files["one space.json"] = files.pop("001.json")
     files["applied.log"] = "now one space.json pr=42 actions=1 urls=https://receipt\n"
     env[2]["pr"] = store("pr", files)
-    assert publish_selected(
-        env[0], env[1], IDENTITY.full_name, ProposalId("pr", "one space.json"),
-        journal_store=env[3], options=PublishOptions(), confirm=lambda count: True,
-    ) == 1
+    assert (
+        publish_selected(
+            env[0],
+            env[1],
+            IDENTITY.full_name,
+            ProposalId("pr", "one space.json"),
+            journal_store=env[3],
+            options=PublishOptions(),
+            confirm=lambda count: True,
+        )
+        == 1
+    )
     env[4]["pr_comment"].assert_not_called()
     env[1].exec_with_input.assert_not_called()
 
