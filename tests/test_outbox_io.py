@@ -775,6 +775,17 @@ def test_owned_issue_log_proof_rejects_unproven_changes(change):
             )
             lines[-1] = json.dumps(record, sort_keys=True)
         changed["applied.log"] = "Original" + "\n".join(lines) + "\n"
+    if change in ("order", "duplicate-index", "missing-index"):
+        from jailbee.outbox_io import issue_receipt_line
+
+        # Keep bytes canonical for this journal so only completeness rejects it.
+        mutated_block = "".join(
+            issue_receipt_line(key.manifest_name, action, "2026-10-01T12:00:00Z") + "\n"
+            for action in journal.actions
+        )
+        changed["applied.log"] = "Original" + mutated_block
+        assert len(journal.actions) == journal.action_count
+        assert journal.digest == proposal_digest(key.manifest_name, text, bodies)
     raw = proposal_digest(key.manifest_name, text, changed)
     assert issue_proposal_digest(key, text, changed, journal) == raw
     assert raw != journal.digest
