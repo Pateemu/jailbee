@@ -915,8 +915,12 @@ def apply_batch(
     cleaned: list[str] = []
 
     def failed(
-        manifest: str | None, index: int | None, uncertain: bool, detail: str,
-        *, kind: Literal["validation", "execution"] = "execution",
+        manifest: str | None,
+        index: int | None,
+        uncertain: bool,
+        detail: str,
+        *,
+        kind: Literal["validation", "execution"] = "execution",
     ) -> ApplyReport:
         return ApplyReport(
             tuple(applied),
@@ -955,14 +959,26 @@ def apply_batch(
             name = prepared.manifest.name
             text = outbox.files.get(name)
             if text is None:
-                return failed(name, None, False, f"{name}: manifest is no longer in the outbox", kind="validation")
+                return failed(
+                    name,
+                    None,
+                    False,
+                    f"{name}: manifest is no longer in the outbox",
+                    kind="validation",
+                )
             digest = proposal_digest(
                 name,
                 text,
                 {body: outbox.files.get(body, "") for body in prepared.manifest.body_files},
             )
             if digest != prepared.digest:
-                return failed(name, None, False, f"{name}: proposal changed since it was approved", kind="validation")
+                return failed(
+                    name,
+                    None,
+                    False,
+                    f"{name}: proposal changed since it was approved",
+                    kind="validation",
+                )
             key = journal_key(batch.identity, name)
             try:
                 journal = _create_or_replace_journal(

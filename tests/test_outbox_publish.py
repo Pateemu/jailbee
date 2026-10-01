@@ -265,6 +265,7 @@ def test_typed_final_apply_prechecks_are_validation(env, mocker, change):
 
     read = issue_outbox.read_issue_outbox
     calls = []
+
     def drifting_read(*args, **kwargs):
         calls.append(1)
         if len(calls) == 2:
@@ -275,13 +276,16 @@ def test_typed_final_apply_prechecks_are_validation(env, mocker, change):
                 files["body.md"] = "Changed"
             env[2]["issue"] = store("issue", files)
         return read(*args, **kwargs)
+
     if change == "identity":
         identify = issue_outbox.container_identity
         identity_calls = []
+
         def drifting_identity(*args, **kwargs):
             identity_calls.append(1)
             value = identify(*args, **kwargs)
             return replace(value, created_at="replacement") if len(identity_calls) == 2 else value
+
         mocker.patch.object(issue_outbox, "container_identity", side_effect=drifting_identity)
     else:
         mocker.patch.object(issue_outbox, "read_issue_outbox", side_effect=drifting_read)
