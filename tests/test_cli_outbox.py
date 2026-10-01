@@ -341,7 +341,9 @@ def test_apply_real_domain_orchestration(publication_env, mocker, kind, mode):
         create.assert_called_once()
         assert [call.args[2] for call in comment.call_args_list] == [73, 42]
         assert "fully applied" in result.output
-        receipts = [json.loads(line) for line in env[2]["issue"].as_dict()["applied.log"].splitlines()]
+        receipts = [
+            json.loads(line) for line in env[2]["issue"].as_dict()["applied.log"].splitlines()
+        ]
         assert [(r["manifest"], r["index"], r["issue"]) for r in receipts] == [
             ("001.json", 0, 73),
             ("001.json", 1, 42),
