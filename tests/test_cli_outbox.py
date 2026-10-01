@@ -3,6 +3,7 @@
 import json
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from jailbee.cli import app
@@ -258,8 +259,9 @@ def publication_env(env, mocker, tmp_path):
 
 @pytest.mark.parametrize("kind", ["issue", "pr"])
 @pytest.mark.parametrize("mode", ["yes", "cancel", "dry-run"])
-def test_apply_real_domain_orchestration(publication_env, kind, mode):
+def test_apply_real_domain_orchestration(publication_env, mocker, kind, mode):
     env, create, comment, review = publication_env
+    prompt = mocker.spy(typer, "confirm")
     args = ["outbox", "apply", "feature", f"{kind}/001.json"]
     if mode == "yes":
         args += ["-y"]
@@ -268,6 +270,12 @@ def test_apply_real_domain_orchestration(publication_env, kind, mode):
     result = CliRunner().invoke(app, args, input="n\n")
     assert result.exit_code == 0, result.output
     assert "alice" in result.output
+    if mode == "cancel":
+        prompt.assert_called_once_with(
+            f"Publish {3 if kind == 'issue' else 1} pending actions?", default=False
+        )
+    else:
+        prompt.assert_not_called()
     if mode != "yes":
         create.assert_not_called()
         comment.assert_not_called()
@@ -310,6 +318,192 @@ def test_apply_pr_execution_read_error_is_one(publication_env, mocker):
     publication_env[3].assert_not_called()
 
 
+def assert_publication_refused(publication_env):
+    for mutation in publication_env[1:]:
+        mutation.assert_not_called()
+    env = publication_env[0]
+    env[1].exec.assert_not_called()
+    env[4].assert_not_called()
+    assert not list(env[5].root.rglob("*.json"))
+
+
+def issue_edit(env):
+    files = env[2]["issue"].as_dict()
+    files["001.json"] = json.dumps({
+        "version": 1,
+        "actions": [{"type": "edit", "repo": ".", "issue": 42,
+                     "body": "New", "expected": {"body": "Body"}}],
+    })
+    env[2]["issue"] = store("issue", files)
+
+
+@pytest.mark.parametrize("kind", ["issue", "pr"])
+@pytest.mark.parametrize("late", [False, True])
+def test_apply_target_staleness_is_validation(publication_env, mocker, kind, late):
+    from dataclasses import replace
+    from jailbee import issue_github
+
+    env = publication_env[0]
+    if kind == "issue":
+        issue_edit(env)
+
+    def change():
+        if kind == "issue":
+            issue_github.get_issue.return_value = replace(
+                issue_github.get_issue.return_value, body="Moved"
+            )
+        else:
+            env[1].config_get.side_effect = lambda c, key: (
+                "43" if key == "user.jailbee.pr" else None
+            )
+
+    if not late:
+        change()
+
+    def confirm(*args, **kwargs):
+        change()
+        return True
+
+    prompt = mocker.patch("typer.confirm", side_effect=confirm)
+    result = CliRunner().invoke(app, ["outbox", "apply", "feature", f"{kind}/001.json"])
+    assert result.exit_code == 2, result.output
+    assert result.stderr
+    assert prompt.call_count == int(late)
+    assert_publication_refused(publication_env)
+
+
+@pytest.mark.parametrize("kind", ["issue", "pr"])
+def test_apply_content_changed_during_confirmation_is_validation(publication_env, mocker, kind):
+    env = publication_env[0]
+
+    def confirm(*args, **kwargs):
+        files = env[2][kind].as_dict()
+        payload = json.loads(files["001.json"])
+        payload["actions"][0]["body"] = "Changed after approval"
+        files["001.json"] = json.dumps(payload)
+        env[2][kind] = store(kind, files)
+        return True
+
+    mocker.patch("typer.confirm", side_effect=confirm)
+    result = CliRunner().invoke(app, ["outbox", "apply", "feature", f"{kind}/001.json"])
+    assert result.exit_code == 2, result.output
+    assert "refresh" in result.output
+    assert_publication_refused(publication_env)
+
+
+@pytest.mark.parametrize("change", ["body", "missing", "identity"])
+def test_apply_final_domain_validation_is_two(publication_env, mocker, change):
+    from dataclasses import replace
+    from jailbee import issue_outbox
+
+    env = publication_env[0]
+    armed = False
+    reached = []
+    read = issue_outbox.read_issue_outbox
+    identify = issue_outbox.container_identity
+
+    def final_read(*args, **kwargs):
+        if armed and change != "identity":
+            reached.append(change)
+            files = env[2]["issue"].as_dict()
+            if change == "missing":
+                files.pop("001.json")
+            else:
+                files["body.md"] = "Changed at final authoritative read"
+            env[2]["issue"] = store("issue", files)
+        return read(*args, **kwargs)
+
+    def final_identity(*args, **kwargs):
+        value = identify(*args, **kwargs)
+        if armed and change == "identity":
+            reached.append(change)
+            return replace(value, created_at="replacement")
+        return value
+
+    def confirm(*args, **kwargs):
+        nonlocal armed
+        armed = True
+        return True
+
+    mocker.patch.object(issue_outbox, "read_issue_outbox", side_effect=final_read)
+    mocker.patch.object(issue_outbox, "container_identity", side_effect=final_identity)
+    mocker.patch("typer.confirm", side_effect=confirm)
+    result = CliRunner().invoke(app, ["outbox", "apply", "feature", "issue/001.json"])
+    assert result.exit_code == 2, result.output
+    assert reached == [change]
+    assert result.stderr
+    assert_publication_refused(publication_env)
+
+
+@pytest.mark.parametrize("boundary, late", [
+    ("login", False), ("issue", False), ("labels", False), ("outbox", False),
+    ("pr-read", False), ("pr-login", False),
+    ("issue", True), ("outbox", True), ("pr-read", True),
+])
+def test_apply_transport_failure_has_safe_execution_diagnostic(publication_env, mocker, boundary, late):
+    from jailbee import issue_github, issue_outbox, pr
+    from jailbee.outbox_io import OutboxReadError
+
+    env = publication_env[0]
+    kind = "pr" if boundary.startswith("pr-") else "issue"
+    if boundary == "issue":
+        issue_edit(env)
+    failure = "transport [bold]down[/bold]\x1b\r"
+    owner, name, error = {
+        "login": (issue_github, "current_login", issue_github.IssueGithubReadError),
+        "issue": (issue_github, "get_issue", issue_github.IssueGithubReadError),
+        "labels": (issue_github, "list_labels", issue_github.IssueGithubReadError),
+        "outbox": (issue_outbox, "read_text_outbox", OutboxReadError),
+        "pr-read": (pr, "resolve_pr", pr.PrError),
+        "pr-login": (pr, "gh_login", pr.PrError),
+    }[boundary]
+
+    def fail():
+        mocker.patch.object(owner, name, side_effect=error(failure))
+
+    if not late:
+        fail()
+
+    def confirm(*args, **kwargs):
+        fail()
+        return True
+
+    prompt = mocker.patch("typer.confirm", side_effect=confirm)
+    result = CliRunner().invoke(app, ["outbox", "apply", "feature", f"{kind}/001.json"])
+    assert result.exit_code == 1, result.output
+    assert "transport [bold]down[/bold]" in result.stderr
+    assert "\x1b" not in result.stderr and "\r" not in result.stderr
+    assert prompt.call_count == int(late)
+    assert_publication_refused(publication_env)
+
+
+@pytest.mark.parametrize("kind", ["issue", "pr"])
+def test_apply_mutation_failure_is_execution_and_retains_progress(publication_env, kind):
+    from jailbee import issue_github, pr
+    from jailbee.outbox_io import journal_key
+
+    env, create, comment, review = publication_env
+    if kind == "issue":
+        create.side_effect = issue_github.IssueGithubMutationError("secret detail", uncertain=True)
+    else:
+        review.side_effect = pr.PrError("write [bold]failed[/bold]\x1b")
+    result = CliRunner().invoke(app, ["outbox", "apply", "feature", f"{kind}/001.json", "-y"])
+    assert result.exit_code == 1, result.output
+    assert "\x1b" not in result.stderr
+    env[1].exec.assert_not_called()
+    if kind == "issue":
+        assert "secret detail" not in result.output
+        assert "outcome is uncertain" in result.stderr
+        assert env[5].load(journal_key(IDENTITY, "001.json")).actions[0].state == "uncertain"
+        comment.assert_not_called()
+        review.assert_not_called()
+    else:
+        assert "write [bold]failed[/bold]" in result.stderr
+        assert "re-running skips what landed" in result.output
+        create.assert_not_called()
+        comment.assert_not_called()
+
+
 @pytest.mark.parametrize("kind", ["issue", "pr"])
 def test_apply_confirmation_rechecks_scope(publication_env, mocker, kind):
     from jailbee.remote_ssh.repo_scope import RemoteRepoScope
@@ -328,6 +522,155 @@ def test_apply_confirmation_rechecks_scope(publication_env, mocker, kind):
     for mutation in publication_env[1:]:
         mutation.assert_not_called()
     publication_env[0][1].exec.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", ["issue", "pr"])
+def test_apply_scope_refusal_precedes_local_reads(publication_env, mocker, kind):
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+
+    mocker.patch("jailbee.remote_ssh.repo_scope.scope_for_session",
+                 return_value=RemoteRepoScope(frozenset({"acme"})))
+    result = CliRunner().invoke(app, ["outbox", "apply", "feature", f"{kind}/001.json", "-y"])
+    assert result.exit_code == 2, result.output
+    publication_env[0][3].assert_not_called()
+    assert_publication_refused(publication_env)
+
+
+@pytest.mark.parametrize("kind", ["issue", "pr"])
+def test_apply_confirmation_reloads_target_config(publication_env, mocker, kind):
+    env = publication_env[0]
+    changed = env[0].model_copy(update={
+        "container_user": env[0].container_user.model_copy(update={"uid": 2345})
+    })
+    loader = mocker.patch("jailbee.config.load_repo_config", return_value=env[0])
+
+    def confirm(*args, **kwargs):
+        loader.return_value = changed
+        return True
+
+    mocker.patch("typer.confirm", side_effect=confirm)
+    result = CliRunner().invoke(app, ["outbox", "apply", "feature", f"{kind}/001.json"])
+    assert result.exit_code == 2, result.output
+    assert "target config changed" in result.stderr
+    assert_publication_refused(publication_env)
+
+
+@pytest.mark.parametrize("kind", ["issue", "pr"])
+def test_apply_inspected_revision_refuses_drift_before_remote_gate(publication_env, mocker, kind):
+    from jailbee import issue_github, pr
+
+    shown = CliRunner().invoke(app, ["outbox", "show", "feature", f"{kind}/001.json", "-o", "json"])
+    assert shown.exit_code == 0, shown.output
+    token = json.loads(shown.stdout)["proposal"]["revision"]
+    env = publication_env[0]
+    files = env[2][kind].as_dict()
+    payload = json.loads(files["001.json"])
+    payload["actions"][0]["body"] = "Changed since inspection"
+    files["001.json"] = json.dumps(payload)
+    env[2][kind] = store(kind, files)
+    prompt = mocker.patch("typer.confirm", side_effect=AssertionError("stale token prompted"))
+    result = CliRunner().invoke(app, ["outbox", "apply", "feature", f"{kind}/001.json",
+                                      "--revision", token, "-y"])
+    assert result.exit_code == 2, result.output
+    assert "refresh" in result.stderr
+    issue_github.current_login.assert_not_called()
+    pr.resolve_pr.assert_not_called()
+    prompt.assert_not_called()
+    assert_publication_refused(publication_env)
+
+
+@pytest.mark.parametrize("kind", ["issue", "pr"])
+def test_apply_read_only_plan_runs_one_domain_preflight(publication_env, kind):
+    from jailbee import issue_github, pr
+
+    result = CliRunner().invoke(app, ["outbox", "apply", "feature", f"{kind}/001.json", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert "Dry run" in result.output
+    if kind == "issue":
+        issue_github.current_login.assert_called_once()
+        issue_github.get_issue.assert_called_once()
+        issue_github.list_labels.assert_called_once()
+    else:
+        pr.resolve_pr.assert_called_once()
+    assert_publication_refused(publication_env)
+
+
+@pytest.mark.parametrize("kind", ["issue", "pr"])
+def test_apply_uses_target_owned_config_before_local_reads(publication_env, mocker, make_cfg, tmp_path, kind):
+    from jailbee import git
+    from jailbee.outbox import io
+    from tests.test_outbox_commands import register
+
+    env = publication_env[0]
+    caller_root = tmp_path / "caller"
+    caller_root.mkdir()
+    caller = make_cfg(caller_root, container_prefix="caller")
+    target = env[0].model_copy(update={
+        "container_user": env[0].container_user.model_copy(update={"uid": 2345})
+    })
+    register("acme", target.repo_root)
+    mocker.patch("jailbee.config.load_repo_config", side_effect=lambda root: (
+        caller if root == caller_root else target
+    ))
+    mocker.patch("jailbee.config.load_config", return_value=caller)
+    reads = []
+
+    def read(i, c, k, **kwargs):
+        assert kwargs["uid"] == 2345
+        assert c == "acme-feature"
+        reads.append(k)
+        return env[2][k]
+
+    mocker.patch.object(service, "read_store", side_effect=read)
+    mocker.patch.object(io, "read_store", side_effect=read)
+    result = CliRunner().invoke(app, ["outbox", "apply", "acme-feature", f"{kind}/001.json",
+                                      "--config", "caller.yaml", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert set(reads) == {"issue", "pr"}
+    assert {call.args[0] for call in git.get_remote_url.call_args_list} == {target.repo_root}
+    assert_publication_refused(publication_env)
+
+
+@pytest.mark.parametrize("kind", ["issue", "pr"])
+def test_apply_retry_preserves_recorded_receipt_and_only_confirms_pending(publication_env, mocker, kind):
+    from jailbee import issue_github, pr
+    from jailbee.outbox_io import journal_key
+
+    env, create, comment, review = publication_env
+    if kind == "issue":
+        comment.side_effect = issue_github.IssueGithubMutationError("timeout", uncertain=True)
+        first = CliRunner().invoke(app, ["outbox", "apply", "feature", "issue/001.json", "-y"])
+        assert first.exit_code == 1, first.output
+        journal = env[5].load(journal_key(IDENTITY, "001.json"))
+        assert [(a.index, a.state, a.issue) for a in journal.actions] == [
+            (0, "applied", 73), (1, "uncertain", None)
+        ]
+        create.reset_mock()
+        comment.reset_mock()
+        retry = CliRunner().invoke(app, ["outbox", "apply", "feature", "issue/001.json", "-y"])
+        assert retry.exit_code == 2, retry.output
+        assert "uncertain" in retry.stderr
+        create.assert_not_called()
+        comment.assert_not_called()
+        env[1].exec.assert_not_called()
+        assert env[5].load(journal_key(IDENTITY, "001.json")) == journal
+    else:
+        files = env[2][kind].as_dict()
+        payload = json.loads(files["001.json"])
+        payload["actions"].append({"type": "comment", "body": "Still pending"})
+        files["001.json"] = json.dumps(payload)
+        files["001.json.progress.json"] = json.dumps({
+            "applied": [0], "urls": {"0": "https://github.com/acme/repo/pull/42#review-1"}
+        })
+        env[2][kind] = store(kind, files)
+        pending = mocker.patch.object(pr, "add_issue_comment", return_value="receipt")
+        prompt = mocker.spy(typer, "confirm")
+        retry = CliRunner().invoke(app, ["outbox", "apply", "feature", "pr/001.json"], input="y\n")
+        assert retry.exit_code == 0, retry.output
+        prompt.assert_called_once_with("Publish 1 pending actions?", default=False)
+        review.assert_not_called()
+        pending.assert_called_once_with(env[0].repo_root, 42, "Still pending", repo="acme/repo")
+        assert "Already published (skipped): [0]" in retry.output
 
 
 @pytest.mark.parametrize("name", ["ls", "show", "drop", "apply", "browse"])

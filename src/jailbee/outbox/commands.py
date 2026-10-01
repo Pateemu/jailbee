@@ -205,21 +205,14 @@ def apply_selected(
     )
     if view.error:
         raise OutboxError(f"{proposal}: {view.error}")
-    _validate_publication(target, incus, container, proposal, options, journal_store)
-    boundary_errors: list[OutboxError] = []
-
     def checked_confirm(total: int) -> bool:
         accepted = confirm(total)
         if accepted:
-            try:
-                _recheck_target(cfg, incus, container.name, target)
-            except OutboxError as exc:
-                boundary_errors.append(exc)
-                raise
+            _recheck_target(cfg, incus, container.name, target)
         return accepted
 
     _recheck_target(cfg, incus, container.name, target)
-    status = publish_selected(
+    return publish_selected(
         target,
         incus,
         container.name,
@@ -228,48 +221,8 @@ def apply_selected(
         options=options,
         confirm=checked_confirm,
         expected_revision=view.revision,
+        raise_errors=True,
     )
-    if boundary_errors:
-        raise boundary_errors[0]
-    return status
-
-
-def _validate_publication(
-    cfg: Config,
-    incus: Incus,
-    container: ContainerView,
-    proposal: ProposalId,
-    options: PublishOptions,
-    journal_store: JournalStore,
-) -> None:
-    # The selected publisher deliberately returns a legacy failure count. Run
-    # public domain preflight to preserve validation exit 2 without parsing its
-    # printed diagnostics. Publication still repeats every gate under its lock.
-    from jailbee import issue_outbox, pr, pr_outbox
-
-    snapshot = next(s for s in container.stores if s.kind == proposal.kind)
-    try:
-        if proposal.kind == "issue":
-            issue_outbox.prepare_batch(
-                cfg,
-                incus,
-                container.name,
-                (proposal.name,),
-                uid=cfg.container_user.uid,
-                journal_store=journal_store,
-            )
-        else:
-            files = snapshot.as_dict()
-            manifest = pr_outbox.parse_manifest(proposal.name, files[proposal.name], files)
-            target = pr_outbox.resolve_target(
-                cfg, incus, container.name, manifest, force=options.force
-            )
-            if target.pr is None:
-                raise OutboxError("proposal awaits a recorded PR; create or adopt it first")
-    except (issue_outbox.IssueGateError, pr_outbox.GateError, pr_outbox.ManifestError) as exc:
-        raise OutboxError(str(exc)) from exc
-    except pr.PrError as exc:
-        raise OutboxExecutionError(str(exc)) from exc
 
 
 def print_lines(lines: Sequence[str]) -> None:
