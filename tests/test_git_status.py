@@ -1135,7 +1135,7 @@ def test_probe_counts_only_root_manifests_and_preserves_unknown_stores(
     other = stores["issue" if store == "pr" else "pr"]
     other.mkdir()
     for index in range(3):
-        (other / f"{index}.json").write_text('{}')
+        (other / f"{index}.json").write_text("{}")
     outbox = stores[store]
     denied = ""
     denied_flag = ""
@@ -1152,21 +1152,21 @@ def test_probe_counts_only_root_manifests_and_preserves_unknown_stores(
     elif state in ("symlink", "dangling-symlink"):
         outbox.symlink_to(other if state == "symlink" else tmp_path / "absent")
     elif state == "file":
-        outbox.write_text('{}')
+        outbox.write_text("{}")
     elif state != "missing":
         outbox.mkdir()
         if state == "entries":
             (outbox / "proposal with\nnewline.json").write_text('{"actions": [1, 2, 3]}')
-            (outbox / "invalid.json").write_text('not parsed by the cheap counter')
-            (outbox / "proposal.progress.json").write_text('{}')
+            (outbox / "invalid.json").write_text("not parsed by the cheap counter")
+            (outbox / "proposal.progress.json").write_text("{}")
             (outbox / "directory.json").mkdir()
-            (outbox / "directory.json" / "nested.json").write_text('{}')
+            (outbox / "directory.json" / "nested.json").write_text("{}")
             (outbox / "link.json").symlink_to(outbox / "invalid.json")
             (outbox / "broken.json").symlink_to(outbox / "missing.json")
             os.mkfifo(outbox / "pipe.json")
-            (outbox / "publication.log").write_text('log')
+            (outbox / "publication.log").write_text("log")
         elif state in ("unreadable", "unsearchable"):
-            (outbox / "proposal.json").write_text('{}')
+            (outbox / "proposal.json").write_text("{}")
             denied = str(outbox)
             denied_flag = "-r" if state == "unreadable" else "-x"
 
@@ -1178,21 +1178,21 @@ def test_probe_counts_only_root_manifests_and_preserves_unknown_stores(
         '  "rev-parse HEAD") printf "headsha\\n" ;;\n'
         '  "rev-parse --git-dir") printf ".git\\n" ;;\n'
         '  *"--verify"*) exit 1 ;;\n'
-        'esac\n'
+        "esac\n"
     )
     git_bin.chmod(0o755)
 
     def exec_snippet(_name, args, *, env, **_kwargs):
         # Inject access-test results, not chmod-only assertions: root bypasses
         # permission bits. All other filesystem tests remain real Bash tests.
-        access_checks = r'''
+        access_checks = r"""
 [() {
     if builtin [ "$2" = "$DENIED_DIR" ] && builtin [ "$1" = "$DENIED_FLAG" ]; then
         return 1
     fi
     builtin [ "$@"
 }
-'''
+"""
         completed = subprocess.run(
             [args[0], args[1], access_checks + args[2]],
             env={
