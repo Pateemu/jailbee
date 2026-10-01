@@ -206,6 +206,26 @@ def test_accounts_state_navigation_and_render() -> None:
     assert "team" in text and "a@x.io#org12345" in text and "parked" in text
 
 
+@pytest.mark.parametrize("width", [70, 90, 110])
+def test_render_accounts_keeps_the_short_columns_beside_long_values(width: int) -> None:
+    """A long login and repo list must squeeze ACCOUNT and USED BY, not GROUP/AGENT/STATE."""
+    long_row = da.AccountRow(
+        "claude",
+        "team",
+        "tuomas.airaksinen@gisgro.com#org-3f9a2c71",
+        "live",
+        ("gisgro-incus-env", "other-repo"),
+        ("gisgro-incus-env-help", "other-main"),
+    )
+    console = Console(width=width, record=True)
+    console.print(da.render_accounts(da.AccountsState((long_row,))))
+    lines = console.export_text().splitlines()
+    header = next(line for line in lines if "ACCOUNT" in line)
+    assert all(name in header for name in ("GROUP", "AGENT", "STATE", "USED BY"))
+    row = next(line for line in lines if "tuomas" in line)
+    assert "team" in row and "claude" in row and "live" in row
+
+
 def test_render_accounts_empty_and_markup_safe() -> None:
     console = Console(width=100, record=True)
     console.print(da.render_accounts(da.AccountsState(())))

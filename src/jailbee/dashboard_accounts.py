@@ -37,6 +37,11 @@ ACCOUNTS_HINT = (
     "[bold]n[/bold] new group  ·  [bold]Esc[/bold] close"
 )
 
+# Column index -> widest a fixed-width column may grow (GROUP, AGENT, STATE).
+_FIXED_COLUMNS = {0: 20, 1: 12, 3: 8}
+# ACCOUNT and USED BY share the remaining width in these proportions.
+_FLEX_RATIOS = {2: 1, 4: 1}
+
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -270,12 +275,29 @@ def selected_account(state: AccountsState) -> AccountRow | None:
 
 def render_accounts(state: AccountsState) -> RenderableType:
     table = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
-    for header in ("GROUP", "AGENT", "ACCOUNT", "STATE", "USED BY"):
-        table.add_column(header, overflow="ellipsis", no_wrap=True)
-    for i, row in enumerate(state.rows):
+    cells_by_row = [
+        (
+            row.group or "-",
+            row.agent,
+            row.account or "-",
+            row.state,
+            ", ".join((*row.repos, *row.containers)) or "-",
+        )
+        for row in state.rows
+    ]
+    for column, header in enumerate(("GROUP", "AGENT", "ACCOUNT", "STATE", "USED BY")):
+        # No-wrap columns all shrink proportionally, so a long login or repo list
+        # squeezes the short ones to nothing. GROUP, AGENT and STATE therefore get
+        # a fixed width that fits their content; ACCOUNT and USED BY take the rest.
+        width = None
+        if column in _FIXED_COLUMNS:
+            width = max([len(header), *(len(cells[column]) for cells in cells_by_row)])
+            width = min(width, _FIXED_COLUMNS[column])
+        table.add_column(
+            header, overflow="ellipsis", no_wrap=True, width=width, ratio=_FLEX_RATIOS.get(column)
+        )
+    for i, cells in enumerate(cells_by_row):
         style = CURSOR_STYLE if i == state.index else ""
-        used_by = ", ".join((*row.repos, *row.containers)) or "-"
-        cells = (row.group or "-", row.agent, row.account or "-", row.state, used_by)
         table.add_row(*(Text(c) for c in cells), style=style)
     body: RenderableType = table
     if not state.rows:
