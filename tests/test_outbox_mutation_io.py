@@ -145,6 +145,41 @@ def fake_binary(tmp_path, monkeypatch, name, script):
     monkeypatch.setenv("PATH", str(folder) + os.pathsep + os.environ["PATH"])
 
 
+@pytest.mark.parametrize("command", ["mktemp", "stat"])
+def test_initialization_warning_refuses_before_mutation(mocker, tmp_path, monkeypatch, command):
+    env = local_mutator(mocker, tmp_path)
+    (env[2] / "001.json").write_text("original")
+    import shlex
+    marker = shlex.quote(str(tmp_path / "first-call"))
+    fake_binary(
+        tmp_path, monkeypatch, command,
+        f'if [[ ! -e {marker} ]]; then touch {marker}; '
+        'printf "initialization warning" >&2; fi\n'
+        f'exec /usr/bin/{command} "$@"\n',
+    )
+    with pytest.raises(OutboxExecutionError):
+        mutate(env, {"001.json": "original"})
+    assert (env[2] / "001.json").read_text() == "original"
+    assert not list(env[2].glob(".outbox-*.tmp"))
+
+
+def test_cleanup_warning_is_not_success(mocker, tmp_path, monkeypatch):
+    env = local_mutator(mocker, tmp_path)
+    (env[2] / "001.json").write_text("original")
+    # Inject stderr at the real cleanup command, without rewriting the helper.
+    hook = tmp_path / "hook"
+    hook.write_text(
+        "set -T\n"
+        "trap 'if [[ $BASH_COMMAND == *\"/bin/rm -f\"* ]]; then "
+        "printf \"cleanup warning\" >&2; fi' DEBUG\n"
+    )
+    monkeypatch.setenv("BASH_ENV", str(hook))
+    with pytest.raises(OutboxExecutionError):
+        mutate(env, {"001.json": "original"})
+    assert (env[2] / "001.json").read_text() == "replacement"
+    assert not list(env[2].glob(".outbox-*.tmp"))
+
+
 def test_temp_write_failure_retains_target(mocker, tmp_path, monkeypatch):
     env = local_mutator(mocker, tmp_path)
     (env[2] / "001.json").write_text("original")

@@ -171,6 +171,19 @@ def test_empty_old_journal_not_reset(mocker, make_cfg, tmp_path, count):
     assert env[7].load(key) == before
 
 
+@pytest.mark.parametrize("count", [1, 3, 9])
+def test_whole_archive_request_keeps_empty_old_journal(mocker, make_cfg, tmp_path, count):
+    env = setup_service(mocker, make_cfg, tmp_path)
+    key = journal_key(IDENTITY, "001.json")
+    before = env[7].create(key, "b" * 64, count)
+    raw = env[7]._path(key).read_bytes()
+    plan = preview(env, DeleteSelection(archive_journal=True))
+    assert execute(env, plan) == plan.delete_names
+    assert env[7].load(key) == before
+    assert env[7]._path(key).read_bytes() == raw
+    assert not (env[7]._path(key).parent / "archive").exists()
+
+
 def test_unreadable_journal_blocks(mocker, make_cfg, tmp_path):
     env = setup_service(mocker, make_cfg, tmp_path)
     key = journal_key(IDENTITY, "001.json")

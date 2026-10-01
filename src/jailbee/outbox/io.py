@@ -223,10 +223,26 @@ deletes=("$@")
 removed=()
 tmp=; err=
 cleanup() {
-    [[ -z "$tmp" ]] || /bin/rm -f -- "$tmp"
-    [[ -z "$err" ]] || /bin/rm -f -- "$err"
+    local failed=0
+    [[ -z "$tmp" ]] || /bin/rm -f -- "$tmp" || failed=1
+    [[ -z "$err" ]] || /bin/rm -f -- "$err" || failed=1
+    return "$failed"
 }
 trap cleanup EXIT
+# Initialization has no error file yet. Preserve single-line stdout separately
+# from stderr using a trailing status/value frame, including zero-exit warnings.
+initial_command() {
+    local packet tail code
+    packet=$({
+        value=$("$@")
+        code=$?
+        printf '\n%d\n%s' "$code" "$value"
+    } 2>&1)
+    initial_value=${packet##*$'\n'}
+    tail=${packet%$'\n'*}
+    code=${tail##*$'\n'}
+    [[ "$code" == 0 && "${tail%$'\n'*}" == "" ]]
+}
 path_check() {
     local path=/ component
     local -a components
@@ -297,11 +313,22 @@ work() {
     [[ ! -s "$err" ]]
 }
 status=error
-if path_check; then
-    directory_identity=$(stat -c '%d:%i' -- "$store")
-    err=$(mktemp -- "$store/.outbox-XXXXXXXX.tmp")
-    if [[ -n "$err" ]] && regular "$err" && work 2>"$err"; then status=ok; fi
+if path_check && initial_command stat -c '%d:%i' -- "$store"; then
+    directory_identity=$initial_value
+    if initial_command mktemp -- "$store/.outbox-XXXXXXXX.tmp"; then
+        err=$initial_value
+        if regular "$err" 2>"$err" && [[ ! -s "$err" ]] && work 2>>"$err"; then
+            status=ok
+        fi
+    else
+        # A warning may accompany a successfully created owned temp path.
+        err=$initial_value
+    fi
 fi
+# Cleanup is part of the result: no success receipt precedes its exit/stderr.
+cleanup_packet=$({ cleanup; printf '\n%d' "$?"; } 2>&1)
+trap - EXIT
+[[ "$cleanup_packet" == $'\n0' ]] || status=error
 printf 'v1\0%s\0%d\0' "$status" "${#removed[@]}"
 for name in "${removed[@]}"; do printf '%s\0' "$name"; done
 """

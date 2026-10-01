@@ -98,8 +98,10 @@ def execute_delete(
             )
             if removed != plan.delete_names:
                 raise OutboxExecutionError("incomplete deletion; journal retained")
-            if plan.selection.archive_journal and journal_store.load(key) is not None:
-                journal_store.archive(key)
+            if plan.selection.archive_journal:
+                journal = journal_store.load(key)
+                if journal is not None and journal.actions:
+                    journal_store.archive(key)
             return removed
     except (IncusError, JournalError) as exc:
         raise OutboxExecutionError(str(exc)) from exc
