@@ -1718,6 +1718,97 @@ def test_run_wires_config_edit_signal(mocker):
     window.configEditRequested.connect.assert_called_once_with(controller.on_config_edit)
 
 
+@pytest.mark.parametrize("operation", ["load", "delete"])
+def test_run_persistence_error_still_joins_outbox_and_stops_refresh(qtbot, mocker, make_cfg, tmp_path, operation):
+    from threading import Event, Thread
+
+    from jailbee.dashboard import RepoTarget
+    from jailbee.db.models import GuiState
+    from jailbee.db.view_prefs import ViewState
+    from jailbee.outbox_io import JournalStore
+    from jailbee.qtui import outbox
+    from tests.outbox_support import IDENTITY
+    from tests.test_qtui_outbox import select, views
+
+    cfg = make_cfg(tmp_path)
+    view = views(tmp_path)
+    entered, release, completed = Event(), Event(), Event()
+    controllers, requests, notifications = [], [], []
+    original_controller = qapp.AppController
+    mocker.patch.object(qapp, "QApplication")
+    fake_app = qapp.QApplication.instance.return_value
+    mocker.patch.object(qapp, "collect_repo_roots", return_value=[tmp_path])
+    window = MainWindow(git_enabled=False, interval=3)
+    qtbot.addWidget(window)
+    mocker.patch.object(qapp, "MainWindow", return_value=window)
+    mocker.patch.object(window, "show")  # Never open a user-display window.
+    refresh_thread = mocker.patch.object(qapp, "QThread").return_value
+    worker = mocker.patch.object(qapp, "RefreshWorker").return_value
+    worker.gather_once.return_value = []
+    mocker.patch.object(qapp, "PRIME_INTERVAL_SECONDS", 0)
+    mocker.patch("jailbee.db.get_engine", return_value=mocker.sentinel.engine)
+    mocker.patch.object(qapp, "seed_view_state", return_value=ViewState())
+    mocker.patch.object(qapp, "dashboard_config_migration_notice", return_value=None)
+    mocker.patch("jailbee.db.gui_state.load_gui_state", return_value=GuiState())
+    failure = OSError("disk full")
+    mocker.patch("jailbee.db.gui_state.save_gui_state", side_effect=failure)
+    mocker.patch.object(outbox.config_api, "load_repo_config", return_value=cfg)
+    mocker.patch.object(outbox.commands, "resolve_target", return_value=(cfg, IDENTITY.full_name))
+    mocker.patch.object(outbox, "Incus", return_value=mocker.Mock())
+    mocker.patch.object(outbox, "JournalStore", return_value=JournalStore(tmp_path / "journals"))
+    read = mocker.patch.object(outbox.service, "load_container", return_value=view)
+    mutation = mocker.patch.object(outbox.service, "execute_delete", return_value=())
+    mocker.patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes)
+
+    def controller_factory(*args, **kwargs):
+        controller = original_controller(*args, **kwargs)
+        controllers.append(controller)
+        return controller
+    mocker.patch.object(qapp, "AppController", side_effect=controller_factory)
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert release.wait(3)
+        completed.set()
+        return view if operation == "load" else ()
+
+    def event_loop():
+        controller = controllers[0]
+        controller._open_outbox(RepoTarget(cfg.repo_root, None), IDENTITY.full_name)
+        dialog = next(iter(controller._outboxes.values()))
+        qtbot.waitUntil(lambda: not dialog.busy)
+        dialog.changed.connect(lambda: notifications.append(QThread.currentThread()))
+        if operation == "load":
+            read.side_effect = blocked
+            dialog.refresh()
+        else:
+            mutation.side_effect = blocked
+            select(dialog, action=0, comment=0)
+            dialog.delete_selected()
+        qtbot.waitUntil(entered.is_set)
+        requests.append(dialog._request)
+        return 0
+    fake_app.exec.side_effect = event_loop
+    releaser = Thread(target=lambda: entered.wait(3) and release.wait(0.1) or release.set())
+    releaser.start()
+    try:
+        with pytest.raises(OSError) as caught:
+            qapp.run(mocker.Mock(), None, interval=3, git_interval=10, no_git=True)
+        assert caught.value is failure
+        assert completed.is_set()
+        assert not requests[0].isRunning()
+        assert not controllers[0]._outboxes
+        assert len(notifications) == (1 if operation == "delete" else 0)
+        assert all(thread is QThread.currentThread() for thread in notifications)
+        worker.request_stop.assert_called_once()
+        refresh_thread.quit.assert_called_once()
+        refresh_thread.wait.assert_called_once_with(2000)
+    finally:
+        release.set()
+        releaser.join(3)
+        controllers[0]._finish_outboxes()
+
+
 def test_run_fills_the_window_before_showing_it(mocker):
     """The Qt dashboard used to flash an empty window and populate it a
     gather later. `run()` now surveys the cheap tier synchronously and feeds

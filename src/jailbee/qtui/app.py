@@ -806,9 +806,13 @@ def run(
     try:
         return int(app.exec())
     finally:
-        controller.persist_on_close()
-        controller._finish_outboxes()
-        worker.request_stop()
-        worker.force()
-        thread.quit()
-        thread.wait(2000)
+        try:
+            controller.persist_on_close()
+        finally:
+            try:
+                controller._finish_outboxes()
+            finally:
+                worker.request_stop()
+                worker.force()
+                thread.quit()
+                thread.wait(2000)
