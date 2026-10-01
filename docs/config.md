@@ -2464,11 +2464,13 @@ for, unless `api_base` is set) and `params` (raw LiteLLM deployment parameters;
 keys that change the provider, endpoint or credential, such as `model`,
 `api_base`, `api_key` or `extra_headers`, are rejected there: use the route's own
 fields). A route's `egress`, like `litellm.egress`, reaches the proxy's allowlist
-whenever `jailbee apply` restarts an instance for another reason; an edit that
+whenever `jailbee apply` reloads or restarts an instance for another reason; an edit that
 changes nothing else needs `jailbee litellm up`. Profiles also accept `account` (from `accounts`; required when the
 profile maps a `chatgpt/` route) and `effort` as the default session effort, and `instructions` (model-policy text appended to Claude Code's system prompt; see [Profile instructions](litellm.md#profile-instructions)). `jailbee litellm up` renders changes
-and restarts the instance if needed; `jailbee apply` also re-renders the proxy
-and restarts the instances whose routes changed (`--no-restart` defers it), and
+and restarts the instance if needed; `jailbee apply` also re-renders the proxy,
+reloads route changes into the running instances (restarting only for secrets,
+`extra`, settings or an unconfirmed reload; `--no-restart` defers only the
+restarts), and
 synchronizes the gateway file/key into each running dev container.
 
 ### `remote.ssh`

@@ -717,8 +717,9 @@ are supported. A repo can override routes, profiles, `default_profile` and
 `autostart` in its host-local `~/.config/jailbee/repos/<prefix>.yaml` under
 `litellm:` (never in the committed repo config); edit it on the host with
 `jailbee config edit --local`, then run `jailbee apply` (`jailbee new` alone
-does not update the proxy; `apply --no-restart` defers the restart of changed
-proxy instances; an edit that only changes egress, such as a route's `egress`
+does not update the proxy; route and profile edits reload into the running proxy,
+and `apply --no-restart` defers only restarts (secrets, `extra`, settings, an
+unconfirmed reload); an edit that only changes egress, such as a route's `egress`
 list on an existing route or `litellm.egress`, needs `jailbee litellm up` because `apply` does not
 notice it). `claude-jb` gives Claude Code per-tier names such as
 `jb.codex.capable` (`jb.<profile>.<most-capable|capable|standard|cheap>`), not

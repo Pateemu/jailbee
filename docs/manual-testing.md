@@ -5137,3 +5137,15 @@ resources created by this approved rig. If the daemon, PTY, Qt dependency
 or approved rig is unavailable, report the exact omitted check as pending,
 not verified. Real-display and live GitHub publication remain separate,
 explicitly authorized checks.
+
+## LiteLLM live reload (host-unverified)
+
+1. `jailbee litellm up`, then `jailbee apply` in a repo with `litellm.enabled`.
+2. In a container start a long `claude-jb` turn.
+3. Edit `litellm.routes.<name>.context_window` (or an `effort`) in `global.yaml`; run `jailbee apply`.
+   Expect: "Reloaded the routes of LiteLLM instance(s) default without a restart."; the turn finishes.
+4. `incus exec jailbee-litellm -- cat /var/lib/jailbee-litellm/default/applied.json`
+   Expect `"error": null` and a `hot_digest` equal to `sha256sum` of the neighbouring `hot.json`.
+5. Rotate a secret in `secrets.env` and `apply`: expect a restart message (cold change).
+6. Break the reload on purpose (`incus exec jailbee-litellm -- chattr +i .../applied.json`, edit a route, `apply`):
+   expect "could not reload live (...); restarted it". Undo with `chattr -i`.

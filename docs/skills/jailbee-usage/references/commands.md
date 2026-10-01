@@ -78,8 +78,9 @@ the gateway. Plain `claude` remains native. Profile selection: flag, then
 `JAILBEE_LITELLM_PROFILE`, then `default_profile` (`codex`; the repo's
 host-local `litellm:` override may change it for that repo's containers).
 Overrides are edited on the host (`jailbee config edit --local`) and take effect
-with `jailbee apply`, which restarts only the proxy instances whose routes
-changed (`--no-restart` defers it). A profile's `instructions` text is appended to the session's system prompt; your own `--append-system-prompt[-file]` is merged after it. `litellm.autostart` starts the Claude
+with `jailbee apply`, which reloads route and profile changes into the running proxy and restarts an
+instance only for secrets, `extra`, settings or an unconfirmed reload
+(`--no-restart` defers only the restarts). A profile's `instructions` text is appended to the session's system prompt; your own `--append-system-prompt[-file]` is merged after it. `litellm.autostart` starts the Claude
 autostart window with `claude-jb`.
 
 ## Remote SSH
