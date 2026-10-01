@@ -5,6 +5,7 @@ from typer.testing import CliRunner
 
 from jailbee.cli import app
 from jailbee.global_config import GlobalConfig
+from jailbee.incus import IncusError
 from jailbee.remote_display import DisplayError, DisplayStatus
 
 
@@ -72,3 +73,23 @@ def test_status_stopped_prints_no_recipe(display):
     assert result.exit_code == 0, result.output
     assert "stopped" in result.output
     assert "ssh -N -L" not in result.output
+
+
+def test_down_reports_an_incus_error_and_exits_1(display):
+    display.patch("jailbee.remote_display.display_down", side_effect=IncusError("stop failed"))
+
+    result = CliRunner().invoke(app, ["display", "down"])
+
+    assert result.exit_code == 1
+    assert "stop failed" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_status_reports_an_incus_error_and_exits_1(display):
+    display.patch("jailbee.remote_display.display_status", side_effect=IncusError("incus gone"))
+
+    result = CliRunner().invoke(app, ["display", "status"])
+
+    assert result.exit_code == 1
+    assert "incus gone" in result.output
+    assert "Traceback" not in result.output

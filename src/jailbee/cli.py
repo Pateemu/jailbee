@@ -10736,18 +10736,22 @@ def display_up_cmd(
 @display_app.command("down")
 def display_down_cmd(config: ConfigOption = None) -> None:
     """Stop the shared RDP display and revoke SSH forwarding to it."""
-    from jailbee.incus import Incus
+    from jailbee.incus import Incus, IncusError
     from jailbee.remote_display import display_down
 
     _load_or_exit(config)
-    display_down(Incus())
+    try:
+        display_down(Incus())
+    except IncusError as e:
+        error(str(e))
+        raise typer.Exit(1) from e
     success("Shared display stopped")
 
 
 @display_app.command("status")
 def display_status_cmd(config: ConfigOption = None) -> None:
     """Show the shared display's status and, when running, how to connect."""
-    from jailbee.incus import Incus
+    from jailbee.incus import Incus, IncusError
     from jailbee.remote_display import (
         DisplayStatus,
         connection_info,
@@ -10757,7 +10761,11 @@ def display_status_cmd(config: ConfigOption = None) -> None:
 
     _load_or_exit(config)
     gcfg = _load_global()
-    status = display_status(Incus())
+    try:
+        status = display_status(Incus())
+    except IncusError as e:
+        error(str(e))
+        raise typer.Exit(1) from e
     info(f"Shared display: {status.value}")
     if status is DisplayStatus.RUNNING:
         for line in format_connection_info(connection_info(gcfg.remote.ssh.port)):
