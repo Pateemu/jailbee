@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING
 
 from jailbee import config as config_api
 from jailbee.config import ConfigError
-from jailbee.lifecycle import list_containers, resolve_container_name
+from jailbee.incus import IncusError
+from jailbee.lifecycle import list_containers
+from jailbee.outbox.io import READ_TIMEOUT
 from jailbee.outbox.delete import DeletePlan, DeleteSelection, plan_delete
 from jailbee.outbox.inspect import detail_json, overview_json, safe_text
 from jailbee.outbox.models import (
@@ -81,7 +83,12 @@ def _inventory(
     cfg: Config, incus: Incus, *, all_repos: bool
 ) -> tuple[list[ContainerInfo], dict[str, Path]]:
     scope = repo_scope.scope_for_session()
-    containers = list_containers(cfg, incus, all_repos=all_repos, scope=scope)
+    try:
+        containers = list_containers(
+            cfg, incus, all_repos=all_repos, scope=scope, timeout=READ_TIMEOUT
+        )
+    except IncusError as exc:
+        raise OutboxExecutionError(str(exc)) from exc
     return containers, _repo_roots(cfg, scope)
 
 
@@ -98,23 +105,21 @@ def resolve_target(cfg: Config, incus: Incus, name: str) -> tuple[Config, str]:
     a missing root, failed load or changed prefix cannot fall back to the caller.
     """
     containers, roots = _inventory(cfg, incus, all_repos=True)
-    item = _resolve_visible(cfg, incus, name, containers)
+    item = _resolve_visible(cfg, name, containers)
     target = _own_config(item.repo, roots)
     _running(item)
     return target, item.name
 
 
 def _resolve_visible(
-    cfg: Config, incus: Incus, name: str, containers: Sequence[ContainerInfo]
+    cfg: Config, name: str, containers: Sequence[ContainerInfo]
 ) -> ContainerInfo:
-    try:
-        full = resolve_container_name(cfg, incus, name)
-    except ValueError as exc:
-        raise OutboxError(str(exc)) from exc
-    item = next((c for c in containers if c.name == full), None)
-    if item is None:
-        raise OutboxError(f"no such container in the visible repository scope: {name}")
-    return item
+    # Only the scoped inventory can supply candidates; exact full names win.
+    for candidate in (name, f"{cfg.container_prefix}-{name}"):
+        item = next((c for c in containers if c.name == candidate), None)
+        if item is not None:
+            return item
+    raise OutboxError(f"no such container in the visible repository scope: {name}")
 
 
 def discover(
@@ -125,7 +130,7 @@ def discover(
         raise OutboxError("pass a container or --all-repos, not both")
     containers, roots = _inventory(cfg, incus, all_repos=all_repos or name is not None)
     if name is not None:
-        containers = [_resolve_visible(cfg, incus, name, containers)]
+        containers = [_resolve_visible(cfg, name, containers)]
     result = []
     for item in containers:
         try:

@@ -199,6 +199,99 @@ def test_mutation_callback_rechecks_scope_after_confirmation(env, mocker):
     mutation.assert_not_called()
 
 
+def test_inventory_timeout_is_typed_before_config_or_store_read(env, mocker):
+    import subprocess
+
+    from jailbee.incus import Incus
+    from jailbee.outbox.commands import resolve_target
+    from jailbee.outbox.models import OutboxExecutionError
+
+    cfg, _, loader, reader, _, _ = env
+
+    def expire(argv, **kwargs):
+        assert 0 < (kwargs.get("timeout") or 0) <= 30
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    mocker.patch("jailbee.incus.subprocess.run", side_effect=expire)
+    with pytest.raises(OutboxExecutionError, match="timed out"):
+        resolve_target(cfg, Incus(), "feature")
+    loader.assert_not_called()
+    reader.assert_not_called()
+
+
+@pytest.mark.parametrize("name", ["feature", "acme-feature"])
+def test_resolution_uses_inventory_without_exists(env, name):
+    from jailbee.outbox.commands import resolve_target
+
+    cfg, incus, _, _, _, _ = env
+    incus.exists.side_effect = AssertionError("redundant unbounded existence query")
+    target, full = resolve_target(cfg, incus, name)
+    assert target is cfg and full == "acme-feature"
+    assert incus.list_containers.call_count == 1
+
+
+def test_excluded_exact_candidate_never_bypasses_scoped_inventory(env, mocker):
+    from jailbee.outbox.commands import resolve_target
+    from jailbee.remote_ssh.repo_scope import RemoteRepoScope
+
+    cfg, incus, _, reader, _, _ = env
+    incus.list_containers.return_value.append(
+        {"name": "feature", "profiles": ["excluded-base"], "status": "Running"}
+    )
+    mocker.patch(
+        "jailbee.remote_ssh.repo_scope.scope_for_session",
+        return_value=RemoteRepoScope(frozenset({"excluded"})),
+    )
+    incus.exists.side_effect = AssertionError("unscoped lookup")
+    assert resolve_target(cfg, incus, "feature") == (cfg, "acme-feature")
+    with pytest.raises(OutboxError):
+        resolve_target(cfg, incus, "excluded-feature")
+    reader.assert_not_called()
+
+
+def test_exact_visible_name_wins_over_prefixed_candidate(env):
+    from jailbee.outbox.commands import resolve_target
+
+    cfg, incus, _, _, _, _ = env
+    incus.list_containers.return_value.append(
+        {"name": "feature", "profiles": ["acme-base"], "status": "Running"}
+    )
+    incus.exists.side_effect = AssertionError("redundant unbounded existence query")
+    assert resolve_target(cfg, incus, "feature") == (cfg, "feature")
+
+
+@pytest.mark.parametrize("drift", ["prefix", "root"])
+def test_target_identity_drift_prevents_reads(env, tmp_path, drift):
+    from jailbee.outbox.commands import discover, resolve_target
+
+    cfg, incus, loader, reader, _, journals = env
+    loader.return_value = cfg.model_copy(
+        update={"container_prefix": "other"} if drift == "prefix" else {"repo_root": tmp_path}
+    )
+    with pytest.raises(OutboxError, match="identity changed"):
+        resolve_target(cfg, incus, "feature")
+    views = discover(cfg, incus, None, all_repos=False, journal_store=journals)
+    assert not views[0].available and "identity changed" in views[0].error
+    reader.assert_not_called()
+
+
+def test_stale_inventory_cannot_authorize_deletion(env):
+    from jailbee.outbox.commands import drop_selected
+    from jailbee.outbox.delete import DeleteSelection
+    from jailbee.outbox.models import ProposalId
+
+    cfg, incus, _, _, mutation, journals = env
+    original = incus.list_containers.return_value
+    changed = [{**original[0], "created_at": "2026-10-01T12:00:00Z"}]
+    incus.list_containers.side_effect = [original] * 4 + [changed] * 4
+    with pytest.raises(OutboxError, match="changed"):
+        drop_selected(
+            cfg, incus, "feature", ProposalId("issue", "001.json"),
+            selection=DeleteSelection(), journal_store=journals, confirm=lambda plan: True,
+        )
+    mutation.assert_not_called()
+
+
 def test_mutation_callback_reloads_target_config(env):
     from jailbee.outbox.commands import drop_selected
     from jailbee.outbox.delete import DeleteSelection

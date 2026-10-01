@@ -17,6 +17,9 @@ if TYPE_CHECKING:
 
 _FALLBACK_BRANCH = "main"
 
+# Local config discovery only; network, merge and publication keep their budgets.
+_LOCAL_DISCOVERY_TIMEOUT = 30
+
 #: What every host-side helper falls back to when the upstream remote cannot
 #: be resolved — the historical behaviour, preserved so an unresolvable repo is
 #: no worse off than before. See `detect_upstream_remote`.
@@ -47,8 +50,9 @@ def _remote_head_branch(repo_root: Path, remote: str) -> str | None:
             capture_output=True,
             text=True,
             check=False,
+            timeout=_LOCAL_DISCOVERY_TIMEOUT,
         )
-    except (FileNotFoundError, OSError):
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
         return None
@@ -73,8 +77,9 @@ def _existing_refs(repo_root: Path, refs: Sequence[str]) -> set[str]:
             capture_output=True,
             text=True,
             check=False,
+            timeout=_LOCAL_DISCOVERY_TIMEOUT,
         )
-    except (FileNotFoundError, OSError):
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return set()
     if result.returncode != 0:
         return set()
@@ -135,8 +140,9 @@ def list_remotes(repo_root: Path) -> list[str]:
             capture_output=True,
             text=True,
             check=False,
+            timeout=_LOCAL_DISCOVERY_TIMEOUT,
         )
-    except (FileNotFoundError, OSError):
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return []
     if result.returncode != 0:
         return []
@@ -158,8 +164,9 @@ def _remote_has_head_symref(repo_root: Path, remote: str) -> bool:
             capture_output=True,
             text=True,
             check=False,
+            timeout=_LOCAL_DISCOVERY_TIMEOUT,
         )
-    except (FileNotFoundError, OSError):
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return False
     return result.returncode == 0
 
@@ -302,8 +309,9 @@ def _git_config_get(repo_root: Path, key: str) -> str | None:
             capture_output=True,
             text=True,
             check=False,
+            timeout=_LOCAL_DISCOVERY_TIMEOUT,
         )
-    except (FileNotFoundError, OSError):
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None
 
     if result.returncode != 0:
@@ -330,8 +338,9 @@ def get_current_branch(repo_root: Path) -> str | None:
             capture_output=True,
             text=True,
             check=False,
+            timeout=_LOCAL_DISCOVERY_TIMEOUT,
         )
-    except (FileNotFoundError, OSError):
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None
 
     if result.returncode != 0:

@@ -1909,5 +1909,36 @@ def test_tree_writers_run_outside_a_remote_session(mocker, monkeypatch, name, ca
     spawn.assert_called_once()
 
 
+@pytest.mark.parametrize(
+    ("probe", "expected"),
+    [
+        (lambda root: git._remote_head_branch(root, "origin"), None),
+        (lambda root: git._existing_refs(root, ["refs/heads/main"]), set()),
+        (git.list_remotes, []),
+        (lambda root: git._remote_has_head_symref(root, "origin"), False),
+        (lambda root: git._git_config_get(root, "remote.pushDefault"), None),
+        (git.get_current_branch, None),
+        (git.detect_upstream_remote, None),
+        (lambda root: git.detect_default_branch(root, "origin"), "main"),
+    ],
+)
+def test_local_discovery_timeout_preserves_fallback(mocker, tmp_path, probe, expected):
+    def expire(argv, **kwargs):
+        assert 0 < (kwargs.get("timeout") or 0) <= 30
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    mocker.patch("jailbee.git.subprocess.run", side_effect=expire)
+    assert probe(tmp_path) == expected
+
+
+def test_network_fetch_retains_no_discovery_deadline(mocker, tmp_path):
+    def run(argv, **kwargs):
+        assert "timeout" not in kwargs
+        return CompletedProcess(argv, 0, "", "")
+
+    mocker.patch("jailbee.git.subprocess.run", side_effect=run)
+    git.fetch_remote_ref(tmp_path, "origin", "main")
+
+
 def test_the_refusal_is_a_git_error_every_caller_already_handles():
     assert issubclass(git.HostTreeWriteRefusedError, git.GitError)
