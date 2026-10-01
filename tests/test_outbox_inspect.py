@@ -123,6 +123,14 @@ def test_bad_pr_sidecar_is_unknown_not_empty(tmp_path, sidecar):
         "broken",
         "pr=42 actions=broken urls=https://x pr=7 actions=1 urls=https://y",
         "pr=42 actions=1 urls=https://x pr=7 actions=1 urls=https://y",
+        "pr=42 actions=broken  urls=https://x pr=7 actions=1 urls=https://y",
+        "pr=42\tactions=broken\turls=https://x pr=7 actions=1 urls=https://y",
+        " pr=42  actions=broken   urls=https://x pr=7 actions=1 urls=https://y",
+        "pr = 42 actions = broken urls = https://x pr=7 actions=1 urls=https://y",
+        "pr=42 urls=https://x actions=broken pr=7 actions=1 urls=https://y",
+        "actions=broken urls=https://x pr=7 actions=1 urls=https://y",
+        "pr=42 urls=https://x pr=7 actions=1 urls=https://y",
+        "pr=42 actions=broken url=https://x pr=7 actions=1 urls=https://y",
     ],
 )
 def test_whitespace_receipt_blocks_exact_proposal(tmp_path, name, suffix):
@@ -139,6 +147,13 @@ def test_whitespace_receipt_blocks_exact_proposal(tmp_path, name, suffix):
     with pytest.raises(OutboxError):
         plan_delete(container, ProposalId("pr", name), DeleteSelection(action=0))
     assert view.raw_text == files[name]
+    from jailbee.outbox.inspect import pr_progress_evidence
+
+    evidence = pr_progress_evidence(snapshot, name, 1)
+    assert ("applied.log", files["applied.log"].rstrip("\n")) in evidence.inputs
+    changed = files | {"applied.log": files["applied.log"].replace("now ", "later ", 1).replace("https://y", "https://changed")}
+    after = build_views(IDENTITY, (store("pr", changed),), journal_store=JournalStore(tmp_path))[0]
+    assert after.revision != view.revision
 
 
 @pytest.mark.parametrize(
@@ -147,6 +162,9 @@ def test_whitespace_receipt_blocks_exact_proposal(tmp_path, name, suffix):
         "one.json longer.json",
         "one.json pr=7 longer.json",
         "one.json pr=7 actions=notes.json",
+        "one.json pr=7  longer.json",
+        "one.json actions=notes.json",
+        "one.json pr = 7 longer.json",
         " one.json pr=7 longer.json",
     ],
 )

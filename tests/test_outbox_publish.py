@@ -179,6 +179,14 @@ def env(mocker, make_cfg, tmp_path):
         "pr=42 actions=1 urls=https://receipt",
         "pr=42 actions=broken urls=https://x pr=7 actions=1 urls=https://y",
         "pr=42 actions=1 urls=https://x pr=7 actions=1 urls=https://y",
+        "pr=42 actions=broken  urls=https://x pr=7 actions=1 urls=https://y",
+        "pr=42\tactions=broken\turls=https://x pr=7 actions=1 urls=https://y",
+        " pr=42  actions=broken   urls=https://x pr=7 actions=1 urls=https://y",
+        "pr = 42 actions = broken urls = https://x pr=7 actions=1 urls=https://y",
+        "pr=42 urls=https://x actions=broken pr=7 actions=1 urls=https://y",
+        "actions=broken urls=https://x pr=7 actions=1 urls=https://y",
+        "pr=42 urls=https://x pr=7 actions=1 urls=https://y",
+        "pr=42 actions=broken url=https://x pr=7 actions=1 urls=https://y",
     ],
 )
 def test_existing_whitespace_receipt_refuses_actual_selected_replay(env, name, suffix):
@@ -211,6 +219,9 @@ def test_existing_whitespace_receipt_refuses_actual_selected_replay(env, name, s
         "001.json longer.json",
         "001.json pr=7 longer.json",
         "001.json pr=7 actions=notes.json",
+        "001.json pr=7  longer.json",
+        "001.json actions=notes.json",
+        "001.json pr = 7 longer.json",
         " 001.json pr=7 longer.json",
     ],
 )
