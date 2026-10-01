@@ -35,9 +35,10 @@ if TYPE_CHECKING:
 
 
 def load_container(
-    cfg: Config, incus: Incus, container: str, *, journal_store: JournalStore
+    cfg: Config, incus: Incus, container: str, *, journal_store: JournalStore,
+    raise_errors: bool = False,
 ) -> ContainerView:
-    """Inspect both stores locally; unavailable input is never an empty success."""
+    """Inspect stores; explicit operations retain typed failures, overviews do not."""
     identity = None
     try:
         identity = _identity(incus, container)
@@ -51,6 +52,10 @@ def load_container(
         proposals = build_views(identity, stores, journal_store=journal_store)
         return ContainerView(identity, container, True, None, stores, proposals)
     except (IncusError, JournalError, OutboxExecutionError, OutboxChanged) as exc:
+        if raise_errors:
+            if isinstance(exc, (OutboxChanged, OutboxExecutionError)):
+                raise
+            raise OutboxExecutionError(str(exc)) from exc
         return ContainerView(identity, container, False, str(exc), (), ())
 
 

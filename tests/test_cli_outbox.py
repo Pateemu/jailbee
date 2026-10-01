@@ -343,6 +343,22 @@ def test_apply_domain_validation_exit_two(publication_env, mocker, kind):
     env[1].exec.assert_not_called()
 
 
+@pytest.mark.parametrize("kind", ["pr", "issue"])
+def test_apply_first_store_read_timeout_is_execution(publication_env, mocker, kind):
+    from jailbee.incus import IncusTimeoutError
+    from jailbee.outbox import service
+    from jailbee.outbox.models import OutboxExecutionError
+
+    original = IncusTimeoutError("first reader timeout")
+    failure = OutboxExecutionError("reader transport failed")
+    failure.__cause__ = original
+    mocker.patch.object(service, "read_store", side_effect=failure)
+    result = CliRunner().invoke(app, ["outbox", "apply", "feature", f"{kind}/001.json", "-y"])
+    assert result.exit_code == 1, result.output
+    assert "reader transport failed" in result.output
+    assert_publication_refused(publication_env)
+
+
 def test_apply_pr_execution_read_error_is_one(publication_env, mocker):
     from jailbee import pr
 

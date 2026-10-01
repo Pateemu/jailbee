@@ -50,29 +50,9 @@ def _checked(
     *,
     raise_errors: bool = False,
 ) -> tuple[ContainerView, str]:
-    if raise_errors:
-        from jailbee.outbox.io import read_store
-        from jailbee.outbox.models import Kind
-
-        # Inspection's load_container intentionally stores errors as strings.
-        # Typed publication needs the reader's original exception and cause.
-        current = _identity(incus, container)
-        kinds: tuple[Kind, ...] = ("pr", "issue")
-        stores = tuple(
-            read_store(incus, container, kind, uid=cfg.container_user.uid) for kind in kinds
-        )
-        if _identity(incus, container) != current:
-            raise OutboxChanged("container changed while reading; refresh required")
-        fresh = ContainerView(
-            current,
-            container,
-            True,
-            None,
-            stores,
-            build_views(current, stores, journal_store=journal_store),
-        )
-    else:
-        fresh = load_container(cfg, incus, container, journal_store=journal_store)
+    fresh = load_container(
+        cfg, incus, container, journal_store=journal_store, raise_errors=raise_errors
+    )
     if not fresh.available or fresh.identity != identity:
         raise OutboxChanged(fresh.error or "container changed; refresh required")
     view = next((v for v in fresh.proposals if v.id == proposal), None)

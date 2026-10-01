@@ -151,7 +151,7 @@ def _selected(
     revision: str | None = None,
 ) -> tuple[Config, ContainerView, ProposalView]:
     target, full = resolve_target(cfg, incus, name)
-    container = load_container(target, incus, full, journal_store=journal_store)
+    container = load_container(target, incus, full, journal_store=journal_store, raise_errors=True)
     if not container.available:
         raise OutboxError(container.error or "container is unavailable")
     view = next((p for p in container.proposals if p.id == proposal), None)

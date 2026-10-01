@@ -199,6 +199,26 @@ def test_mutation_callback_rechecks_scope_after_confirmation(env, mocker):
     mutation.assert_not_called()
 
 
+def test_explicit_first_read_preserves_type_and_cause_but_overview_reports_unavailable(env):
+    from jailbee.incus import IncusTimeoutError
+    from jailbee.outbox.commands import _selected, discover
+    from jailbee.outbox.models import OutboxExecutionError, ProposalId
+
+    cfg, incus, _, reader, mutation, journals = env
+    transport = IncusTimeoutError("read expired")
+    failure = OutboxExecutionError("outbox read failed")
+    failure.__cause__ = transport
+    reader.side_effect = failure
+    with pytest.raises(OutboxExecutionError) as caught:
+        _selected(cfg, incus, "feature", ProposalId("issue", "001.json"), journal_store=journals)
+    assert caught.value is failure
+    assert caught.value.__cause__ is transport
+    (unavailable,) = discover(cfg, incus, "feature", all_repos=False, journal_store=journals)
+    assert not unavailable.available
+    assert unavailable.error == "outbox read failed"
+    mutation.assert_not_called()
+
+
 def test_inventory_timeout_is_typed_before_config_or_store_read(env, mocker):
     import subprocess
 
