@@ -731,10 +731,15 @@ def test_outbox_leaves_follow_policy(leaf):
         argv += ("box", "pr/a.json")
     assert command_path(argv) == f"outbox {leaf}"
     assert policy_allows(argv, FULL) == f"outbox {leaf}"
-    assert policy_allows(argv, RemoteCommandPolicy(mode="allowlist", allow=[f"outbox {leaf}"])) == f"outbox {leaf}"
+    assert (
+        policy_allows(argv, RemoteCommandPolicy(mode="allowlist", allow=[f"outbox {leaf}"]))
+        == f"outbox {leaf}"
+    )
 
 
-@pytest.mark.parametrize("argv", [("outbox",), ("outbox", "feature"), ("outbox", "lss"), ("outbox", "browse", "apply")])
+@pytest.mark.parametrize(
+    "argv", [("outbox",), ("outbox", "feature"), ("outbox", "lss"), ("outbox", "browse", "apply")]
+)
 def test_outbox_shorthand_is_browse_not_help(argv):
     assert command_path(argv) == "outbox browse"
     assert command_leaf(argv)[0] == "outbox browse"
@@ -745,7 +750,9 @@ def test_outbox_shorthand_is_browse_not_help(argv):
         policy_allows(argv, RemoteCommandPolicy())
 
 
-@pytest.mark.parametrize("options", [("--yes",), ("-y",), ("-yy",), ("--yes=true",), ("--yes=false",), ("-fy",)])
+@pytest.mark.parametrize(
+    "options", [("--yes",), ("-y",), ("-yy",), ("--yes=true",), ("--yes=false",), ("-fy",)]
+)
 def test_outbox_apply_never_skips_confirmation(options):
     argv = ("outbox", "apply", "box", "pr/a.json", *options)
     for policy in (FULL, RemoteCommandPolicy(mode="allowlist", allow=["outbox apply"])):
@@ -755,14 +762,17 @@ def test_outbox_apply_never_skips_confirmation(options):
         check_arguments(argv)
 
 
-@pytest.mark.parametrize("argv", [
-    ("outbox", "feature", "-c/x"),
-    ("outbox", "browse", "--config=/x"),
-    ("outbox", "apply", "box", "pr/a.json", "-yc/x"),
-    ("outbox", "--config", "ls", "apply", "box", "pr/a.json", "-y"),
-    ("outbox", "--config=/x", "feature"),
-    ("outbox", "-c/x"),
-])
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("outbox", "feature", "-c/x"),
+        ("outbox", "browse", "--config=/x"),
+        ("outbox", "apply", "box", "pr/a.json", "-yc/x"),
+        ("outbox", "--config", "ls", "apply", "box", "pr/a.json", "-y"),
+        ("outbox", "--config=/x", "feature"),
+        ("outbox", "-c/x"),
+    ],
+)
 def test_outbox_host_config_is_denied(argv):
     with pytest.raises(RouteError):
         policy_allows(argv, FULL)
@@ -770,7 +780,17 @@ def test_outbox_host_config_is_denied(argv):
         check_arguments(argv)
 
 
-@pytest.mark.parametrize("argv", [("outbox",), ("outbox", "feature"), ("outbox", "ls", "--all-repos"), ("outbox", "show", "secret-box", "pr/a.json"), ("outbox", "drop", "box", "pr/a.json"), ("outbox", "apply", "box", "pr/a.json")])
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("outbox",),
+        ("outbox", "feature"),
+        ("outbox", "ls", "--all-repos"),
+        ("outbox", "show", "secret-box", "pr/a.json"),
+        ("outbox", "drop", "box", "pr/a.json"),
+        ("outbox", "apply", "box", "pr/a.json"),
+    ],
+)
 def test_outbox_exclusions_remain_fail_closed(argv):
     with pytest.raises(RouteError, match="unavailable when SSH repository exclusions"):
         policy_allows(argv, FULL, scope=RemoteRepoScope(frozenset({"secret"})))
@@ -797,7 +817,10 @@ def test_outbox_confirmation_denial_uses_real_parameter_source(options):
 
 def test_outbox_normalized_argument_is_not_an_option():
     assert policy_allows(("outbox", "browse", "--", "--config=/x"), FULL) == "outbox browse"
-    assert policy_allows(("outbox", "apply", "box", "pr/a.json", "--dry-run", "--force"), FULL) == "outbox apply"
+    assert (
+        policy_allows(("outbox", "apply", "box", "pr/a.json", "--dry-run", "--force"), FULL)
+        == "outbox apply"
+    )
 
 
 def test_outbox_shorthand_route_preserves_argv(engine, repo, configured_ssh):

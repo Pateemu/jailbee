@@ -450,7 +450,8 @@ def check_arguments(argv: Sequence[str]) -> None:
         # Outbox flags must fail closed on parser errors; resilient parsing
         # discards parameter sources for malformed equals/short-option forms.
         ctx = command.make_context(
-            words[-1], list(argv[len(words) :]),
+            words[-1],
+            list(argv[len(words) :]),
             resilient_parsing=not canonical.startswith("outbox "),
         )
     except Exit as error:
