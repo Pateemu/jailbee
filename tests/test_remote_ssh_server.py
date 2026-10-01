@@ -1585,3 +1585,28 @@ def test_forwarding_is_refused_when_the_feature_is_off(connection, tmp_path, mon
 
 def test_a_connection_without_an_authenticated_key_gets_no_forwarding(connection):
     assert _gui_server(connection).connection_requested("127.0.0.1", 13389, "::1", 1) is False
+
+
+def test_a_grant_is_useless_without_an_authenticated_key(connection, tmp_path, monkeypatch):
+    """Fails if the `fingerprint is not None` guard is removed."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    from jailbee.remote_ssh.display_grants import record_grant
+
+    record_grant(FINGERPRINT, "127.0.0.1", 13389, "feat-1")
+    connection.set_extra_info(jailbee_key_fingerprint=None)
+
+    assert _gui_server(connection).connection_requested("127.0.0.1", 13389, "::1", 1) is False
+
+
+@pytest.mark.parametrize("failure", [ConfigError("bad"), OSError("unreadable"), RuntimeError("x")])
+def test_gui_flag_fails_closed_when_the_config_cannot_be_read(mocker, failure):
+    mocker.patch.object(server, "load_global_config", side_effect=failure)
+
+    assert server._gui_enabled(None) is False
+
+
+def test_gui_flag_follows_the_loaded_config(mocker):
+    config = GlobalConfig(remote=RemoteConfig(ssh=RemoteSSHConfig(gui=True)))
+    mocker.patch.object(server, "load_global_config", return_value=(config, None))
+
+    assert server._gui_enabled(None) is True

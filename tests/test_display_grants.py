@@ -70,3 +70,53 @@ def test_the_record_is_private():
     path = grants.record_grant(KEY_A, "127.0.0.1", 13389, "feat-1")
 
     assert path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"created": "x"},
+        {"created": float("nan")},
+        {"created": float("inf")},
+        {"created": 4_000_000_000_000.0},
+        {"created": True},
+        {"port": "13389"},
+        {"port": True},
+        {"fingerprint": 5},
+        {"host": None},
+        {"container": 1},
+    ],
+)
+def test_a_wrongly_typed_record_is_not_a_grant(override):
+    import json
+
+    path = grants.record_grant(KEY_A, "127.0.0.1", 13389, "feat-1")
+    record = json.loads(path.read_text()) | override
+    path.write_text(json.dumps(record))
+
+    assert grants.is_allowed(KEY_A, "127.0.0.1", 13389) is False
+
+
+def test_a_record_that_does_not_match_its_path_is_not_a_grant():
+    import json
+
+    path = grants.record_grant(KEY_A, "127.0.0.1", 13389, "feat-1")
+    record = json.loads(path.read_text()) | {"fingerprint": KEY_B}
+    path.write_text(json.dumps(record))
+
+    assert grants.is_allowed(KEY_A, "127.0.0.1", 13389) is False
+
+
+def test_the_grants_directory_is_private_even_if_it_pre_existed():
+    path = grants.record_grant(KEY_A, "127.0.0.1", 13389, "feat-1")
+    path.parent.chmod(0o755)
+
+    grants.record_grant(KEY_B, "127.0.0.1", 13389, "feat-2")
+
+    assert path.parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_no_temporary_file_is_left_behind():
+    path = grants.record_grant(KEY_A, "127.0.0.1", 13389, "feat-1")
+
+    assert [item.name for item in path.parent.iterdir()] == [path.name]
