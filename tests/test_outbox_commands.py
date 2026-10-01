@@ -73,9 +73,9 @@ def test_existing_registry_is_read_only_and_preserves_registration(env, tmp_path
     discover(cfg, incus, None, all_repos=True, journal_store=journals)
     assert database.read_bytes() == before
     with sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True) as connection:
-        assert connection.execute("SELECT container_prefix, repo_root FROM registered_repo").fetchall() == [
-            ("other", str(tmp_path / "missing-root"))
-        ]
+        assert connection.execute(
+            "SELECT container_prefix, repo_root FROM registered_repo"
+        ).fetchall() == [("other", str(tmp_path / "missing-root"))]
 
 
 def test_zero_probe_count_does_not_filter(env):
