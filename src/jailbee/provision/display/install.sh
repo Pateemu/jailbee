@@ -5,6 +5,23 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 : "${JAILBEE_UID:?}" "${JAILBEE_GID:?}" "${JAILBEE_USER:?}"
 
+# The container was started moments ago: DHCP and the bridge's dnsmasq may not
+# have answered yet. Wait for name resolution instead of failing the first
+# apt-get on a boot race.
+network_up=""
+for _ in $(seq 1 60); do
+  if getent hosts archive.ubuntu.com >/dev/null 2>&1; then
+    network_up=1
+    break
+  fi
+  sleep 1
+done
+if [ -z "$network_up" ]; then
+  echo "jailbee-display has no working DNS after 60s on the jailbee-loose bridge." >&2
+  echo "If DHCP/DNS from the bridge is dropped by a host firewall, run 'jailbee doctor'." >&2
+  exit 1
+fi
+
 apt-get update -qq
 apt-get install -y -qq weston openssl
 
