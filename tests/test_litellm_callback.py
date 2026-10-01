@@ -261,9 +261,12 @@ def test_a_changed_file_upserts_first_then_deletes_what_it_no_longer_lists(cb, t
 
 
 def test_an_unchanged_file_is_not_reconciled_again(cb, tmp_path):
-    handler, router = cb.JailbeeCallback(), FakeRouter()
+    _write_hot(tmp_path, TABLE, [dep("jb:a")])
+    handler, router = cb.JailbeeCallback(), FakeRouter(["jb:a"])
     handler.reload_once(router)
+    assert router.calls == [("upsert", "jb:a")]
     router.calls.clear()
+    handler.reload_once(router)
     handler.reload_once(router)
     assert router.calls == []
 
@@ -287,6 +290,7 @@ def test_without_a_router_nothing_is_acknowledged_until_one_exists(cb, tmp_path)
     new_table = {"aliases": {}, "catch_all": None}
     digest = _write_hot(tmp_path, new_table, [dep("jb:a")])
     handler.reload_once(None)
+    assert not (tmp_path / "applied.json").exists()
     assert handler._table == TABLE  # the old table keeps serving
     handler.reload_once(FakeRouter())
     assert _ack(tmp_path) == {"hot_digest": digest, "error": None}

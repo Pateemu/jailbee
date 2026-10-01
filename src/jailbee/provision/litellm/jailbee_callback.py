@@ -219,9 +219,11 @@ class JailbeeCallback(CustomLogger):  # type: ignore[misc]  # LiteLLM's base is 
         self._ack_path = _required_env(
             "JAILBEE_LITELLM_ACK_FILE", "the proxy could not report what it loaded."
         )
+        # Signature first: a push between the stat and the read is then seen as a
+        # change by the next poll, instead of never being read.
+        self._seen = _signature(self._hot_path)
         hot = read_hot(self._hot_path)  # required: a missing or invalid file stops the proxy
         self._table = hot.table
-        self._seen = _signature(self._hot_path)
         self._pending: HotFile | None = hot  # not yet reconciled with a router
         self._acked: tuple[str | None, str | None] | None = None
         self._task: asyncio.Task[None] | None = None
