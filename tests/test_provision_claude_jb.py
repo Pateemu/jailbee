@@ -185,3 +185,154 @@ def test_inherited_anthropic_vars_are_replaced(script, env):
     lines = _lines(r.stdout)
     assert not any(line.startswith("ANTHROPIC_DEFAULT_SONNET_MODEL=") for line in lines)
     assert not any(line.startswith("ANTHROPIC_API_KEY=") for line in lines)
+
+
+@pytest.fixture
+def argv_env(env: dict[str, str], tmp_path: Path) -> dict[str, str]:
+    """`env` with a fake `claude` that prints its argv as one JSON array, so an
+    argument with newlines in it survives the round trip. The `--` stops jq
+    reading `-p` and friends as its own options (it drops only the first one)."""
+    fake = tmp_path / "bin" / "claude"
+    fake.write_text("#!/bin/bash\njq -cn '$ARGS.positional' --args -- \"$@\"\n")
+    fake.chmod(0o755)
+    return env
+
+
+def _set_instructions(env: dict[str, str], text: str | None, profile: str = "codex") -> None:
+    path = Path(env["JAILBEE_LITELLM_CONFIG"])
+    cfg = json.loads(path.read_text())
+    cfg["profiles"][profile]["instructions"] = text
+    path.write_text(json.dumps(cfg))
+
+
+def _argv(r: subprocess.CompletedProcess[str]) -> list[str]:
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+APPEND = "--append-system-prompt"
+POLICY = "Never use fable.\nPrefer haiku for lookups."
+
+
+def test_a_litellm_json_without_the_key_adds_no_flag(script, argv_env):
+    """The fixture payload predates `instructions`: an older file must keep working."""
+    assert _argv(_run(script, argv_env, "-p", "hi")) == ["-p", "hi"]
+
+
+def test_a_null_instructions_value_adds_no_flag(script, argv_env):
+    _set_instructions(argv_env, None)
+    assert _argv(_run(script, argv_env, "-p", "hi")) == ["-p", "hi"]
+
+
+def test_profile_instructions_become_one_append_flag(script, argv_env):
+    _set_instructions(argv_env, POLICY)
+    assert _argv(_run(script, argv_env, "-p", "hi")) == [APPEND, POLICY, "-p", "hi"]
+
+
+def test_instructions_belong_to_their_profile(script, argv_env):
+    _set_instructions(argv_env, POLICY, profile="codex")
+    assert _argv(_run(script, argv_env, "--profile", "deep", "-p", "hi")) == [
+        "--effort",
+        "max",
+        "-p",
+        "hi",
+    ]
+
+
+def test_the_append_flag_follows_the_profile_effort(script, argv_env):
+    _set_instructions(argv_env, POLICY, profile="deep")
+    assert _argv(_run(script, argv_env, "--profile", "deep", "-p", "hi")) == [
+        "--effort",
+        "max",
+        APPEND,
+        POLICY,
+        "-p",
+        "hi",
+    ]
+
+
+def test_user_append_text_is_merged_after_the_profile_text(script, argv_env):
+    _set_instructions(argv_env, POLICY)
+    inline = _argv(_run(script, argv_env, APPEND, "mine", "-p", "hi"))
+    equals = _argv(_run(script, argv_env, f"{APPEND}=mine", "-p", "hi"))
+    assert inline == equals == [APPEND, f"{POLICY}\n\nmine", "-p", "hi"]
+
+
+def test_user_append_file_is_read_and_merged(script, argv_env, tmp_path):
+    _set_instructions(argv_env, POLICY)
+    extra = tmp_path / "extra.md"
+    extra.write_text("from the file\n")
+    spaced = _argv(_run(script, argv_env, f"{APPEND}-file", str(extra), "-p", "hi"))
+    equals = _argv(_run(script, argv_env, f"{APPEND}-file={extra}", "-p", "hi"))
+    assert spaced == equals == [APPEND, f"{POLICY}\n\nfrom the file", "-p", "hi"]
+
+
+def test_user_append_parts_keep_the_order_given(script, argv_env, tmp_path):
+    _set_instructions(argv_env, POLICY)
+    extra = tmp_path / "extra.md"
+    extra.write_text("file part")
+    argv = _argv(_run(script, argv_env, f"{APPEND}-file", str(extra), APPEND, "text part"))
+    assert argv == [APPEND, f"{POLICY}\n\nfile part\n\ntext part"]
+
+
+def test_an_unreadable_append_file_is_an_error_when_the_profile_has_text(
+    script, argv_env, tmp_path
+):
+    _set_instructions(argv_env, POLICY)
+    r = _run(script, argv_env, f"{APPEND}-file", str(tmp_path / "nope.md"))
+    assert r.returncode == 2 and "cannot read" in r.stderr
+    assert r.stdout == ""
+
+
+def test_user_append_flags_pass_through_untouched_without_profile_text(script, argv_env):
+    """Nothing to merge: not even an unreadable file is the wrapper's business."""
+    args = [APPEND, "a", f"{APPEND}-file", "/does/not/exist", f"{APPEND}=b", "-p", "hi"]
+    assert _argv(_run(script, argv_env, *args)) == args
+
+
+def test_a_dangling_append_flag_is_not_consumed(script, argv_env):
+    assert _argv(_run(script, argv_env, "-p", "hi", APPEND)) == ["-p", "hi", APPEND]
+
+
+def test_double_dash_ends_option_parsing(script, argv_env):
+    tail = ["--", "--effort", "low", "--profile", "nope", APPEND, "x"]
+    without = _argv(_run(script, argv_env, "--profile", "deep", *tail))
+    assert without == ["--effort", "max", *tail]
+
+    _set_instructions(argv_env, POLICY, profile="deep")
+    with_text = _argv(_run(script, argv_env, "--profile", "deep", *tail))
+    assert with_text == ["--effort", "max", APPEND, POLICY, *tail]
+
+
+def test_instructions_reach_claude_verbatim(script, argv_env, tmp_path):
+    nasty = "$(touch pwned) `touch pwned2` \"q\" 'q' --effort -- * \\n\n  indented\n"
+    _set_instructions(argv_env, nasty)
+    r = subprocess.run(
+        [str(script), "-p", "hi"], env=argv_env, cwd=tmp_path, capture_output=True, text=True
+    )
+    assert _argv(r) == [APPEND, nasty.rstrip("\n"), "-p", "hi"]
+    assert not (tmp_path / "pwned").exists() and not (tmp_path / "pwned2").exists()
+
+
+@pytest.mark.parametrize(
+    ("text", "ok"),
+    [
+        ("a" * 131_071, True),
+        ("a" * 131_072, False),
+        ("ä" * 65_535, True),  # 131070 bytes
+        ("ä" * 65_536, False),  # 131072 bytes: bytes, not characters
+    ],
+)
+def test_the_combined_argument_is_limited_to_one_linux_argv_string(script, argv_env, text, ok):
+    _set_instructions(argv_env, text)
+    r = _run(script, argv_env, "-p", "hi")
+    if ok:
+        assert _argv(r) == [APPEND, text, "-p", "hi"]
+    else:
+        assert r.returncode == 2 and "128 KiB" in r.stderr and r.stdout == ""
+
+
+def test_profile_text_plus_user_text_over_the_limit_is_refused(script, argv_env):
+    _set_instructions(argv_env, "a" * 100_000)
+    r = _run(script, argv_env, APPEND, "b" * 40_000)
+    assert r.returncode == 2 and "128 KiB" in r.stderr

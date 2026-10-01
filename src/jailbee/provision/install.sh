@@ -155,6 +155,7 @@ chmod 0644 /etc/profile.d/jailbee-claude.sh
 # --profile, then $JAILBEE_LITELLM_PROFILE, then the file's default — sets the
 # variables Claude Code reads for a gateway, and execs `claude`. It writes
 # nothing and never falls back to native: a missing proxy is an error.
+# With the profile's `instructions` set it also appends them to Claude Code's system prompt.
 cat > /usr/local/bin/claude-jb <<'EOF'
 #!/bin/bash
 set -euo pipefail
@@ -162,14 +163,24 @@ config="${JAILBEE_LITELLM_CONFIG:-/etc/jailbee/litellm.json}"
 die() { printf 'claude-jb: %s\n' "$1" >&2; exit 2; }
 
 profile="${JAILBEE_LITELLM_PROFILE:-}"
-args=()
+args=()          # what the user passed, minus --profile
+plain=()         # the same without the append flags that are merged below
+append_parts=()  # one "t<text>" or "f<path>" per --append-system-prompt[-file], in order
 user_effort=0
 while [ $# -gt 0 ]; do
     case "$1" in
+        --) args+=("$@"); plain+=("$@"); break ;;
         --profile) [ $# -ge 2 ] && [ -n "$2" ] || die "--profile needs a name"; profile="$2"; shift 2 ;;
         --profile=*) profile="${1#--profile=}"; [ -n "$profile" ] || die "--profile needs a name"; shift ;;
-        --effort|--effort=*) user_effort=1; args+=("$1"); shift ;;
-        *) args+=("$1"); shift ;;
+        --effort|--effort=*) user_effort=1; args+=("$1"); plain+=("$1"); shift ;;
+        --append-system-prompt|--append-system-prompt-file)
+            if [ $# -lt 2 ]; then args+=("$1"); plain+=("$1"); shift; continue; fi
+            kind=t
+            if [ "$1" = --append-system-prompt-file ]; then kind=f; fi
+            args+=("$1" "$2"); append_parts+=("$kind$2"); shift 2 ;;
+        --append-system-prompt=*) args+=("$1"); append_parts+=("t${1#--append-system-prompt=}"); shift ;;
+        --append-system-prompt-file=*) args+=("$1"); append_parts+=("f${1#--append-system-prompt-file=}"); shift ;;
+        *) args+=("$1"); plain+=("$1"); shift ;;
     esac
 done
 
@@ -198,6 +209,25 @@ for tier in fable opus sonnet haiku; do
         export "ANTHROPIC_DEFAULT_${tier^^}_MODEL=$model"
     fi
 done
+
+# The profile's model-policy text. With text, the user's own append flags are
+# merged after it (one argument; Claude Code's handling of a repeated flag is
+# undocumented); without, `args` already carries them verbatim.
+instructions="$(get '.instructions // empty')"
+if [ -n "$instructions" ]; then
+    combined="$instructions"
+    for part in "${append_parts[@]}"; do
+        if [ "${part:0:1}" = f ]; then
+            text="$(cat -- "${part:1}")" || die "cannot read ${part:1} (--append-system-prompt-file)"
+        else
+            text="${part:1}"
+        fi
+        if [ -n "$text" ]; then combined+=$'\n\n'"$text"; fi
+    done
+    [ "$(printf '%s' "$combined" | wc -c)" -le 131071 ] \
+        || die "the profile's instructions plus --append-system-prompt exceed the 128 KiB limit on one argument"
+    args=(--append-system-prompt "$combined" "${plain[@]}")
+fi
 
 effort="$(get '.effort // empty')"
 if [ -n "$effort" ] && [ "$user_effort" -eq 0 ]; then
