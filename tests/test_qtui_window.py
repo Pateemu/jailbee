@@ -91,10 +91,40 @@ def test_menu_labels_match_menu_actions_for_running(qtbot):
         )
     ]
     assert win.menu_labels_for("p-foo") == expected
-    assert expected[:5] == ["Attach tmux", "Open shell", "Launch →", "PR →", "Git →"]
+    assert expected[:6] == ["Attach tmux", "Open shell", "Outbox", "Launch →", "PR →", "Git →"]
     assert "Launch chrome" not in expected
     assert "Network: loose" in expected
     assert "Network: strict" not in expected
+
+
+@pytest.mark.parametrize("config_path", [Path("/repo/.jailbee/config.yaml"), None])
+def test_outbox_browse_launches_in_terminal_with_repo_target(config_path):
+    from jailbee.dashboard import RepoTarget
+    from jailbee.qtui.actions import (
+        TerminalNotFoundError,
+        build_action,
+        launch_mode,
+        resolve_launch,
+    )
+    from jailbee.qtui.terminal import TerminalSpec
+
+    target = RepoTarget(Path("/repo"), config_path)
+    action = build_action("outbox browse", "p-foo", target)
+    expected = ["jailbee", "outbox", "browse", "p-foo"]
+    if config_path is not None:
+        expected += ["--config", str(config_path)]
+
+    assert launch_mode("outbox browse") == "terminal"
+    assert action.launch == "terminal"
+    assert action.argv == expected
+    assert action.cwd == Path("/repo")
+    assert action.verb == "outbox browse"
+    assert action.confirm is False
+    assert resolve_launch(action, TerminalSpec("xterm", ["-e"])) == [
+        "xterm", "-e", *expected
+    ]
+    with pytest.raises(TerminalNotFoundError):
+        resolve_launch(action, None)
 
 
 def test_menu_labels_empty_for_unknown_container(qtbot):
@@ -123,6 +153,9 @@ def test_table_context_menu_submenus_dispatch_leaf_verb(qtbot):
             return
         root = popup.actions()
         root_labels.extend(action.text() for action in root)
+        outbox = next(action for action in root if action.text() == "Outbox")
+        assert outbox.menu() is None
+        outbox.trigger()
         git_action = next((action for action in root if action.text() == "Git →"), None)
         if git_action is not None and (git := git_action.menu()) is not None:
             git_labels.extend(action.text() for action in git.actions())
@@ -131,9 +164,9 @@ def test_table_context_menu_submenus_dispatch_leaf_verb(qtbot):
 
     QTimer.singleShot(0, interact)
     win._on_context_menu(QPoint(0, 0))
-    assert root_labels[:4] == ["Attach tmux", "Open shell", "PR →", "Git →"]
+    assert root_labels[:5] == ["Attach tmux", "Open shell", "Outbox", "PR →", "Git →"]
     assert git_labels[:2] == ["Merge into…", "Send commits to host (git pull)"]
-    assert seen == [("merge", "p-foo")]
+    assert seen == [("outbox browse", "p-foo"), ("merge", "p-foo")]
 
 
 def test_context_menu_on_a_view_only_row_explains_itself(qtbot):
