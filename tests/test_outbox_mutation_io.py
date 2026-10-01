@@ -150,10 +150,13 @@ def test_initialization_warning_refuses_before_mutation(mocker, tmp_path, monkey
     env = local_mutator(mocker, tmp_path)
     (env[2] / "001.json").write_text("original")
     import shlex
+
     marker = shlex.quote(str(tmp_path / "first-call"))
     fake_binary(
-        tmp_path, monkeypatch, command,
-        f'if [[ ! -e {marker} ]]; then touch {marker}; '
+        tmp_path,
+        monkeypatch,
+        command,
+        f"if [[ ! -e {marker} ]]; then touch {marker}; "
         'printf "initialization warning" >&2; fi\n'
         f'exec /usr/bin/{command} "$@"\n',
     )
@@ -170,8 +173,8 @@ def test_cleanup_warning_is_not_success(mocker, tmp_path, monkeypatch):
     hook = tmp_path / "hook"
     hook.write_text(
         "set -T\n"
-        "trap 'if [[ $BASH_COMMAND == *\"/bin/rm -f\"* ]]; then "
-        "printf \"cleanup warning\" >&2; fi' DEBUG\n"
+        'trap \'if [[ $BASH_COMMAND == *"/bin/rm -f"* ]]; then '
+        'printf "cleanup warning" >&2; fi\' DEBUG\n'
     )
     monkeypatch.setenv("BASH_ENV", str(hook))
     with pytest.raises(OutboxExecutionError):
