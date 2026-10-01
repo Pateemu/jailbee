@@ -794,7 +794,7 @@ def litellm_reconcile(
     if not cold and not hot:
         return ReconcileResult(issues=issues)
     # Reloads interrupt nothing, so `--no-restart` still applies them; only an
-    # instance that needs a restart stays pending (and is not written to).
+    # instance needing a restart stays pending; a cold one is not written to.
     pending = [] if restart else [f.account for f in cold]
     stopped = [] if restart else [f.account for f in cold if f.account in down]
     targets = [*cold, *hot] if restart else hot

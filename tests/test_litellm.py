@@ -90,6 +90,8 @@ def _incus(
         else []
     )
 
+    reads = {"ack": 0}
+
     def exec_(name, cmd, **_kw):
         text = " ".join(cmd)
         if "importlib.metadata" in text:
@@ -110,6 +112,10 @@ def _incus(
             if pushed is None:
                 raise IncusError("no such file")
             digest = hashlib.sha256(pushed.encode()).hexdigest()
+            reads["ack"] += 1
+            # "stale": the proxy only ever acknowledged an older file; "late": it catches up.
+            if ack == "stale" or (ack == "late" and reads["ack"] == 1):
+                digest = hashlib.sha256(b"old").hexdigest()
             return json.dumps({"hot_digest": digest, "error": "boom" if ack == "error" else None})
         return ""
 
@@ -1661,14 +1667,22 @@ def test_up_restarts_when_the_callback_source_changed(xdg, monkeypatch):
     assert (result.restarted, result.reloaded) == (["default"], [])
 
 
-@pytest.mark.parametrize("ack", ["none", "error"])
+@pytest.mark.parametrize("ack", ["none", "error", "stale"])
 def test_up_falls_back_to_a_restart_when_the_reload_is_not_confirmed(xdg, ack):
     ll.litellm_up(_incus(present=True), _gcfg())
     incus = _incus(present=True, ack=ack)
     result = ll.litellm_up(incus, _gcfg(routes={"sol-xhigh": {"effort": "max"}}))
     assert (result.restarted, result.reloaded) == (["default"], [])
-    assert ("did not acknowledge" if ack == "none" else "refused") in result.fallbacks["default"]
+    assert ("refused" if ack == "error" else "did not acknowledge") in result.fallbacks["default"]
     assert sum("systemctl restart" in e for e in _execs(incus)) == 1
+
+
+def test_up_keeps_polling_until_the_ack_matches(xdg):
+    ll.litellm_up(_incus(present=True), _gcfg())
+    incus = _incus(present=True, ack="late")
+    result = ll.litellm_up(incus, _gcfg(routes={"sol-xhigh": {"effort": "max"}}))
+    assert (result.restarted, result.reloaded, result.fallbacks) == ([], ["default"], {})
+    assert sum(e.endswith("/applied.json") for e in _execs(incus)) == 2
 
 
 def test_a_restart_records_the_hot_stamp_so_the_next_run_is_quiet(xdg):
@@ -1715,7 +1729,8 @@ def test_reconcile_without_restart_leaves_an_unconfirmed_reload_pending_then_ret
     assert (second.reloaded, second.restarted) == (["default"], [])
 
 
-def test_a_hot_only_change_still_rewrites_the_egress_allowlist(xdg, monkeypatch):
+@pytest.mark.parametrize("restart", [True, False])
+def test_a_hot_only_change_still_rewrites_the_egress_allowlist(xdg, monkeypatch, restart):
     from jailbee.litellm_render import egress_hosts
 
     incus = _incus(present=True)
@@ -1726,7 +1741,8 @@ def test_a_hot_only_change_still_rewrites_the_egress_allowlist(xdg, monkeypatch)
     )
     route = {"model": "openai/x", "context_window": 1000, "api_base": "https://llm.example.com/v1"}
     gcfg = _gcfg(routes={"mine": route})
-    result = ll.litellm_reconcile(incus, gcfg)
+    result = ll.litellm_reconcile(incus, gcfg, restart=restart)
     expected = [h if ":" in h else f"{h}:443" for h in egress_hosts(gcfg.litellm)]
     assert (result.reloaded, result.restarted) == (["default"], [])
+    assert seen
     assert seen[-1] == expected and any("llm.example.com" in h for h in expected)
