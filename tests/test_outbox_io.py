@@ -600,14 +600,20 @@ def test_delete_outbox_files_rejects_paths_before_any_deletion(mocker, name):
 
 @pytest.mark.parametrize("count", [3, 10**30])
 @pytest.mark.parametrize("owned_log", [False, True])
-def test_persisted_declared_count_never_allocates_inspection_or_preparation(tmp_path, mocker, make_cfg, count, owned_log):
+def test_persisted_declared_count_never_allocates_inspection_or_preparation(
+    tmp_path, mocker, make_cfg, count, owned_log
+):
     from jailbee import issue_github, issue_outbox
     from jailbee.outbox.inspect import build_views
     from jailbee.outbox_io import issue_receipt_line
     from tests.outbox_support import store
 
     name = "one.json"
-    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "applied.log"} if owned_log else {"type": "comment", "repo": ".", "issue": 7, "body": "Original"}
+    action = (
+        {"type": "comment", "repo": ".", "issue": 7, "body_file": "applied.log"}
+        if owned_log
+        else {"type": "comment", "repo": ".", "issue": 7, "body": "Original"}
+    )
     text = json.dumps({"version": 1, "actions": [action]})
     files = {name: text, **({"applied.log": "Original"} if owned_log else {})}
     key = journal_key(_identity(), name)
@@ -618,7 +624,9 @@ def test_persisted_declared_count_never_allocates_inspection_or_preparation(tmp_
     journals.mark_prepared(key, 0, repo="acme/app")
     journal = journals.mark_applied(key, 0, repo="acme/app", url="https://receipt", issue=7)
     if owned_log:
-        files["applied.log"] += issue_receipt_line(name, journal.actions[0], "2026-10-01T12:00:00Z") + "\n"
+        files["applied.log"] += (
+            issue_receipt_line(name, journal.actions[0], "2026-10-01T12:00:00Z") + "\n"
+        )
     fresh = JournalStore(journals.root)
     assert fresh.load(key).action_count == count
     views = build_views(key.identity, (store("issue", files),), journal_store=fresh)
@@ -626,12 +634,26 @@ def test_persisted_declared_count_never_allocates_inspection_or_preparation(tmp_
     assert views[0].error and views[0].edit_block
     cfg = make_cfg(tmp_path)
     incus = mocker.Mock()
-    incus.list_containers.return_value = [{"name": key.identity.full_name, "created_at": key.identity.created_at}]
-    mocker.patch.object(issue_outbox, "read_issue_outbox", return_value=issue_outbox.OutboxSnapshot(files))
-    mocker.patch.object(issue_outbox, "resolve_repo_targets", return_value={".": issue_outbox.RepoTarget(".", cfg.repo_root, "acme/app")})
-    remote = mocker.patch.object(issue_github, "current_login", side_effect=AssertionError("remote reached"))
-    with pytest.raises(issue_outbox.IssueGateError, match="count differs|changed after recorded progress"):
-        issue_outbox.prepare_batch(cfg, incus, key.identity.full_name, (name,), uid=1000, journal_store=fresh)
+    incus.list_containers.return_value = [
+        {"name": key.identity.full_name, "created_at": key.identity.created_at}
+    ]
+    mocker.patch.object(
+        issue_outbox, "read_issue_outbox", return_value=issue_outbox.OutboxSnapshot(files)
+    )
+    mocker.patch.object(
+        issue_outbox,
+        "resolve_repo_targets",
+        return_value={".": issue_outbox.RepoTarget(".", cfg.repo_root, "acme/app")},
+    )
+    remote = mocker.patch.object(
+        issue_github, "current_login", side_effect=AssertionError("remote reached")
+    )
+    with pytest.raises(
+        issue_outbox.IssueGateError, match=r"count differs|changed after recorded progress"
+    ):
+        issue_outbox.prepare_batch(
+            cfg, incus, key.identity.full_name, (name,), uid=1000, journal_store=fresh
+        )
     remote.assert_not_called()
     assert fresh.load(key).digest == original_digest
 
@@ -715,7 +737,13 @@ def test_owned_issue_log_proof_rejects_unproven_changes(change):
     elif change == "order":
         journal = replace(journal, actions=tuple(reversed(journal.actions)))
     elif change in ("duplicate-index", "missing-index"):
-        journal = replace(journal, actions=(journal.actions[0], replace(journal.actions[1], index=0 if change == "duplicate-index" else 2)))
+        journal = replace(
+            journal,
+            actions=(
+                journal.actions[0],
+                replace(journal.actions[1], index=0 if change == "duplicate-index" else 2),
+            ),
+        )
     elif change == "manifest":
         text += "\n"
     elif change == "other-body":
