@@ -107,7 +107,9 @@ def env(mocker, make_cfg, tmp_path):
     return cfg, incus, snapshots, journals, mutations, labels, fetch, manager
 
 
-def selected(env, kind="issue", *, confirm=lambda count: True, revision=None, raise_errors=False, **options):
+def selected(
+    env, kind="issue", *, confirm=lambda count: True, revision=None, raise_errors=False, **options
+):
     from jailbee.outbox.publish import PublishOptions, publish_selected
 
     cfg, incus, _, journals, *_ = env
@@ -131,19 +133,36 @@ def test_typed_publication_preserves_validation_error(env, kind, late):
 
     if kind == "issue":
         files = env[2][kind].as_dict()
-        files["001.json"] = json.dumps({"version": 1, "actions": [{"type": "edit", "repo": ".", "issue": 42, "body": "New", "expected": {"body": "Old body"}}]})
+        files["001.json"] = json.dumps(
+            {
+                "version": 1,
+                "actions": [
+                    {
+                        "type": "edit",
+                        "repo": ".",
+                        "issue": 42,
+                        "body": "New",
+                        "expected": {"body": "Old body"},
+                    }
+                ],
+            }
+        )
         env[2][kind] = store(kind, files)
+
     def change():
         if kind == "issue":
             env[6].return_value = replace(env[6].return_value, body="Moved")
         else:
             env[5]["user.jailbee.pr"] = "43"
+
     if not late:
         change()
+
     def confirm(count):
         if late:
             change()
         return True
+
     with pytest.raises(OutboxError):
         selected(env, kind, confirm=confirm, raise_errors=True)
     assert_no_mutation(env)
@@ -156,6 +175,7 @@ def test_typed_publication_retains_snapshot_staleness(env, kind):
     def confirm(count):
         env[2][kind] = store(kind, env[2][kind].as_dict() | {"body.md": "Changed"})
         return True
+
     with pytest.raises(OutboxChanged):
         selected(env, kind, confirm=confirm, raise_errors=True)
     assert_no_mutation(env)
@@ -167,11 +187,20 @@ def test_typed_publication_preserves_execution_cause(env, mocker, boundary):
     from jailbee.outbox_io import OutboxReadError
 
     kind = "pr" if boundary.startswith("pr-") else "issue"
-    failure = (pr.PrError("transport down") if kind == "pr" else OutboxReadError("transport down") if boundary == "outbox" else issue_github.IssueGithubReadError("transport down"))
+    failure = (
+        pr.PrError("transport down")
+        if kind == "pr"
+        else OutboxReadError("transport down")
+        if boundary == "outbox"
+        else issue_github.IssueGithubReadError("transport down")
+    )
     owner, name = {
-        "login": (issue_github, "current_login"), "issue": (issue_github, "get_issue"),
-        "labels": (issue_github, "list_labels"), "outbox": (issue_outbox, "read_issue_outbox"),
-        "pr-login": (pr, "gh_login"), "pr-read": (pr, "resolve_pr"),
+        "login": (issue_github, "current_login"),
+        "issue": (issue_github, "get_issue"),
+        "labels": (issue_github, "list_labels"),
+        "outbox": (issue_outbox, "read_issue_outbox"),
+        "pr-login": (pr, "gh_login"),
+        "pr-read": (pr, "resolve_pr"),
     }[boundary]
     mocker.patch.object(owner, name, side_effect=failure)
     with pytest.raises(OutboxExecutionError, match="transport down") as caught:
@@ -185,8 +214,8 @@ def test_typed_publication_preserves_execution_cause(env, mocker, boundary):
 
 @pytest.mark.parametrize("kind", ["issue", "pr"])
 def test_typed_local_reader_failure_is_execution(env, mocker, kind):
-    from jailbee.outbox.models import OutboxExecutionError
     from jailbee.incus import IncusTimeoutError
+    from jailbee.outbox.models import OutboxExecutionError
 
     failure = IncusTimeoutError("reader timed out")
     mocker.patch.object(service, "read_store", side_effect=failure)
@@ -202,14 +231,29 @@ def test_typed_late_transport_is_execution_not_validation(env, mocker, kind):
 
     if kind == "issue":
         files = env[2][kind].as_dict()
-        files["001.json"] = json.dumps({"version": 1, "actions": [{"type": "edit", "repo": ".", "issue": 42, "body": "New", "expected": {"body": "Old body"}}]})
+        files["001.json"] = json.dumps(
+            {
+                "version": 1,
+                "actions": [
+                    {
+                        "type": "edit",
+                        "repo": ".",
+                        "issue": 42,
+                        "body": "New",
+                        "expected": {"body": "Old body"},
+                    }
+                ],
+            }
+        )
         env[2][kind] = store(kind, files)
+
     def confirm(count):
         if kind == "issue":
             env[6].side_effect = issue_github.IssueGithubReadError("late read failed")
         else:
             mocker.patch.object(pr, "resolve_pr", side_effect=pr.PrError("late read failed"))
         return True
+
     with pytest.raises(OutboxExecutionError, match="late read failed"):
         selected(env, kind, confirm=confirm, raise_errors=True)
     assert_no_mutation(env)
@@ -220,7 +264,9 @@ def test_typed_mutation_failure_retains_receipts_and_execution_type(env, kind):
     from jailbee.outbox.models import OutboxExecutionError
 
     if kind == "issue":
-        env[4]["create"].side_effect = issue_github.IssueGithubMutationError("write failed", uncertain=True)
+        env[4]["create"].side_effect = issue_github.IssueGithubMutationError(
+            "write failed", uncertain=True
+        )
     else:
         env[4]["pr_comment"].side_effect = pr.PrError("write failed")
     detail = "outcome is uncertain" if kind == "issue" else "write failed"

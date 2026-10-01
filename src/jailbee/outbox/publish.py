@@ -58,11 +58,19 @@ def _checked(
         # Typed publication needs the reader's original exception and cause.
         current = _identity(incus, container)
         kinds: tuple[Kind, ...] = ("pr", "issue")
-        stores = tuple(read_store(incus, container, kind, uid=cfg.container_user.uid) for kind in kinds)
+        stores = tuple(
+            read_store(incus, container, kind, uid=cfg.container_user.uid) for kind in kinds
+        )
         if _identity(incus, container) != current:
             raise OutboxChanged("container changed while reading; refresh required")
-        fresh = ContainerView(current, container, True, None, stores,
-                              build_views(current, stores, journal_store=journal_store))
+        fresh = ContainerView(
+            current,
+            container,
+            True,
+            None,
+            stores,
+            build_views(current, stores, journal_store=journal_store),
+        )
     else:
         fresh = load_container(cfg, incus, container, journal_store=journal_store)
     if not fresh.available or fresh.identity != identity:
@@ -175,8 +183,14 @@ def publish_selected(
         )
         with lock:
             fresh, revision = _checked(
-                cfg, incus, container, proposal, identity, journal_store, expected_revision,
-                raise_errors=raise_errors
+                cfg,
+                incus,
+                container,
+                proposal,
+                identity,
+                journal_store,
+                expected_revision,
+                raise_errors=raise_errors,
             )
             snapshot = next(s for s in fresh.stores if s.kind == proposal.kind)
             if manager is not None:
@@ -221,7 +235,16 @@ def publish_selected(
             )
             if batch.identity != identity or prepared is None or prepared.revision != revision:
                 raise OutboxChanged("proposal changed during preparation; refresh required")
-            _checked(cfg, incus, container, proposal, identity, journal_store, revision, raise_errors=raise_errors)
+            _checked(
+                cfg,
+                incus,
+                container,
+                proposal,
+                identity,
+                journal_store,
+                revision,
+                raise_errors=raise_errors,
+            )
             _print_lines(issue_outbox.plan_lines(batch))
             if options.dry_run:
                 info_plain("Dry run: nothing was published.")
@@ -230,9 +253,27 @@ def publish_selected(
             if total and not confirm(total):
                 info_plain("Nothing published.")
                 return 0
-            _checked(cfg, incus, container, proposal, identity, journal_store, revision, raise_errors=raise_errors)
+            _checked(
+                cfg,
+                incus,
+                container,
+                proposal,
+                identity,
+                journal_store,
+                revision,
+                raise_errors=raise_errors,
+            )
             issue_outbox.revalidate_batch(batch)
-            _checked(cfg, incus, container, proposal, identity, journal_store, revision, raise_errors=raise_errors)
+            _checked(
+                cfg,
+                incus,
+                container,
+                proposal,
+                identity,
+                journal_store,
+                revision,
+                raise_errors=raise_errors,
+            )
             report = issue_outbox.apply_batch(
                 batch, incus=incus, uid=cfg.container_user.uid, journal_store=journal_store
             )
@@ -253,7 +294,16 @@ def publish_selected(
         if raise_errors:
             if isinstance(exc, (OutboxError, OutboxExecutionError)):
                 raise
-            if isinstance(exc, (issue_outbox.IssueExecutionError, JournalError, OutboxReadError, IncusError, pr.PrError)):
+            if isinstance(
+                exc,
+                (
+                    issue_outbox.IssueExecutionError,
+                    JournalError,
+                    OutboxReadError,
+                    IncusError,
+                    pr.PrError,
+                ),
+            ):
                 raise OutboxExecutionError(str(exc)) from exc
             raise OutboxError(str(exc)) from exc
         error_plain(safe_text(str(exc)))

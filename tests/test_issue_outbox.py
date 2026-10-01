@@ -381,7 +381,11 @@ def test_domain_transport_has_execution_type_and_original_cause(preflight, bound
     from jailbee.issue_outbox import IssueExecutionError, IssueGateError
     from jailbee.outbox_io import OutboxReadError
 
-    failure = OutboxReadError("read failed") if boundary == "reader" else IssueGithubReadError("read failed")
+    failure = (
+        OutboxReadError("read failed")
+        if boundary == "reader"
+        else IssueGithubReadError("read failed")
+    )
     preflight[boundary].side_effect = failure
     with pytest.raises(IssueExecutionError) as caught:
         preflight["prepare"]({"a.json": [_comment(), _create()]})
