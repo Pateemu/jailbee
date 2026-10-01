@@ -4,6 +4,7 @@
 .news-summary { font-size: 1.2rem; color: var(--muted); }
 .news-card { border-top: 1px solid var(--border); padding: 2rem 0; display: grid; gap: 1.5rem; }
 .news-card img, .news-feature { width: 100%; border-radius: var(--radius); }
+.news-feature { display: block; margin-bottom: 1.5rem; }
 .news-card h2 { margin: .4rem 0; }
 .news-card time, .news-article time { color: var(--muted); font-family: var(--mono); }
 .news-back { display: inline-block; margin-bottom: 2rem; }
