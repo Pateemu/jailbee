@@ -92,7 +92,7 @@ def pr_progress_evidence(
         _, separator, remainder = line.partition(" ")
         prefix = name + " "
         matching_name = remainder == name or remainder.startswith(prefix)
-        suffix = remainder[len(prefix):] if remainder.startswith(prefix) else ""
+        suffix = remainder[len(prefix) :] if remainder.startswith(prefix) else ""
         exact = re.fullmatch(r"pr=([^ ]+) actions=([0-9]+) urls=(.+)", suffix) is not None
         # Validate the selected name's suffix independently: URL text may contain
         # another receipt-shaped suffix. A longer filename containing `pr=` is

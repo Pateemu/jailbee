@@ -100,8 +100,13 @@ def env(mocker, make_cfg, tmp_path):
     def read(i, c, k, **kw):
         sync(k)
         command = [
-            "bash", "-c", io._READ_SCRIPT, "bash", str(directory),
-            str(io.FILE_LIMIT), str(io.SNAPSHOT_LIMIT),
+            "bash",
+            "-c",
+            io._READ_SCRIPT,
+            "bash",
+            str(directory),
+            str(io.FILE_LIMIT),
+            str(io.SNAPSHOT_LIMIT),
         ]
         return io._decode(k, run_shell(command, text=True, capture_output=True, check=True).stdout)
 
@@ -168,11 +173,14 @@ def env(mocker, make_cfg, tmp_path):
 
 
 @pytest.mark.parametrize("name", ["one space.json", " leading .json", "one pr=7 space.json"])
-@pytest.mark.parametrize("suffix", [
-    "pr=42 actions=1 urls=https://receipt",
-    "pr=42 actions=broken urls=https://x pr=7 actions=1 urls=https://y",
-    "pr=42 actions=1 urls=https://x pr=7 actions=1 urls=https://y",
-])
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "pr=42 actions=1 urls=https://receipt",
+        "pr=42 actions=broken urls=https://x pr=7 actions=1 urls=https://y",
+        "pr=42 actions=1 urls=https://x pr=7 actions=1 urls=https://y",
+    ],
+)
 def test_existing_whitespace_receipt_refuses_actual_selected_replay(env, name, suffix):
     from jailbee.outbox.publish import PublishOptions, publish_selected
 
@@ -197,12 +205,15 @@ def test_existing_whitespace_receipt_refuses_actual_selected_replay(env, name, s
     assert env[2]["pr"].as_dict() == files
 
 
-@pytest.mark.parametrize("other", [
-    "001.json longer.json",
-    "001.json pr=7 longer.json",
-    "001.json pr=7 actions=notes.json",
-    " 001.json pr=7 longer.json",
-])
+@pytest.mark.parametrize(
+    "other",
+    [
+        "001.json longer.json",
+        "001.json pr=7 longer.json",
+        "001.json pr=7 actions=notes.json",
+        " 001.json pr=7 longer.json",
+    ],
+)
 def test_longer_receipt_filename_does_not_block_actual_selected_publication(env, other):
     files = env[2]["pr"].as_dict()
     files[other] = files["001.json"]
@@ -472,7 +483,9 @@ def test_issue_publishes_all_selected_actions_and_keeps_shared_body(env, capsys)
     assert env[2]["issue"].as_dict()["body.md"] == "Original body"
     receipts = [json.loads(line) for line in env[2]["issue"].as_dict()["applied.log"].splitlines()]
     assert [(r["manifest"], r["index"], r["issue"]) for r in receipts] == [
-        ("001.json", 0, 73), ("001.json", 1, 42), ("001.json", 2, 42),
+        ("001.json", 0, 73),
+        ("001.json", 1, 42),
+        ("001.json", 2, 42),
     ]
     assert all(r["repo"] == "acme/repo" and r["url"] for r in receipts)
     assert "fully applied" in capsys.readouterr().out

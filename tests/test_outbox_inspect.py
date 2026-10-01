@@ -116,12 +116,15 @@ def test_bad_pr_sidecar_is_unknown_not_empty(tmp_path, sidecar):
 
 
 @pytest.mark.parametrize("name", ["one space.json", " leading .json", "one pr=7 space.json"])
-@pytest.mark.parametrize("suffix", [
-    "pr=42 actions=1 urls=https://receipt",
-    "broken",
-    "pr=42 actions=broken urls=https://x pr=7 actions=1 urls=https://y",
-    "pr=42 actions=1 urls=https://x pr=7 actions=1 urls=https://y",
-])
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "pr=42 actions=1 urls=https://receipt",
+        "broken",
+        "pr=42 actions=broken urls=https://x pr=7 actions=1 urls=https://y",
+        "pr=42 actions=1 urls=https://x pr=7 actions=1 urls=https://y",
+    ],
+)
 def test_whitespace_receipt_blocks_exact_proposal(tmp_path, name, suffix):
     from jailbee.outbox.delete import DeleteSelection, plan_delete
 
@@ -138,12 +141,15 @@ def test_whitespace_receipt_blocks_exact_proposal(tmp_path, name, suffix):
     assert view.raw_text == files[name]
 
 
-@pytest.mark.parametrize("other", [
-    "one.json longer.json",
-    "one.json pr=7 longer.json",
-    "one.json pr=7 actions=notes.json",
-    " one.json pr=7 longer.json",
-])
+@pytest.mark.parametrize(
+    "other",
+    [
+        "one.json longer.json",
+        "one.json pr=7 longer.json",
+        "one.json pr=7 actions=notes.json",
+        " one.json pr=7 longer.json",
+    ],
+)
 def test_longer_receipt_filename_is_not_selected_name(tmp_path, other):
     text = pr_files()["001.json"]
     files = {"one.json": text, other: text, "applied.log": f"now {other} pr=42 actions=1 urls=x"}
