@@ -1106,3 +1106,119 @@ def test_probe_failure_preserves_host_target_snapshot(mocker, failure):
     assert status.base_source == "local"
     assert status.tracking_relation == "tracking-ahead"
     assert status.upstream_ref == "refs/remotes/origin/main"
+
+
+@pytest.mark.parametrize("store", ["pr", "issue"])
+@pytest.mark.parametrize(
+    "state,expected",
+    [
+        ("missing", 0),
+        ("missing-parents", 0),
+        ("empty", 0),
+        ("entries", 2),
+        ("symlink", None),
+        ("dangling-symlink", None),
+        ("file", None),
+        ("unreadable", None),
+        ("unsearchable", None),
+        ("missing-inaccessible-parent", None),
+    ],
+)
+def test_probe_counts_only_root_manifests_and_preserves_unknown_stores(
+    mocker, tmp_path, store, state, expected
+):
+    # Removing the regular-file/progress guards or coercing access failures
+    # to zero must fail these tests, including when pytest runs as root.
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    stores = {name: tmp_path / name for name in ("pr", "issue")}
+    other = stores["issue" if store == "pr" else "pr"]
+    other.mkdir()
+    for index in range(3):
+        (other / f"{index}.json").write_text('{}')
+    outbox = stores[store]
+    denied = ""
+    denied_flag = ""
+    if state == "missing-parents":
+        outbox = tmp_path / "absent" / "nested" / store
+        stores[store] = outbox
+    elif state == "missing-inaccessible-parent":
+        parent = tmp_path / "blocked"
+        parent.mkdir()
+        outbox = parent / store
+        stores[store] = outbox
+        denied = str(parent)
+        denied_flag = "-x"
+    elif state in ("symlink", "dangling-symlink"):
+        outbox.symlink_to(other if state == "symlink" else tmp_path / "absent")
+    elif state == "file":
+        outbox.write_text('{}')
+    elif state != "missing":
+        outbox.mkdir()
+        if state == "entries":
+            (outbox / "proposal with\nnewline.json").write_text('{"actions": [1, 2, 3]}')
+            (outbox / "invalid.json").write_text('not parsed by the cheap counter')
+            (outbox / "proposal.progress.json").write_text('{}')
+            (outbox / "directory.json").mkdir()
+            (outbox / "directory.json" / "nested.json").write_text('{}')
+            (outbox / "link.json").symlink_to(outbox / "invalid.json")
+            (outbox / "broken.json").symlink_to(outbox / "missing.json")
+            os.mkfifo(outbox / "pipe.json")
+            (outbox / "publication.log").write_text('log')
+        elif state in ("unreadable", "unsearchable"):
+            (outbox / "proposal.json").write_text('{}')
+            denied = str(outbox)
+            denied_flag = "-r" if state == "unreadable" else "-x"
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    git_bin = bin_dir / "git"
+    git_bin.write_text(
+        '#!/bin/sh\ncase "$*" in\n'
+        '  "rev-parse HEAD") printf "headsha\\n" ;;\n'
+        '  "rev-parse --git-dir") printf ".git\\n" ;;\n'
+        '  *"--verify"*) exit 1 ;;\n'
+        'esac\n'
+    )
+    git_bin.chmod(0o755)
+
+    def exec_snippet(_name, args, *, env, **_kwargs):
+        # Inject access-test results, not chmod-only assertions: root bypasses
+        # permission bits. All other filesystem tests remain real Bash tests.
+        access_checks = r'''
+[() {
+    if builtin [ "$2" = "$DENIED_DIR" ] && builtin [ "$1" = "$DENIED_FLAG" ]; then
+        return 1
+    fi
+    builtin [ "$@"
+}
+'''
+        completed = subprocess.run(
+            [args[0], args[1], access_checks + args[2]],
+            env={
+                "PATH": f"{bin_dir}:/usr/bin:/bin",
+                **env,
+                "OUTBOX_DIR": str(stores["pr"]),
+                "ISSUE_OUTBOX_DIR": str(stores["issue"]),
+                "DENIED_DIR": denied,
+                "DENIED_FLAG": denied_flag,
+            },
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        )
+        fields = completed.stdout.split("\0")
+        assert fields[6:12] == ["headsha", "0", "?", "?", "", "0"]
+        assert fields[12 if store == "pr" else 13] == ("?" if expected is None else str(expected))
+        assert fields[13 if store == "pr" else 12] == "3"
+        assert fields[14] == "?"
+        return completed.stdout
+
+    incus = mocker.Mock()
+    incus.exec.side_effect = exec_snippet
+    status = probe_container_git(incus, "c", str(repo), "main", "main")
+    assert getattr(status, f"pending_{store}_actions") == expected
+    assert getattr(status, f"pending_{'issue' if store == 'pr' else 'pr'}_actions") == 3
+    if state in ("missing", "missing-parents", "missing-inaccessible-parent"):
+        assert not outbox.exists()
