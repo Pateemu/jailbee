@@ -693,17 +693,25 @@ def test_outbox_over_any_ssh_keeps_terminal_browser(mocker, tmp_path, monkeypatc
     mocker.patch.object(qapp, "subprocess", spawn)
     controller.on_action("outbox browse", "p-foo")
     native.assert_not_called()
-    assert spawn.Popen.call_args.args[0][:6] == ["xterm", "-e", "jailbee", "outbox", "browse", "p-foo"]
+    assert spawn.Popen.call_args.args[0][:6] == [
+        "xterm",
+        "-e",
+        "jailbee",
+        "outbox",
+        "browse",
+        "p-foo",
+    ]
 
 
 def test_outbox_publish_command_and_dialog_lifetime(qtbot, mocker, tmp_path):
     from PySide6.QtCore import Signal
+
     from jailbee.dashboard import RepoTarget
     from jailbee.qtui.terminal import TerminalSpec
 
     class Dialog(QDialog):
         changed = Signal()
-        publishRequested = Signal(str, str)
+        publishRequested = Signal(str, str)  # noqa: N815 - mirrors the Qt signal contract
         retired = Signal()
         closing = False
 
@@ -726,8 +734,15 @@ def test_outbox_publish_command_and_dialog_lifetime(qtbot, mocker, tmp_path):
     assert factory.call_count == 1
     dialog.publishRequested.emit("issue/001.json", "a" * 64)
     assert spawn.Popen.call_args.args[0] == [
-        "xterm", "-e", "jailbee", "outbox", "apply", "p-foo", "issue/001.json",
-        "--revision", "a" * 64,
+        "xterm",
+        "-e",
+        "jailbee",
+        "outbox",
+        "apply",
+        "p-foo",
+        "issue/001.json",
+        "--revision",
+        "a" * 64,
     ]
     assert spawn.Popen.call_args.kwargs == {"start_new_session": True, "cwd": tmp_path}
     assert dialog.started
@@ -746,7 +761,13 @@ def test_outbox_publish_builder_validates_tokens_and_preserves_target(tmp_path, 
     target = RepoTarget(tmp_path, tmp_path / "config.yaml" if with_config else None)
     action = build_outbox_publish("p-foo", "issue/001.json", "a" * 64, target)
     assert action.argv == [
-        "jailbee", "outbox", "apply", "p-foo", "issue/001.json", "--revision", "a" * 64,
+        "jailbee",
+        "outbox",
+        "apply",
+        "p-foo",
+        "issue/001.json",
+        "--revision",
+        "a" * 64,
         *(["--config", str(tmp_path / "config.yaml")] if with_config else []),
     ]
     assert action.launch == "terminal" and not action.confirm
@@ -769,13 +790,16 @@ def test_outbox_publish_missing_terminal_warns_without_launch(mocker, tmp_path):
     spawn.Popen.assert_not_called()
 
 
-def test_controller_retains_closing_dialog_until_blocked_delete_completes(qtbot, mocker, make_cfg, tmp_path):
+def test_controller_retains_closing_dialog_until_blocked_delete_completes(
+    qtbot, mocker, make_cfg, tmp_path
+):
     from threading import Event
+
     from jailbee.dashboard import RepoTarget
-    from jailbee.qtui import outbox
-    from tests.test_qtui_outbox import views, select
-    from tests.outbox_support import IDENTITY
     from jailbee.outbox_io import JournalStore
+    from jailbee.qtui import outbox
+    from tests.outbox_support import IDENTITY
+    from tests.test_qtui_outbox import select, views
 
     cfg = make_cfg(tmp_path)
     mocker.patch.object(outbox.config_api, "load_repo_config", return_value=cfg)
@@ -784,10 +808,12 @@ def test_controller_retains_closing_dialog_until_blocked_delete_completes(qtbot,
     mocker.patch.object(outbox, "JournalStore", return_value=JournalStore(tmp_path / "journals"))
     mocker.patch.object(outbox.service, "load_container", return_value=views(tmp_path))
     entered, release = Event(), Event()
+
     def blocked(*args, **kwargs):
         entered.set()
         assert release.wait(3)
         return ()
+
     mocker.patch.object(outbox.service, "execute_delete", side_effect=blocked)
     mocker.patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes)
     window = MainWindow(git_enabled=False, interval=3)

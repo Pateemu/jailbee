@@ -5,11 +5,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QEvent, QThread, Qt, Signal, Slot
+from PySide6.QtCore import QEvent, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QCloseEvent, QFont
 from PySide6.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit, QPushButton,
-    QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QSplitter,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 from jailbee import config as config_api
@@ -34,7 +43,9 @@ class _Selection:
 class _Request(QThread):
     """One controlled request; no widgets or retained Config cross this boundary."""
 
-    def __init__(self, target: RepoTarget, container: str, generation: int, plan: DeletePlan | None) -> None:
+    def __init__(
+        self, target: RepoTarget, container: str, generation: int, plan: DeletePlan | None
+    ) -> None:
         super().__init__()
         self.target = target
         self.container = container
@@ -78,7 +89,9 @@ class OutboxDialog(QDialog):
     publishRequested = Signal(str, str)  # noqa: N815 - Qt signal convention
     retired = Signal()
 
-    def __init__(self, target: RepoTarget, container: str, *, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, target: RepoTarget, container: str, *, parent: QWidget | None = None
+    ) -> None:
         if is_ssh_session():
             raise OutboxError("Use the read-only terminal outbox browser over SSH")
         super().__init__(parent)
@@ -157,7 +170,9 @@ class OutboxDialog(QDialog):
         self._request = None
         if request.mutation_attempted:
             self.changed.emit()  # Never discard mutation completion on close/generation.
-        if not self.closing and (request.plan is not None or request.generation == self._generation):
+        if not self.closing and (
+            request.plan is not None or request.generation == self._generation
+        ):
             if request.view is not None:
                 self._render(request.view)
             if request.error:
@@ -181,7 +196,9 @@ class OutboxDialog(QDialog):
         self._view = view
         self.tree.clear()
         self.details.clear()
-        status = view.error or ("No proposals (empty)" if not view.proposals else "Select a proposal")
+        status = view.error or (
+            "No proposals (empty)" if not view.proposals else "Select a proposal"
+        )
         warnings = [text for store in view.stores for text in (*store.warnings, *store.rejected)]
         self.status.setText("\n".join([status, *warnings]))
         restored: QTreeWidgetItem | None = None
@@ -191,15 +208,30 @@ class OutboxDialog(QDialog):
             if previous and previous.proposal.id == proposal.id:
                 restored = root
             for action in proposal.actions:
-                child = QTreeWidgetItem(root, [f"Action {action.index}: {action.kind} [{action.state}]"])
+                child = QTreeWidgetItem(
+                    root, [f"Action {action.index}: {action.kind} [{action.state}]"]
+                )
                 child.setData(0, Qt.ItemDataRole.UserRole, _Selection(proposal, action.index))
-                same = previous and previous.proposal.id == proposal.id and previous.proposal.revision == proposal.revision
+                same = (
+                    previous
+                    and previous.proposal.id == proposal.id
+                    and previous.proposal.revision == proposal.revision
+                )
                 if same and previous and previous.action == action.index:
                     restored = child
                 for comment in action.comments:
                     leaf = QTreeWidgetItem(child, [f"Comment {comment.index}: {comment.label}"])
-                    leaf.setData(0, Qt.ItemDataRole.UserRole, _Selection(proposal, action.index, comment.index))
-                    if same and previous and previous.action == action.index and previous.comment == comment.index:
+                    leaf.setData(
+                        0,
+                        Qt.ItemDataRole.UserRole,
+                        _Selection(proposal, action.index, comment.index),
+                    )
+                    if (
+                        same
+                        and previous
+                        and previous.action == action.index
+                        and previous.comment == comment.index
+                    ):
                         restored = leaf
         self.tree.expandAll()
         if restored is not None:
@@ -214,15 +246,27 @@ class OutboxDialog(QDialog):
             return
         proposal = selected.proposal
         action = next((a for a in proposal.actions if a.index == selected.action), None)
-        comment = next((c for c in action.comments if c.index == selected.comment), None) if action else None
+        comment = (
+            next((c for c in action.comments if c.index == selected.comment), None)
+            if action
+            else None
+        )
         if comment:
             text = comment.text
         elif action:
             text = action.text + (f"\nReceipt: {action.receipt}" if action.receipt else "")
         else:
-            texts = [f"{proposal.id} [{proposal.state}]\nRevision: {proposal.revision}", proposal.error or "", proposal.edit_block or "", "Raw manifest:\n" + proposal.raw_text]
+            texts = [
+                f"{proposal.id} [{proposal.state}]\nRevision: {proposal.revision}",
+                proposal.error or "",
+                proposal.edit_block or "",
+                "Raw manifest:\n" + proposal.raw_text,
+            ]
             for entry in proposal.actions:
-                texts.append(f"Action {entry.index}: {entry.kind} {entry.repo} {entry.target} [{entry.state}]\n{entry.text}")
+                texts.append(
+                    f"Action {entry.index}: {entry.kind} {entry.repo} "
+                    f"{entry.target} [{entry.state}]\n{entry.text}"
+                )
                 if entry.receipt:
                     texts.append("Receipt: " + entry.receipt)
                 texts.extend(f"Comment {c.index}: {c.label}\n{c.text}" for c in entry.comments)
@@ -236,14 +280,29 @@ class OutboxDialog(QDialog):
         selected = self._selected()
         enabled = not self.busy and not self.closing
         self.refresh_button.setEnabled(enabled)
-        self.delete_button.setEnabled(bool(enabled and selected and not selected.proposal.edit_block))
-        self.publish_button.setEnabled(bool(enabled and selected and not selected.proposal.error and selected.proposal.state in ("pending", "partial", "awaiting-pr")))
+        self.delete_button.setEnabled(
+            bool(enabled and selected and not selected.proposal.edit_block)
+        )
+        self.publish_button.setEnabled(
+            bool(
+                enabled
+                and selected
+                and not selected.proposal.error
+                and selected.proposal.state in ("pending", "partial", "awaiting-pr")
+            )
+        )
         self.tree.setEnabled(enabled)
 
     @Slot()
     def delete_selected(self) -> None:
         selected = self._selected()
-        if self.busy or self.closing or selected is None or self._view is None or selected.proposal.edit_block:
+        if (
+            self.busy
+            or self.closing
+            or selected is None
+            or self._view is None
+            or selected.proposal.edit_block
+        ):
             return
         self._confirming = True
         self._buttons()
@@ -252,10 +311,16 @@ class OutboxDialog(QDialog):
             try:
                 plan = plan_delete(self._view, selected.proposal.id, selection)
             except OutboxError:
-                plan = plan_delete(self._view, selected.proposal.id, DeleteSelection(selected.action, selected.comment, with_dependents=True))
+                plan = plan_delete(
+                    self._view,
+                    selected.proposal.id,
+                    DeleteSelection(selected.action, selected.comment, with_dependents=True),
+                )
             # QMessageBox runs a nested event loop; keep this immutable plan frozen.
             reply = QMessageBox.question(
-                self, "Delete exact scope", "\n".join(plan.summary),
+                self,
+                "Delete exact scope",
+                "\n".join(plan.summary),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -281,7 +346,10 @@ class OutboxDialog(QDialog):
 
     def publication_started(self) -> None:
         self._return_refresh = True
-        self.status.setText("Terminal owns confirmation for all pending actions in this manifest. Refresh after return; launch is not publication.")
+        self.status.setText(
+            "Terminal owns confirmation for all pending actions in this manifest. "
+            "Refresh after return; launch is not publication."
+        )
 
     def event(self, event: QEvent) -> bool:
         if event.type() == QEvent.Type.WindowActivate and getattr(self, "_return_refresh", False):

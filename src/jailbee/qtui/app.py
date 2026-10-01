@@ -622,9 +622,13 @@ class AppController(QObject):
                     candidate.publication_started()
                 return
 
-    def _publish_outbox(self, target: RepoTarget, container: str, proposal: str, revision: str) -> bool:
+    def _publish_outbox(
+        self, target: RepoTarget, container: str, proposal: str, revision: str
+    ) -> bool:
         if is_ssh_session():
-            QMessageBox.warning(self._window, "Read-only browser", "Use explicit outbox apply over SSH.")
+            QMessageBox.warning(
+                self._window, "Read-only browser", "Use explicit outbox apply over SSH."
+            )
             return False
         try:
             action = build_outbox_publish(container, proposal, revision, target)

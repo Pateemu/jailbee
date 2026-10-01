@@ -157,8 +157,20 @@ def build_outbox_publish(
     if re.fullmatch(r"[0-9a-f]{64}", revision) is None:
         raise ValueError("invalid outbox revision; refresh required")
     return ActionCommand(
-        ["jailbee", "outbox", "apply", container, str(selected), "--revision", revision, *target.flags()],
-        "terminal", False, target.cwd(), "outbox apply",
+        [
+            "jailbee",
+            "outbox",
+            "apply",
+            container,
+            str(selected),
+            "--revision",
+            revision,
+            *target.flags(),
+        ],
+        "terminal",
+        False,
+        target.cwd(),
+        "outbox apply",
     )
 
 

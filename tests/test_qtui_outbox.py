@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from jailbee.dashboard import RepoTarget
 from jailbee.outbox.inspect import build_views
-from jailbee.outbox.models import ContainerView, OutboxChanged, ProposalId
+from jailbee.outbox.models import ContainerView
 from jailbee.outbox_io import JournalStore
 from tests.outbox_support import IDENTITY, issue_files, pr_files, store
 
@@ -24,7 +24,11 @@ def views(tmp_path, *, files=None):
         store("issue", issue_files() if files is None else files),
     )
     return ContainerView(
-        IDENTITY, IDENTITY.full_name, True, None, snapshots,
+        IDENTITY,
+        IDENTITY.full_name,
+        True,
+        None,
+        snapshots,
         build_views(IDENTITY, snapshots, journal_store=JournalStore(tmp_path / "journal")),
     )
 
@@ -39,7 +43,9 @@ def env(qtbot, mocker, make_cfg, tmp_path):
     mocker.patch.object(outbox, "Incus", return_value=incus)
     mocker.patch.object(outbox, "JournalStore", return_value=JournalStore(tmp_path / "journal"))
     loader = mocker.patch.object(outbox.config_api, "load_repo_config", return_value=cfg)
-    resolver = mocker.patch.object(outbox.commands, "resolve_target", return_value=(cfg, IDENTITY.full_name))
+    resolver = mocker.patch.object(
+        outbox.commands, "resolve_target", return_value=(cfg, IDENTITY.full_name)
+    )
     view = views(tmp_path)
     read = mocker.patch.object(outbox.service, "load_container", return_value=view)
     mutate = mocker.patch.object(outbox.service, "execute_delete", return_value=())
@@ -102,11 +108,16 @@ def test_empty_invalid_and_progress_states(env, qtbot, tmp_path, state):
     if state in ("empty", "unavailable"):
         assert not dialog.delete_button.isEnabled()
         assert not dialog.publish_button.isEnabled()
-        assert state in dialog.status.text().lower() or "no proposals" in dialog.status.text().lower()
+        assert (
+            state in dialog.status.text().lower() or "no proposals" in dialog.status.text().lower()
+        )
     elif state == "progress":
         select(dialog, action=0)
         assert not dialog.delete_button.isEnabled()
-        assert "publication progress" in dialog.details.toPlainText() or "publication progress" in dialog.status.text()
+        assert (
+            "publication progress" in dialog.details.toPlainText()
+            or "publication progress" in dialog.status.text()
+        )
     else:
         select(dialog, proposal=1)
         assert not dialog.publish_button.isEnabled()
@@ -115,7 +126,9 @@ def test_empty_invalid_and_progress_states(env, qtbot, tmp_path, state):
 
 def test_child_delete_uses_shared_plan_frozen_revision_and_reload(env, qtbot, mocker):
     dialog, view, read, mutate, *_ = env
-    question = mocker.patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes)
+    question = mocker.patch.object(
+        QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes
+    )
     select(dialog, action=0, comment=0)
     with qtbot.waitSignal(dialog.changed):
         dialog.delete_selected()
@@ -134,7 +147,8 @@ def test_child_delete_uses_shared_plan_frozen_revision_and_reload(env, qtbot, mo
 def test_cascade_preview_and_cancel(env, qtbot, mocker, accept):
     dialog, _, _, mutate, *_ = env
     question = mocker.patch.object(
-        QMessageBox, "question",
+        QMessageBox,
+        "question",
         return_value=QMessageBox.StandardButton.Yes if accept else QMessageBox.StandardButton.No,
     )
     select(dialog, proposal=1, action=0)
@@ -194,7 +208,9 @@ def test_publish_child_requests_whole_manifest_and_reloads_on_return(env, qtbot)
 
 
 @pytest.mark.parametrize("operation", ["load", "delete"])
-def test_blocked_worker_close_is_responsive_and_preserves_delete_completion(env, qtbot, mocker, operation):
+def test_blocked_worker_close_is_responsive_and_preserves_delete_completion(
+    env, qtbot, mocker, operation
+):
     dialog, _, read, mutate, *_ = env
     entered, release = Event(), Event()
     changed, retired, ticks, threads = [], [], [], []
@@ -267,16 +283,20 @@ def test_obsolete_load_is_discarded_and_refreshes_are_coalesced(env, qtbot):
 
 
 def test_worker_loads_target_config_off_ui_and_rechecks_for_delete(env, qtbot, mocker, tmp_path):
-    dialog, _, read, mutate, loader, resolver, cfg, incus = env
+    dialog, _, _read, mutate, loader, resolver, cfg, incus = env
     seen = []
     loader.side_effect = lambda root: seen.append((root, QThread.currentThread())) or cfg
-    foreign = cfg.model_copy(update={"container_user": cfg.container_user.model_copy(update={"uid": 1234})})
+    foreign = cfg.model_copy(
+        update={"container_user": cfg.container_user.model_copy(update={"uid": 1234})}
+    )
     resolver.return_value = (foreign, IDENTITY.full_name)
     select(dialog, action=0, comment=0)
     mocker.patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes)
     dialog.delete_selected()
     qtbot.waitUntil(lambda: not dialog.busy)
-    assert seen and all(root == cfg.repo_root and thread is not QThread.currentThread() for root, thread in seen)
+    assert seen and all(
+        root == cfg.repo_root and thread is not QThread.currentThread() for root, thread in seen
+    )
     assert mutate.call_args.args[:2] == (foreign, incus)
     assert resolver.call_count >= 3
 
@@ -284,7 +304,10 @@ def test_worker_loads_target_config_off_ui_and_rechecks_for_delete(env, qtbot, m
 def test_delete_config_drift_and_mutation_error_remain_visible(env, qtbot, mocker):
     dialog, _, _, mutate, _, resolver, cfg, _ = env
     select(dialog, action=0, comment=0)
-    resolver.side_effect = [(cfg, IDENTITY.full_name), (cfg.model_copy(update={"container_prefix": "changed"}), IDENTITY.full_name)]
+    resolver.side_effect = [
+        (cfg, IDENTITY.full_name),
+        (cfg.model_copy(update={"container_prefix": "changed"}), IDENTITY.full_name),
+    ]
     mocker.patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes)
     dialog.delete_selected()
     qtbot.waitUntil(lambda: not dialog.busy)
@@ -307,9 +330,11 @@ def test_load_failure_clears_stale_selection(env, qtbot):
 def test_close_during_confirmation_cancels_mutation(env, qtbot, mocker):
     dialog, _, _, mutate, *_ = env
     select(dialog, action=0, comment=0)
+
     def closing(*args):
         dialog.close()
         return QMessageBox.StandardButton.Yes
+
     mocker.patch.object(QMessageBox, "question", side_effect=closing)
     dialog.delete_selected()
     mutate.assert_not_called()
@@ -323,12 +348,18 @@ def test_real_shared_deletion_changes_only_selected_comment(env, qtbot, mocker):
     mocker.stop(read)
     mocker.stop(mutate)
     snapshots = {s.kind: s for s in view.stores}
-    incus.list_containers.return_value = [{"name": IDENTITY.full_name, "created_at": IDENTITY.created_at}]
-    mocker.patch.object(outbox.service, "read_store", side_effect=lambda i, c, kind, **kw: snapshots[kind])
+    incus.list_containers.return_value = [
+        {"name": IDENTITY.full_name, "created_at": IDENTITY.created_at}
+    ]
+    mocker.patch.object(
+        outbox.service, "read_store", side_effect=lambda i, c, kind, **kw: snapshots[kind]
+    )
     management = mocker.patch.object(outbox.service, "PrManagement")
     from jailbee.outbox.io import PrManagement
+
     management.return_value = PrManagement(cfg.repo_root / "pr-locks")
     updated = []
+
     def mutation(i, c, kind, **kwargs):
         updated.append(kwargs["new_manifest"])
         files = snapshots[kind].as_dict()
@@ -336,6 +367,7 @@ def test_real_shared_deletion_changes_only_selected_comment(env, qtbot, mocker):
         files[name] = text
         snapshots[kind] = store(kind, files)
         return kwargs["delete_names"]
+
     mocker.patch.object(outbox.service, "mutate_store", side_effect=mutation)
     select(dialog, action=0, comment=0)
     mocker.patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes)
@@ -343,7 +375,9 @@ def test_real_shared_deletion_changes_only_selected_comment(env, qtbot, mocker):
         dialog.delete_selected()
     qtbot.waitUntil(lambda: not dialog.busy)
     assert len(updated) == 1
-    assert json.loads(updated[0][1])["actions"][0]["comments"] == [{"path": "a.py", "line": 2, "body": "Second"}]
+    assert json.loads(updated[0][1])["actions"][0]["comments"] == [
+        {"path": "a.py", "line": 2, "body": "Second"}
+    ]
     assert dialog.tree.topLevelItem(0).child(0).childCount() == 1
 
 
@@ -356,6 +390,7 @@ def test_ambiguous_mutation_failure_still_notifies_controller(env, qtbot):
     # Avoid a modal confirmation while preserving the real deletion path.
     dialog._confirming = False
     from unittest.mock import patch
+
     with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
         with qtbot.waitSignal(dialog.changed):
             dialog.delete_selected()
