@@ -177,3 +177,8 @@ def record_applied(account: str, digest: str) -> None:
 
 def record_hot_applied(account: str, digest: str) -> None:
     _write_private(_account_dir(account) / "applied-hot.sha256", digest + "\n")
+
+
+def clear_hot_applied(account: str) -> None:
+    """Forget the hot stamp: the proxy may now serve routes no recorded digest describes."""
+    (state_dir() / check_account(account) / "applied-hot.sha256").unlink(missing_ok=True)

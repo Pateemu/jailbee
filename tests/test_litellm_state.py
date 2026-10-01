@@ -81,6 +81,7 @@ def test_account_names_cannot_leave_the_state_dir(name: str) -> None:
         lambda n: st.config_applied(n, "x"),
         lambda n: st.record_hot_applied(n, "x"),
         lambda n: st.hot_applied(n, "x"),
+        st.clear_hot_applied,
     ):
         with pytest.raises(ValueError, match="invalid LiteLLM account name"):
             call(name)
@@ -147,6 +148,15 @@ def test_config_applied_compares_the_recorded_digest() -> None:
     assert st.config_applied("default", "abc")
     assert not st.config_applied("default", "def")
     assert (st.state_dir() / "default" / "applied.sha256").stat().st_mode & 0o777 == 0o600
+
+
+def test_clear_hot_applied_forgets_only_the_hot_stamp_and_tolerates_none() -> None:
+    st.clear_hot_applied("default")  # nothing recorded yet
+    st.record_applied("default", "cold")
+    st.record_hot_applied("default", "abc")
+    st.clear_hot_applied("default")
+    assert not st.hot_applied("default", "abc")
+    assert st.config_applied("default", "cold")
 
 
 def test_hot_and_cold_stamps_are_independent() -> None:

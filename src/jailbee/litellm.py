@@ -543,6 +543,9 @@ def _converge(
                 reloaded = True
             else:
                 done.fallbacks[account] = problem
+                # The proxy may already serve (part of) the new routes, so the old
+                # stamp no longer describes it: reverting the config must push again.
+                litellm_state.clear_hot_applied(account)
                 restart = True
         if restart and not allow_restart:
             done.unreloaded.append(account)

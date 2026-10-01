@@ -1729,6 +1729,19 @@ def test_reconcile_without_restart_leaves_an_unconfirmed_reload_pending_then_ret
     assert (second.reloaded, second.restarted) == (["default"], [])
 
 
+def test_reverting_after_an_unconfirmed_reload_pushes_the_old_routes_again(xdg):
+    # The proxy may have taken the unconfirmed B; reverting to A must not be
+    # skipped just because A was the last confirmed state.
+    ll.litellm_up(_incus(present=True), _gcfg())
+    stuck = _incus(present=True, ack="none")
+    pending = ll.litellm_reconcile(
+        stuck, _gcfg(routes={"sol-xhigh": {"effort": "max"}}), restart=False
+    )
+    assert (pending.pending, pending.restarted) == (["default"], [])
+    reverted = ll.litellm_reconcile(_incus(present=True), _gcfg(), restart=False)
+    assert (reverted.reloaded, reverted.pending) == (["default"], [])
+
+
 @pytest.mark.parametrize("restart", [True, False])
 def test_a_hot_only_change_still_rewrites_the_egress_allowlist(xdg, monkeypatch, restart):
     from jailbee.litellm_render import egress_hosts
