@@ -1715,6 +1715,12 @@ def new_container(
 
     agent_private.attach(cfg, incus, name)
 
+    # Infrastructure must exist even without cloning or autostart; a failed
+    # bootstrap must not let agents write into an unsafe store.
+    from jailbee.outbox.io import ensure_directories
+
+    ensure_directories(cfg, incus, name)
+
     # Install/update every enabled agent before autostart execs them. Must
     # come after mounts are attached (each agent's shared cache, e.g.
     # claude-install, provides its persistent store) and after the network

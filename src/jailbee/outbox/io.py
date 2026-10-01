@@ -21,6 +21,7 @@ from jailbee.outbox.models import Kind, OutboxChanged, OutboxExecutionError, Sto
 from jailbee.outbox_io import ContainerIdentity
 
 if TYPE_CHECKING:
+    from jailbee.config import Config
     from jailbee.incus import Incus
 
 FILE_LIMIT = 256 * 1024
@@ -117,6 +118,47 @@ def store_directory(kind: Kind) -> str:
     if kind not in ("pr", "issue"):
         raise OutboxExecutionError("unknown outbox kind")
     return f"/home/dev/.jailbee/{kind}-outbox"
+
+
+# Walk via open directory descriptors: a concurrent rename/symlink replacement
+# cannot redirect creation through an unchecked ancestor.
+_CREATE_SCRIPT = r"""
+import os
+import sys
+
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+for store in sys.argv[1:]:
+    fd = os.open('/', flags)
+    try:
+        for component in store.strip('/').split('/'):
+            try:
+                child = os.open(component, flags, dir_fd=fd)
+            except FileNotFoundError:
+                try:
+                    os.mkdir(component, mode=0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+                child = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+    finally:
+        os.close(fd)
+"""
+
+
+def ensure_directories(cfg: Config, incus: Incus, container: str) -> None:
+    """Bootstrap fixed stores as their writer, refusing links and non-directories."""
+    try:
+        incus.exec(
+            container,
+            ["python3", "-c", _CREATE_SCRIPT, store_directory("pr"), store_directory("issue")],
+            uid=cfg.container_user.uid,
+            timeout=30,
+        )
+    except IncusError as exc:
+        raise OutboxExecutionError(
+            f"Could not create outbox directories in '{container}': {exc}"
+        ) from exc
 
 
 def _decode(kind: Kind, raw: str) -> StoreSnapshot:
