@@ -146,6 +146,21 @@ def env(mocker, make_cfg, tmp_path):
     return cfg, incus, snapshots, journals, mutations, labels, fetch, manager
 
 
+def test_existing_whitespace_receipt_refuses_actual_selected_replay(env):
+    from jailbee.outbox.publish import PublishOptions, publish_selected
+
+    files = env[2]["pr"].as_dict()
+    files["one space.json"] = files.pop("001.json")
+    files["applied.log"] = "now one space.json pr=42 actions=1 urls=https://receipt\n"
+    env[2]["pr"] = store("pr", files)
+    assert publish_selected(
+        env[0], env[1], IDENTITY.full_name, ProposalId("pr", "one space.json"),
+        journal_store=env[3], options=PublishOptions(), confirm=lambda count: True,
+    ) == 1
+    env[4]["pr_comment"].assert_not_called()
+    env[1].exec_with_input.assert_not_called()
+
+
 def selected(
     env, kind="issue", *, confirm=lambda count: True, revision=None, raise_errors=False, **options
 ):

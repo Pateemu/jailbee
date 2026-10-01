@@ -115,6 +115,45 @@ def test_bad_pr_sidecar_is_unknown_not_empty(tmp_path, sidecar):
     assert view.error and view.edit_block
 
 
+@pytest.mark.parametrize("name", ["one space.json", " leading .json", "one pr=7 space.json"])
+@pytest.mark.parametrize("suffix", ["pr=42 actions=1 urls=https://receipt", "broken"])
+def test_whitespace_receipt_blocks_exact_proposal(tmp_path, name, suffix):
+    from jailbee.outbox.delete import DeleteSelection, plan_delete
+
+    files = {name: pr_files()["001.json"], "applied.log": f"now {name} {suffix}\n"}
+    snapshot = store("pr", files)
+    views = build_views(IDENTITY, (snapshot,), journal_store=JournalStore(tmp_path))
+    view = views[0]
+    assert view.error and view.edit_block
+    container = ContainerView(IDENTITY, IDENTITY.full_name, True, None, (snapshot,), views)
+    with pytest.raises(OutboxError):
+        plan_delete(container, ProposalId("pr", name), DeleteSelection())
+    with pytest.raises(OutboxError):
+        plan_delete(container, ProposalId("pr", name), DeleteSelection(action=0))
+    assert view.raw_text == files[name]
+
+
+@pytest.mark.parametrize("bad", ["deep-progress", "surrogate-body"])
+def test_bad_proposal_input_does_not_abort_healthy_sibling(tmp_path, bad):
+    files = pr_files() | {"healthy.json": pr_files()["001.json"]}
+    if bad == "deep-progress":
+        files["001.json.progress.json"] = "[" * 20000 + "0" + "]" * 20000
+    else:
+        raw = json.loads(files["001.json"])
+        raw["actions"][0]["body"] = "\ud800"
+        files["001.json"] = json.dumps(raw)
+    snapshot = store("pr", files)
+    views = build_views(IDENTITY, (snapshot,), journal_store=JournalStore(tmp_path))
+    invalid, healthy = views
+    assert invalid.error
+    assert invalid.raw_text == files["001.json"]
+    assert healthy.state == "pending" and healthy.error is None
+    if bad == "deep-progress":
+        assert invalid.state == "uncertain" and invalid.edit_block
+    else:
+        assert invalid.state == "invalid"
+
+
 def test_pr_progress_and_exact_log_name(tmp_path):
     journals = JournalStore(tmp_path)
     unrelated = pr_files() | {

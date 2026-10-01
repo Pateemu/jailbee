@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
@@ -83,18 +84,19 @@ def pr_progress_evidence(
                 raise ValueError
             applied = frozenset(indices)
             receipts = tuple(sorted((int(k), v) for k, v in urls.items()))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):
             error = "invalid PR progress sidecar"
-    # The second whitespace-delimited field is the exact manifest name.
+    # The writer separates timestamp/name/suffix with one literal space. Never
+    # split the name: existing histories can include leading or embedded spaces.
     for line in files.get("applied.log", "").splitlines():
-        fields = line.split()
-        if len(fields) >= 2 and fields[1] == name:
+        _, separator, remainder = line.partition(" ")
+        record = re.fullmatch(r"(.*) pr=([^ ]+) actions=([0-9]+) urls=(.+)", remainder)
+        exact = record is not None and record.group(1) == name
+        malformed_match = remainder == name or remainder.startswith(name + " ")
+        if separator and (exact or (record is None and malformed_match)):
             inputs.append(("applied.log", line))
             block = "recorded publication evidence prevents editing"
-            if len(fields) < 5 or not all(
-                fields[i].startswith(prefix)
-                for i, prefix in ((2, "pr="), (3, "actions="), (4, "urls="))
-            ):
+            if not exact:
                 error = "invalid PR receipt log record"
             elif not applied:
                 error = "receipt log records publication without usable action progress"

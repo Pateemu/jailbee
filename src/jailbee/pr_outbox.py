@@ -192,7 +192,11 @@ def _resolve_body(name: str, index: int, item: dict[str, Any], bodies: Mapping[s
             raise ManifestError(f"{name} action {index}: body must be a string")
         body = body_val
 
-    if len(body.encode()) > MAX_BODY_BYTES:
+    try:
+        size = len(body.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise ManifestError(f"{name} action {index}: body is not valid UTF-8") from exc
+    if size > MAX_BODY_BYTES:
         raise ManifestError(
             f"{name} action {index}: body is larger than {MAX_BODY_BYTES // 1024} KB"
         )
