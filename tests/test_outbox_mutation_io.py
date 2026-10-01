@@ -15,21 +15,40 @@ def local_mutator(mocker, tmp_path):
     directory = tmp_path / "home" / "dev" / ".jailbee" / "pr-outbox"
     directory.mkdir(parents=True)
     incus = mocker.Mock()
+
     def execute(container, command, input_text, **kwargs):
         # Substitute only the fixed directory argv; never rewrite script source.
         command = list(command)
         command[4] = str(directory)
-        result = subprocess.run(command, input=input_text, text=True, capture_output=True, timeout=10)
+        result = subprocess.run(
+            command, input=input_text, text=True, capture_output=True, timeout=10
+        )
         if result.returncode:
             raise IncusError(result.stderr)
         return result.stdout
+
     incus.exec_with_input.side_effect = execute
     return io, incus, directory
 
 
-def mutate(env, expected, replacement=("001.json", "replacement"), delete=(), progress="001.json.progress.json"):
+def mutate(
+    env,
+    expected,
+    replacement=("001.json", "replacement"),
+    delete=(),
+    progress="001.json.progress.json",
+):
     io, incus, _ = env
-    return io.mutate_store(incus, "c", "pr", uid=1000, expected=expected, new_manifest=replacement, delete_names=delete, forbidden_progress=progress)
+    return io.mutate_store(
+        incus,
+        "c",
+        "pr",
+        uid=1000,
+        expected=expected,
+        new_manifest=replacement,
+        delete_names=delete,
+        forbidden_progress=progress,
+    )
 
 
 def test_large_stdin_is_not_silently_truncated(mocker, tmp_path):
@@ -51,10 +70,15 @@ def test_utf8_stdin_atomic_replace_and_sibling_preservation(mocker, tmp_path):
     assert (env[2] / "neighbor.json").read_text() == "neighbor"
     assert not (env[2] / "hacked").exists()
     assert not list(env[2].glob(".outbox-*.tmp"))
-    assert env[1].exec_with_input.call_args.kwargs == {"uid": 1000, "timeout": env[0].MUTATION_TIMEOUT}
+    assert env[1].exec_with_input.call_args.kwargs == {
+        "uid": 1000,
+        "timeout": env[0].MUTATION_TIMEOUT,
+    }
 
 
-@pytest.mark.parametrize("unsafe", ["hash", "symlink", "fifo", "hardlink", "missing", "progress", "sibling"])
+@pytest.mark.parametrize(
+    "unsafe", ["hash", "symlink", "fifo", "hardlink", "missing", "progress", "sibling"]
+)
 def test_unsafe_final_evidence_leaves_target_unchanged(mocker, tmp_path, unsafe):
     env = local_mutator(mocker, tmp_path)
     target = env[2] / "001.json"
@@ -87,9 +111,11 @@ def test_new_sibling_in_final_window_keeps_exclusive_body(mocker, tmp_path):
     for name, text in {"001.json": "manifest", "body.md": "body"}.items():
         (env[2] / name).write_text(text)
     original_execute = env[1].exec_with_input.side_effect
+
     def late_sibling(*args, **kwargs):
         (env[2] / "002.json").write_text('{"actions":[{"body_file":"body.md"}]}')
         return original_execute(*args, **kwargs)
+
     env[1].exec_with_input.side_effect = late_sibling
     with pytest.raises(OutboxExecutionError):
         mutate(env, {"001.json": "manifest", "body.md": "body"}, None, ("001.json", "body.md"))
@@ -122,7 +148,13 @@ def fake_binary(tmp_path, monkeypatch, name, script):
 def test_temp_write_failure_retains_target(mocker, tmp_path, monkeypatch):
     env = local_mutator(mocker, tmp_path)
     (env[2] / "001.json").write_text("original")
-    fake_binary(tmp_path, monkeypatch, "dd", 'if [[ "$*" == *of=* ]]; then printf "write failed" >&2; exit 1; fi\nexec /usr/bin/dd "$@"\n')
+    fake_binary(
+        tmp_path,
+        monkeypatch,
+        "dd",
+        'if [[ "$*" == *of=* ]]; then printf "write failed" >&2; exit 1; fi\n'
+        'exec /usr/bin/dd "$@"\n',
+    )
     with pytest.raises(OutboxExecutionError):
         mutate(env, {"001.json": "original"})
     assert (env[2] / "001.json").read_text() == "original"
@@ -132,7 +164,12 @@ def test_temp_write_failure_retains_target(mocker, tmp_path, monkeypatch):
 def test_unexpected_success_stderr_fails_without_removing(mocker, tmp_path, monkeypatch):
     env = local_mutator(mocker, tmp_path)
     (env[2] / "001.json").write_text("original")
-    fake_binary(tmp_path, monkeypatch, "sha256sum", "printf 'unexpected internal warning' >&2\nexec /usr/bin/sha256sum \"$@\"\n")
+    fake_binary(
+        tmp_path,
+        monkeypatch,
+        "sha256sum",
+        "printf 'unexpected internal warning' >&2\nexec /usr/bin/sha256sum \"$@\"\n",
+    )
     with pytest.raises(OutboxExecutionError):
         mutate(env, {"001.json": "original"})
     assert (env[2] / "001.json").read_text() == "original"
@@ -143,7 +180,12 @@ def test_partial_remove_reports_actual_names(mocker, tmp_path, monkeypatch):
     expected = {"001.json": "manifest", "body.md": "body"}
     for name, text in expected.items():
         (env[2] / name).write_text(text)
-    fake_binary(tmp_path, monkeypatch, "rm", 'if [[ "$*" == *body.md* ]]; then printf "denied" >&2; exit 1; fi\nexec /usr/bin/rm "$@"\n')
+    fake_binary(
+        tmp_path,
+        monkeypatch,
+        "rm",
+        'if [[ "$*" == *body.md* ]]; then printf "denied" >&2; exit 1; fi\nexec /usr/bin/rm "$@"\n',
+    )
     with pytest.raises(OutboxExecutionError) as failure:
         mutate(env, expected, None, ("001.json", "body.md"))
     assert failure.value.removed_names == ("001.json",)
@@ -167,14 +209,25 @@ def test_whole_removal_and_full_progress_log_hash(mocker, tmp_path):
 @pytest.mark.parametrize("raw", ["", "v1\0ok\0", "garbage", "x" * (1024 * 1024)])
 def test_malformed_bounded_result_fails(mocker, raw):
     from jailbee.outbox.io import mutate_store
+
     incus = mocker.Mock()
     incus.exec_with_input.return_value = raw
     with pytest.raises(OutboxExecutionError):
-        mutate_store(incus, "c", "issue", uid=None, expected={"001.json": "old"}, new_manifest=("001.json", "new"), delete_names=(), forbidden_progress=None)
+        mutate_store(
+            incus,
+            "c",
+            "issue",
+            uid=None,
+            expected={"001.json": "old"},
+            new_manifest=("001.json", "new"),
+            delete_names=(),
+            forbidden_progress=None,
+        )
 
 
 def test_sibling_created_during_final_hash_refuses_cleanup(mocker, tmp_path, monkeypatch):
     import shlex
+
     env = local_mutator(mocker, tmp_path)
     expected = {"001.json": "manifest", "body.md": "body"}
     for name, text in expected.items():
@@ -183,7 +236,16 @@ def test_sibling_created_during_final_hash_refuses_cleanup(mocker, tmp_path, mon
     # gains a sibling after inventory enumeration, while hashing its last file.
     counter = tmp_path / "count"
     sibling = env[2] / "002.json"
-    fake_binary(tmp_path, monkeypatch, "sha256sum", f'n=0; [[ ! -f {shlex.quote(str(counter))} ]] || read -r n < {shlex.quote(str(counter))}\nn=$((n+1)); printf "%s\\n" "$n" > {shlex.quote(str(counter))}\nif (( n == 4 )); then printf "sibling" > {shlex.quote(str(sibling))}; fi\nexec /usr/bin/sha256sum "$@"\n')
+    fake_binary(
+        tmp_path,
+        monkeypatch,
+        "sha256sum",
+        f"n=0; [[ ! -f {shlex.quote(str(counter))} ]] || "
+        f"read -r n < {shlex.quote(str(counter))}\n"
+        f'n=$((n+1)); printf "%s\\n" "$n" > {shlex.quote(str(counter))}\n'
+        f'if (( n == 4 )); then printf "sibling" > {shlex.quote(str(sibling))}; fi\n'
+        'exec /usr/bin/sha256sum "$@"\n',
+    )
     with pytest.raises(OutboxExecutionError):
         mutate(env, expected, None, ("001.json", "body.md"))
     assert (env[2] / "body.md").read_text() == "body"
@@ -192,12 +254,18 @@ def test_sibling_created_during_final_hash_refuses_cleanup(mocker, tmp_path, mon
 
 def test_sibling_created_between_unlinks_retains_body(mocker, tmp_path, monkeypatch):
     import shlex
+
     env = local_mutator(mocker, tmp_path)
     expected = {"001.json": "manifest", "body.md": "body"}
     for name, text in expected.items():
         (env[2] / name).write_text(text)
     sibling = env[2] / "002.json"
-    fake_binary(tmp_path, monkeypatch, "rm", f'/usr/bin/rm "$@" || exit $?\nprintf "sibling" > {shlex.quote(str(sibling))}\n')
+    fake_binary(
+        tmp_path,
+        monkeypatch,
+        "rm",
+        f'/usr/bin/rm "$@" || exit $?\nprintf "sibling" > {shlex.quote(str(sibling))}\n',
+    )
     with pytest.raises(OutboxExecutionError) as failure:
         mutate(env, expected, None, ("001.json", "body.md"))
     assert failure.value.removed_names == ("001.json",)
@@ -238,7 +306,17 @@ def test_changed_neighbor_text_preserves_body(mocker, tmp_path):
 
 def test_timeout_is_not_success(mocker):
     from jailbee.outbox.io import mutate_store
+
     incus = mocker.Mock()
     incus.exec_with_input.side_effect = IncusTimeoutError("timeout")
     with pytest.raises(OutboxExecutionError):
-        mutate_store(incus, "c", "issue", uid=None, expected={"001.json": "old"}, new_manifest=None, delete_names=("001.json",), forbidden_progress=None)
+        mutate_store(
+            incus,
+            "c",
+            "issue",
+            uid=None,
+            expected={"001.json": "old"},
+            new_manifest=None,
+            delete_names=("001.json",),
+            forbidden_progress=None,
+        )

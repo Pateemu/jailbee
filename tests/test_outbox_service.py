@@ -21,14 +21,23 @@ def setup_service(mocker, make_cfg, tmp_path, kind="issue"):
         {"name": IDENTITY.full_name, "created_at": IDENTITY.created_at}
     ]
     files = issue_files() if kind == "issue" else pr_files()
-    snapshots = {kind: store(kind, files), "pr" if kind == "issue" else "issue": store("pr" if kind == "issue" else "issue", {})}
-    reader = mocker.patch.object(service, "read_store", side_effect=lambda i, c, k, **kw: snapshots[k])
-    mutation = mocker.patch.object(service, "mutate_store", side_effect=lambda *args, **kw: kw["delete_names"])
+    snapshots = {
+        kind: store(kind, files),
+        "pr" if kind == "issue" else "issue": store("pr" if kind == "issue" else "issue", {}),
+    }
+    reader = mocker.patch.object(
+        service, "read_store", side_effect=lambda i, c, k, **kw: snapshots[k]
+    )
+    mutation = mocker.patch.object(
+        service, "mutate_store", side_effect=lambda *args, **kw: kw["delete_names"]
+    )
     journals = JournalStore(tmp_path / "journals")
     return service, cfg, incus, files, snapshots, reader, mutation, journals
 
 
-def preview(env, selection=DeleteSelection(action=2), kind="issue"):
+def preview(env, selection=None, kind="issue"):
+    if selection is None:
+        selection = DeleteSelection(action=2)
     service, cfg, incus, _, _, _, _, journals = env
     view = service.load_container(cfg, incus, IDENTITY.full_name, journal_store=journals)
     return plan_delete(view, ProposalId(kind, "001.json"), selection)
@@ -45,7 +54,9 @@ def test_zero_based_action_and_bodies_retained(mocker, make_cfg, tmp_path):
     execute(env, plan)
     kwargs = env[6].call_args.kwargs
     payload = json.loads(kwargs["new_manifest"][1])
-    assert payload["actions"] == [{"type": "comment", "repo": ".", "issue": 42, "body": "Independent"}]
+    assert payload["actions"] == [
+        {"type": "comment", "repo": ".", "issue": 42, "body": "Independent"}
+    ]
     assert kwargs["delete_names"] == ()
     assert kwargs["expected"] == env[3]
 
@@ -107,10 +118,14 @@ def test_pr_evidence_blocks_whole_deletion(mocker, make_cfg, tmp_path, evidence)
 def journal(env, state):
     key = journal_key(IDENTITY, "001.json")
     files = env[3]
-    env[7].create(key, proposal_digest("001.json", files["001.json"], {"body.md": files["body.md"]}), 3)
+    env[7].create(
+        key, proposal_digest("001.json", files["001.json"], {"body.md": files["body.md"]}), 3
+    )
     env[7].mark_prepared(key, 0, repo="acme/repo")
     if state == "applied":
-        env[7].mark_applied(key, 0, repo="acme/repo", url="https://github.com/acme/repo/issues/1", issue=1)
+        env[7].mark_applied(
+            key, 0, repo="acme/repo", url="https://github.com/acme/repo/issues/1", issue=1
+        )
     return key
 
 
@@ -125,10 +140,12 @@ def test_settled_archive_only_after_success_under_same_lock(mocker, make_cfg, tm
     env = setup_service(mocker, make_cfg, tmp_path)
     key = journal(env, "applied")
     plan = preview(env, DeleteSelection(archive_journal=True))
+
     def mutation(*args, **kwargs):
         assert env[7]._lock_path(key) in env[7]._held_lock_paths()
         assert env[7]._path(key).exists()
         return plan.delete_names
+
     env[6].side_effect = mutation
     assert execute(env, plan) == plan.delete_names
     assert env[7].load(key) is None
@@ -174,10 +191,12 @@ def test_timeout_unavailable_not_empty(mocker, make_cfg, tmp_path):
 def test_identity_rechecked_after_read_before_action(mocker, make_cfg, tmp_path):
     env = setup_service(mocker, make_cfg, tmp_path)
     plan = preview(env)
+
     def read(i, c, k, **kw):
         if k == "issue":
             env[2].list_containers.return_value[0]["created_at"] = "replacement"
         return env[4][k]
+
     env[5].side_effect = read
     with pytest.raises(OutboxChanged):
         execute(env, plan)
@@ -206,8 +225,10 @@ def test_rejected_neighbor_preserves_body(mocker, make_cfg, tmp_path):
 
 def test_pr_lock_held_across_mutation(mocker, make_cfg, tmp_path):
     from contextlib import contextmanager
+
     env = setup_service(mocker, make_cfg, tmp_path, "pr")
     held = []
+
     @contextmanager
     def lock(identity):
         assert identity == IDENTITY
@@ -216,10 +237,13 @@ def test_pr_lock_held_across_mutation(mocker, make_cfg, tmp_path):
             yield
         finally:
             held.pop()
+
     mocker.patch.object(env[0].PrManagement, "lock", side_effect=lock)
+
     def mutation(*args, **kwargs):
         assert held == [IDENTITY]
         return kwargs["delete_names"]
+
     env[6].side_effect = mutation
     execute(env, preview(env, DeleteSelection(), "pr"))
     assert held == []
@@ -234,12 +258,15 @@ def test_identity_reads_have_finite_timeout(mocker, make_cfg, tmp_path):
 @pytest.mark.parametrize("kind", ["pr", "issue"])
 def test_identity_rechecked_after_lock_wait(mocker, make_cfg, tmp_path, kind):
     from contextlib import contextmanager
+
     env = setup_service(mocker, make_cfg, tmp_path, kind)
     plan = preview(env, DeleteSelection(), kind)
+
     @contextmanager
     def replacing_lock(*args):
         env[2].list_containers.return_value[0]["created_at"] = "replacement"
         yield
+
     if kind == "issue":
         mocker.patch.object(env[7], "lock", side_effect=replacing_lock)
     else:
@@ -252,4 +279,8 @@ def test_identity_rechecked_after_lock_wait(mocker, make_cfg, tmp_path, kind):
 def test_identity_timeout_unavailable(mocker, make_cfg, tmp_path):
     env = setup_service(mocker, make_cfg, tmp_path)
     env[2].list_containers.side_effect = IncusTimeoutError("timeout")
-    assert not env[0].load_container(env[1], env[2], IDENTITY.full_name, journal_store=env[7]).available
+    assert (
+        not env[0]
+        .load_container(env[1], env[2], IDENTITY.full_name, journal_store=env[7])
+        .available
+    )

@@ -260,7 +260,8 @@ validate() {
         before=$(stat -c '%d:%i:%h:%s:%y:%z' -- "$file") || return 1
         size=$(stat -c %s -- "$file") || return 1
         (( size <= limit )) || return 1
-        digest=$(dd if="$file" iflag=nofollow,nonblock bs=262145 count=1 status=none | sha256sum) || return 1
+        digest=$(dd if="$file" iflag=nofollow,nonblock \
+            bs=262145 count=1 status=none | sha256sum) || return 1
         after=$(stat -c '%d:%i:%h:%s:%y:%z' -- "$file") || return 1
         [[ "$before" == "$after" && "${digest%% *}" == "${hashes["$name"]}" ]] || return 1
     done
@@ -312,9 +313,15 @@ def _member_name(name: str) -> None:
 
 
 def mutate_store(
-    incus: Incus, container: str, kind: Kind, *, uid: int | None,
-    expected: Mapping[str, str], new_manifest: tuple[str, str] | None,
-    delete_names: tuple[str, ...], forbidden_progress: str | None,
+    incus: Incus,
+    container: str,
+    kind: Kind,
+    *,
+    uid: int | None,
+    expected: Mapping[str, str],
+    new_manifest: tuple[str, str] | None,
+    delete_names: tuple[str, ...],
+    forbidden_progress: str | None,
     rejected_names: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
     """Compare full inventory and exact UTF-8 bytes at the final mutation boundary."""
@@ -333,21 +340,40 @@ def mutate_store(
         raise MutationExecutionError("missing or rejected deletion input")
     if forbidden_progress is not None:
         _member_name(forbidden_progress)
-    args = [store_directory(kind), str(FILE_LIMIT), target, forbidden_progress or "", str(len(expected))]
+    args = [
+        store_directory(kind),
+        str(FILE_LIMIT),
+        target,
+        forbidden_progress or "",
+        str(len(expected)),
+    ]
     for name, content in sorted(expected.items()):
         args.extend((name, hashlib.sha256(content.encode("utf-8")).hexdigest()))
     args.extend((str(len(rejected_names)), *rejected_names, *delete_names))
     try:
-        result = incus.exec_with_input(container, ["bash", "-c", _MUTATE_SCRIPT, "bash", *args], text, uid=uid, timeout=MUTATION_TIMEOUT)
+        result = incus.exec_with_input(
+            container,
+            ["bash", "-c", _MUTATE_SCRIPT, "bash", *args],
+            text,
+            uid=uid,
+            timeout=MUTATION_TIMEOUT,
+        )
     except IncusError as exc:
-        raise MutationExecutionError(f"mutation transport failed; outcome may be incomplete: {exc}") from exc
+        raise MutationExecutionError(
+            f"mutation transport failed; outcome may be incomplete: {exc}"
+        ) from exc
     if len(result) > FILE_LIMIT:
         raise MutationExecutionError("mutation result overflow; outcome may be incomplete")
     fields = result.split("\0")
-    if len(fields) < 4 or fields[:1] != ["v1"] or fields[1] not in ("ok", "error") or fields[-1] != "":
+    if (
+        len(fields) < 4
+        or fields[:1] != ["v1"]
+        or fields[1] not in ("ok", "error")
+        or fields[-1] != ""
+    ):
         raise MutationExecutionError("invalid mutation result; outcome may be incomplete")
     removed = tuple(fields[3:-1])
-    if fields[2] != str(len(removed)) or removed != delete_names[:len(removed)]:
+    if fields[2] != str(len(removed)) or removed != delete_names[: len(removed)]:
         raise MutationExecutionError("invalid mutation acknowledgement")
     if fields[1] != "ok" or removed != delete_names:
         raise MutationExecutionError("outbox mutation refused or failed; journal retained", removed)

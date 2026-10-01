@@ -15,11 +15,19 @@ from jailbee.outbox_io import ContainerIdentity, JournalError, JournalStore, jou
 def _identity(incus: Incus, container: str) -> ContainerIdentity:
     # The shared legacy identity helper has no timeout parameter. Keep the same
     # raw/nonzero timestamp contract while bounding this interactive service.
-    raw = next((item for item in incus.list_containers(timeout=READ_TIMEOUT) if item.get("name") == container), None)
+    raw = next(
+        (
+            item
+            for item in incus.list_containers(timeout=READ_TIMEOUT)
+            if item.get("name") == container
+        ),
+        None,
+    )
     created = raw.get("created_at") if raw is not None else None
     if not isinstance(created, str) or not created or created.startswith("0001-01-01T00:00:00"):
         raise JournalError(f"{container}: stable instance identity is unavailable")
     return ContainerIdentity(container, created)
+
 
 if TYPE_CHECKING:
     from jailbee.config import Config
@@ -34,7 +42,9 @@ def load_container(
     try:
         identity = _identity(incus, container)
         kinds: tuple[Kind, ...] = ("pr", "issue")
-        stores = tuple(read_store(incus, container, kind, uid=cfg.container_user.uid) for kind in kinds)
+        stores = tuple(
+            read_store(incus, container, kind, uid=cfg.container_user.uid) for kind in kinds
+        )
         if _identity(incus, container) != identity:
             raise OutboxChanged("container changed while reading; refresh required")
         # Canonical freshness matches publication, not optional PR display labels.
@@ -51,7 +61,11 @@ def execute_delete(
     try:
         identity = _identity(incus, container)
         key = journal_key(identity, plan.proposal.name)
-        lock = journal_store.lock(key) if plan.proposal.kind == "issue" else PrManagement().lock(identity)
+        lock = (
+            journal_store.lock(key)
+            if plan.proposal.kind == "issue"
+            else PrManagement().lock(identity)
+        )
         with lock:
             if _identity(incus, container) != identity:
                 raise OutboxChanged("container changed while waiting; refresh required")
@@ -68,11 +82,18 @@ def execute_delete(
             if _identity(incus, container) != identity:
                 raise OutboxChanged("container changed before mutation; refresh required")
             removed = mutate_store(
-                incus, container, plan.proposal.kind, uid=cfg.container_user.uid,
+                incus,
+                container,
+                plan.proposal.kind,
+                uid=cfg.container_user.uid,
                 expected=snapshot.as_dict(),
-                new_manifest=(plan.proposal.name, plan.new_text) if plan.new_text is not None else None,
+                new_manifest=(plan.proposal.name, plan.new_text)
+                if plan.new_text is not None
+                else None,
                 delete_names=plan.delete_names,
-                forbidden_progress=f"{plan.proposal.name}.progress.json" if plan.proposal.kind == "pr" else None,
+                forbidden_progress=f"{plan.proposal.name}.progress.json"
+                if plan.proposal.kind == "pr"
+                else None,
                 rejected_names=snapshot.rejected,
             )
             if removed != plan.delete_names:
