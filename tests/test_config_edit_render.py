@@ -688,3 +688,15 @@ def test_help_pane_on_a_top_level_collection_still_names_its_layer(tmp_path):
     text = _text(help_pane(_collection_state(layers), layers))
 
     assert "(global)" in text
+
+
+def test_collection_pane_summarises_a_multiline_value_on_one_line(tmp_path):
+    from jailbee.config_edit.render import _entry_summary
+
+    long_text = "Line one.\nLine two.\nLine three."
+    row = _entry_summary({"account": "a", "instructions": long_text})
+    assert "\n" not in row
+    assert row.endswith("instructions=Line one. …")
+
+    capped = _entry_summary({"instructions": "x" * 200})
+    assert len(capped) < 80 and capped.endswith("…")

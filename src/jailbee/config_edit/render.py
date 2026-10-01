@@ -34,7 +34,7 @@ from jailbee.config_edit.state import (
     sections,
     visible_specs,
 )
-from jailbee.config_edit.values import format_value
+from jailbee.config_edit.values import first_line, format_value
 
 if TYPE_CHECKING:
     from prompt_toolkit.formatted_text import StyleAndTextTuples
@@ -383,7 +383,18 @@ def _entry_summary(entry: object) -> str:
     if not isinstance(entry, dict) or not entry:
         return "(empty — press Enter to fill it in)"
     shown = list(entry.items())[:3]
-    return "  ".join(f"{k}={v}" for k, v in shown)
+    return "  ".join(f"{k}={_summary_value(v)}" for k, v in shown)
+
+
+_SUMMARY_VALUE_MAX = 40
+
+
+def _summary_value(value: object) -> str:
+    """One entry value as a short single line: first line only, capped in length."""
+    text = first_line(str(value))
+    if len(text) > _SUMMARY_VALUE_MAX:
+        return f"{text[: _SUMMARY_VALUE_MAX - 2].rstrip()} …"
+    return text
 
 
 def body_pane(state: EditorState, layer_set: LayerSet) -> Pane:

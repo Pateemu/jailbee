@@ -72,7 +72,11 @@ def format_value(spec: FieldSpec, value: object) -> str:
         return f"[{len(value)}]" if value else "[]"
     if isinstance(value, dict):
         return f"{{{len(value)}}}" if value else "{}"
-    text = str(value)
+    return first_line(str(value))
+
+
+def first_line(text: str) -> str:
+    """`text` as one display line: a multi-line text is cut after its first line."""
     if "\n" in text:
         return f"{text.split(chr(10), 1)[0]} …"
     return text
