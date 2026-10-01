@@ -724,7 +724,7 @@ notice it). `claude-jb` gives Claude Code per-tier names such as
 `jb.codex.capable` (`jb.<profile>.<most-capable|capable|standard|cheap>`), not
 route names. After `apply`, a route rename or remap therefore reaches open
 sessions without breaking them; renaming a profile or unmapping a tier does
-break them. A profile's `instructions` (model-policy text written on the host) is appended to Claude Code's system prompt by `claude-jb`; it is set on the host, takes effect after `jailbee apply`, and cannot be changed from inside the container.
+break them. A profile's `instructions` (model-policy text written on the host) is appended to Claude Code's system prompt by `claude-jb`; it is set on the host, takes effect after `jailbee apply`, and cannot be changed through the host's config from inside the container. It is guidance, not enforcement: the container's copy is editable (sudo) until `jailbee apply` rewrites it.
 
 With `litellm.autostart`, the Claude autostart window runs
 `claude-jb`. Inside the container there is no key and no login: `claude-jb` only

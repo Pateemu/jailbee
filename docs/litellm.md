@@ -122,7 +122,10 @@ litellm:
   after the profile's text; with no profile text they pass through unchanged.
   Everything after `--` is passed to Claude Code untouched.
 - Plain `claude` and profiles without `instructions` are unaffected. It is
-  guidance to the model, not enforcement, and the container cannot change it.
+  guidance to the model, not enforcement: the text is set on the host and
+  cannot be changed through the host's config from inside the container, but a
+  user in the container (who has `sudo`) can edit the container's copy, and
+  `jailbee apply` rewrites that copy from the host's config.
 - `jailbee config edit` edits it in a multi-line prompt (Ctrl-S commits).
 
 `claude-jb` gives Claude Code one model name per tier of the selected profile,
