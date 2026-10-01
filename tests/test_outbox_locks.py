@@ -29,9 +29,7 @@ def held_by_process(kind, root, identity, *, release_after=3):
     """Use an independent file description; auto-release bounds a broken test."""
     context = get_context("spawn")
     parent, child = context.Pipe()
-    process = context.Process(
-        target=_hold_lock, args=(kind, root, identity, child, release_after)
-    )
+    process = context.Process(target=_hold_lock, args=(kind, root, identity, child, release_after))
     process.start()
     child.close()
     try:
@@ -67,7 +65,7 @@ def test_finite_lock_wait_times_out_closes_fd_and_can_be_reused(kind, tmp_path, 
     opened = mocker.spy(os, "open")
     with held_by_process(kind, root, identity):
         started = time.monotonic()
-        with pytest.raises(error, match="(?i)timed out.*refresh.*retry"):
+        with pytest.raises(error, match=r"(?i)timed out.*refresh.*retry"):
             with manager.lock(key, timeout=0.1):
                 pytest.fail("busy lock entered")
         assert 0.08 <= time.monotonic() - started < 0.8

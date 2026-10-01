@@ -69,13 +69,17 @@ def execute_delete(
         key = journal_key(identity, plan.proposal.name)
         # Preserve the legacy no-keyword call for blocking callers and adapters.
         if plan.proposal.kind == "issue":
-            lock = journal_store.lock(key) if lock_timeout is None else journal_store.lock(
-                key, timeout=lock_timeout
+            lock = (
+                journal_store.lock(key)
+                if lock_timeout is None
+                else journal_store.lock(key, timeout=lock_timeout)
             )
         else:
             manager = PrManagement()
-            lock = manager.lock(identity) if lock_timeout is None else manager.lock(
-                identity, timeout=lock_timeout
+            lock = (
+                manager.lock(identity)
+                if lock_timeout is None
+                else manager.lock(identity, timeout=lock_timeout)
             )
         with lock:
             if _identity(incus, container) != identity:

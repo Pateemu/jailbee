@@ -462,9 +462,7 @@ class PrManagement:
         return cast("ContainerIdentity | None", getattr(self._lock_state, "identity", None))
 
     @contextmanager
-    def lock(
-        self, identity: ContainerIdentity, *, timeout: float | None = None
-    ) -> Iterator[None]:
+    def lock(self, identity: ContainerIdentity, *, timeout: float | None = None) -> Iterator[None]:
         """Serialize the PR store; opt-in finite seconds bound lock contention."""
         if not identity.full_name or not identity.created_at:
             raise OutboxExecutionError("cannot lock an empty container identity")
