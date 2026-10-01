@@ -731,8 +731,7 @@ break them. A profile's `instructions` (model-policy text written on the host) i
 With `litellm.autostart`, the Claude autostart window runs
 `claude-jb`. Inside the container there is no key and no login: `claude-jb` only
 reads `/etc/jailbee/litellm.json` and the proxy key for the profile's account.
-ChatGPT subscription use through this gateway is
-unofficial and may break or risk account sanctions. Full setup and limits:
+Full setup and limits:
 [LiteLLM](../../litellm.md); exact CLI flags:
 [commands](references/commands.md#litellm-proxy).
 

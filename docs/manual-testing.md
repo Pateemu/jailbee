@@ -33,7 +33,7 @@ jailbee destroy feat-smoke --force
 
 **Maintainer recipe; not a CI test.** Use a disposable, configured repository
 and a real Incus daemon, a ChatGPT subscription you are willing to use through
-the [unofficial integration](litellm.md), and network access to the image
+the [LiteLLM integration](litellm.md), and network access to the image
 server, Ubuntu packages, PyPI and ChatGPT. The dogfood dev container has the
 Incus binary but its daemon is normally **stopped**: a nested rig can be
 started with `sudo systemctl start incus` and `incus admin init --minimal`.

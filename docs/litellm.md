@@ -6,10 +6,6 @@ and uses your Claude subscription; both commands can run side by side in the
 same dev container. Gateway sessions share Claude Code's per-repo configuration
 and history, but neither command changes the other's environment.
 
-> **Unofficial subscription use:** LiteLLM's `chatgpt/` provider uses a ChatGPT
-> subscription outside the Codex CLI. OpenAI may change the backend, reject
-> requests or sanction the account without notice. Use it at your own risk.
-
 Several ChatGPT accounts can run side by side (one proxy instance each), and
 routes can use any LiteLLM provider with an API key. LiteLLM settings belong in
 the host's `global.yaml`; a repo may override routes and profiles in its

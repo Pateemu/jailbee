@@ -196,8 +196,7 @@ before editing `## Unreleased`.
   volume, never on the host filesystem; its egress is default-deny and limited
   to the hosts the routes need, and the install is pinned and hash-locked.
   `jailbee litellm ls|status|logs|logout|down` and `jailbee doctor` inspect
-  it. ChatGPT-subscription use through LiteLLM is unofficial and at your own
-  risk. See [Claude Code through LiteLLM](https://jailbee.gisgro.io/docs/litellm/).
+  it. See [Claude Code through LiteLLM](https://jailbee.gisgro.io/docs/litellm/).
 
 - **A shared RDP display for GUI apps launched over SSH.** With
   `remote.ssh.gui: true`, `jb ide`, `jb chrome`, `jb firefox`, `jb browser`,
