@@ -996,7 +996,9 @@ def apply_batch(
                     except JournalError as exc:
                         return failed(name, resolved.index, False, str(exc))
                     try:
-                        receipt = _execute_one(batch.host_repo_root, resolved, created_issue_numbers)
+                        receipt = _execute_one(
+                            batch.host_repo_root, resolved, created_issue_numbers
+                        )
                     except IssueGithubMutationError as exc:
                         recorded = True
                         try:
@@ -1232,7 +1234,8 @@ def drop_manifest(
             manifest_name, text, {body: outbox.files[body] for body in body_files}
         )
         fresh_digest = proposal_digest(
-            manifest_name, fresh.files[manifest_name],
+            manifest_name,
+            fresh.files[manifest_name],
             {body: fresh.files.get(body, "") for body in body_files},
         )
         if fresh_digest != digest or any(body not in fresh.files for body in body_files):
@@ -1240,8 +1243,14 @@ def drop_manifest(
                 f"{manifest_name}: the outbox changed since it was read; re-read it before dropping"
             )
         journal = journal_store.load(key)
-        if journal is not None and journal.actions and (
-            parsed is None or journal.digest != digest or journal.action_count != len(parsed.actions)
+        if (
+            journal is not None
+            and journal.actions
+            and (
+                parsed is None
+                or journal.digest != digest
+                or journal.action_count != len(parsed.actions)
+            )
         ):
             raise JournalError(f"{manifest_name}: proposal changed after recorded progress")
         has_uncertainty = journal is not None and journal_has_uncertainty(journal)

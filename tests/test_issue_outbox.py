@@ -1667,8 +1667,13 @@ def test_drop_holds_one_lock_across_fresh_read_progress_delete_and_archive(execu
     store = execution["store"]
     seen = []
 
-    for owner, method in ((issue_outbox, "container_identity"), (issue_outbox, "read_issue_outbox"),
-                          (store, "load"), (issue_outbox, "delete_outbox_files"), (store, "archive")):
+    for owner, method in (
+        (issue_outbox, "container_identity"),
+        (issue_outbox, "read_issue_outbox"),
+        (store, "load"),
+        (issue_outbox, "delete_outbox_files"),
+        (store, "archive"),
+    ):
         original = getattr(owner, method)
 
         def checked(*args, _original=original, _method=method, **kwargs):
@@ -1679,7 +1684,13 @@ def test_drop_holds_one_lock_across_fresh_read_progress_delete_and_archive(execu
 
         mocker.patch.object(owner, method, side_effect=checked)
     assert _drop(execution, batch, archive_journal=True) == ("a.json",)
-    assert seen == ["container_identity", "read_issue_outbox", "load", "delete_outbox_files", "archive"]
+    assert seen == [
+        "container_identity",
+        "read_issue_outbox",
+        "load",
+        "delete_outbox_files",
+        "archive",
+    ]
 
 
 @pytest.mark.parametrize("change", ["manifest", "body"])
