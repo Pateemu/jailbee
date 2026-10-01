@@ -1125,8 +1125,14 @@ def _delete_from_outbox(
     from jailbee.outbox import io as store_io
 
     store_io.mutate_store(
-        incus, container, "pr", uid=uid, expected=outbox.files,
-        new_manifest=None, delete_names=tuple(names), forbidden_progress=None,
+        incus,
+        container,
+        "pr",
+        uid=uid,
+        expected=outbox.files,
+        new_manifest=None,
+        delete_names=tuple(names),
+        forbidden_progress=None,
         rejected_names=outbox.rejected,
     )
     return names
@@ -1241,9 +1247,18 @@ def finalize(
             if evidence.error:
                 raise OutboxError(evidence.error)
             recorded = Progress(evidence.applied, {str(i): url for i, url in evidence.receipts})
-            if recorded.applied != merged_applied or any(recorded.urls.get(k) != v for k, v in merged_urls.items()):
+            if recorded.applied != merged_applied or any(
+                recorded.urls.get(k) != v for k, v in merged_urls.items()
+            ):
                 raise OutboxChanged("publication progress changed; cleanup refused")
-            _delete_from_outbox(incus, container, Outbox(files, fresh_store.rejected, outbox.identity), manifest.name, uid=uid, with_sidecar=True)
+            _delete_from_outbox(
+                incus,
+                container,
+                Outbox(files, fresh_store.rejected, outbox.identity),
+                manifest.name,
+                uid=uid,
+                with_sidecar=True,
+            )
         except (IncusError, OutboxExecutionError, OutboxError, JournalError) as e:
             raise FinalizeError(
                 f"manifest {manifest.name} is fully applied but could not be "

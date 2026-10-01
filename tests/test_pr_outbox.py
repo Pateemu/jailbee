@@ -1481,9 +1481,14 @@ def test_finalize_raises_when_deleting_a_fully_applied_manifest_fails(mocker, tm
     manifest = parse_manifest(
         "001-x.json", _manifest_text(actions=[{"type": "comment", "body": "a"}]), {}
     )
-    outbox = Outbox(files={"001-x.json": _manifest_text(actions=[{"type": "comment", "body": "a"}])})
+    outbox = Outbox(
+        files={"001-x.json": _manifest_text(actions=[{"type": "comment", "body": "a"}])}
+    )
     incus = mocker.MagicMock()
-    reader = mocker.patch("jailbee.outbox.io.read_store", return_value=StoreSnapshot("pr", tuple(outbox.files.items()), (), ()))
+    reader = mocker.patch(
+        "jailbee.outbox.io.read_store",
+        return_value=StoreSnapshot("pr", tuple(outbox.files.items()), (), ()),
+    )
     _pr_transport(mocker, tmp_path, incus, reader)
 
     def fake_exec(container, cmd, **kwargs):
@@ -1546,7 +1551,10 @@ def test_finalize_deletes_a_fully_applied_manifest_and_its_own_bodies(mocker, tm
         }
     )
     incus = mocker.MagicMock()
-    reader = mocker.patch("jailbee.outbox.io.read_store", return_value=StoreSnapshot("pr", tuple(outbox.files.items()), (), ()))
+    reader = mocker.patch(
+        "jailbee.outbox.io.read_store",
+        return_value=StoreSnapshot("pr", tuple(outbox.files.items()), (), ()),
+    )
     _pr_transport(mocker, tmp_path, incus, reader)
 
     finalize(
@@ -1567,6 +1575,7 @@ def test_finalize_deletes_a_fully_applied_manifest_and_its_own_bodies(mocker, tm
     assert "001-x.md" not in reader.return_value.as_dict()
     assert "002-y.json" in reader.return_value.as_dict()
 
+
 def test_finalize_keeps_a_shared_body_file_referenced_by_another_manifest(mocker, tmp_path):
     """A `body_file` still named by a pending manifest must survive cleanup."""
     from jailbee.outbox.models import StoreSnapshot
@@ -1579,10 +1588,17 @@ def test_finalize_keeps_a_shared_body_file_referenced_by_another_manifest(mocker
     )
     other_manifest_text = _manifest_text(actions=[{"type": "comment", "body_file": "shared.md"}])
     outbox = Outbox(
-        files={"001-x.json": other_manifest_text, "shared.md": "text", "002-y.json": other_manifest_text}
+        files={
+            "001-x.json": other_manifest_text,
+            "shared.md": "text",
+            "002-y.json": other_manifest_text,
+        }
     )
     incus = mocker.MagicMock()
-    reader = mocker.patch("jailbee.outbox.io.read_store", return_value=StoreSnapshot("pr", tuple(outbox.files.items()), (), ()))
+    reader = mocker.patch(
+        "jailbee.outbox.io.read_store",
+        return_value=StoreSnapshot("pr", tuple(outbox.files.items()), (), ()),
+    )
     _pr_transport(mocker, tmp_path, incus, reader)
 
     finalize(
@@ -1601,6 +1617,7 @@ def test_finalize_keeps_a_shared_body_file_referenced_by_another_manifest(mocker
 
     assert "001-x.json" not in reader.return_value.as_dict()
     assert reader.return_value.as_dict()["shared.md"] == "text"
+
 
 def test_finalize_keeps_a_partly_applied_manifest_and_writes_progress(mocker):
     from jailbee.pr_outbox import ApplyOutcome, Outbox, Target, finalize, parse_manifest
@@ -1653,12 +1670,17 @@ def test_finalize_merges_new_progress_with_what_a_previous_run_already_landed(mo
     )
     outbox = Outbox(
         files={
-            "001-x.json": _manifest_text(actions=[{"type": "comment", "body": "a"}, {"type": "comment", "body": "b"}]),
+            "001-x.json": _manifest_text(
+                actions=[{"type": "comment", "body": "a"}, {"type": "comment", "body": "b"}]
+            ),
             "001-x.json.progress.json": '{"applied": [0], "urls": {"0": "https://x/a"}}',
         }
     )
     incus = mocker.MagicMock()
-    reader = mocker.patch("jailbee.outbox.io.read_store", return_value=StoreSnapshot("pr", tuple(outbox.files.items()), (), ()))
+    reader = mocker.patch(
+        "jailbee.outbox.io.read_store",
+        return_value=StoreSnapshot("pr", tuple(outbox.files.items()), (), ()),
+    )
     _pr_transport(mocker, tmp_path, incus, reader)
 
     finalize(
@@ -1677,6 +1699,7 @@ def test_finalize_merges_new_progress_with_what_a_previous_run_already_landed(mo
 
     assert "001-x.json" not in reader.return_value.as_dict()
 
+
 def test_finalize_appends_one_applied_log_line(mocker, tmp_path):
     """The one extra test the brief describes in prose, not in code.
 
@@ -1693,9 +1716,18 @@ def test_finalize_appends_one_applied_log_line(mocker, tmp_path):
         ),
         {},
     )
-    outbox = Outbox(files={"001-x.json": _manifest_text(actions=[{"type": "comment", "body": "a"}, {"type": "comment", "body": "b"}])})
+    outbox = Outbox(
+        files={
+            "001-x.json": _manifest_text(
+                actions=[{"type": "comment", "body": "a"}, {"type": "comment", "body": "b"}]
+            )
+        }
+    )
     incus = mocker.MagicMock()
-    reader = mocker.patch("jailbee.outbox.io.read_store", return_value=StoreSnapshot("pr", tuple(outbox.files.items()), (), ()))
+    reader = mocker.patch(
+        "jailbee.outbox.io.read_store",
+        return_value=StoreSnapshot("pr", tuple(outbox.files.items()), (), ()),
+    )
     _pr_transport(mocker, tmp_path, incus, reader)
 
     finalize(
@@ -1739,9 +1771,14 @@ def test_finalize_presents_an_empty_receipt_url_as_a_placeholder_not_a_blank_lin
     manifest = parse_manifest(
         "001-x.json", _manifest_text(actions=[{"type": "comment", "body": "a"}]), {}
     )
-    outbox = Outbox(files={"001-x.json": _manifest_text(actions=[{"type": "comment", "body": "a"}])})
+    outbox = Outbox(
+        files={"001-x.json": _manifest_text(actions=[{"type": "comment", "body": "a"}])}
+    )
     incus = mocker.MagicMock()
-    reader = mocker.patch("jailbee.outbox.io.read_store", return_value=StoreSnapshot("pr", tuple(outbox.files.items()), (), ()))
+    reader = mocker.patch(
+        "jailbee.outbox.io.read_store",
+        return_value=StoreSnapshot("pr", tuple(outbox.files.items()), (), ()),
+    )
     _pr_transport(mocker, tmp_path, incus, reader)
 
     finalize(
@@ -1846,7 +1883,6 @@ def test_record_consumed_keeps_a_manifest_still_missing_other_actions(mocker):
 def _pr_transport(mocker, tmp_path, incus, reader):
     import subprocess
 
-    from jailbee.outbox import io
     from jailbee.outbox.models import StoreSnapshot
 
     run_shell = subprocess.run
@@ -1862,8 +1898,12 @@ def _pr_transport(mocker, tmp_path, incus, reader):
             (directory / name).write_bytes(b"\xff")
 
     def save(snapshot):
-        files = {p.name: p.read_text() for p in directory.iterdir() if p.name not in snapshot.rejected}
-        reader.return_value = StoreSnapshot("pr", tuple(sorted(files.items())), snapshot.rejected, ())
+        files = {
+            p.name: p.read_text() for p in directory.iterdir() if p.name not in snapshot.rejected
+        }
+        reader.return_value = StoreSnapshot(
+            "pr", tuple(sorted(files.items())), snapshot.rejected, ()
+        )
 
     def execute(container, command, **kwargs):
         if command[0] != "bash":
@@ -2772,7 +2812,7 @@ def test_selected_progress_never_authorizes_replay(mocker, make_cfg, tmp_path, b
             "out_of_range": '{"applied": [1], "urls": {}}',
             "wrong_urls": '{"applied": [0], "urls": {"1": "https://x"}}',
         }[bad]
-    cfg, incus, _, _, reader, apply = _selected_setup(
+    cfg, incus, _, _, _, apply = _selected_setup(
         mocker, make_cfg, tmp_path, files=files, rejected=rejected
     )
     assert _selected_offer(cfg, incus) == 1
@@ -2886,7 +2926,7 @@ def test_selected_uses_strict_progress_even_if_legacy_parser_lies(mocker, make_c
         ),
         "one.json.progress.json": '{"applied": [0], "urls": {"0": "https://x/old"}}',
     }
-    cfg, incus, _, _, reader, apply = _selected_setup(mocker, make_cfg, tmp_path, files=files)
+    cfg, incus, _, _, _, apply = _selected_setup(mocker, make_cfg, tmp_path, files=files)
     mocker.patch("jailbee.pr_outbox.read_progress", return_value=Progress(frozenset(), {}))
     assert _selected_offer(cfg, incus) == 0
     assert [c.args[1].body for c in apply.call_args_list] == ["pending"]
@@ -2955,6 +2995,7 @@ def test_selected_cleanup_refuses_late_change_retains_receipts(mocker, make_cfg,
 
         incus.exec_with_input.side_effect = mutate
     else:
+
         def publish(*args, **kwargs):
             files = reader.return_value.as_dict()
             files["one.json" if change == "manifest" else "body.md"] += "changed"
@@ -2965,7 +3006,10 @@ def test_selected_cleanup_refuses_late_change_retains_receipts(mocker, make_cfg,
     assert _selected_offer(cfg, incus) == 1
     remaining = reader.return_value.as_dict()
     assert "one.json" in remaining and "body.md" in remaining
-    assert json.loads(remaining["one.json.progress.json"]) == {"applied": [0], "urls": {"0": "https://x/receipt"}}
+    assert json.loads(remaining["one.json.progress.json"]) == {
+        "applied": [0],
+        "urls": {"0": "https://x/receipt"},
+    }
     assert "https://x/receipt" in remaining["applied.log"]
     assert apply.call_count == 1
 
