@@ -2188,8 +2188,11 @@ def _offer_locked(
             # the legacy offer's first-line preview. Use the freshly gated PR.
             assert target.pr is not None
             displayed = Manifest(
-                target.manifest.name, target.manifest.repo, target.pr.number,
-                target.manifest.head_sha, target.manifest.actions,
+                target.manifest.name,
+                target.manifest.repo,
+                target.pr.number,
+                target.manifest.head_sha,
+                target.manifest.actions,
             )
             console.print(f"Container: {safe_text(container)}", markup=False, highlight=False)
             console.print(f"Head: {safe_text(target.pr.head_sha)}", markup=False, highlight=False)

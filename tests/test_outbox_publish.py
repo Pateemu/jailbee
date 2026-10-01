@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import pytest
 
-from jailbee import issue_github, issue_outbox, pr, pr_outbox
+from jailbee import issue_github, issue_outbox, pr
 from jailbee.outbox import io, service
 from jailbee.outbox.inspect import build_views
 from jailbee.outbox.io import PrManagement
@@ -32,37 +32,73 @@ def env(mocker, make_cfg, tmp_path):
     ]
     snapshots = {
         "issue": store("issue", issue_files() | {"002.json": issue_files()["001.json"]}),
-        "pr": store("pr", {
-            "001.json": json.dumps(payload),
-            "002.json": json.dumps(payload),
-            "body.md": "[red]Original[/red]\nLast line " + "x" * 100,
-        }),
+        "pr": store(
+            "pr",
+            {
+                "001.json": json.dumps(payload),
+                "002.json": json.dumps(payload),
+                "body.md": "[red]Original[/red]\nLast line " + "x" * 100,
+            },
+        ),
     }
-    read = lambda i, c, k, **kw: snapshots[k]
+
+    def read(i, c, k, **kw):
+        return snapshots[k]
+
     mocker.patch.object(service, "read_store", side_effect=read)
     mocker.patch.object(io, "read_store", side_effect=read)
-    mocker.patch.object(issue_outbox, "read_text_outbox", side_effect=lambda *a, **kw: snapshots["issue"].as_dict())
+    mocker.patch.object(
+        issue_outbox, "read_text_outbox", side_effect=lambda *a, **kw: snapshots["issue"].as_dict()
+    )
     mocker.patch("subprocess.run", side_effect=AssertionError("unexpected real subprocess"))
     mocker.patch("jailbee.git.get_remote_url", return_value="https://github.com/acme/repo.git")
     mocker.patch("jailbee.submodules.declared_submodule_remotes", return_value=())
     mocker.patch("jailbee.submodules.host_submodule_paths", return_value=[])
-    mocker.patch.object(pr, "resolve_pr", return_value=pr.PrInfo(
-        number=42, head_ref="feature", head_sha="a" * 40, state="OPEN", base_ref="main"
-    ))
+    mocker.patch.object(
+        pr,
+        "resolve_pr",
+        return_value=pr.PrInfo(
+            number=42, head_ref="feature", head_sha="a" * 40, state="OPEN", base_ref="main"
+        ),
+    )
     mocker.patch.object(pr, "gh_login", return_value="alice")
     mocker.patch.object(pr, "pr_body", return_value="Old description")
     mocker.patch.object(issue_github, "current_login", return_value="alice")
     mocker.patch.object(issue_github, "list_labels", return_value={})
-    fetch = mocker.patch.object(issue_github, "get_issue", return_value=issue_github.IssueSnapshot(
-        42, "Old", "Old body", (), "open", "https://github.com/acme/repo/issues/42", False
-    ))
+    fetch = mocker.patch.object(
+        issue_github,
+        "get_issue",
+        return_value=issue_github.IssueSnapshot(
+            42, "Old", "Old body", (), "open", "https://github.com/acme/repo/issues/42", False
+        ),
+    )
     mutations = {
-        "create": mocker.patch.object(issue_github, "create_issue", return_value=issue_github.MutationReceipt(issue=73, url="https://github.com/acme/repo/issues/73")),
-        "comment": mocker.patch.object(issue_github, "add_comment", return_value=issue_github.MutationReceipt(issue=42, url="https://github.com/acme/repo/issues/42#issuecomment-1")),
+        "create": mocker.patch.object(
+            issue_github,
+            "create_issue",
+            return_value=issue_github.MutationReceipt(
+                issue=73, url="https://github.com/acme/repo/issues/73"
+            ),
+        ),
+        "comment": mocker.patch.object(
+            issue_github,
+            "add_comment",
+            return_value=issue_github.MutationReceipt(
+                issue=42, url="https://github.com/acme/repo/issues/42#issuecomment-1"
+            ),
+        ),
         "edit": mocker.patch.object(issue_github, "edit_issue"),
-        "pr_comment": mocker.patch.object(pr, "add_issue_comment", return_value="https://github.com/acme/repo/pull/42#issuecomment-1"),
+        "pr_comment": mocker.patch.object(
+            pr,
+            "add_issue_comment",
+            return_value="https://github.com/acme/repo/pull/42#issuecomment-1",
+        ),
         "pr_edit": mocker.patch.object(pr, "edit_pr"),
-        "review": mocker.patch.object(pr, "submit_review", return_value="https://github.com/acme/repo/pull/42#pullrequestreview-1"),
+        "review": mocker.patch.object(
+            pr,
+            "submit_review",
+            return_value="https://github.com/acme/repo/pull/42#pullrequestreview-1",
+        ),
     }
     journals = JournalStore(tmp_path / "journals")
     manager = PrManagement(tmp_path / "pr-locks")
@@ -76,9 +112,14 @@ def selected(env, kind="issue", *, confirm=lambda count: True, revision=None, **
 
     cfg, incus, _, journals, *_ = env
     return publish_selected(
-        cfg, incus, IDENTITY.full_name, ProposalId(kind, "001.json"),
-        journal_store=journals, options=PublishOptions(**options),
-        confirm=confirm, expected_revision=revision,
+        cfg,
+        incus,
+        IDENTITY.full_name,
+        ProposalId(kind, "001.json"),
+        journal_store=journals,
+        options=PublishOptions(**options),
+        confirm=confirm,
+        expected_revision=revision,
     )
 
 
@@ -108,9 +149,14 @@ def test_issue_publishes_all_selected_actions_and_keeps_shared_body(env, capsys)
 
     assert selected(env, confirm=confirm) == 0
     assert counts == [3]
-    env[4]["create"].assert_called_once_with(env[0].repo_root, "acme/repo", title="Example", body="Original body", labels=())
+    env[4]["create"].assert_called_once_with(
+        env[0].repo_root, "acme/repo", title="Example", body="Original body", labels=()
+    )
     assert [call.args[2] for call in env[4]["comment"].call_args_list] == [73, 42]
-    assert [call.kwargs["body"] for call in env[4]["comment"].call_args_list] == ["Follow-up", "Independent"]
+    assert [call.kwargs["body"] for call in env[4]["comment"].call_args_list] == [
+        "Follow-up",
+        "Independent",
+    ]
     removed = next(c.args[1] for c in env[1].exec.call_args_list if c.args[1][0] == "rm")
     assert any(n.endswith("/001.json") for n in removed)
     assert not any(n.endswith(("/002.json", "/body.md")) for n in removed)
@@ -131,8 +177,14 @@ def test_pr_publishes_selected_all_actions_and_full_plain_text(env, capsys):
         return True
 
     assert selected(env, "pr", confirm=confirm) == 0
-    assert [c.kwargs["repo"] for c in env[4]["pr_comment"].call_args_list] == ["acme/repo", "acme/repo"]
-    assert [c.args[2] for c in env[4]["pr_comment"].call_args_list] == [env[2]["pr"].as_dict()["body.md"], "Second action"]
+    assert [c.kwargs["repo"] for c in env[4]["pr_comment"].call_args_list] == [
+        "acme/repo",
+        "acme/repo",
+    ]
+    assert [c.args[2] for c in env[4]["pr_comment"].call_args_list] == [
+        env[2]["pr"].as_dict()["body.md"],
+        "Second action",
+    ]
     removed = next(c.args[1] for c in env[1].exec.call_args_list if c.args[1][0] == "rm")
     assert not any(n.endswith(("/002.json", "/body.md")) for n in removed)
     assert env[7].identity is None
@@ -142,7 +194,10 @@ def test_pr_publishes_selected_all_actions_and_full_plain_text(env, capsys):
 @pytest.mark.parametrize("mode", ["cancel", "dry_run", "off_tty"])
 def test_no_approval_or_dry_run_never_mutates(env, kind, mode):
     called = []
-    assert selected(env, kind, confirm=lambda n: called.append(n) or False, dry_run=mode == "dry_run") == 0
+    assert (
+        selected(env, kind, confirm=lambda n: called.append(n) or False, dry_run=mode == "dry_run")
+        == 0
+    )
     assert called == ([] if mode == "dry_run" else [3 if kind == "issue" else 2])
     assert_no_mutation(env)
 
@@ -158,6 +213,7 @@ def test_issue_force_is_refused(env):
 def test_original_shared_revision_guards_fresh_inputs(env, kind, when, change):
     original = revision(env, kind)
     prepared = []
+
     def alter():
         snapshot = env[2][kind]
         files = snapshot.as_dict()
@@ -207,21 +263,39 @@ def test_pr_rejected_progress_is_not_lost_in_dict_conversion(env, rejected):
 
 @pytest.mark.parametrize("recorded", [False, True])
 @pytest.mark.parametrize("submodule", [False, True])
-def test_null_pr_requires_explicit_command_unless_fresh_gate_adopts(env, recorded, submodule, capsys, mocker):
+def test_null_pr_requires_explicit_command_unless_fresh_gate_adopts(
+    env, recorded, submodule, capsys, mocker
+):
     payload = json.loads(env[2]["pr"].as_dict()["001.json"])
     payload["pr"] = None
     payload["actions"] = [{"type": "description", "body": "Draft"}]
     if submodule:
         from jailbee.pr_flow import PrRecord, PrScope
         from jailbee.submodule_pr import SubmodulePrState
-        mocker.patch("jailbee.pr_flow.candidate_scopes", return_value=[PrScope(env[0].repo_root / "lib", "origin", "lib", "lib")])
-        mocker.patch.object(SubmodulePrState, "read", return_value=PrRecord(number=42 if recorded else None, head=None, author=False, adopted=recorded))
+
+        mocker.patch(
+            "jailbee.pr_flow.candidate_scopes",
+            return_value=[PrScope(env[0].repo_root / "lib", "origin", "lib", "lib")],
+        )
+        mocker.patch.object(
+            SubmodulePrState,
+            "read",
+            return_value=PrRecord(
+                number=42 if recorded else None, head=None, author=False, adopted=recorded
+            ),
+        )
     env[2]["pr"] = store("pr", {"001.json": json.dumps(payload)})
     if not recorded:
         env[5].clear()
     assert selected(env, "pr") == (0 if recorded else 1)
     if recorded:
-        env[4]["pr_edit"].assert_called_once_with(env[0].repo_root / "lib" if submodule else env[0].repo_root, 42, title=None, body="Draft", repo="acme/repo")
+        env[4]["pr_edit"].assert_called_once_with(
+            env[0].repo_root / "lib" if submodule else env[0].repo_root,
+            42,
+            title=None,
+            body="Draft",
+            repo="acme/repo",
+        )
     else:
         assert_no_mutation(env)
         assert ("jailbee submodule pr" if submodule else "jailbee pr") in capsys.readouterr().out
@@ -245,6 +319,7 @@ def test_pr_ownership_revalidated_after_confirm(env):
     def confirm(count):
         env[5]["user.jailbee.pr"] = "43"
         return True
+
     assert selected(env, "pr", confirm=confirm) == 1
     assert_no_mutation(env)
 
@@ -264,11 +339,14 @@ def test_before_prepare_stale_token_never_reaches_remote_gate(env, kind, mocker)
 @pytest.mark.parametrize("kind", ["issue", "pr"])
 def test_identity_change_waiting_for_outer_lock_refuses(env, kind, mocker):
     from contextlib import contextmanager
+
     owner = env[3] if kind == "issue" else env[7]
+
     @contextmanager
     def replacing_lock(*args):
         env[1].list_containers.return_value[0]["created_at"] = "replacement"
         yield
+
     mocker.patch.object(owner, "lock", side_effect=replacing_lock)
     assert selected(env, kind) == 1
     assert_no_mutation(env)
@@ -278,13 +356,17 @@ def test_identity_change_waiting_for_outer_lock_refuses(env, kind, mocker):
 @pytest.mark.parametrize("change", ["identity", "body"])
 def test_change_inside_remote_revalidation_refuses(env, kind, change, mocker):
     confirmed = []
+
     def gate(*args, **kwargs):
         if confirmed:
             if change == "identity":
                 env[1].list_containers.return_value[0]["created_at"] = "replacement"
             else:
                 env[2][kind] = store(kind, env[2][kind].as_dict() | {"body.md": "Moved"})
-        return pr.PrInfo(number=42, head_ref="feature", head_sha="a" * 40, state="OPEN", base_ref="main")
+        return pr.PrInfo(
+            number=42, head_ref="feature", head_sha="a" * 40, state="OPEN", base_ref="main"
+        )
+
     if kind == "pr":
         mocker.patch.object(pr, "resolve_pr", side_effect=gate)
     else:
@@ -296,14 +378,20 @@ def test_change_inside_remote_revalidation_refuses(env, kind, change, mocker):
 @pytest.mark.parametrize("kind", ["issue", "pr"])
 def test_issue_uncertain_and_pr_partial_preserve_recovery(env, kind, capsys):
     if kind == "issue":
-        env[4]["create"].side_effect = issue_github.IssueGithubMutationError("timeout", uncertain=True)
+        env[4]["create"].side_effect = issue_github.IssueGithubMutationError(
+            "timeout", uncertain=True
+        )
         assert selected(env) == 1
         journal = env[3].load(journal_key(IDENTITY, "001.json"))
         assert journal.actions[0].state == "uncertain"
         assert "resolve: jailbee issue resolve" in capsys.readouterr().out
         env[4]["comment"].assert_not_called()
     else:
-        env[2]["pr"] = store("pr", env[2]["pr"].as_dict() | {"001.json.progress.json": '{"applied":[0],"urls":{"0":"https://receipt"}}'})
+        env[2]["pr"] = store(
+            "pr",
+            env[2]["pr"].as_dict()
+            | {"001.json.progress.json": '{"applied":[0],"urls":{"0":"https://receipt"}}'},
+        )
         assert selected(env, "pr") == 0
         assert [call.args[2] for call in env[4]["pr_comment"].call_args_list] == ["Second action"]
 
@@ -322,9 +410,11 @@ def test_plan_cannot_interpret_terminal_controls(env, kind, capsys):
 
 def test_issue_prepare_cannot_replace_original_preview(env, mocker):
     real = issue_outbox.prepare_batch
+
     def changed_prepare(*args, **kwargs):
         env[2]["issue"] = store("issue", env[2]["issue"].as_dict() | {"body.md": "Newer"})
         return real(*args, **kwargs)
+
     mocker.patch.object(issue_outbox, "prepare_batch", side_effect=changed_prepare)
     assert selected(env, revision=revision(env, "issue")) == 1
     assert_no_mutation(env)
@@ -337,10 +427,26 @@ def test_pr_force_relaxes_only_moved_review_head(env, force, mocker):
     payload["repo"] = "acme/repo"
     files["001.json"] = json.dumps(payload)
     env[2]["pr"] = store("pr", files)
-    mocker.patch.object(pr, "resolve_pr", return_value=pr.PrInfo(number=42, head_ref="feature", head_sha="b" * 40, state="OPEN", base_ref="main"))
+    mocker.patch.object(
+        pr,
+        "resolve_pr",
+        return_value=pr.PrInfo(
+            number=42, head_ref="feature", head_sha="b" * 40, state="OPEN", base_ref="main"
+        ),
+    )
     assert selected(env, "pr", force=force) == (0 if force else 1)
     if force:
-        env[4]["review"].assert_called_once_with(env[0].repo_root, 42, commit_id="a" * 40, body="Review body", comments=[{"path": "a.py", "line": 1, "body": "First", "side": "RIGHT"}, {"path": "a.py", "line": 2, "body": "Second", "side": "RIGHT"}], repo="acme/repo")
+        env[4]["review"].assert_called_once_with(
+            env[0].repo_root,
+            42,
+            commit_id="a" * 40,
+            body="Review body",
+            comments=[
+                {"path": "a.py", "line": 1, "body": "First", "side": "RIGHT"},
+                {"path": "a.py", "line": 2, "body": "Second", "side": "RIGHT"},
+            ],
+            repo="acme/repo",
+        )
     else:
         assert_no_mutation(env)
 
@@ -362,11 +468,24 @@ def test_missing_selected_manifest_is_failure_not_empty_success(env, kind):
 
 def test_issue_expected_fields_revalidated_after_confirm(env):
     files = env[2]["issue"].as_dict()
-    payload = {"version": 1, "actions": [{"type": "edit", "repo": ".", "issue": 42, "body": "New", "expected": {"body": "Old body"}}]}
+    payload = {
+        "version": 1,
+        "actions": [
+            {
+                "type": "edit",
+                "repo": ".",
+                "issue": 42,
+                "body": "New",
+                "expected": {"body": "Old body"},
+            }
+        ],
+    }
     files["001.json"] = json.dumps(payload)
     env[2]["issue"] = store("issue", files)
+
     def confirm(count):
         env[6].return_value = replace(env[6].return_value, body="Remote moved")
         return True
+
     assert selected(env, confirm=confirm) == 1
     assert_no_mutation(env)

@@ -19,7 +19,13 @@ from jailbee.outbox.models import (
     StoreSnapshot,
 )
 from jailbee.outbox.service import _identity, load_container
-from jailbee.outbox_io import ContainerIdentity, JournalError, JournalStore, OutboxReadError, journal_key
+from jailbee.outbox_io import (
+    ContainerIdentity,
+    JournalError,
+    JournalStore,
+    OutboxReadError,
+    journal_key,
+)
 from jailbee.tui import console, error_plain, info_plain
 
 if TYPE_CHECKING:
@@ -34,8 +40,13 @@ class PublishOptions:
 
 
 def _checked(
-    cfg: Config, incus: Incus, container: str, proposal: ProposalId,
-    identity: ContainerIdentity, journal_store: JournalStore, expected_revision: str | None,
+    cfg: Config,
+    incus: Incus,
+    container: str,
+    proposal: ProposalId,
+    identity: ContainerIdentity,
+    journal_store: JournalStore,
+    expected_revision: str | None,
 ) -> tuple[ContainerView, str]:
     fresh = load_container(cfg, incus, container, journal_store=journal_store)
     if not fresh.available or fresh.identity != identity:
@@ -49,7 +60,8 @@ def _checked(
 
 
 def issue_outcome_lines(
-    batch: issue_outbox.PreparedBatch, report: issue_outbox.ApplyReport,
+    batch: issue_outbox.PreparedBatch,
+    report: issue_outbox.ApplyReport,
 ) -> tuple[str, ...]:
     """Format domain receipts, recovery advice and untouched actions without CLI handlers."""
     lines = []
@@ -60,7 +72,9 @@ def issue_outcome_lines(
         lines.append(f"{name} action {receipt.index}: applied{detail}")
     failure = report.failure
     if failure is None:
-        lines.extend(f"{name}: fully applied and removed from the outbox" for name in report.cleaned)
+        lines.extend(
+            f"{name}: fully applied and removed from the outbox" for name in report.cleaned
+        )
     else:
         label = "uncertain" if failure.uncertain else "failed"
         target = failure.manifest or "apply stopped"
@@ -76,7 +90,8 @@ def issue_outcome_lines(
             )
         lines.extend(
             f"{prepared.manifest.name} action {resolved.index}: pending"
-            for prepared in batch.manifests for resolved in prepared.actions
+            for prepared in batch.manifests
+            for resolved in prepared.actions
             if (prepared.manifest.name, resolved.index) not in attempted
         )
     return tuple(lines)
@@ -88,9 +103,15 @@ def _print_lines(lines: list[str] | tuple[str, ...]) -> None:
 
 
 def publish_selected(
-    cfg: Config, incus: Incus, container: str, proposal: ProposalId,
-    *, journal_store: JournalStore, options: PublishOptions,
-    confirm: Callable[[int], bool], expected_revision: str | None = None,
+    cfg: Config,
+    incus: Incus,
+    container: str,
+    proposal: ProposalId,
+    *,
+    journal_store: JournalStore,
+    options: PublishOptions,
+    confirm: Callable[[int], bool],
+    expected_revision: str | None = None,
 ) -> int:
     """Publish all pending actions of one manifest; the callback owns TTY policy.
 
@@ -103,26 +124,55 @@ def publish_selected(
             raise OutboxError("force is only valid for PR publication")
         identity = _identity(incus, container)
         manager = PrManagement() if proposal.kind == "pr" else None
-        lock = manager.lock(identity) if manager is not None else journal_store.lock(journal_key(identity, proposal.name))
+        lock = (
+            manager.lock(identity)
+            if manager is not None
+            else journal_store.lock(journal_key(identity, proposal.name))
+        )
         with lock:
-            fresh, revision = _checked(cfg, incus, container, proposal, identity, journal_store, expected_revision)
+            fresh, revision = _checked(
+                cfg, incus, container, proposal, identity, journal_store, expected_revision
+            )
             snapshot = next(s for s in fresh.stores if s.kind == proposal.kind)
             if manager is not None:
                 return pr_outbox.offer_pending_comments(
-                    cfg, incus, container, container, pr_number=None,
-                    confirm=confirm, outbox=pr_outbox.Outbox(snapshot.as_dict(), snapshot.rejected, identity),
-                    force=options.force, dry_run=options.dry_run,
-                    manifest_names=(proposal.name,), management=manager, expected_revision=revision,
+                    cfg,
+                    incus,
+                    container,
+                    container,
+                    pr_number=None,
+                    confirm=confirm,
+                    outbox=pr_outbox.Outbox(snapshot.as_dict(), snapshot.rejected, identity),
+                    force=options.force,
+                    dry_run=options.dry_run,
+                    manifest_names=(proposal.name,),
+                    management=manager,
+                    expected_revision=revision,
                 )
 
             batch = issue_outbox.prepare_batch(
-                cfg, incus, container, (proposal.name,), uid=cfg.container_user.uid,
+                cfg,
+                incus,
+                container,
+                (proposal.name,),
+                uid=cfg.container_user.uid,
                 journal_store=journal_store,
             )
             # Prepare reads independently: do not approve a newer domain proposal
             # merely because its own digest will pass apply_batch's later check.
-            prepared_store = StoreSnapshot("issue", tuple(sorted(batch.outbox.files.items())), snapshot.rejected, ())
-            prepared = next((v for v in build_views(batch.identity, (prepared_store,), journal_store=journal_store) if v.id == proposal), None)
+            prepared_store = StoreSnapshot(
+                "issue", tuple(sorted(batch.outbox.files.items())), snapshot.rejected, ()
+            )
+            prepared = next(
+                (
+                    v
+                    for v in build_views(
+                        batch.identity, (prepared_store,), journal_store=journal_store
+                    )
+                    if v.id == proposal
+                ),
+                None,
+            )
             if batch.identity != identity or prepared is None or prepared.revision != revision:
                 raise OutboxChanged("proposal changed during preparation; refresh required")
             _checked(cfg, incus, container, proposal, identity, journal_store, revision)
@@ -137,9 +187,19 @@ def publish_selected(
             _checked(cfg, incus, container, proposal, identity, journal_store, revision)
             issue_outbox.revalidate_batch(batch)
             _checked(cfg, incus, container, proposal, identity, journal_store, revision)
-            report = issue_outbox.apply_batch(batch, incus=incus, uid=cfg.container_user.uid, journal_store=journal_store)
+            report = issue_outbox.apply_batch(
+                batch, incus=incus, uid=cfg.container_user.uid, journal_store=journal_store
+            )
             _print_lines(issue_outcome_lines(batch, report))
             return int(report.failure is not None)
-    except (OutboxError, OutboxExecutionError, JournalError, OutboxReadError, IncusError, issue_outbox.IssueGateError, pr.PrError) as exc:
+    except (
+        OutboxError,
+        OutboxExecutionError,
+        JournalError,
+        OutboxReadError,
+        IncusError,
+        issue_outbox.IssueGateError,
+        pr.PrError,
+    ) as exc:
         error_plain(safe_text(str(exc)))
         return 1
