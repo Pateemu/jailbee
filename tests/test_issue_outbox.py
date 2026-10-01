@@ -375,6 +375,32 @@ def test_preflight_caches_issues_and_canonicalizes_labels_read_only(preflight):
     assert not preflight["store"].root.exists()
 
 
+@pytest.mark.parametrize("boundary", ["login", "fetch", "labels", "reader"])
+def test_domain_transport_has_execution_type_and_original_cause(preflight, boundary):
+    from jailbee.issue_github import IssueGithubReadError
+    from jailbee.issue_outbox import IssueExecutionError, IssueGateError
+    from jailbee.outbox_io import OutboxReadError
+
+    failure = OutboxReadError("read failed") if boundary == "reader" else IssueGithubReadError("read failed")
+    preflight[boundary].side_effect = failure
+    with pytest.raises(IssueExecutionError) as caught:
+        preflight["prepare"]({"a.json": [_comment(), _create()]})
+    assert isinstance(caught.value, IssueGateError)
+    assert caught.value.__cause__ is failure
+
+
+def test_domain_revalidation_transport_is_not_stale(preflight):
+    from jailbee.issue_github import IssueGithubReadError
+    from jailbee.issue_outbox import IssueExecutionError, revalidate_batch
+
+    batch = preflight["prepare"]({"a.json": [_edit(title="New", expected={"title": "Old title"})]})
+    failure = IssueGithubReadError("late read failed")
+    preflight["fetch"].side_effect = failure
+    with pytest.raises(IssueExecutionError) as caught:
+        revalidate_batch(batch)
+    assert caught.value.__cause__ is failure
+
+
 def test_preflight_rejects_pull_requests_and_caches_failed_reads(preflight):
     from jailbee.issue_github import IssueGithubReadError
     from jailbee.issue_outbox import IssueGateError

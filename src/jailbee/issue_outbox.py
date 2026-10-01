@@ -120,6 +120,10 @@ class IssueGateError(Exception):
     """One or more read-only checks refuse a proposed batch."""
 
 
+class IssueExecutionError(IssueGateError):
+    """A required read or transport failed; legacy gate catches remain compatible."""
+
+
 class IssueStaleError(IssueGateError):
     """An expected field changed after the approval plan was prepared."""
 
@@ -335,12 +339,13 @@ def prepare_batch(
     journal_store: JournalStore,
 ) -> PreparedBatch:
     """Resolve and validate an offer using only host-authorized, read-only inputs."""
-    outbox = read_issue_outbox(incus, container, uid=uid)
-    refusals: list[str] = []
     try:
+        outbox = read_issue_outbox(incus, container, uid=uid)
         identity = container_identity(incus, container)
-    except (JournalError, IncusError) as exc:
-        raise IssueGateError(str(exc)) from exc
+    except (OutboxReadError, JournalError, IncusError) as exc:
+        raise IssueExecutionError(str(exc)) from exc
+    refusals: list[str] = []
+    execution_errors: list[IssueGithubReadError] = []
     try:
         targets = resolve_repo_targets(cfg)
     except ValueError as exc:
@@ -353,6 +358,7 @@ def prepare_batch(
     try:
         login = issue_github.current_login(cfg.repo_root)
     except IssueGithubReadError as exc:
+        execution_errors.append(exc)
         refusals.append(str(exc))
         login = ""
     issues: dict[tuple[str, int], IssueSnapshot] = {}
@@ -394,6 +400,7 @@ def prepare_batch(
                                 cfg.repo_root, repo.slug, issue.number
                             )
                         except IssueGithubReadError as exc:
+                            execution_errors.append(exc)
                             issue_errors[key] = str(exc)
                     if key in issue_errors:
                         refusals.append(f"{context}: {issue_errors[key]}")
@@ -413,6 +420,7 @@ def prepare_batch(
                             cfg.repo_root, repo.slug
                         )
                     except IssueGithubReadError as exc:
+                        execution_errors.append(exc)
                         label_errors[repo.identity] = str(exc)
                 if repo.identity in label_errors:
                     refusals.append(f"{context}: {label_errors[repo.identity]}")
@@ -432,6 +440,8 @@ def prepare_batch(
                     mutations[mutation_key] = context
             actions.append(ResolvedAction(index, action, repo, issue, status, labels))
         prepared.append(PreparedManifest(manifest, digest, journal, tuple(actions)))
+    if execution_errors:
+        raise IssueExecutionError("\n".join(refusals)) from execution_errors[0]
     if refusals:
         raise IssueGateError("\n".join(refusals))
     return PreparedBatch(
@@ -443,6 +453,7 @@ def revalidate_batch(batch: PreparedBatch) -> None:
     """Refetch only pending existing mutations and compare their declared fields."""
     fresh: dict[tuple[str, int], IssueSnapshot] = {}
     errors: dict[tuple[str, int], str] = {}
+    execution_errors: list[IssueGithubReadError] = []
     refusals = []
     for manifest in batch.manifests:
         for resolved in manifest.actions:
@@ -460,6 +471,7 @@ def revalidate_batch(batch: PreparedBatch) -> None:
                         batch.host_repo_root, resolved.repo.slug, resolved.issue.number
                     )
                 except IssueGithubReadError as exc:
+                    execution_errors.append(exc)
                     errors[key] = str(exc)
             if key in errors:
                 refusals.append(f"{context}: {errors[key]}")
@@ -468,6 +480,8 @@ def revalidate_batch(batch: PreparedBatch) -> None:
             if snapshot.is_pull_request:
                 refusals.append(f"{context}: target is a pull request, not an issue")
             refusals.extend(_differences(resolved.action, snapshot, context))
+    if execution_errors:
+        raise IssueExecutionError("\n".join(refusals)) from execution_errors[0]
     if refusals:
         raise IssueStaleError("\n".join(refusals))
 

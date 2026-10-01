@@ -47,8 +47,24 @@ def _checked(
     identity: ContainerIdentity,
     journal_store: JournalStore,
     expected_revision: str | None,
+    *,
+    raise_errors: bool = False,
 ) -> tuple[ContainerView, str]:
-    fresh = load_container(cfg, incus, container, journal_store=journal_store)
+    if raise_errors:
+        from jailbee.outbox.io import read_store
+        from jailbee.outbox.models import Kind
+
+        # Inspection's load_container intentionally stores errors as strings.
+        # Typed publication needs the reader's original exception and cause.
+        current = _identity(incus, container)
+        kinds: tuple[Kind, ...] = ("pr", "issue")
+        stores = tuple(read_store(incus, container, kind, uid=cfg.container_user.uid) for kind in kinds)
+        if _identity(incus, container) != current:
+            raise OutboxChanged("container changed while reading; refresh required")
+        fresh = ContainerView(current, container, True, None, stores,
+                              build_views(current, stores, journal_store=journal_store))
+    else:
+        fresh = load_container(cfg, incus, container, journal_store=journal_store)
     if not fresh.available or fresh.identity != identity:
         raise OutboxChanged(fresh.error or "container changed; refresh required")
     view = next((v for v in fresh.proposals if v.id == proposal), None)
@@ -137,12 +153,15 @@ def publish_selected(
     options: PublishOptions,
     confirm: Callable[[int], bool],
     expected_revision: str | None = None,
+    raise_errors: bool = False,
 ) -> int:
     """Publish all pending actions of one manifest; the callback owns TTY policy.
 
     The shared UI revision is distinct from a domain proposal digest. Hold the
     same host lock from the first freshness check through domain apply/cleanup;
     the domain's own content, target and recovery gates remain mandatory.
+    raise_errors preserves typed validation/execution failures for UI callers;
+    the default retains legacy printed diagnostics and integer failure counts.
     """
     try:
         if proposal.kind == "issue" and options.force:
@@ -156,7 +175,8 @@ def publish_selected(
         )
         with lock:
             fresh, revision = _checked(
-                cfg, incus, container, proposal, identity, journal_store, expected_revision
+                cfg, incus, container, proposal, identity, journal_store, expected_revision,
+                raise_errors=raise_errors
             )
             snapshot = next(s for s in fresh.stores if s.kind == proposal.kind)
             if manager is not None:
@@ -173,6 +193,7 @@ def publish_selected(
                     manifest_names=(proposal.name,),
                     management=manager,
                     expected_revision=revision,
+                    raise_errors=raise_errors,
                 )
 
             batch = issue_outbox.prepare_batch(
@@ -200,7 +221,7 @@ def publish_selected(
             )
             if batch.identity != identity or prepared is None or prepared.revision != revision:
                 raise OutboxChanged("proposal changed during preparation; refresh required")
-            _checked(cfg, incus, container, proposal, identity, journal_store, revision)
+            _checked(cfg, incus, container, proposal, identity, journal_store, revision, raise_errors=raise_errors)
             _print_lines(issue_outbox.plan_lines(batch))
             if options.dry_run:
                 info_plain("Dry run: nothing was published.")
@@ -209,13 +230,15 @@ def publish_selected(
             if total and not confirm(total):
                 info_plain("Nothing published.")
                 return 0
-            _checked(cfg, incus, container, proposal, identity, journal_store, revision)
+            _checked(cfg, incus, container, proposal, identity, journal_store, revision, raise_errors=raise_errors)
             issue_outbox.revalidate_batch(batch)
-            _checked(cfg, incus, container, proposal, identity, journal_store, revision)
+            _checked(cfg, incus, container, proposal, identity, journal_store, revision, raise_errors=raise_errors)
             report = issue_outbox.apply_batch(
                 batch, incus=incus, uid=cfg.container_user.uid, journal_store=journal_store
             )
             print_issue_outcome(batch, report)
+            if raise_errors and report.failure is not None:
+                raise OutboxExecutionError(report.failure.detail)
             return int(report.failure is not None)
     except (
         OutboxError,
@@ -225,6 +248,13 @@ def publish_selected(
         IncusError,
         issue_outbox.IssueGateError,
         pr.PrError,
+        pr_outbox.GateError,
     ) as exc:
+        if raise_errors:
+            if isinstance(exc, (OutboxError, OutboxExecutionError)):
+                raise
+            if isinstance(exc, (issue_outbox.IssueExecutionError, JournalError, OutboxReadError, IncusError, pr.PrError)):
+                raise OutboxExecutionError(str(exc)) from exc
+            raise OutboxError(str(exc)) from exc
         error_plain(safe_text(str(exc)))
         return 1

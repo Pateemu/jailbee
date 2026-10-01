@@ -1863,6 +1863,7 @@ def _gate_manifests(
     force: bool,
     comments_only: bool,
     manifest_names: Sequence[str] | None = None,
+    raise_errors: bool = False,
 ) -> tuple[list[Target], list[str], list[str]]:
     """Gate every pending manifest: (publishable targets, refusals, notes).
 
@@ -1899,6 +1900,8 @@ def _gate_manifests(
         try:
             manifest = parse_manifest(name, outbox.files[name], outbox.files)
         except ManifestError as e:
+            if raise_errors:
+                raise OutboxError(str(e)) from e
             if comments_only:
                 notes.append(f"Ignoring outbox manifest {name}: {e}")
             else:
@@ -1919,6 +1922,8 @@ def _gate_manifests(
         try:
             target = resolve_target(cfg, incus, container, manifest, force=force)
         except GateError as e:
+            if raise_errors:
+                raise
             if comments_only:
                 # `StaleError` is the only refusal `--force` relaxes; every
                 # other `GateError` would refuse again identically.
@@ -1937,6 +1942,8 @@ def _gate_manifests(
             notes.append(_held_back(str(e), short, stale=False))
             continue
         if target.pr is None:
+            if raise_errors:
+                raise OutboxError("proposal awaits a recorded PR; create or adopt it first")
             # Unreachable under `comments_only`: `parse_manifest` refuses a
             # `pr: null` manifest that carries anything but a lone description,
             # and `_offerable_indices` has already skipped those above.
@@ -1992,6 +1999,7 @@ def offer_pending_comments(
     manifest_names: Sequence[str] | None = None,
     management: PrManagement | None = None,
     expected_revision: str | None = None,
+    raise_errors: bool = False,
 ) -> int:
     """Serialize fresh PR inspection, confirmation, revalidation and publication.
 
@@ -2006,6 +2014,8 @@ def offer_pending_comments(
     explicit = manifest_names is not None or expected_revision is not None
     manager = management if management is not None else PrManagement()
     try:
+        if raise_errors and (not explicit or pr_number is not None):
+            raise OutboxError("typed errors require selected PR publication")
         if expected_revision is not None and (manifest_names is None or len(manifest_names) != 1):
             raise OutboxError("expected_revision requires one selected manifest")
         if not explicit and outbox is None:
@@ -2061,6 +2071,7 @@ def offer_pending_comments(
                 identity=identity,
                 management=manager,
                 selected_publication=explicit and pr_number is None,
+                raise_errors=raise_errors,
             )
     except (
         OutboxReadError,
@@ -2071,6 +2082,8 @@ def offer_pending_comments(
         pr.PrError,
         GateError,
     ) as exc:
+        if raise_errors:
+            raise
         if not explicit and pr_number is not None:
             warn_plain(f"{exc}; nothing was offered.")
             return 0
@@ -2094,6 +2107,7 @@ def _offer_locked(
     identity: ContainerIdentity,
     management: PrManagement,
     selected_publication: bool = False,
+    raise_errors: bool = False,
 ) -> int:
     """Show what `container` wants to publish, ask once, publish it.
 
@@ -2151,6 +2165,7 @@ def _offer_locked(
         force=force,
         comments_only=for_offer,
         manifest_names=manifest_names,
+        raise_errors=raise_errors,
     )
     for message in refusals:
         error_plain(message)
@@ -2261,9 +2276,13 @@ def _offer_locked(
             # The GitHub side is settled but the container could not be told.
             # Publishing the next manifest would post more that nothing can
             # record — the very thing the sidecar exists to prevent.
+            if raise_errors:
+                raise OutboxExecutionError(str(e)) from e
             error_plain(str(e))
             stop = True
         if outcome.failure is not None:
+            if raise_errors:
+                raise OutboxExecutionError(f"{target.manifest.name}: {outcome.failure}")
             error_plain(f"{target.manifest.name}: {outcome.failure}")
             warn_plain(f"{target.manifest.name} is still pending; re-running skips what landed.")
             stop = True
