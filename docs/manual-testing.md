@@ -148,12 +148,15 @@ never Astra.
 
 1. Write `$XDG_CONFIG_HOME/jailbee/repos/<prefix>.yaml` with
    `litellm: {routes: {luna-high: {effort: low}}}` and run `jailbee apply`.
-   Expect `Restarted LiteLLM instance(s) default on the new routes`. In the
+   Expect `Reloaded the routes of LiteLLM instance(s) default without a restart.`. In the
    container `claude-jb -p 'say hi' --model haiku` answers, and
    `jailbee litellm logs` shows requests for `jb-<prefix>.codex.cheap`.
    `jailbee litellm ls` lists a `repo <prefix>` block with `luna-high  chatgpt/gpt-6-luna  low (fixed)`.
-2. Run `jailbee apply` again: no restart message.
-3. Change the effort to `medium` and run `jailbee apply --no-restart`: it warns
+2. Run `jailbee apply` again: no reload or restart message.
+3. Change the effort to `medium` and run `jailbee apply --no-restart`: it still
+   reloads (`Reloaded the routes of LiteLLM instance(s) default without a
+   restart.`). Then make a cold change instead, such as editing the
+   `litellm.extra` fragment, and run `jailbee apply --no-restart`: it warns
    that instance `default` still serves the previous routes. A plain
    `jailbee apply` then restarts it.
 4. Break the file (`litellm: {enabled: true}`): `jailbee litellm ls`, and
