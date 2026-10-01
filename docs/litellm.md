@@ -197,14 +197,16 @@ proxy configuration and syncs the repo's running containers. Edits to routes
 and profiles (a model, `context_window`, `effort`, `api_base`, a new route that
 needs no new secret) are **loaded into the running proxy without a restart**:
 open `claude-jb` sessions keep going, and a stream in flight finishes on the
-route it started on. Anything the proxy only reads at start (a secret, `extra`,
-the proxy's settings, the callback itself) restarts the instance that changed,
+route it started on. Anything the proxy only reads at start (a secret, `extra`
+outside its `model_list`, the proxy's settings, the callback itself) restarts the instance that changed,
 saying which. If the proxy does not confirm a reload within about ten seconds,
 or refuses it, `apply` restarts the instance instead and says why.
 `jailbee apply --no-restart` still applies reloads, since they interrupt
 nothing, and leaves an instance that needs a restart (or whose reload was not
 confirmed) pending, with a warning; a later plain `jailbee apply` restarts it.
-`jailbee new` does not update the proxy.
+`jailbee new` does not update the proxy, with one exception: the first container in a
+scratch directory runs an `apply` to create its profiles, and that run can apply a pending
+route reload (waiting up to about ten seconds per instance) but never restarts an instance.
 
 `apply` sees an edit through the rendered instance files, and the proxy's egress
 allowlist is not part of them. An edit that changes **only** egress (a route's
@@ -316,7 +318,7 @@ back on; that is your choice.
   standard input. `jailbee litellm down` keeps the volume, so logins survive a
   rebuild; `jailbee litellm down --purge` deletes it. On the host, only
   `~/.local/share/jailbee/litellm/` remains, holding the port map, each
-  account's proxy key (`0600`) and its `applied.sha256` stamp. Dev containers get only the proxy keys, one
+  account's proxy key (`0600`) and its `applied.sha256` and `applied-hot.sha256` stamps. Dev containers get only the proxy keys, one
   `/etc/jailbee/litellm-<account>.key` (`0640`, readable by the dev group) per
   account. `jailbee litellm logout [ACCOUNT]` deletes that account's token.
 - The proxy has default-deny egress restricted to the hosts the routes need
@@ -338,7 +340,7 @@ back on; that is your choice.
   Resuming a native session with signed Opus thinking blocks through
   `claude-jb` is untested.
 - Changing a route reloads it into the account's running instance; changing a
-  secret, `litellm.extra` or the proxy's own settings restarts it, interrupting
+  secret, `litellm.extra` outside its `model_list` or the proxy's own settings restarts it, interrupting
   every container's streams on that account (`jailbee litellm up`, or
   `jailbee apply` in any repo). `apply --no-restart` defers the restart.
   An instance that serves no route at all cannot take its first route by
