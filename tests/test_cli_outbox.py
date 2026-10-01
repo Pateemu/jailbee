@@ -39,6 +39,15 @@ def env(mocker, make_cfg, tmp_path):
     return cfg, incus, snapshots, reader, mutation, journals, raw
 
 
+@pytest.mark.parametrize("args", [["ls"], ["show", "feature", "issue/001.json"], ["browse"]])
+def test_inspection_missing_registry_does_not_bootstrap_state(env, monkeypatch, tmp_path, args):
+    state = tmp_path / "fresh-state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    result = CliRunner().invoke(app, ["outbox", *args])
+    assert result.exit_code == 0, result.output
+    assert not state.exists()
+
+
 @pytest.mark.parametrize("leaf", [None, "browse", "ls", "show", "drop", "apply"])
 def test_public_help(leaf):
     args = ["outbox"] + ([leaf] if leaf else []) + ["--help"]

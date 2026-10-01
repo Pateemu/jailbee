@@ -36,19 +36,27 @@ if TYPE_CHECKING:
 def _repo_roots(cfg: Config, scope: RemoteRepoScope) -> dict[str, Path]:
     # Keep missing registered roots: unlike the dashboard, inspection must report
     # their containers as unavailable rather than silently omitting the repository.
+    import sqlite3
     from pathlib import Path
 
-    from sqlmodel import Session, select
+    from jailbee.db import state_dir
 
-    from jailbee.db import get_engine
-    from jailbee.db.models import RegisteredRepo
-
-    with Session(get_engine()) as session:
-        roots = {
-            repo.container_prefix: Path(repo.repo_root)
-            for repo in session.exec(select(RegisteredRepo)).all()
-            if scope.allows(repo.container_prefix)
-        }
+    roots: dict[str, Path] = {}
+    database = state_dir() / "state.sqlite"
+    if database.is_file():
+        # mode=ro also closes the exists/connect race without creating a new DB.
+        # Never bootstrap or migrate runtime state for an inspection command.
+        try:
+            connection = sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True)
+            try:
+                rows = connection.execute(
+                    "SELECT container_prefix, repo_root FROM registered_repo"
+                ).fetchall()
+            finally:
+                connection.close()
+        except sqlite3.Error as exc:
+            raise OutboxExecutionError(f"repository registry is unreadable: {exc}") from exc
+        roots = {prefix: Path(root) for prefix, root in rows if scope.allows(prefix)}
     if scope.allows(cfg.container_prefix):
         roots[cfg.container_prefix] = cfg.repo_root
     return roots

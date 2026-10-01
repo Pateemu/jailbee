@@ -57,6 +57,27 @@ def register(prefix, root):
         session.commit()
 
 
+def test_existing_registry_is_read_only_and_preserves_registration(env, tmp_path, mocker):
+    import sqlite3
+
+    from jailbee.db import state_dir
+    from jailbee.outbox.commands import discover
+
+    cfg, incus, _, _, _, journals = env
+    register("other", tmp_path / "missing-root")
+    database = state_dir() / "state.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    before = database.read_bytes()
+    mocker.patch("jailbee.db.get_engine", side_effect=AssertionError("inspection bootstrapped DB"))
+    discover(cfg, incus, None, all_repos=True, journal_store=journals)
+    assert database.read_bytes() == before
+    with sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True) as connection:
+        assert connection.execute("SELECT container_prefix, repo_root FROM registered_repo").fetchall() == [
+            ("other", str(tmp_path / "missing-root"))
+        ]
+
+
 def test_zero_probe_count_does_not_filter(env):
     from jailbee.outbox.commands import discover
 
