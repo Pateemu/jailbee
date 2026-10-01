@@ -14,6 +14,7 @@ import typer
 import yaml
 
 from jailbee import __version__, completion, table_format
+from jailbee.cli_outbox import app as outbox_app
 from jailbee.config import ConfigError, load_config, load_config_unsanitized
 from jailbee.constants import LEGACY_REMOVAL_VERSION
 from jailbee.global_config import (
@@ -40,6 +41,8 @@ app = typer.Typer(
     help="Manage isolated development environments using Incus.",
     no_args_is_help=True,
 )
+
+app.add_typer(outbox_app)
 
 config_app = typer.Typer(
     name="config",

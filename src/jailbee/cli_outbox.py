@@ -1,0 +1,286 @@
+"""Focused unified outbox CLI; business logic is imported only on invocation."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from enum import StrEnum
+from pathlib import Path
+from typing import TYPE_CHECKING, Annotated
+
+import typer
+from typer import _click as click
+from typer.core import TyperGroup
+
+if TYPE_CHECKING:
+    from jailbee.config import Config
+    from jailbee.incus import Incus
+
+_COMMANDS = frozenset(("browse", "ls", "show", "drop", "apply"))
+
+
+def _normalize_local(argv: Sequence[str]) -> list[str]:
+    args = list(argv)
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word in ("--help", "-h"):
+            return args
+        if word in ("--config", "-c"):
+            index += 2
+        elif word.startswith("--config=") or (word.startswith("-c") and len(word) > 2):
+            index += 1
+        else:
+            break
+    if index == len(args) or (
+        index < len(args) and args[index] not in _COMMANDS and not args[index].startswith("-")
+    ):
+        args.insert(index, "browse")
+    return args
+
+
+def normalize_outbox_argv(argv: Sequence[str]) -> list[str]:
+    """Normalize the outbox segment, preserving option values and other argv."""
+    args = list(argv)
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word in ("--config", "-c"):
+            index += 2
+            continue
+        if word == "outbox":
+            return args[: index + 1] + _normalize_local(args[index + 1 :])
+        if not word.startswith("-"):
+            return args
+        index += 1
+    return args
+
+
+class OutboxGroup(TyperGroup):
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        return super().parse_args(ctx, _normalize_local(args))
+
+
+app = typer.Typer(
+    name="outbox",
+    cls=OutboxGroup,
+    help=(
+        "Inspect and manage staged proposals. Shorthand: outbox [container]. "
+        "Use outbox browse ls for a container named ls."
+    ),
+)
+ConfigOption = Annotated[
+    Path | None, typer.Option("--config", "-c", help="Repository config file.")
+]
+ContainerArgument = Annotated[str, typer.Argument(help="Full or short container name.")]
+ProposalArgument = Annotated[
+    str, typer.Argument(help="Proposal: pr/<manifest>.json or issue/<manifest>.json.")
+]
+RevisionOption = Annotated[
+    str | None,
+    typer.Option("--revision", help="Refuse changes since this inspected revision token."),
+]
+YesOption = Annotated[
+    bool, typer.Option("--yes", "-y", help="Confirm only; never bypass safety checks.")
+]
+
+
+class Output(StrEnum):
+    table = "table"
+    json = "json"
+
+
+OutputOption = Annotated[
+    Output, typer.Option("--format", "--output", "-o", help="Output format: table or json.")
+]
+
+
+@app.callback()
+def group(ctx: typer.Context, config: ConfigOption = None) -> None:
+    ctx.obj = config
+
+
+def _run(
+    ctx: typer.Context, config: Path | None, operation: Callable[[Config, Incus], int]
+) -> None:
+    from jailbee.config import ConfigError, load_config, load_repo_config
+    from jailbee.incus import Incus, IncusError
+    from jailbee.outbox.inspect import safe_text
+    from jailbee.outbox.models import OutboxError, OutboxExecutionError
+    from jailbee.remote_ssh.repo_scope import RepoScopeError
+    from jailbee.tui import error_plain
+
+    try:
+        path = config if config is not None else ctx.obj
+        cfg = load_config(path) if path is not None else load_repo_config(Path.cwd())
+        status = operation(cfg, Incus())
+    except (ConfigError, OutboxError, RepoScopeError) as exc:
+        error_plain(safe_text(str(exc)))
+        raise typer.Exit(2) from exc
+    except (OutboxExecutionError, IncusError, OSError) as exc:
+        error_plain(safe_text(str(exc)))
+        raise typer.Exit(1) from exc
+    if status:
+        raise typer.Exit(status)
+
+
+@app.command()
+def browse(
+    ctx: typer.Context,
+    container: Annotated[str | None, typer.Argument(help="Full or short container name.")] = None,
+    config: ConfigOption = None,
+) -> None:
+    """Overview (also off-TTY). Unambiguous spelling for subcommand-name containers."""
+    from jailbee.outbox.commands import show_overview
+    from jailbee.outbox_io import JournalStore
+
+    _run(
+        ctx,
+        config,
+        lambda cfg, incus: show_overview(
+            cfg, incus, container, all_repos=False, output="table", journal_store=JournalStore()
+        ),
+    )
+
+
+@app.command("ls")
+def list_cmd(
+    ctx: typer.Context,
+    container: Annotated[str | None, typer.Argument(help="Full or short container name.")] = None,
+    all_repos: Annotated[
+        bool, typer.Option("--all-repos", help="Include registered repositories.")
+    ] = False,
+    output: OutputOption = Output.table,
+    config: ConfigOption = None,
+) -> None:
+    """List proposals, including structured unavailable containers."""
+    from jailbee.outbox.commands import show_overview
+    from jailbee.outbox_io import JournalStore
+
+    _run(
+        ctx,
+        config,
+        lambda cfg, incus: show_overview(
+            cfg,
+            incus,
+            container,
+            all_repos=all_repos,
+            output=output.value,
+            journal_store=JournalStore(),
+        ),
+    )
+
+
+@app.command()
+def show(
+    ctx: typer.Context,
+    container: ContainerArgument,
+    proposal: ProposalArgument,
+    output: OutputOption = Output.table,
+    config: ConfigOption = None,
+) -> None:
+    """Inspect a complete proposal with zero-based action and comment indices."""
+    from jailbee.outbox.commands import show_selected
+    from jailbee.outbox.models import ProposalId
+    from jailbee.outbox_io import JournalStore
+
+    _run(
+        ctx,
+        config,
+        lambda cfg, incus: show_selected(
+            cfg,
+            incus,
+            container,
+            ProposalId.parse(proposal),
+            output=output.value,
+            journal_store=JournalStore(),
+        ),
+    )
+
+
+@app.command()
+def drop(
+    ctx: typer.Context,
+    container: ContainerArgument,
+    proposal: ProposalArgument,
+    action: Annotated[int | None, typer.Option("--action", help="Zero-based action index.")] = None,
+    comment: Annotated[
+        int | None,
+        typer.Option("--comment", help="Zero-based inline comment index; requires --action."),
+    ] = None,
+    with_dependents: Annotated[
+        bool, typer.Option("--with-dependents", help="Include dependent issue-create actions.")
+    ] = False,
+    archive_journal: Annotated[
+        bool,
+        typer.Option("--archive-journal", help="Archive settled journal on whole issue deletion."),
+    ] = False,
+    yes: YesOption = False,
+    revision: RevisionOption = None,
+    config: ConfigOption = None,
+) -> None:
+    """Delete locally after displaying exact scope; selectors are zero-based."""
+    from jailbee.outbox.commands import drop_selected, print_lines
+    from jailbee.outbox.delete import DeletePlan, DeleteSelection
+    from jailbee.outbox.models import ProposalId
+    from jailbee.outbox_io import JournalStore
+
+    def confirm(plan: DeletePlan) -> bool:
+        print_lines(plan.summary)
+        accepted = yes or typer.confirm("Delete this exact scope?", default=False)
+        if not accepted:
+            print_lines(("Nothing deleted.",))
+        return accepted
+
+    _run(
+        ctx,
+        config,
+        lambda cfg, incus: drop_selected(
+            cfg,
+            incus,
+            container,
+            ProposalId.parse(proposal),
+            selection=DeleteSelection(action, comment, with_dependents, archive_journal),
+            journal_store=JournalStore(),
+            confirm=confirm,
+            expected_revision=revision,
+        ),
+    )
+
+
+@app.command()
+def apply(
+    ctx: typer.Context,
+    container: ContainerArgument,
+    proposal: ProposalArgument,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Show plan without publishing.")
+    ] = False,
+    force: Annotated[
+        bool, typer.Option("--force", help="PR stale-anchor override only; invalid for issues.")
+    ] = False,
+    yes: YesOption = False,
+    revision: RevisionOption = None,
+    config: ConfigOption = None,
+) -> None:
+    """Publish one whole manifest through its existing domain gates."""
+    from jailbee.outbox.commands import apply_selected
+    from jailbee.outbox.models import ProposalId
+    from jailbee.outbox.publish import PublishOptions
+    from jailbee.outbox_io import JournalStore
+
+    _run(
+        ctx,
+        config,
+        lambda cfg, incus: apply_selected(
+            cfg,
+            incus,
+            container,
+            ProposalId.parse(proposal),
+            options=PublishOptions(dry_run, force),
+            journal_store=JournalStore(),
+            confirm=lambda total: (
+                yes or typer.confirm(f"Publish {total} pending actions?", default=False)
+            ),
+            expected_revision=revision,
+        ),
+    )
