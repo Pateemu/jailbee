@@ -786,3 +786,21 @@ def test_litellm_autostart_is_a_global_leaf():
     from jailbee.config_edit.schema import global_specs
 
     assert ("litellm", "autostart") in {s.path for s in global_specs()}
+
+
+def test_profile_instructions_is_a_multiline_optional_str():
+    from jailbee.config.models_litellm import LiteLLMProfile
+    from jailbee.config_edit.schema import FieldKind, build_specs
+
+    spec = _by_path(build_specs(LiteLLMProfile), "instructions")
+    assert spec.kind is FieldKind.STR
+    assert spec.multiline is True and spec.optional is True
+
+
+def test_no_root_field_is_multiline():
+    """`multiline` is opt-in per field; the entry form of a profile is the only user."""
+    from jailbee.config import Config
+    from jailbee.config_edit.schema import build_specs
+    from jailbee.global_config import GlobalConfig
+
+    assert not any(s.multiline for s in (*build_specs(Config), *build_specs(GlobalConfig)))

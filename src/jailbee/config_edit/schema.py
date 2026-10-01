@@ -271,6 +271,9 @@ class FieldSpec:
     item_models: tuple[type[BaseModel], ...] = ()
     """Every shape this collection's entries may take, for a `list[A] | list[B]`
     field; empty when `item_model` is the only one. `entry_model` reads it."""
+    multiline: bool = False
+    """A `STR` the editor edits in a multi-line prompt (Ctrl-S to commit) instead
+    of on one line. Opt-in per field via `Field(json_schema_extra={"multiline": True})`."""
 
 
 def to_raw(value: object) -> object:
@@ -335,6 +338,11 @@ def build_specs(model: type[BaseModel]) -> tuple[FieldSpec, ...]:
     return tuple(_walk(model, prefix=(), stack=(model,)))
 
 
+def _is_multiline(info: FieldInfo) -> bool:
+    extra = info.json_schema_extra
+    return isinstance(extra, dict) and extra.get("multiline") is True
+
+
 def _walk(
     model: type[BaseModel],
     *,
@@ -372,6 +380,7 @@ def _walk(
                 secret=found.secret,
                 advanced=path not in BASIC_FIELDS,
                 item_models=found.item_models,
+                multiline=_is_multiline(info),
             )
         )
     return out

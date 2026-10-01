@@ -237,3 +237,9 @@ def test_an_empty_opaque_block_is_an_empty_mapping():
     """Clearing the block means "no overlay", not "invalid"."""
     assert parse_opaque("   \n") == ({}, None)
     assert parse_opaque("") == ({}, None)
+
+
+def test_format_value_shows_only_the_first_line_of_a_multiline_string():
+    spec = _spec(FieldKind.STR)
+    assert format_value(spec, "first line\nsecond line\n") == "first line …"
+    assert format_value(spec, "one line") == "one line"

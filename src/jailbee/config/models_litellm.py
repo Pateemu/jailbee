@@ -326,6 +326,7 @@ class LiteLLMProfile(BaseModel):
             "sessions of this profile (at most 64 KiB; use a YAML `|` block for several "
             "lines). A higher layer replaces it whole; `null` removes it."
         ),
+        json_schema_extra={"multiline": True},
     )
 
     @field_validator("instructions")

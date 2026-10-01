@@ -1654,3 +1654,77 @@ def test_the_esc_gate_still_names_a_step_field_in_a_flat_trigger(tmp_path):
 
     assert "incomplete" in editor.message
     assert "name: " in editor.message, editor.message
+
+
+def _global_editor(tmp_path, global_):
+    """An `Editor` over `global_specs()` with `global_` as `global.yaml`."""
+    import yaml
+
+    from jailbee.config_edit.app import Editor
+    from jailbee.config_edit.schema import global_specs
+
+    repo_path = tmp_path / "repo" / ".jailbee" / "config.yaml"
+    repo_path.parent.mkdir(parents=True, exist_ok=True)
+    repo_path.write_text(yaml.safe_dump({}, sort_keys=False))
+    global_path = tmp_path / "global.yaml"
+    global_path.write_text(yaml.safe_dump(global_, sort_keys=False))
+    layer_set = read_layers(repo_path, global_path)
+    specs = global_specs()
+    editor = Editor(
+        layer_set=layer_set,
+        state=st.open_editor(
+            layer="global",
+            specs=specs,
+            origins=resolve(specs, layer_set),
+            layer_raw=raw_for(layer_set, "global"),
+        ),
+        policy="patch",
+    )
+    editor.state = st.toggle_show_all(editor.state)  # litellm.profiles is advanced
+    return editor
+
+
+_PROFILE = {"litellm": {"profiles": {"mine": {"account": "default", "opus": "sol-xhigh"}}}}
+
+
+def test_a_multiline_str_field_opens_a_multiline_prompt_and_commits_the_text(tmp_path):
+    editor = _global_editor(tmp_path, _PROFILE)
+    _descend(editor, "litellm", "profiles", "mine")
+    _cursor_to(editor, "instructions")
+
+    editor.edit_current()
+
+    assert editor.prompt is not None and editor.prompt.multiline is True
+    editor.prompt.area.text = "Use haiku for lookups.\nNever fable.\n"
+    editor.commit_prompt()
+    assert editor.state.staged[("litellm", "profiles", "mine", "instructions")] == (
+        "Use haiku for lookups.\nNever fable."
+    )
+
+
+def test_an_unchanged_multiline_text_is_not_restaged(tmp_path):
+    """A `|` block ends in a newline the prompt's text does not keep; committing
+    it untouched must not turn `|` into `|-` in the diff."""
+    profile = {"account": "default", "opus": "sol-xhigh", "instructions": "a\nb\n"}
+    editor = _global_editor(tmp_path, {"litellm": {"profiles": {"mine": profile}}})
+    _descend(editor, "litellm", "profiles", "mine")
+    _cursor_to(editor, "instructions")
+
+    editor.edit_current()
+    assert editor.prompt is not None
+    editor.commit_prompt()
+
+    assert ("litellm", "profiles", "mine", "instructions") not in editor.state.staged
+
+
+def test_clearing_a_multiline_text_stages_null(tmp_path):
+    profile = {"account": "default", "opus": "sol-xhigh", "instructions": "keep me"}
+    editor = _global_editor(tmp_path, {"litellm": {"profiles": {"mine": profile}}})
+    _descend(editor, "litellm", "profiles", "mine")
+    _cursor_to(editor, "instructions")
+
+    editor.edit_current()
+    editor.prompt.area.text = ""
+    editor.commit_prompt()
+
+    assert editor.state.staged[("litellm", "profiles", "mine", "instructions")] is None

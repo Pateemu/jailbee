@@ -424,6 +424,8 @@ class Editor:
             self._open_prompt(spec, values.map_to_text(value), multiline=True)
         elif spec.kind is FieldKind.OPAQUE:
             self._open_prompt(spec, values.opaque_to_text(value), multiline=True)
+        elif spec.kind is FieldKind.STR and spec.multiline:
+            self._open_prompt(spec, values.to_text(spec, value), multiline=True)
         elif spec.kind in _TEXT_KINDS:
             self._open_prompt(spec, values.to_text(spec, value), multiline=False)
         elif spec.kind is FieldKind.BOOL:
@@ -588,6 +590,13 @@ class Editor:
         if error is not None:
             self.notice(error, style="class:error")
             return
+        if spec.multiline and isinstance(parsed, str):
+            current = st.current_value(self.state, spec.path)
+            if isinstance(current, str) and current.strip() == parsed:
+                # Unchanged: the prompt's text lost the block's final newline,
+                # and restaging it would turn `|` into `|-` in the diff.
+                self.prompt = None
+                return
         cancelled = self._pending_reset_of(spec.path)
         self.state = st.stage(self.state, spec.path, parsed)
         self.prompt = None

@@ -72,7 +72,10 @@ def format_value(spec: FieldSpec, value: object) -> str:
         return f"[{len(value)}]" if value else "[]"
     if isinstance(value, dict):
         return f"{{{len(value)}}}" if value else "{}"
-    return str(value)
+    text = str(value)
+    if "\n" in text:
+        return f"{text.split(chr(10), 1)[0]} …"
+    return text
 
 
 def to_text(spec: FieldSpec, value: object) -> str:
