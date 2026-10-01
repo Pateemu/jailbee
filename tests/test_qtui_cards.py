@@ -693,7 +693,7 @@ def test_compact_card_shows_the_agent_compact_field(qtbot):
     cc = CardContent(
         name="feat",
         state="Running",
-        fields=[CardField("agent_compact", "AGENT", "waiting 4m")],
+        fields=[CardField("agent_compact", "AGENT", "◆ 4m")],
         agent_tooltip="claude: input needed",
         agent_waiting=True,
     )
@@ -702,7 +702,7 @@ def test_compact_card_shows_the_agent_compact_field(qtbot):
 
     label = _agent_label(card)
     assert label is not None
-    assert label.text() == "waiting 4m"
+    assert label.text() == "◆ 4m"
     assert "input needed" in label.toolTip()
     assert _AGENT_WAITING in label.styleSheet()
 

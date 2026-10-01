@@ -335,7 +335,7 @@ def test_card_content_carries_the_agent_tooltip_and_waiting_flag():
     fields = dashboard.visible_fields(datetime.now().astimezone(), [c])
     cc = m.card_content(c, fields)
 
-    assert m.card_field(cc, "agent_compact") == "waiting, busy"
+    assert m.card_field(cc, "agent_compact") == "◆ ●"
     assert m.card_field(cc, "agent") is None
     assert cc.agent_tooltip == "claude: input needed"
     assert cc.agent_waiting is True

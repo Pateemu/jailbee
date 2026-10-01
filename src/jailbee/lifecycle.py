@@ -2588,6 +2588,28 @@ def format_duration_short(delta: timedelta) -> str:
     return f"{mins}m"
 
 
+def format_duration_coarse(delta: timedelta) -> str:
+    """Render a duration as its largest unit only: ``30h``, ``12m``, ``45s``.
+
+    For a column where the order of magnitude is the information; truncates,
+    and clamps a non-positive delta to ``0s``.
+    """
+    total = max(0, int(delta.total_seconds()))
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{total // 60}m"
+    return f"{total // 3600}h"
+
+
+_AGENT_GLYPHS: dict[str, tuple[str, str | None]] = {
+    "waiting": ("◆", "yellow"),
+    "busy": ("●", "green"),
+    "idle": ("○", "dim"),
+}
+"""The `agent_compact` mark and Rich style per known state."""
+
+
 def repo_has_submodules(cfg: Config) -> bool:
     """True iff the repo declares submodules (a ``.gitmodules`` file exists)."""
     return (cfg.repo_root / ".gitmodules").exists()
@@ -2815,8 +2837,8 @@ def ls_field_specs(
             names.append(f"[dim]+{hidden}[/dim]")
         return ", ".join(names)
 
-    def _agent_text(s: AgentSummary, *, include_name: bool = True) -> str:
-        text = f"{s.agent}: {s.state}" if include_name else s.state
+    def _agent_text(s: AgentSummary) -> str:
+        text = f"{s.agent}: {s.state}"
         if s.since is not None and s.since <= now:
             text += f" {format_duration_short(now - s.since)}"
         if s.count > 1:
@@ -2830,10 +2852,25 @@ def ls_field_specs(
             return "[dim]—[/dim]"
         return ", ".join(_agent_text(s) for s in c.agent_status)
 
+    def _agent_compact_text(s: AgentSummary) -> str:
+        glyph, colour = _AGENT_GLYPHS.get(s.state, ("?", None))
+        text = glyph
+        if s.state not in _AGENT_GLYPHS:
+            # The state is raw text from a file the container wrote.
+            text += f" {escape(s.state)}"
+        if s.since is not None and s.since <= now:
+            text += f" {format_duration_coarse(now - s.since)}"
+        return f"[{colour}]{text}[/{colour}]" if colour else text
+
     def _agent_compact_cell(c: ContainerInfo) -> str:
         if not c.agent_status:
             return "[dim]—[/dim]"
-        return ", ".join(_agent_text(s, include_name=False) for s in c.agent_status)
+        # One mark per distinct state: agents arrive most urgent first, so the
+        # first of a state is its longest-standing.
+        first_of_state = {s.state: s for s in reversed(c.agent_status)}
+        return " ".join(
+            _agent_compact_text(s) for s in c.agent_status if first_of_state[s.state] is s
+        )
 
     def _agent_json(c: ContainerInfo) -> list[dict[str, object]]:
         return [

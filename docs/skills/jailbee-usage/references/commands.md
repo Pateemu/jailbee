@@ -543,9 +543,10 @@ so they cost no command inside the container.
 `claude: waiting 4m` (it is waiting for input, and has been for four
 minutes), `claude: busy 12s`, `claude: idle 2h`; `·2` counts several
 sessions of one agent, and `—` means none is running. **AGENT_COMPACT** shows
-the same states and durations without agent names (`waiting 4m`, `busy 12s`,
-`idle 2h`). Both show multiple agents/sessions in order, and waiting states
-are highlighted. These columns read the session files and trust a file only
+each state as a mark with only the largest unit of its duration: `◆ 4m`
+(waiting), `● 12s` (busy), `○ 2h` (idle). It names no agent and counts no
+sessions; several agents in one state share one mark. A long idle time says
+how cold the agent's prompt cache is. These columns read the session files and trust a file only
 while a process of *that* container still matches it, so a crashed session
 never reads as live. Under `ls --all`, only the current repo's rows are filled
 in.
