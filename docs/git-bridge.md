@@ -1025,9 +1025,12 @@ Selective deletion is an edit, allowed only before any recorded publication
 progress. PR progress sidecars/receipts and issue journals block edits;
 malformed or unreadable evidence is not treated as empty. For a whole issue
 manifest with settled progress only, `--archive-journal` permits local
-deletion after showing receipts and pending actions. Uncertain outcomes must
-first be reconciled with the existing `jb issue resolve` command. There is
-no general text editor in the browser.
+deletion. First run `jb outbox show <container> issue/<manifest>.json` and
+inspect its receipts and pending actions before approving whole-manifest
+archival deletion. Direct `outbox drop` previews deletion scope, not receipts
+or action content. Uncertain outcomes must first be reconciled with the
+existing `jb issue resolve` command. There is no general text editor in the
+browser.
 
 `show` includes the revision token, raw JSON, full proposed text and available
 receipts. `ls`/`show` support `-o json` (also `--format`/`--output`) for

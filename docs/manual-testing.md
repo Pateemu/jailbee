@@ -5070,8 +5070,12 @@ pending, and neither child nor whole PR deletion may discard that evidence.
 Malformed sidecars must block, not silently reset progress. For issues,
 inject a settled journal via the existing `JournalStore` fixture API: a
 create applied with its number/receipt and its dependent comment pending.
-Selective deletion refuses; whole `--archive-journal` deletion may proceed
-with receipt preview. Injecting an uncertain record must refuse that escape.
+Selective deletion refuses. First run `jb outbox show smoke
+issue/903-dependent.json` in the injected fixture and inspect the applied
+create's receipt and pending comment. Only then approve whole-manifest
+`outbox drop smoke issue/903-dependent.json --archive-journal`: direct drop
+previews deletion scope, not receipts or pending content. Injecting an
+uncertain record must refuse that escape.
 Never fabricate journals or progress in real stores, and never call a real
 publication command to manufacture this state.
 
