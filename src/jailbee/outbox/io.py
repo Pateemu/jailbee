@@ -13,11 +13,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from threading import local
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from jailbee.db import state_dir
 from jailbee.incus import IncusError
-from jailbee.outbox.models import Kind, OutboxExecutionError, StoreSnapshot
+from jailbee.outbox.models import Kind, OutboxChanged, OutboxExecutionError, StoreSnapshot
 from jailbee.outbox_io import ContainerIdentity
 
 if TYPE_CHECKING:
@@ -202,10 +202,17 @@ class PrManagement:
         self.root = root if root is not None else state_dir() / "pr-outbox" / "locks"
         self._lock_state = local()
 
+    @property
+    def identity(self) -> ContainerIdentity | None:
+        """The identity owned by this thread's outermost operation, if any."""
+        return cast("ContainerIdentity | None", getattr(self._lock_state, "identity", None))
+
     @contextmanager
     def lock(self, identity: ContainerIdentity) -> Iterator[None]:
         if not identity.full_name or not identity.created_at:
             raise OutboxExecutionError("cannot lock an empty container identity")
+        if self.identity is not None and self.identity != identity:
+            raise OutboxChanged("container changed during publication; refresh required")
         digest = hashlib.sha256(f"{identity.full_name}\0{identity.created_at}".encode()).hexdigest()
         path = self.root / f"{digest}.lock"
         held = getattr(self._lock_state, "paths", None)
@@ -226,10 +233,12 @@ class PrManagement:
                 os.close(descriptor)
             raise OutboxExecutionError("could not lock PR outbox") from exc
         held.add(path)
+        self._lock_state.identity = identity
         try:
             yield
         finally:
             held.remove(path)
+            self._lock_state.identity = None
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
             finally:

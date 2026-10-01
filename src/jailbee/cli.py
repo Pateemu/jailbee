@@ -7875,6 +7875,7 @@ def pr_cmd(
                 status_label=f"Generating PR title/description with Claude in '{short}'…",
                 use_outbox=not no_outbox,
             )
+            pr_flow.bind_outbox_source(management, plan.outbox_source)
             publish_name, ai_text = plan.publish_name, plan.ai_text
             # A container-written description is text that already exists, so `--no-ai`
             # (which clears `ai_on`) must not discard it. `ai_on` itself stays as it is:
@@ -7976,6 +7977,7 @@ def pr_cmd(
                     origin_label=f"container '{short}'",
                 )
             if not is_update_path:
+                pr_flow.bind_outbox_source(management, plan.outbox_source)
                 pr_flow.validate_outbox_source(cfg, incus, full, plan.outbox_source)
             try:
                 created = pr_flow.create_or_view_pr(
@@ -8618,6 +8620,7 @@ def submodule_pr_cmd(
                 status_label=f"Generating PR title/description with Claude in '{short}:{subpath}'…",
                 use_outbox=not no_outbox,
             )
+            pr_flow.bind_outbox_source(management, plan.outbox_source)
             publish_name = plan.publish_name
             if publish_name is None:
                 error(
@@ -8665,6 +8668,7 @@ def submodule_pr_cmd(
                     origin_label=f"container '{short}' submodule '{subpath}'",
                 )
             if not is_update:
+                pr_flow.bind_outbox_source(management, plan.outbox_source)
                 pr_flow.validate_outbox_source(cfg, incus, full, plan.outbox_source)
             try:
                 created = pr_flow.create_or_view_pr(

@@ -413,6 +413,15 @@ def outbox_publication_guard(
         yield
 
 
+def bind_outbox_source(management: PrManagement, source: OutboxPrText | None) -> None:
+    """Reject a revision-bearing source from outside the operation's identity."""
+    from jailbee.outbox.models import OutboxChanged
+
+    # Revision-free synthetic sources remain the strict validator's concern.
+    if source is not None and source.identity is not None and source.identity != management.identity:
+        raise OutboxChanged("description container changed during publication; refresh required")
+
+
 def validate_outbox_source(
     cfg: Config, incus: IncusType, container: str, source: OutboxPrText | None
 ) -> None:
@@ -1447,6 +1456,7 @@ def apply_pr_updates(
                 return PrUpdate(title_changed=False, body_changed=False, state_note="")
         if edit is not None:
             try:
+                bind_outbox_source(manager, edit.source)
                 validate_outbox_source(cfg, incus, full, edit.source)
                 pr_module.edit_pr(
                     scope.repo_root, number, title=edit.title, body=edit.body, **repo_args
