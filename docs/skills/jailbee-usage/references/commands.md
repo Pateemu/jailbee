@@ -693,7 +693,7 @@ entry set `top_level: true`, so it launches correctly either way.
 
 Quick-action keys skip the menu for the highlighted row: `t` attach tmux, `s`
 open a shell, `i` launch the IDE, `c` launch Chrome, `p` open the PR, `P`
-create/update the PR, `u` update from base, `d` show the diff. Each one
+create/update the PR, `u` update from base, `d` show the diff, `D` destroy (asks to confirm). Each one
 fires only when that action is offered for that container — the gate is the
 same one the menu uses, so a Stopped container has no `t`/`s`, `i`/`c` need
 `jetbrains.enabled`/`browsers.chrome.enabled` (Firefox and `apps:` entries

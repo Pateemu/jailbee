@@ -1125,6 +1125,16 @@ KEY_BINDINGS: tuple[KeyBinding, ...] = (
     KeyBinding("action:pr-update", (b"P",), "P", "create or update the PR", "Actions", verb="pr"),
     KeyBinding("action:push", (b"u",), "u", "update from base", "Actions", verb="git push"),
     KeyBinding("action:diff", (b"d",), "d", "show the diff", "Actions", verb="git diff"),
+    # Capital, so a stray `d` (diff) can never reach it. The confirmation is the
+    # CLI's own `destroy` prompt, run in the terminal exactly as the menu entry.
+    KeyBinding(
+        "action:destroy",
+        (b"D",),
+        "D",
+        "destroy the container (asks to confirm)",
+        "Actions",
+        verb="destroy",
+    ),
     # Repo-scoped, not container-scoped: no `verb`, so it never reaches
     # `quick_verb`/`actions_for_container` (those gate on a container's state).
     # `run`'s dispatch handles it directly, with its own guard.
