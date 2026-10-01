@@ -211,36 +211,53 @@ def publication_env(env, mocker, tmp_path):
     directory = tmp_path / "mutation-outbox"
     directory.mkdir()
 
-    def mutate(container, command, text, **kwargs):
-        kind = "issue" if command[4].endswith("issue-outbox") else "pr"
+    def sync(kind):
         snapshot = env[2][kind]
         for path in directory.iterdir():
             path.unlink()
         for name, content in snapshot.files:
-            (directory / name).write_text(content)
+            (directory / name).write_bytes(content.encode("utf-8"))
         for name in snapshot.rejected:
             (directory / name).write_bytes(b"\xff")
+
+    def save(kind):
+        snapshot = env[2][kind]
+        files = {
+            p.name: p.read_bytes().decode("utf-8")
+            for p in directory.iterdir()
+            if p.name not in snapshot.rejected
+        }
+        env[2][kind] = store(kind, files, rejected=snapshot.rejected)
+
+    def mutate(container, command, text, **kwargs):
+        assert command[:4] == ["bash", "-c", io._MUTATE_SCRIPT, "bash"]
+        kind = "issue" if command[4].endswith("issue-outbox") else "pr"
+        sync(kind)
         command = list(command)
         command[4] = str(directory)
         result = run_shell(command, input=text, text=True, capture_output=True, check=True).stdout
-        files = {
-            p.name: p.read_text() for p in directory.iterdir() if p.name not in snapshot.rejected
-        }
-        env[2][kind] = store(kind, files, rejected=snapshot.rejected)
+        save(kind)
         return result
 
     env[1].exec_with_input.side_effect = mutate
 
     def execute(container, command, **kwargs):
-        if command[0] == "bash" and command[-1].endswith("progress.json"):
-            files = env[2]["pr"].as_dict()
-            files[command[-1].rsplit("/", 1)[-1]] = command[4]
-            env[2]["pr"] = store("pr", files, rejected=env[2]["pr"].rejected)
-        elif command[0] == "bash" and command[-1].endswith("applied.log"):
-            files = env[2]["pr"].as_dict()
-            files["applied.log"] = files.get("applied.log", "") + command[4] + "\n"
-            env[2]["pr"] = store("pr", files, rejected=env[2]["pr"].rejected)
-        return ""
+        # Run the production container scripts; only the fixed paths are remapped.
+        assert command[:2] == ["bash", "-c"], command
+        command = list(command)
+        if command[4] == io.store_directory("issue"):
+            # Issue receipts pass the directory and a base64 payload, not a log path.
+            kind = "issue"
+            command[4] = str(directory)
+        elif command[-1].endswith(("progress.json", "applied.log")):
+            kind = "pr"
+            command[-1] = str(directory / command[-1].rsplit("/", 1)[-1])
+        else:
+            raise AssertionError(command)
+        sync(kind)
+        result = run_shell(command, text=True, capture_output=True, check=True).stdout
+        save(kind)
+        return result
 
     env[1].exec.side_effect = execute
     mocker.patch.object(io, "read_store", side_effect=lambda i, c, k, **kw: env[2][k])
@@ -324,6 +341,13 @@ def test_apply_real_domain_orchestration(publication_env, mocker, kind, mode):
         create.assert_called_once()
         assert [call.args[2] for call in comment.call_args_list] == [73, 42]
         assert "fully applied" in result.output
+        receipts = [json.loads(line) for line in env[2]["issue"].as_dict()["applied.log"].splitlines()]
+        assert [(r["manifest"], r["index"], r["issue"]) for r in receipts] == [
+            ("001.json", 0, 73),
+            ("001.json", 1, 42),
+            ("001.json", 2, 42),
+        ]
+        assert all(r["repo"] == "acme/repo" and r["url"] for r in receipts)
     else:
         review.assert_called_once()
     if mode == "yes":
