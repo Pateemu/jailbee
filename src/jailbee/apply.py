@@ -700,6 +700,16 @@ def _reconcile_litellm_or_warn(
             f"Restarted LiteLLM instance(s) {', '.join(result.restarted)} on the new routes; "
             "their in-flight `claude-jb` requests were interrupted."
         )
+    if result.reloaded:
+        info(
+            f"Reloaded the routes of LiteLLM instance(s) {', '.join(result.reloaded)} "
+            "without a restart."
+        )
+    for account, problem in sorted(result.fallbacks.items()):
+        if account in result.restarted:
+            warn_plain(
+                f"LiteLLM instance {account} could not reload live ({problem}); restarted it."
+            )
     if result.awaiting_login:
         warn_plain(
             f"LiteLLM instance(s) {', '.join(result.awaiting_login)} not started: no login yet; "
@@ -708,8 +718,10 @@ def _reconcile_litellm_or_warn(
     # No flag is named: `jailbee new` skips restarts for a scratch bootstrap too.
     waiting = [a for a in result.pending if a not in result.stopped]
     if waiting:
+        reasons = "; ".join(f"{a}: {result.fallbacks[a]}" for a in waiting if a in result.fallbacks)
+        detail = f" ({reasons})" if reasons else ""
         warn_plain(
-            f"LiteLLM instance(s) {', '.join(waiting)} still serve the previous routes; "
+            f"LiteLLM instance(s) {', '.join(waiting)} still serve the previous routes{detail}; "
             "run `jailbee apply` again to restart them."
         )
     if result.stopped:

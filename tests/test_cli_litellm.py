@@ -65,6 +65,39 @@ def test_up_prints_endpoint_and_next_steps(mocker, context):
     assert callable(up.call_args.kwargs["on_step"])
 
 
+def test_up_says_when_routes_were_reloaded_without_a_restart(mocker, context):
+    mocker.patch(
+        "jailbee.litellm.litellm_up",
+        return_value=ll.UpResult(
+            ip="10.0.0.3",
+            ports={"default": 4100},
+            restarted=[],
+            retired=[],
+            installed=False,
+            reloaded=["default"],
+        ),
+    )
+    out = " ".join(runner.invoke(app, ["litellm", "up"]).output.split())
+    assert "Reloaded the routes of default without a restart" in out
+    assert "interrupted" not in out
+
+
+def test_up_explains_a_reload_that_fell_back_to_a_restart(mocker, context):
+    mocker.patch(
+        "jailbee.litellm.litellm_up",
+        return_value=ll.UpResult(
+            ip="10.0.0.3",
+            ports={"default": 4100},
+            restarted=["default"],
+            retired=[],
+            installed=False,
+            fallbacks={"default": "the proxy did not acknowledge the new routes in time"},
+        ),
+    )
+    out = " ".join(runner.invoke(app, ["litellm", "up"]).output.split())
+    assert "default could not reload live (the proxy did not acknowledge" in out
+
+
 def test_up_disabled_is_exit_1_with_message(mocker, context):
     mocker.patch("jailbee.litellm.litellm_up", side_effect=ValueError("LiteLLM is disabled"))
     result = runner.invoke(app, ["litellm", "up"])
