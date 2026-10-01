@@ -151,7 +151,11 @@ def test_whitespace_receipt_blocks_exact_proposal(tmp_path, name, suffix):
 
     evidence = pr_progress_evidence(snapshot, name, 1)
     assert ("applied.log", files["applied.log"].rstrip("\n")) in evidence.inputs
-    changed = files | {"applied.log": files["applied.log"].replace("now ", "later ", 1).replace("https://y", "https://changed")}
+    changed = files | {
+        "applied.log": files["applied.log"]
+        .replace("now ", "later ", 1)
+        .replace("https://y", "https://changed")
+    }
     after = build_views(IDENTITY, (store("pr", changed),), journal_store=JournalStore(tmp_path))[0]
     assert after.revision != view.revision
 

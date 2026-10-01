@@ -107,9 +107,9 @@ def pr_progress_evidence(
         # Receipt-shaped text within a filename is inherently ambiguous in this
         # unescaped legacy format. Recognize fields independently of their values
         # and separators; validation of the actual suffix remains strict above.
-        matching_fields = re.match(
-            r"\s*pr\s*=\s*\S*\s+actions\s*=\s*\S*\s+urls\s*=", suffix
-        ) is not None
+        matching_fields = (
+            re.match(r"\s*pr\s*=\s*\S*\s+actions\s*=\s*\S*\s+urls\s*=", suffix) is not None
+        )
         if separator and matching_name and (exact or matching_fields or not other_name):
             inputs.append(("applied.log", line))
             block = "recorded publication evidence prevents editing"
