@@ -148,7 +148,8 @@ def issue_proposal_digest(
         or journal.identity != key.identity
         or journal.manifest_name != key.manifest_name
         or journal.action_count <= 0
-        or tuple(a.index for a in journal.actions) != tuple(range(journal.action_count))
+        or len(journal.actions) != journal.action_count
+        or any(action.index != index for index, action in enumerate(journal.actions))
         or any(a.state != "applied" for a in journal.actions)
         or "applied.log" not in body_files
         or raw_digest == journal.digest
