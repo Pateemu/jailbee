@@ -83,6 +83,15 @@ class RemoteSSHConfig(BaseModel):
             "`false` makes an allowed command behave exactly as it does locally."
         ),
     )
+    gui: bool = Field(
+        default=False,
+        description=(
+            "Let remote sessions launch GUI apps (`ide`, `chrome`, `firefox`, "
+            "`browser`, `apps run`) onto a shared RDP display instead of the "
+            "host's screen, and allow SSH port forwarding to that display only. "
+            "Off by default."
+        ),
+    )
     excluded_repos: list[str] = Field(
         default_factory=list,
         description="Registered repository prefixes unavailable through remote SSH.",

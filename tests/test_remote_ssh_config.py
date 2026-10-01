@@ -159,3 +159,15 @@ def test_excluded_repos_reject_duplicates_and_invalid_prefixes(prefixes: list[st
 def test_excluded_repos_require_host_restrictions() -> None:
     with pytest.raises(ValidationError, match="restrict_host"):
         RemoteSSHConfig(excluded_repos=["secret"], restrict_host=False)
+
+
+def test_gui_is_off_by_default():
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    assert RemoteSSHConfig().gui is False
+
+
+def test_gui_can_be_turned_on():
+    from jailbee.config.models_remote import RemoteSSHConfig
+
+    assert RemoteSSHConfig(gui=True).gui is True
