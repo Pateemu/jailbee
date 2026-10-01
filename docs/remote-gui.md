@@ -39,7 +39,8 @@ ssh -N -L 3389:127.0.0.1:13389 -p <ssh port> jailbee@<host>
 ```
 
 then point an RDP client at `localhost:3389`. Any client works: `mstsc` on
-Windows, Microsoft Remote Desktop on macOS, `xfreerdp` or Remmina on Linux.
+Windows, Windows App (formerly Microsoft Remote Desktop) on macOS, `xfreerdp` or
+Remmina on Linux.
 There is no username or password prompt; enter anything if the client insists.
 
 Already in an SSH session? Add the forward to it with `~C`, then

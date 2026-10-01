@@ -291,7 +291,8 @@ def connection_info(ssh_port: int) -> ConnectionInfo:
         ssh_command=f"ssh -N -L {RDP_PORT}:127.0.0.1:{HOST_RDP_PORT} -p {ssh_port} jailbee@<host>",
         rdp_address=RDP_PORT_ADDRESS,
         hints=(
-            "Windows: mstsc  |  macOS: Microsoft Remote Desktop  |  Linux: xfreerdp / Remmina",
+            "Windows: mstsc  |  macOS: Windows App (was Microsoft Remote Desktop)  |  "
+            "Linux: xfreerdp / Remmina",
             "Already connected over SSH? Add the forward live with ~C, then -L ...",
             "The forward is accepted once this SSH key has launched a GUI app; "
             "launch first, then connect — the launch waits for you.",
