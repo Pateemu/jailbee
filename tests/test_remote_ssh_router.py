@@ -899,9 +899,14 @@ def test_outbox_exclusions_hold_for_unrestricted_ssh_children(
         update={"restrict_host": restrict_host}
     )
     resolve = mocker.patch("jailbee.remote_ssh.router.resolve_repo")
-    for args in ("outbox", "outbox secret-box", "outbox ls --all-repos",
-                 "outbox show secret-box pr/a.json", "outbox drop box pr/a.json",
-                 "outbox apply box pr/a.json"):
+    for args in (
+        "outbox",
+        "outbox secret-box",
+        "outbox ls --all-repos",
+        "outbox show secret-box pr/a.json",
+        "outbox drop box pr/a.json",
+        "outbox apply box pr/a.json",
+    ):
         with pytest.raises(RouteError, match="unavailable when SSH repository exclusions"):
             route(f"--repo project {args}", cfg, engine=engine)
         with pytest.raises(RouteError, match="unavailable when SSH repository exclusions"):

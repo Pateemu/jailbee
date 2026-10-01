@@ -145,10 +145,12 @@ def browse(
     from jailbee.outbox_io import JournalStore
 
     if browser_read_only():
-        print_lines((
-            "Outbox browser is read-only over SSH. Use explicit outbox drop or "
-            "outbox apply commands when permitted by the remote command policy.",
-        ))
+        print_lines(
+            (
+                "Outbox browser is read-only over SSH. Use explicit outbox drop or "
+                "outbox apply commands when permitted by the remote command policy.",
+            )
+        )
     _run(
         ctx,
         config,
