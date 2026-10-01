@@ -1171,9 +1171,9 @@ def test_repo_network_menu_is_a_submenu_and_escape_returns_to_parent():
     group = dashboard.RepoGroup("alpha", "/alpha", None, [])
     menu = dashboard.open_repo_menu([group], "alpha", frozenset())
     assert menu is not None
-    assert menu.actions[3] == dashboard.MenuGroup("Network →", (("Egress…", "net egress ls"),))
+    assert menu.actions[4] == dashboard.MenuGroup("Network →", (("Egress…", "net egress ls"),))
 
-    menu.index = 3
+    menu.index = 4
     child, verb = dashboard.enter_menu(menu)
     assert verb is None
     assert isinstance(child, dashboard.RepoMenuState)
@@ -1182,7 +1182,7 @@ def test_repo_network_menu_is_a_submenu_and_escape_returns_to_parent():
     parent = dashboard.back_menu(child)
     assert parent is not None
     assert parent.active_group is None
-    assert parent.index == 3
+    assert parent.index == 4
     assert dashboard.menu_verb(parent) is None
 
 
@@ -1374,7 +1374,7 @@ def test_repo_egress_dispatch_uses_repo_scope_and_explicit_config(mocker, tmp_pa
 
     keys = [
         b"\r",
-        *[b"j"] * 3,  # past New container…, New from PR…, Credential group…
+        *[b"j"] * 4,  # past New container…, New from PR…, Credential group…, Accounts…
         b"\r",
         b"\r",
         b"a",
@@ -5756,6 +5756,7 @@ def test_repo_header_enter_opens_menu_without_folding(mocker, tmp_path):
         "New container…",
         "New from PR…",
         "Credential group…",
+        "Accounts…",
         "Network →",
         "Apply config…",
         "Diagnostics →",
@@ -7270,6 +7271,44 @@ def test_key_a_opens_the_accounts_panel_with_rows_and_keeps_the_table(mocker, tm
     assert "credential groups and logins" in out
     assert "b@x.io~2" in out
     assert "n new group" in out  # the panel's own hint line
+
+
+def test_repo_menu_offers_accounts_after_the_credential_group():
+    group = dashboard.RepoGroup("alpha", "/alpha", None, [])
+    menu = dashboard.open_repo_menu([group], "alpha", frozenset())
+    assert menu is not None
+    assert menu.actions[3] == ("Accounts…", "accounts")
+
+
+@pytest.mark.parametrize(
+    ("over_ssh", "policy_kwargs", "offered"),
+    [
+        (False, {"commands": {"mode": "disabled"}}, True),
+        (True, {"commands": {"mode": "allowlist", "allow": ["new", "tmux"]}}, False),
+    ],
+    ids=["local-ignores-policy", "ssh-allowlist-without-it"],
+)
+def test_repo_menu_accounts_follows_the_ssh_policy(over_ssh, policy_kwargs, offered):
+    group = dashboard.RepoGroup("alpha", "/alpha", None, [])
+    menu = dashboard.open_repo_menu(
+        [group], "alpha", frozenset(), ssh_policy=_ssh_policy(policy_kwargs), over_ssh=over_ssh
+    )
+    assert menu is not None
+    verbs = [item[1] for item in menu.actions if not isinstance(item, dashboard.MenuGroup)]
+    assert ("accounts" in verbs) is offered
+
+
+def test_repo_menu_accounts_opens_the_panel_in_that_repo(mocker, tmp_path):
+    run = _fake_accounts_cli(mocker)
+    render = mocker.patch.object(dashboard, "render", wraps=dashboard.render)
+    keys = [b"\r", *[b"j"] * 3, b"\r"]  # repo header → Accounts…
+
+    assert _drive_run(mocker, keys, [_alpha(tmp_path)]) == 0
+
+    assert run.call_args_list == [mocker.call(_ACCOUNT_LS, cwd=tmp_path)]
+    states = _rendered(render, dashboard.da.AccountsState)
+    assert states
+    assert states[-1].prefix == "alpha"
 
 
 def test_key_a_runs_the_listing_in_the_selected_rows_repo(mocker, tmp_path):

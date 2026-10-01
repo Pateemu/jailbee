@@ -642,7 +642,7 @@ ACL updates and repo `jailbee apply` advice. Over SSH, the read panel requires
 `net egress ls`; add/remove require their own permitted command leaves, and
 `restrict_host: true` keeps them unavailable even under a full command policy.
 
-`A` opens the credential-group overlay — every credential group and stored
+`A` (or `Accounts…` in the repo menu) opens the credential-group overlay — every credential group and stored
 login on the host, as `jailbee account ls` lists them. `Enter` on a row offers
 what applies to it: use a stored login in a group, park a group's live login,
 use a parked login in a group, delete a parked login, or remove an unused group

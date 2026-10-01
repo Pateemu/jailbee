@@ -1409,6 +1409,8 @@ def open_repo_menu(
         # Probed with a placeholder group: the policy judges the command, not its value.
         if permitted(["account", "group", "set", "x"], ssh_policy, over_ssh=over_ssh):
             actions.append(("Credential group…", "credential-group"))
+        if permitted(["account", "ls"], ssh_policy, over_ssh=over_ssh):
+            actions.append(("Accounts…", "accounts"))
         if permitted(["net", "egress", "ls", "--repo"], ssh_policy, over_ssh=over_ssh):
             actions.append(MenuGroup("Network →", (("Egress…", "net egress ls"),)))
         extras = dact.repo_extras(ssh_policy, over_ssh=over_ssh)
@@ -3967,6 +3969,8 @@ def run(
                                     overlay = start_new_container(from_pr=True)
                                 elif verb == "credential-group":
                                     overlay = open_group_picker("repo-group", target)
+                                elif verb == "accounts":
+                                    overlay = load_accounts(target)
                                 elif verb == dact.REPO_APPLY:
                                     overlay = dact.apply_picker(target)
                                 elif verb == dact.REPO_DOCTOR:
