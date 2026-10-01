@@ -9,18 +9,31 @@ from typer.testing import CliRunner
 
 from jailbee import pr_flow, pr_outbox
 from jailbee.cli import app
+from jailbee.outbox.models import OutboxChanged, StoreSnapshot
+from jailbee.outbox_io import ContainerIdentity
 from jailbee.pr_ai import PrText
 from jailbee.submodule_pr import SubCandidate, SubPublishResult
 from jailbee.sync import FetchResult, PublishResult
+from tests.conftest import make_cfg
+
+
+IDENTITY = ContainerIdentity("sampleapp-feat-foo", "2026-09-30T12:00:00Z")
+
+
+def _mock_store(mocker, files, *, rejected=()):
+    snapshot = StoreSnapshot("pr", tuple(sorted(files.items())), tuple(rejected), ())
+    mocker.patch("jailbee.pr_outbox.read_text_outbox", return_value=files)
+    return mocker.patch("jailbee.outbox.io.read_store", return_value=snapshot)
 
 
 def _setup_command(mocker, tmp_path, *, submodule, authored=False):
-    cfg = mocker.MagicMock()
-    cfg.repo_root = tmp_path
-    cfg.container_prefix = "sampleapp"
-    cfg.upstream_remote = "origin"
-    cfg.claude.enabled = False
-    cfg.claude.ai_pr_description = True
+    cfg = make_cfg(
+        tmp_path,
+        shared_dir=tmp_path / "shared",
+        container_prefix="sampleapp",
+        claude={"enabled": authored, "ai_pr_description": True},
+    )
+    mocker.patch.dict("os.environ", {"XDG_STATE_HOME": str(tmp_path / "state")})
     labels = {"user.jailbee.base_branch": "main", "user.jailbee.branch": "feat/foo"}
     if authored:
         labels.update(
@@ -31,6 +44,9 @@ def _setup_command(mocker, tmp_path, *, submodule, authored=False):
             }
         )
     incus = mocker.MagicMock()
+    incus.list_containers.return_value = [
+        {"name": IDENTITY.full_name, "created_at": IDENTITY.created_at}
+    ]
     incus.config_get.side_effect = lambda name, key: labels.get(key)
     mocker.patch("jailbee.cli._load_or_exit", return_value=cfg)
     mocker.patch("jailbee.cli._resolve_existing", return_value=(incus, "sampleapp-feat-foo"))
@@ -96,6 +112,58 @@ def _setup_command(mocker, tmp_path, *, submodule, authored=False):
 
 
 @pytest.mark.parametrize("submodule", [False, True], ids=["pr", "submodule-pr"])
+@pytest.mark.parametrize("change", ["text", "rejected", "identity"])
+def test_pinning_fixture_retains_strict_source_evidence(mocker, tmp_path, submodule, change):
+    cfg, incus, _args, root, slug = _setup_command(mocker, tmp_path, submodule=submodule)
+    name = "42-description.json"
+    files = {
+        name: json.dumps(
+            {
+                "version": 1,
+                "repo": slug,
+                "pr": 42,
+                "head_sha": None,
+                "actions": [{"type": "description", "title": "Title", "body": "Body"}],
+            }
+        )
+    }
+    store = _mock_store(mocker, files)
+    preview = pr_outbox.read_outbox(incus, IDENTITY.full_name, uid=cfg.container_user.uid)
+    strict = pr_outbox.read_outbox(
+        incus, IDENTITY.full_name, uid=cfg.container_user.uid, strict=True
+    )
+    assert preview == strict == pr_outbox.Outbox(files=files, identity=IDENTITY)
+    source = pr_outbox.pending_pr_text(
+        cfg,
+        incus,
+        IDENTITY.full_name,
+        scope=pr_flow.PrScope(root, "origin", "", "lib/a" if submodule else None),
+        source_branch="feat/foo",
+        uid=cfg.container_user.uid,
+        for_pr=42,
+    )
+    assert source is not None
+    assert source.manifest_text == files[name]
+    assert source.identity == IDENTITY
+    assert source.digest == pr_outbox.description_source_digest(strict, name, 0, source.text)
+    pr_flow.validate_outbox_source(cfg, incus, IDENTITY.full_name, source)
+
+    fresh = dict(files)
+    rejected = ()
+    if change == "text":
+        fresh[name] = files[name].replace('"Body"', '"Changed body"')
+    elif change == "rejected":
+        rejected = (name,)
+    else:
+        incus.list_containers.return_value = [
+            {"name": IDENTITY.full_name, "created_at": "2026-10-01T12:00:00Z"}
+        ]
+    store.return_value = StoreSnapshot("pr", tuple(sorted(fresh.items())), rejected, ())
+    with pytest.raises(OutboxChanged):
+        pr_flow.validate_outbox_source(cfg, incus, IDENTITY.full_name, source)
+
+
+@pytest.mark.parametrize("submodule", [False, True], ids=["pr", "submodule-pr"])
 @pytest.mark.parametrize("as_name", [False, True], ids=["branch", "as"])
 def test_already_exists_without_outbox_hint_uses_scoped_number(
     mocker, tmp_path, submodule, as_name
@@ -119,8 +187,9 @@ def test_already_exists_without_outbox_hint_uses_scoped_number(
         )
         for number in (42, 99)
     }
-    mocker.patch("jailbee.pr_outbox.read_outbox", return_value=pr_outbox.Outbox(files=files))
+    _mock_store(mocker, files)
     selected = mocker.spy(pr_outbox, "pending_pr_text")
+    validated = mocker.spy(pr_flow, "validate_outbox_source")
     plan = mocker.spy(pr_flow, "resolve_pr_text_and_head")
     consumed = mocker.patch("jailbee.pr_outbox.record_consumed")
     commands, edits = [], []
@@ -153,6 +222,13 @@ def test_already_exists_without_outbox_hint_uses_scoped_number(
 
     assert result.exit_code == 0, result.output
     assert plan.spy_return.outbox_source is None
+    source = selected.spy_return
+    assert source.identity == IDENTITY
+    assert source.manifest_text == files["42-description.json"]
+    assert source.digest == pr_outbox.description_source_digest(
+        pr_outbox.Outbox(files=files, identity=IDENTITY), source.manifest, source.index, source.text
+    )
+    assert any(call.args[-1] == source for call in validated.call_args_list)
     assert edits == [(slug, "42", "Title for 42", "Body for 42")]
     assert [call.kwargs.get("for_pr") for call in selected.call_args_list] == [None, 42]
     assert all(cmd[cmd.index("--repo") + 1] == slug for cmd in commands)
@@ -187,8 +263,7 @@ def test_update_mutations_keep_lookup_repository(
     cfg, _incus, args, root, slug = _setup_command(
         mocker, tmp_path, submodule=submodule, authored=True
     )
-    cfg.claude.enabled = True
-    mocker.patch("jailbee.pr_outbox.read_outbox", return_value=pr_outbox.Outbox(files={}))
+    _mock_store(mocker, {})
     mocker.patch(
         "jailbee.pr_ai.generate_pr_text",
         return_value=PrText(title="Generated title", body="Generated body", branch="feat/foo"),
