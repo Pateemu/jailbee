@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from jailbee.config.common import _HOST_LEVEL_KEYS, _parse_yaml_text, normalize_credentials_key
+from jailbee.config.legacy_pr import LEGACY_PR_KEYS
 from jailbee.config.local_layer import local_config_dir, local_config_path, validate_local_raw
 from jailbee.config.models_host import _PREFIX_RE
 from jailbee.config_writer import DELETE, YamlChange, credential_key_migration, patch_yaml
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
 
 MIGRATION_IDS: tuple[str, ...] = (
     "chrome-block",
+    "legacy-pr-keys",
     "claude-credentials-key",
     "credentials-repos",
     "github-api-tokens",
@@ -106,6 +108,57 @@ def _chrome_block(state: _State) -> None:
                 path,
                 [YamlChange(("browsers",), browsers), YamlChange(("chrome",), DELETE)],
             )
+
+
+def _legacy_pr_keys(state: _State) -> None:
+    """`ai_pr_*` / `pr_prompt` on the Claude block → the `pr:` block, in every file.
+
+    A key already present in `pr:` is kept and its old spelling just dropped,
+    matching `fold_legacy_pr_keys`. A Claude block this empties is removed: a
+    leftover `claude: {}` would still count as the legacy spelling when another
+    file carries `agents.claude`.
+    """
+    paths = [
+        state.inputs.global_path,
+        *sorted(p for p in state.texts if p != state.inputs.global_path),
+    ]
+    for path in paths:
+        raw = state.raw(path)
+        pr = raw.get("pr", {})
+        if not isinstance(pr, dict):
+            continue
+        agents = raw.get("agents")
+        blocks: list[tuple[tuple[str, ...], object]] = [
+            (("claude",), raw.get("claude")),
+            (("agents", "claude"), agents.get("claude") if isinstance(agents, dict) else None),
+        ]
+        changes: list[YamlChange] = []
+        moved: set[str] = set()
+        for key_path, block in blocks:
+            if not isinstance(block, dict):
+                continue
+            legacy = [key for key in LEGACY_PR_KEYS if key in block]
+            if not legacy:
+                continue
+            for old in legacy:
+                new = LEGACY_PR_KEYS[old]
+                if new not in pr and new not in moved:
+                    changes.append(YamlChange(("pr", new), block[old]))
+                    moved.add(new)
+            if len(legacy) == len(block):
+                # Take the now-empty `agents:` wrapper with it when Claude was its only entry.
+                sole_agent = (
+                    key_path[0] == "agents" and isinstance(agents, dict) and len(agents) == 1
+                )
+                changes.append(YamlChange(key_path[:1] if sole_agent else key_path, DELETE))
+            else:
+                changes.extend(YamlChange((*key_path, old), DELETE) for old in legacy)
+        state.change(
+            "legacy-pr-keys",
+            "`ai_pr_*` / `pr_prompt` → `pr:`",
+            path,
+            changes,
+        )
 
 
 def _claude_credentials_key(state: _State) -> None:
@@ -204,6 +257,7 @@ def plan_migrations(inputs: MigrationInputs) -> Plan:
     """Run every migration in registry order over in-memory text. Pure."""
     state = _State(inputs)
     _chrome_block(state)
+    _legacy_pr_keys(state)
     _claude_credentials_key(state)
     _per_repo_map(
         state,

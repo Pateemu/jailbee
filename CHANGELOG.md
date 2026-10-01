@@ -216,7 +216,8 @@ before editing `## Unreleased`.
   `ai_pr_timeout` and `pr_prompt` (and the same keys under the legacy `claude:`
   block) move to `pr.ai_description`, `pr.ai_branch`, `pr.model`, `pr.timeout`
   and `pr.prompt`. The old spelling still loads, per file and with a notice
-  naming that file, and is removed in 2.0.0.
+  naming that file, and is removed in 2.0.0; `jailbee config migrate --apply`
+  moves the keys in `global.yaml` and the host-local files.
 - `github.api_tokens`, `credentials.repos`, and repo-scope egress overrides
   stored in `state.sqlite` are deprecated and will be removed in 2.0.0.
   `jailbee config migrate --apply` moves these values into the host-local

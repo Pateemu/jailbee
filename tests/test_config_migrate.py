@@ -88,6 +88,77 @@ def test_chrome_block_folds_into_browsers():
     assert migrated["browsers"]["chrome"]["source"] == "host"
 
 
+def test_legacy_pr_keys_move_from_the_legacy_claude_block():
+    inputs = _inputs({"claude": {"enabled": True, "ai_pr_timeout": 900, "ai_pr_model": None}})
+    plan = plan_migrations(inputs)
+    migrated = _load(plan, inputs.global_path)
+    assert migrated["claude"] == {"enabled": True}
+    assert migrated["pr"] == {"timeout": 900, "model": None}
+    assert [s.migration_id for s in plan.steps] == ["legacy-pr-keys"]
+
+
+def test_legacy_pr_keys_move_from_agents_claude():
+    inputs = _inputs(
+        {
+            "agents": {
+                "claude": {
+                    "enabled": True,
+                    "pr_prompt": "Mention the ticket.",
+                    "ai_pr_branch": False,
+                }
+            }
+        }
+    )
+    migrated = _load(plan_migrations(inputs), inputs.global_path)
+    assert migrated["agents"] == {"claude": {"enabled": True}}
+    assert migrated["pr"] == {"prompt": "Mention the ticket.", "ai_branch": False}
+
+
+def test_legacy_pr_keys_emptying_the_claude_block_removes_it():
+    """An empty `claude:` would still collide with `agents.claude` in another file."""
+    inputs = _inputs({"claude": {"ai_pr_timeout": 900}})
+    migrated = _load(plan_migrations(inputs), inputs.global_path)
+    assert migrated == {"pr": {"timeout": 900}}
+
+
+def test_legacy_pr_keys_keep_an_explicit_pr_value_and_drop_the_old_one():
+    inputs = _inputs({"pr": {"timeout": 1200}, "claude": {"enabled": True, "ai_pr_timeout": 900}})
+    migrated = _load(plan_migrations(inputs), inputs.global_path)
+    assert migrated["pr"] == {"timeout": 1200}
+    assert migrated["claude"] == {"enabled": True}
+
+
+def test_legacy_pr_keys_migrate_in_host_local_files_too():
+    inputs = _inputs({}, {"a": {"agents": {"claude": {"ai_pr_model": "haiku"}}}})
+    plan = plan_migrations(inputs)
+    assert _load(plan, local_config_path("a")) == {"pr": {"model": "haiku"}}
+
+
+def test_legacy_pr_keys_migration_is_idempotent():
+    inputs = _inputs({"claude": {"enabled": True, "ai_pr_timeout": 900}})
+    first = plan_migrations(inputs)
+    again = MigrationInputs(inputs.global_path, {**inputs.texts, **first.new_texts})
+    assert not plan_migrations(again).pending
+
+
+def test_legacy_pr_keys_result_loads_to_the_same_settings():
+    from jailbee.config.legacy_pr import fold_legacy_pr_keys
+
+    before = {"claude": {"enabled": True, "ai_pr_timeout": 900, "ai_pr_model": None}}
+    inputs = _inputs(before)
+    migrated = _load(plan_migrations(inputs), inputs.global_path)
+    assert fold_legacy_pr_keys(migrated)[1] is False
+    assert fold_legacy_pr_keys(before)[0]["pr"] == migrated["pr"]
+
+
+def test_legacy_pr_keys_survive_apply_validation(tmp_path, mocker):
+    inputs = _inputs({"claude": {"enabled": True, "ai_pr_timeout": 900}})
+    plan = plan_migrations(inputs)
+    from jailbee.config_migrate import validate_plan
+
+    validate_plan(inputs, plan)  # raises if the migrated file would not load
+
+
 def test_egress_rows_append_without_duplicates():
     inputs = _inputs({}, {"a": {"egress_allow": ["x.org"]}}, rows={"a": ["x.org", "y.org"]})
     plan = plan_migrations(inputs)

@@ -1401,7 +1401,8 @@ These settings used to hang off the Claude agent (`claude.ai_pr_*`,
 `claude.pr_prompt`); they describe `jailbee pr`, not Claude, so they moved. The
 old spelling still loads — each key is folded into `pr:` before the layers merge
 (so a repo's old key still beats the global `pr:`), with a deprecation notice
-naming the file — and is removed in 2.0.0.
+naming the file — and is removed in 2.0.0. `jailbee config migrate --apply` rewrites it in
+`global.yaml` and the host-local files for you.
 
 | Key | Type | Default | Description |
 |---|---|---|---|

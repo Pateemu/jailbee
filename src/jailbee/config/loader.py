@@ -317,8 +317,9 @@ def _warn_legacy_pr_keys(source: str) -> None:
             lines=(
                 f"`ai_pr_description`, `ai_pr_branch`, `ai_pr_model`, `ai_pr_timeout` and "
                 f"`pr_prompt` in {source} are deprecated and move to the `pr:` block "
-                f"(`ai_description`, `ai_branch`, `model`, `timeout`, `prompt`) — see "
-                f"docs/config.md. They keep working until {LEGACY_REMOVAL_VERSION}, "
+                f"(`ai_description`, `ai_branch`, `model`, `timeout`, `prompt`) — run "
+                f"`jailbee config migrate`, or see docs/config.md. They keep working "
+                f"until {LEGACY_REMOVAL_VERSION}, "
                 "where they are removed.",
             ),
         )
