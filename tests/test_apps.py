@@ -403,7 +403,8 @@ def test_a_failed_preparation_launches_nothing(tmp_path, mocker, monkeypatch, ca
     assert "Launching" not in capsys.readouterr().out
 
 
-def test_launch_autostart_apps_continues_after_a_display_error(tmp_path, mocker) -> None:
+def test_launch_autostart_apps_stops_after_the_first_display_error(tmp_path, mocker) -> None:
+    """Each later app would wait out the same 120 s and fail the same way."""
     from unittest.mock import MagicMock
 
     from jailbee.apps import launch_autostart_apps
@@ -414,17 +415,21 @@ def test_launch_autostart_apps_continues_after_a_display_error(tmp_path, mocker)
         apps={
             "a": {"command": "/a", "autostart": True},
             "b": {"command": "/b", "autostart": True},
+            "c": {"command": "/c", "autostart": True},
         },
     )
     seen: list[str] = []
 
     def fake_launch(cfg, incus, container, spec, args=None):
         seen.append(spec.name)
-        if spec.name == "a":
-            raise DisplayError("no client")
+        raise DisplayError("no client")
 
     mocker.patch("jailbee.apps.launch", side_effect=fake_launch)
+    error_mock = mocker.patch("jailbee.tui.error")
 
     launch_autostart_apps(cfg, MagicMock(), "c1")
 
-    assert seen == ["a", "b"]
+    assert len(seen) == 1
+    messages = [c.args[0] for c in error_mock.call_args_list]
+    assert messages[0] == "no client"
+    assert sum("Skipping the remaining autostart apps" in m for m in messages) == 1

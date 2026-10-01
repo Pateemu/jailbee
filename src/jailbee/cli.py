@@ -2729,10 +2729,13 @@ def _post_create_gui_launches(cfg: "Config", incus: "IncusType", container: str)
     """
     from jailbee.apps import launch_autostart_apps, resolve_apps
     from jailbee.autostart import has_graphical_session, maybe_warn_no_gui
+    from jailbee.gui import display_target
 
     if not any(s.autostart for s in resolve_apps(cfg)):
         return
-    if not has_graphical_session():
+    # A GUI-enabled SSH session draws on the shared RDP display, so the host's
+    # own WAYLAND_DISPLAY/DISPLAY (the SSH service's environment) is irrelevant.
+    if display_target() != "shared" and not has_graphical_session():
         maybe_warn_no_gui()
         return
     launch_autostart_apps(cfg, incus, container)

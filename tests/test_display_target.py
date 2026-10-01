@@ -95,3 +95,8 @@ def test_child_environment_never_inherits_the_gui_markers() -> None:
 def test_a_non_numeric_gui_marker_is_not_a_session() -> None:
     assert shared_display_port({SSH_GUI_ENV: "yes"}) is None
     assert is_shared_display_session({"JAILBEE_SSH_SESSION": "1", SSH_GUI_ENV: "yes"}) is False
+
+
+def test_a_unicode_digit_marker_is_not_a_port() -> None:
+    """`"²".isdigit()` is True but `int("²")` raises."""
+    assert shared_display_port({SSH_GUI_ENV: "²"}) is None

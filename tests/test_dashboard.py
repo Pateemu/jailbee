@@ -9442,3 +9442,42 @@ def test_is_gui_verb():
     assert dashboard._is_gui_verb("chrome")
     assert dashboard._is_gui_verb("apps run figma")
     assert not dashboard._is_gui_verb("shell")
+
+
+def _gui_dispatch_policy(*, gui: bool):
+    from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
+
+    return RemoteSSHConfig(commands=RemoteCommandPolicy(mode="full"), gui=gui, restrict_host=False)
+
+
+def test_dispatch_action_pauses_after_a_gui_launch_over_ssh_when_gui_is_on(mocker, tmp_path):
+    """The launch prints how to reach the shared display; the pause keeps it readable."""
+    run = mocker.patch.object(dashboard.subprocess, "run")
+    run.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+
+    dashboard._dispatch_action(
+        _dispatch_target(tmp_path),
+        "chrome",
+        "alpha-x",
+        over_ssh=True,
+        ssh_policy=_gui_dispatch_policy(gui=True),
+    )
+
+    wait.assert_called_once_with()
+
+
+def test_dispatch_action_does_not_pause_after_a_gui_verb_when_gui_is_off(mocker, tmp_path):
+    run = mocker.patch.object(dashboard.subprocess, "run")
+    run.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+
+    dashboard._dispatch_action(
+        _dispatch_target(tmp_path),
+        "chrome",
+        "alpha-x",
+        over_ssh=True,
+        ssh_policy=_gui_dispatch_policy(gui=False),
+    )
+
+    wait.assert_not_called()

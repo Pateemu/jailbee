@@ -1630,7 +1630,7 @@ def test_gui_flag_follows_the_loaded_config(mocker):
 @pytest.mark.parametrize("enabled", [True, False])
 def test_server_factory_hands_the_live_gui_flag_to_the_server(listener, mocker, enabled):
     """A dropped `remote_gui_enabled` wiring leaves forwarding on or off for good."""
-    value, listen = listener
+    _, listen = listener
     seen = mocker.patch.object(server, "remote_gui_enabled", return_value=enabled)
     asyncio.run(server.serve_async(RemoteSSHConfig()))
 

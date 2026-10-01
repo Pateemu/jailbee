@@ -195,14 +195,17 @@ def launch_env(
     from jailbee.tui import info
 
     target = display_target()
-    if target == "shared":
+    port = shared_display_port()
+    # `display_target() == "shared"` already implies a port; checking it here
+    # narrows the type for `prepare_shared_display` without a fallback value.
+    if target == "shared" and port is not None:
         from jailbee.remote_display import prepare_shared_display
 
         prepare_shared_display(
             incus,
             container,
             fingerprint=session_fingerprint(),
-            ssh_port=shared_display_port() or 8022,
+            ssh_port=port,
             say=info,
         )
     return {**gui_env(cfg, target), **(extra or {})}
@@ -283,6 +286,11 @@ def launch_autostart_apps(cfg: Config, incus: Incus, container: str) -> None:
     runs the container is already up, so there is no CLI invocation left to
     exit non-zero from; skipping the rest of the list would also silently
     drop every app after the failing one, which is worse than one warning.
+
+    A `DisplayError` (a GUI-enabled SSH session whose shared display could not
+    be prepared, e.g. no RDP client connected within the wait) is different:
+    every later app would wait out the same budget and fail the same way, so
+    the first one is reported and the remaining apps are skipped, once.
     """
     from jailbee.remote_display import DisplayError
     from jailbee.tui import error
@@ -292,7 +300,9 @@ def launch_autostart_apps(cfg: Config, incus: Incus, container: str) -> None:
             continue
         try:
             launch(cfg, incus, container, spec)
-        except (ValueError, DisplayError) as e:
-            # DisplayError: a GUI-enabled SSH session whose shared display
-            # could not be prepared; contained like a missing launcher.
+        except DisplayError as e:
+            error(str(e))
+            error("Skipping the remaining autostart apps: the shared display is not ready.")
+            return
+        except ValueError as e:
             error(str(e))

@@ -97,7 +97,7 @@ def is_ssh_session(environ: Mapping[str, str] | None = None) -> bool:
 def shared_display_port(environ: Mapping[str, str] | None = None) -> int | None:
     """The SSH server port a GUI-enabled session was started under, or None."""
     value = (os.environ if environ is None else environ).get(SSH_GUI_ENV, "")
-    return int(value) if value.isdigit() else None
+    return int(value) if value.isascii() and value.isdigit() else None
 
 
 def is_shared_display_session(environ: Mapping[str, str] | None = None) -> bool:
