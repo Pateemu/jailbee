@@ -2952,11 +2952,23 @@ def test_selected_failed_read_is_failure_even_in_offer_mode(mocker, make_cfg, tm
 
 
 @pytest.mark.parametrize("location", ["root", "action", "inline"])
-@pytest.mark.parametrize("metadata", [{"body_file": 17}, {"body_file": "extension.md"}, {"nested": [{"body_file": 17}]}])
-def test_selected_ignored_extensions_never_abort_remote_finalization(mocker, make_cfg, tmp_path, location, metadata):
+@pytest.mark.parametrize(
+    "metadata", [{"body_file": 17}, {"body_file": "extension.md"}, {"nested": [{"body_file": 17}]}]
+)
+def test_selected_ignored_extensions_never_abort_remote_finalization(
+    mocker, make_cfg, tmp_path, location, metadata
+):
     payload = json.loads(_manifest_text(actions=[{"type": "comment", "body_file": "body.md"}]))
     if location == "inline":
-        payload["actions"] = [{"type": "review", "body": "Review", "comments": [{"path": "a.py", "line": 1, "body_file": "body.md", "agent_metadata": metadata}]}]
+        payload["actions"] = [
+            {
+                "type": "review",
+                "body": "Review",
+                "comments": [
+                    {"path": "a.py", "line": 1, "body_file": "body.md", "agent_metadata": metadata}
+                ],
+            }
+        ]
     else:
         (payload if location == "root" else payload["actions"][0])["agent_metadata"] = metadata
     files = {"one.json": json.dumps(payload), "body.md": "Body", "extension.md": "Keep"}
@@ -2970,7 +2982,9 @@ def test_selected_ignored_extensions_never_abort_remote_finalization(mocker, mak
 
 
 @pytest.mark.parametrize("failure_type", [ValueError, KeyError, RecursionError])
-def test_finalization_extraction_failure_retains_receipts_cause_and_retry(mocker, make_cfg, tmp_path, failure_type):
+def test_finalization_extraction_failure_retains_receipts_cause_and_retry(
+    mocker, make_cfg, tmp_path, failure_type
+):
     from jailbee import pr_outbox
     from jailbee.outbox.io import PrManagement
     from jailbee.outbox.models import OutboxExecutionError
@@ -2978,10 +2992,12 @@ def test_finalization_extraction_failure_retains_receipts_cause_and_retry(mocker
     cfg, incus, _, _, reader, apply = _selected_setup(mocker, make_cfg, tmp_path)
     original = pr_outbox._body_references
     failure = failure_type("extraction failed")
+
     def extract(text):
         if "applied.log" in reader.return_value.as_dict():
             raise failure
         return original(text)
+
     mocker.patch.object(pr_outbox, "_body_references", side_effect=extract)
     with pytest.raises(OutboxExecutionError) as caught:
         _selected_offer(cfg, incus, raise_errors=True, management=PrManagement(tmp_path / "locks"))
@@ -3002,11 +3018,24 @@ def test_finalization_extraction_failure_retains_receipts_cause_and_retry(mocker
 def test_body_references_follow_domain_fields_and_null_compatibility(action_type):
     from jailbee.pr_outbox import _body_references, parse_manifest
 
-    action = {"type": action_type, "body": "Inline", "body_file": None, "agent_metadata": {"body_file": 17}, "comments": [{"body_file": "ignored.md"}]}
+    action = {
+        "type": action_type,
+        "body": "Inline",
+        "body_file": None,
+        "agent_metadata": {"body_file": 17},
+        "comments": [{"body_file": "ignored.md"}],
+    }
     if action_type == "reply":
         action["comment_id"] = 1
     if action_type == "review":
-        action["comments"] = [{"path": "a.py", "line": 1, "body_file": " space pr=7 .md", "metadata": {"body_file": "ignored.md"}}]
+        action["comments"] = [
+            {
+                "path": "a.py",
+                "line": 1,
+                "body_file": " space pr=7 .md",
+                "metadata": {"body_file": "ignored.md"},
+            }
+        ]
     raw = _manifest_text(actions=[action])
     files = {" space pr=7 .md": "Comment"}
     parse_manifest("one.json", raw, files)
@@ -3014,18 +3043,34 @@ def test_body_references_follow_domain_fields_and_null_compatibility(action_type
 
 
 @pytest.mark.parametrize("late_change", [False, True])
-def test_inline_body_reference_is_freshness_input_and_exclusive_cleanup(mocker, make_cfg, tmp_path, late_change):
+def test_inline_body_reference_is_freshness_input_and_exclusive_cleanup(
+    mocker, make_cfg, tmp_path, late_change
+):
     from jailbee.outbox.models import StoreSnapshot
 
     name = " space pr=7 .md"
-    text = _manifest_text(actions=[{"type": "review", "body": "Review", "comments": [{"path": "a.py", "line": 1, "body_file": name, "metadata": {"body_file": 17}}]}])
-    cfg, incus, _, _, reader, apply = _selected_setup(mocker, make_cfg, tmp_path, files={"one.json": text, name: "Original", "orphan.md": "Keep"})
+    text = _manifest_text(
+        actions=[
+            {
+                "type": "review",
+                "body": "Review",
+                "comments": [
+                    {"path": "a.py", "line": 1, "body_file": name, "metadata": {"body_file": 17}}
+                ],
+            }
+        ]
+    )
+    cfg, incus, _, _, reader, apply = _selected_setup(
+        mocker, make_cfg, tmp_path, files={"one.json": text, name: "Original", "orphan.md": "Keep"}
+    )
     if late_change:
+
         def publish(*args, **kwargs):
             files = reader.return_value.as_dict()
             files[name] = "Changed"
             reader.return_value = StoreSnapshot("pr", tuple(files.items()), (), ())
             return "https://x/receipt"
+
         apply.side_effect = publish
     assert _selected_offer(cfg, incus) == (1 if late_change else 0)
     remaining = reader.return_value.as_dict()

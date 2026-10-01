@@ -1070,7 +1070,10 @@ def _body_references(text: str) -> set[str]:
         raise ValueError("invalid manifest reference scope")
     for action in actions:
         if not isinstance(action, dict) or action.get("type") not in (
-            "review", "reply", "comment", "description",
+            "review",
+            "reply",
+            "comment",
+            "description",
         ):
             raise ValueError("invalid action reference scope")
         inputs = [action]
@@ -1085,7 +1088,12 @@ def _body_references(text: str) -> set[str]:
                 raise ValueError("invalid body reference scope")
             name = item.get("body_file")
             if name is not None:
-                if not isinstance(name, str) or "/" in name or "\\" in name or _escapes_containment(name):
+                if (
+                    not isinstance(name, str)
+                    or "/" in name
+                    or "\\" in name
+                    or _escapes_containment(name)
+                ):
                     raise ValueError("invalid body reference")
                 result.add(name)
     return result
@@ -1270,7 +1278,14 @@ def finalize(
                 uid=uid,
                 with_sidecar=True,
             )
-        except (IncusError, OutboxExecutionError, ValueError, KeyError, RecursionError, JournalError) as e:
+        except (
+            IncusError,
+            OutboxExecutionError,
+            ValueError,
+            KeyError,
+            RecursionError,
+            JournalError,
+        ) as e:
             raise FinalizeError(
                 f"manifest {manifest.name} is fully applied but could not be "
                 f"deleted ({e}); it will be cleaned up on a later run"
