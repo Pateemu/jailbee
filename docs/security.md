@@ -231,8 +231,9 @@ display (see [Remote GUI over SSH](remote-gui.md)):
   an Incus proxy device publishes it on the host's loopback
   (`127.0.0.1:13389`) only. The bridge address refuses connections from the
   host and from sibling containers.
-- weston's RDP backend has no credentials, so any local user of the host can
-  connect to `127.0.0.1:13389`. JailBee assumes a single-user workstation.
+- weston's RDP backend needs a login for NLA, but it is the fixed, documented
+  pair `jailbee` / `jailbee`, so it protects nothing: any local user of the host
+  can connect to `127.0.0.1:13389`. JailBee assumes a single-user workstation.
 - SSH access to that port is a forwarding grant bound to the SSH key that
   launched an app, to that one destination, expiring after 24 hours, cleared
   by `jb display down` and `jb display up --recreate`, and refused whenever

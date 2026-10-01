@@ -94,6 +94,11 @@ def test_provisioning_script_carries_both_files_and_the_identity():
     assert "--address=127.0.0.1" in provisioning
     assert "--shell=desktop" in provisioning
     assert "JAILBEE_UID=" in provisioning
+    # weston 14 does NLA and needs a SAM entry, or every client is refused.
+    assert f"JAILBEE_RDP_USER={rd.RDP_USER}" in provisioning
+    assert f"JAILBEE_RDP_PASSWORD={rd.RDP_PASSWORD}" in provisioning
+    assert "WINPR_NTLM_SAM_FILE=/etc/jailbee-display/SAM" in provisioning
+    assert "winpr-utils" in provisioning
 
 
 def test_down_stops_and_revokes_every_grant(mocker):
@@ -205,6 +210,12 @@ def test_the_recipe_says_to_launch_before_connecting():
     text = "\n".join(rd.format_connection_info(rd.connection_info(8022)))
 
     assert "launch first, then connect" in text
+
+
+def test_the_recipe_names_the_rdp_login():
+    text = "\n".join(rd.format_connection_info(rd.connection_info(8022)))
+
+    assert f"{rd.RDP_USER} / {rd.RDP_PASSWORD}" in text
 
 
 def test_ensure_display_mount_tolerates_an_existing_device():

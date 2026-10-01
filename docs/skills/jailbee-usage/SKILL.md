@@ -877,7 +877,7 @@ With `remote.ssh.gui: true` and `jailbee display up` run on the host, `jailbee
 chrome`, `ide` and `apps run` over an SSH session draw on one shared RDP
 display (weston, one screen for every container) instead of being refused.
 They print how to connect: tunnel `ssh -N -L 3389:127.0.0.1:13389 -p <port>
-jailbee@<host>`, then an RDP client to `localhost:3389` (no password). The
+jailbee@<host>`, then an RDP client to `localhost:3389` (login `jailbee` / `jailbee`). The
 launch waits up to 120 s for a client, and the tunnel is accepted only once
 the SSH key has launched an app, so launch first, then connect. For an
 arbitrary command use `jailbee exec <name> -d --gui -- <cmd>`; a plain `exec
