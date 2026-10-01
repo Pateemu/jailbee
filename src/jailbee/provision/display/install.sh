@@ -55,9 +55,13 @@ case "$NT_HASH" in
   *:*) SAM_LINE="$NT_HASH" ;;
   *) SAM_LINE="$JAILBEE_RDP_USER:::$NT_HASH:::" ;;
 esac
-printf '%s\n' "$SAM_LINE" > /etc/jailbee-display/SAM
-chown "$RUN_USER" /etc/jailbee-display/SAM
-chmod 0600 /etc/jailbee-display/SAM
+# WinPR opens its default /etc/winpr/SAM, whatever WINPR_NTLM_SAM_FILE says
+# (weston logs "SamOpen: Could not open SAM file!" otherwise). The directory
+# must be traversable by the service user, the file readable only by it.
+install -d -m 0755 /etc/winpr
+printf '%s\n' "$SAM_LINE" > /etc/winpr/SAM
+chown "$RUN_USER" /etc/winpr/SAM
+chmod 0600 /etc/winpr/SAM
 
 sed "s/__USER__/$RUN_USER/" /root/jailbee-display.service \
   > /etc/systemd/system/jailbee-display.service
