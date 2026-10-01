@@ -9,7 +9,7 @@ import hashlib
 import io
 import os
 import tarfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from threading import local
@@ -193,6 +193,165 @@ def read_store(incus: Incus, container: str, kind: Kind, *, uid: int | None) -> 
     except IncusError as exc:
         raise OutboxExecutionError(f"outbox unavailable: {exc}") from exc
     return _decode(kind, raw)
+
+
+MUTATION_TIMEOUT = 30
+
+
+class MutationExecutionError(OutboxExecutionError):
+    """Failed execution carrying only positively acknowledged removals."""
+
+    def __init__(self, message: str, removed_names: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.removed_names = removed_names
+
+
+# stdout is the wrapper's only result channel. Capture internal stderr even when
+# a command exits zero; acknowledge each unlink before reporting a partial error.
+_MUTATE_SCRIPT = r"""
+set -uo pipefail
+export LC_ALL=C
+store=$1; limit=$2; target=$3; progress=$4; shift 4
+count=$1; shift
+declare -A hashes inventory
+for ((i=0; i<count; i++)); do
+    inventory["$1"]=1; hashes["$1"]=$2; shift 2
+done
+count=$1; shift
+for ((i=0; i<count; i++)); do inventory["$1"]=1; shift; done
+deletes=("$@")
+removed=()
+tmp=; err=
+cleanup() {
+    [[ -z "$tmp" ]] || /bin/rm -f -- "$tmp"
+    [[ -z "$err" ]] || /bin/rm -f -- "$err"
+}
+trap cleanup EXIT
+path_check() {
+    local path=/ component
+    local -a components
+    IFS=/ read -ra components <<< "${store#/}"
+    for component in "${components[@]}"; do
+        path="${path%/}/$component"
+        [[ -d "$path" && ! -L "$path" && -x "$path" ]] || return 1
+    done
+    [[ -r "$store" && -w "$store" ]] || return 1
+}
+regular() {
+    [[ ! -L "$1" && -f "$1" ]] && [[ $(stat -c %h -- "$1") == 1 ]]
+}
+validate() {
+    path_check || return 1
+    [[ $(stat -c '%d:%i' -- "$store") == "$directory_identity" ]] || return 1
+    local file name before after digest size seen=0 directory_before
+    directory_before=$(stat -c '%d:%i:%y:%z' -- "$store") || return 1
+    shopt -s nullglob dotglob
+    for file in "$store"/*; do
+        [[ "$file" != "$tmp" && "$file" != "$err" ]] || continue
+        name=${file##*/}
+        [[ ${inventory["$name"]+yes} ]] || return 1
+        seen=$((seen + 1))
+    done
+    (( seen == ${#inventory[@]} )) || return 1
+    [[ -z "$progress" || ( ! -e "$store/$progress" && ! -L "$store/$progress" ) ]] || return 1
+    for name in "${!hashes[@]}"; do
+        file="$store/$name"
+        regular "$file" || return 1
+        before=$(stat -c '%d:%i:%h:%s:%y:%z' -- "$file") || return 1
+        size=$(stat -c %s -- "$file") || return 1
+        (( size <= limit )) || return 1
+        digest=$(dd if="$file" iflag=nofollow,nonblock bs=262145 count=1 status=none | sha256sum) || return 1
+        after=$(stat -c '%d:%i:%h:%s:%y:%z' -- "$file") || return 1
+        [[ "$before" == "$after" && "${digest%% *}" == "${hashes["$name"]}" ]] || return 1
+    done
+    # Detect membership changes during hashing, not just before it.
+    [[ $(stat -c '%d:%i:%y:%z' -- "$store") == "$directory_before" ]] || return 1
+    path_check || return 1
+    [[ ! -s "$err" ]]
+}
+work() {
+    validate || return 1
+    if [[ -n "$target" ]]; then
+        regular "$store/$target" || return 1
+        tmp=$(mktemp -- "$store/.outbox-XXXXXXXX.tmp") || return 1
+        regular "$tmp" || return 1
+        dd of="$tmp" oflag=nofollow iflag=fullblock status=none bs=262145 count=1 || return 1
+        (( $(stat -c %s -- "$tmp") <= limit )) || return 1
+        validate || return 1
+        regular "$tmp" || return 1
+        mv -T -- "$tmp" "$store/$target" || return 1
+        tmp=
+    else
+        for name in "${deletes[@]}"; do regular "$store/$name" || return 1; done
+        for name in "${deletes[@]}"; do
+            # Previous removals narrow inventory; every remaining body still
+            # requires all surviving neighbor texts and membership to match.
+            validate || return 1
+            rm -- "$store/$name" || return 1
+            removed+=("$name")
+            unset 'inventory[$name]' 'hashes[$name]'
+            [[ ! -s "$err" ]] || return 1
+        done
+    fi
+    [[ ! -s "$err" ]]
+}
+status=error
+if path_check; then
+    directory_identity=$(stat -c '%d:%i' -- "$store")
+    err=$(mktemp -- "$store/.outbox-XXXXXXXX.tmp")
+    if [[ -n "$err" ]] && regular "$err" && work 2>"$err"; then status=ok; fi
+fi
+printf 'v1\0%s\0%d\0' "$status" "${#removed[@]}"
+for name in "${removed[@]}"; do printf '%s\0' "$name"; done
+"""
+
+
+def _member_name(name: str) -> None:
+    if not name or name in (".", "..") or any(c in name for c in ("/", "\\", "\0")):
+        raise MutationExecutionError("invalid outbox member name")
+
+
+def mutate_store(
+    incus: Incus, container: str, kind: Kind, *, uid: int | None,
+    expected: Mapping[str, str], new_manifest: tuple[str, str] | None,
+    delete_names: tuple[str, ...], forbidden_progress: str | None,
+    rejected_names: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    """Compare full inventory and exact UTF-8 bytes at the final mutation boundary."""
+    if new_manifest is not None and delete_names:
+        raise MutationExecutionError("replacement must not delete body files")
+    if len(set(delete_names)) != len(delete_names) or set(expected) & set(rejected_names):
+        raise MutationExecutionError("invalid mutation scope")
+    for name in (*expected, *rejected_names, *delete_names):
+        _member_name(name)
+    target, text = new_manifest if new_manifest is not None else ("", "")
+    if new_manifest is not None:
+        _member_name(target)
+        if target not in expected or len(text.encode("utf-8")) > FILE_LIMIT:
+            raise MutationExecutionError("invalid replacement scope or size")
+    if not set(delete_names) <= set(expected):
+        raise MutationExecutionError("missing or rejected deletion input")
+    if forbidden_progress is not None:
+        _member_name(forbidden_progress)
+    args = [store_directory(kind), str(FILE_LIMIT), target, forbidden_progress or "", str(len(expected))]
+    for name, content in sorted(expected.items()):
+        args.extend((name, hashlib.sha256(content.encode("utf-8")).hexdigest()))
+    args.extend((str(len(rejected_names)), *rejected_names, *delete_names))
+    try:
+        result = incus.exec_with_input(container, ["bash", "-c", _MUTATE_SCRIPT, "bash", *args], text, uid=uid, timeout=MUTATION_TIMEOUT)
+    except IncusError as exc:
+        raise MutationExecutionError(f"mutation transport failed; outcome may be incomplete: {exc}") from exc
+    if len(result) > FILE_LIMIT:
+        raise MutationExecutionError("mutation result overflow; outcome may be incomplete")
+    fields = result.split("\0")
+    if len(fields) < 4 or fields[:1] != ["v1"] or fields[1] not in ("ok", "error") or fields[-1] != "":
+        raise MutationExecutionError("invalid mutation result; outcome may be incomplete")
+    removed = tuple(fields[3:-1])
+    if fields[2] != str(len(removed)) or removed != delete_names[:len(removed)]:
+        raise MutationExecutionError("invalid mutation acknowledgement")
+    if fields[1] != "ok" or removed != delete_names:
+        raise MutationExecutionError("outbox mutation refused or failed; journal retained", removed)
+    return removed
 
 
 class PrManagement:
