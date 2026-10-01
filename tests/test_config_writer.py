@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import stat
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -504,3 +505,37 @@ def test_a_string_with_nel_character_round_trips_exactly():
 def test_a_string_with_null_byte_round_trips_exactly():
     out = patch_yaml("a: 1\n", [YamlChange(("note",), "a\x00\nb")])
     assert yaml.safe_load(out)["note"] == "a\x00\nb"
+
+
+def test_multiline_strings_inside_a_nested_value_are_literal_blocks():
+    value = {
+        "codex": {"account": "a", "instructions": "Line one.\nLine two."},
+        "plain": {"instructions": "single"},
+        "tags": [{"note": "x\ny\n"}, "z"],
+    }
+    snapshot = deepcopy(value)
+
+    out = patch_yaml("a: 1\n", [YamlChange(("litellm", "profiles"), value)])
+
+    assert "instructions: |-\n" in out
+    assert "note: |\n" in out
+    assert "\\n" not in out
+    assert yaml.safe_load(out)["litellm"]["profiles"] == value
+    assert value == snapshot
+    assert type(value["codex"]["instructions"]) is str  # not mutated into a block scalar
+    assert type(value["tags"][0]["note"]) is str
+
+
+def test_nested_unsafe_multiline_strings_stay_quoted_and_exact():
+    value = {"p": {"instructions": "a\r\nb"}}
+    out = patch_yaml("", [YamlChange(("profiles",), value)])
+    assert yaml.safe_load(out)["profiles"] == value
+
+
+def test_render_documented_writes_nested_multiline_strings_as_literal_blocks():
+    from jailbee.global_config import GlobalConfig
+
+    values = {"litellm": {"profiles": {"codex": {"instructions": "line one\nline two"}}}}
+    out = render_documented(values, GlobalConfig)
+    assert "instructions: |-\n" in out
+    assert yaml.safe_load(out) == values

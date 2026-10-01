@@ -1728,3 +1728,30 @@ def test_clearing_a_multiline_text_stages_null(tmp_path):
     editor.commit_prompt()
 
     assert editor.state.staged[("litellm", "profiles", "mine", "instructions")] is None
+
+
+@pytest.mark.parametrize("policy", ["patch", "regenerate"])
+def test_a_new_profile_with_instructions_is_saved_as_a_literal_block(tmp_path, policy):
+    """`n` on `profiles` stages the whole dict, so the nested multi-line text
+    must still come out as a `|` block, in either write mode."""
+    import yaml
+
+    editor = _global_editor(tmp_path, {})
+    editor.policy = policy
+    _descend(editor, "litellm", "profiles")
+    editor.new_entry_here()
+    assert editor.prompt is not None
+    editor.prompt.area.text = "codex"
+    editor.commit_prompt()
+    _cursor_to(editor, "instructions")
+    editor.edit_current()
+    assert editor.prompt is not None
+    editor.prompt.area.text = "line one\nline two"
+    editor.commit_prompt()
+
+    editor.save()
+
+    text = (tmp_path / "global.yaml").read_text()
+    assert "instructions: |-\n" in text, text
+    saved = yaml.safe_load(text)
+    assert saved["litellm"]["profiles"]["codex"]["instructions"] == "line one\nline two"

@@ -135,30 +135,36 @@ def patch_yaml(text: str, changes: Sequence[YamlChange]) -> str:
     return stream.getvalue()
 
 
+def _literal_safe(text: str) -> bool:
+    """Whether `text` survives a `|` literal block unchanged.
+
+    Only printable characters plus `\\n` and `\\t` are safe: YAML
+    line-break normalisation would alter `\\r`, `\\x85` and friends on
+    round-trip, and a block cannot carry `\\x00` or other control characters.
+    """
+    return all(char in ("\n", "\t") or char.isprintable() for char in text)
+
+
 def _spelled(value: object) -> object:
     """`value` as ruamel should write it: a multi-line string as a `|` block.
 
     Without this a long instruction text lands in the file as one quoted line
-    full of `\\n` escapes. Only how the string is *spelled* changes, never its
-    value, and only a top-level `str` is converted.
+    full of `\\n` escapes. Only how a string is *spelled* changes, never its
+    value. Mappings and lists are walked recursively (a whole `profiles` dict
+    can be staged at once) and rebuilt as new containers, so the caller's
+    staged value is never mutated.
 
-    A literal block is only safe when the string contains only printable
-    characters (except `\\n` and `\\t`), so that YAML line-break normalisation
-    does not alter the value on round-trip. If the string contains `\\r`,
-    `\\x85`, `\\x00`, or other non-printable characters, it is returned plain
-    and ruamel quotes/escapes it instead.
+    A string that fails `_literal_safe` is returned plain and ruamel
+    quotes/escapes it instead.
     """
-    if isinstance(value, str) and "\n" in value:
-        # Check if the string is safe for literal blocks: only printable chars
-        # except \n and \t are allowed.
-        for char in value:
-            if char in ("\n", "\t"):
-                continue
-            if not char.isprintable():
-                # Contains unsafe character; let ruamel quote/escape it.
-                return value
-        # Safe to use literal block.
-        return LiteralScalarString(value)
+    if isinstance(value, str):
+        if "\n" in value and _literal_safe(value):
+            return LiteralScalarString(value)
+        return value
+    if isinstance(value, dict):
+        return {key: _spelled(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_spelled(item) for item in value]
     return value
 
 
@@ -340,10 +346,16 @@ def render_documented(
     once per entry for no gain.
     """
     _reject_secrets(values)
-    data = _documented_map(values, model, depth=0)
+    data = _documented_map(_spelled_map(values), model, depth=0)
     stream = io.StringIO()
     _yaml().dump(data, stream)
     return header + stream.getvalue()
+
+
+def _spelled_map(values: dict[str, object]) -> dict[str, object]:
+    spelled = _spelled(values)
+    assert isinstance(spelled, dict)
+    return spelled
 
 
 def _reject_secrets(value: object) -> None:
