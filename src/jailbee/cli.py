@@ -7452,7 +7452,12 @@ app.command(
 
 
 def _offer_outbox_comments(
-    cfg: "Config", incus: "IncusType", container: str, short: str, *, number: int,
+    cfg: "Config",
+    incus: "IncusType",
+    container: str,
+    short: str,
+    *,
+    number: int,
     management: "PrManagement | None" = None,
 ) -> int:
     """Offer to publish the PR comments the container still has pending.
@@ -7939,7 +7944,9 @@ def pr_cmd(
                         )
                     else:
                         try:
-                            git_mod.rename_branch(cfg.repo_root, publish.fetch.branch, publish.publish_name)
+                            git_mod.rename_branch(
+                                cfg.repo_root, publish.fetch.branch, publish.publish_name
+                            )
                             success(
                                 f"Renamed local branch '{publish.fetch.branch}' → "
                                 f"'{publish.publish_name}' to match the PR head."
@@ -7948,7 +7955,9 @@ def pr_cmd(
                                 cfg.repo_root, cfg.upstream_remote, publish.publish_name
                             ):
                                 git_mod.set_upstream(
-                                    cfg.repo_root, publish.publish_name, f"origin/{publish.publish_name}"
+                                    cfg.repo_root,
+                                    publish.publish_name,
+                                    f"origin/{publish.publish_name}",
                                 )
                         except git_mod.GitError as exc:
                             warn(f"Could not rename local branch: {exc}")
@@ -8036,7 +8045,9 @@ def pr_cmd(
                     f"(base '{review_target.parent_head}'). Merge that one first."
                 )
                 pr_flow.record_stacked_base(incus, full, short, review_target.parent_head)
-                pr_flow.maybe_retarget_to_parent(cfg, incus, full, short, review_target, retarget=retarget)
+                pr_flow.maybe_retarget_to_parent(
+                    cfg, incus, full, short, review_target, retarget=retarget
+                )
             elif retarget is not None:
                 warn(
                     "--retarget/--no-retarget is only acted on when a stacked PR is opened; "
@@ -8048,7 +8059,11 @@ def pr_cmd(
             # on the update path), and re-reading the outbox before that record exists
             # would show the spent description as still pending and publish it twice.
             outbox_failures = (
-                0 if no_outbox else _offer_outbox_comments(cfg, incus, full, short, number=created.number, management=management)
+                0
+                if no_outbox
+                else _offer_outbox_comments(
+                    cfg, incus, full, short, number=created.number, management=management
+                )
             )
             if web:
                 pr_mod.open_pr_in_browser(cfg.repo_root, created.number)
@@ -8663,7 +8678,9 @@ def submodule_pr_cmd(
                     body=resolved_body,
                     draft=ready is not True,
                     label="jailbee submodule pr",
-                    record_context=f"failed to record the PR label for submodule '{subpath}' on '{short}'",
+                    record_context=(
+                        f"failed to record the PR label for submodule '{subpath}' on '{short}'"
+                    ),
                 )
             except pr_mod.PrError as exc:
                 error(str(exc))
@@ -8724,7 +8741,11 @@ def submodule_pr_cmd(
                     "then points at a merged commit."
                 )
             outbox_failures = (
-                0 if no_outbox else _offer_outbox_comments(cfg, incus, full, short, number=created.number, management=management)
+                0
+                if no_outbox
+                else _offer_outbox_comments(
+                    cfg, incus, full, short, number=created.number, management=management
+                )
             )
             if web:
                 pr_mod.open_pr_in_browser(scope.repo_root, created.number)
@@ -8733,7 +8754,6 @@ def submodule_pr_cmd(
     except OutboxError as exc:
         error(str(exc))
         raise typer.Exit(1) from exc
-
 
 
 net_app = typer.Typer(

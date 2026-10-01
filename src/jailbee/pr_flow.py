@@ -1406,13 +1406,10 @@ def apply_pr_updates(
     manifest stays pending, so a retry reuses it.
     """
     from jailbee import pr as pr_module
-
     from jailbee.outbox.io import PrManagement
 
     manager = management if management is not None else PrManagement()
-    with outbox_publication_guard(
-        cfg, incus, full, enabled=use_outbox, management=manager
-    ):
+    with outbox_publication_guard(cfg, incus, full, enabled=use_outbox, management=manager):
         title_changed = False
         body_changed = False
         description_source: str | None = None

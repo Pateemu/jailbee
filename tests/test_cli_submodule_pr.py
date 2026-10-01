@@ -727,7 +727,9 @@ def test_submodule_pr_outbox_offer_runs_after_outcome_and_consumption(mocker, tm
 
     assert result.exit_code == 0, result.output
     assert events == [("render", 123), ("record", None), ("offer", 123)]
-    offer.assert_called_once_with(cfg, incus, "sampleapp-feat-foo", "feat-foo", number=123, management=mocker.ANY)
+    offer.assert_called_once_with(
+        cfg, incus, "sampleapp-feat-foo", "feat-foo", number=123, management=mocker.ANY
+    )
 
 
 def test_submodule_pr_outbox_offer_failure_exits_after_the_successful_outcome(mocker, tmp_path):
@@ -1193,15 +1195,26 @@ def test_the_plan_does_not_claim_a_draft_change_on_the_update_path(mocker, tmp_p
     assert "ready for review" not in result.output
 
 
-@pytest.mark.parametrize("outcome", ["create", "existing", "update", "failed_create", "failed_edit", "cancel", "changed"])
-def test_submodule_publication_guard_covers_selection_to_comments(mocker, tmp_path, make_cfg, outcome):
+@pytest.mark.parametrize(
+    "outcome", ["create", "existing", "update", "failed_create", "failed_edit", "cancel", "changed"]
+)
+def test_submodule_publication_guard_covers_selection_to_comments(
+    mocker, tmp_path, make_cfg, outcome
+):
     from contextlib import contextmanager
+
     from jailbee import pr_flow
     from jailbee.outbox.io import PrManagement
     from jailbee.outbox.models import OutboxChanged
     from jailbee.pr import PrCreateError, PrEditError
 
-    _setup(mocker, tmp_path, state_record=pr_flow.PrRecord(123, "feat/foo", True, False) if outcome == "update" else None)
+    _setup(
+        mocker,
+        tmp_path,
+        state_record=pr_flow.PrRecord(123, "feat/foo", True, False)
+        if outcome == "update"
+        else None,
+    )
     _happy(mocker)
     cfg = make_cfg(tmp_path)
     mocker.patch("jailbee.cli._load_or_exit", return_value=cfg)
@@ -1224,6 +1237,7 @@ def test_submodule_publication_guard_covers_selection_to_comments(mocker, tmp_pa
         events.append("select")
         if outcome == "cancel":
             import typer
+
             raise typer.Abort()
         return source
 
@@ -1251,7 +1265,9 @@ def test_submodule_publication_guard_covers_selection_to_comments(mocker, tmp_pa
     mocker.patch("jailbee.pr.create_pr", side_effect=create)
     mocker.patch("jailbee.pr.view_existing_pr", return_value=_created(already=True))
     mocker.patch("jailbee.pr.edit_pr", side_effect=edit)
-    mocker.patch("jailbee.pr_outbox.record_consumed", side_effect=lambda *a, **k: events.append("consume"))
+    mocker.patch(
+        "jailbee.pr_outbox.record_consumed", side_effect=lambda *a, **k: events.append("consume")
+    )
     updates = mocker.spy(pr_flow, "apply_pr_updates")
 
     def offer(*args, **kwargs):
@@ -1273,8 +1289,8 @@ def test_submodule_publication_guard_covers_selection_to_comments(mocker, tmp_pa
     else:
         assert result.exit_code == 0, result.exception
         mutation = "edit" if outcome in {"update", "existing", "failed_edit"} else "create"
-        assert events[events.index(mutation)-1] == "validate"
-        assert events.index(mutation) < events.index("offer") < len(events)-1
+        assert events[events.index(mutation) - 1] == "validate"
+        assert events.index(mutation) < events.index("offer") < len(events) - 1
         if outcome == "failed_edit":
             assert "consume" not in events
         else:
@@ -1289,6 +1305,7 @@ def test_submodule_publication_guard_covers_selection_to_comments(mocker, tmp_pa
 @pytest.mark.parametrize("change", ["manifest", "body", "progress", "identity"])
 def test_submodule_changed_source_after_prompt_never_publishes(mocker, tmp_path, make_cfg, change):
     import json
+
     from jailbee import pr_flow, pr_outbox
     from jailbee.outbox_io import ContainerIdentity
 
@@ -1299,13 +1316,35 @@ def test_submodule_changed_source_after_prompt_never_publishes(mocker, tmp_path,
     cfg = make_cfg(tmp_path)
     mocker.patch("jailbee.cli._load_or_exit", return_value=cfg)
     identity = ContainerIdentity("sampleapp-feat-foo", "2026-09-30T12:00:00Z")
-    raw = json.dumps({"version": 1, "repo": "acme/lib-a", "pr": None, "head_sha": None,
-        "actions": [{"type": "description", "title": "Selected", "branch": "feat/foo", "body_file": "body.md"}]})
+    raw = json.dumps(
+        {
+            "version": 1,
+            "repo": "acme/lib-a",
+            "pr": None,
+            "head_sha": None,
+            "actions": [
+                {
+                    "type": "description",
+                    "title": "Selected",
+                    "branch": "feat/foo",
+                    "body_file": "body.md",
+                }
+            ],
+        }
+    )
     original = pr_outbox.Outbox({"d.json": raw, "body.md": "Original"}, identity=identity)
     from jailbee.pr_ai import PrText
+
     text = PrText("Selected", "Original", "feat/foo")
-    source = pr_outbox.OutboxPrText(text, "d.json", 0, identity,
-        pr_outbox.description_source_digest(original, "d.json", 0, text), raw, (("body.md", "Original"),))
+    source = pr_outbox.OutboxPrText(
+        text,
+        "d.json",
+        0,
+        identity,
+        pr_outbox.description_source_digest(original, "d.json", 0, text),
+        raw,
+        (("body.md", "Original"),),
+    )
     fresh = dict(original.files)
 
     def prompt(proposed, branch):
@@ -1319,8 +1358,15 @@ def test_submodule_changed_source_after_prompt_never_publishes(mocker, tmp_path,
 
     mocker.patch.object(pr_flow, "confirm_pr_branch_name", side_effect=prompt)
     pending = mocker.patch("jailbee.pr_outbox.pending_pr_text", return_value=source)
-    reader = mocker.patch("jailbee.pr_outbox.read_outbox", side_effect=lambda *a, **k:
-        pr_outbox.Outbox(fresh, identity=ContainerIdentity(identity.full_name, "new") if change == "identity" else identity))
+    reader = mocker.patch(
+        "jailbee.pr_outbox.read_outbox",
+        side_effect=lambda *a, **k: pr_outbox.Outbox(
+            fresh,
+            identity=ContainerIdentity(identity.full_name, "new")
+            if change == "identity"
+            else identity,
+        ),
+    )
     create = mocker.patch("jailbee.pr.create_pr")
     consumed = mocker.patch("jailbee.pr_outbox.record_consumed")
     result = CliRunner().invoke(app, ["submodule", "pr", "feat-foo", "--no-ai"])

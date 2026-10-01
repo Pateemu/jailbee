@@ -2998,9 +2998,12 @@ def test_a_pending_description_is_not_published_by_the_offer(mocker, tmp_path):
     assert "jailbee review apply feat-foo" in result.output
 
 
-@pytest.mark.parametrize("outcome", ["create", "existing", "update", "failed_create", "failed_edit", "cancel", "changed"])
+@pytest.mark.parametrize(
+    "outcome", ["create", "existing", "update", "failed_create", "failed_edit", "cancel", "changed"]
+)
 def test_pr_publication_guard_covers_selection_to_comments(mocker, tmp_path, make_cfg, outcome):
     from contextlib import contextmanager
+
     from jailbee import pr_flow
     from jailbee.outbox.io import PrManagement
     from jailbee.outbox.models import OutboxChanged
@@ -3008,7 +3011,13 @@ def test_pr_publication_guard_covers_selection_to_comments(mocker, tmp_path, mak
 
     labels = {"user.jailbee.base_branch": "main", "user.jailbee.branch": "feat/foo"}
     if outcome == "update":
-        labels.update({"user.jailbee.pr": "123", "user.jailbee.pr_branch": "feat/foo", "user.jailbee.pr_author": "true"})
+        labels.update(
+            {
+                "user.jailbee.pr": "123",
+                "user.jailbee.pr_branch": "feat/foo",
+                "user.jailbee.pr_author": "true",
+            }
+        )
     _setup(mocker, tmp_path, labels=labels)
     mocker.patch("jailbee.sync.publish_branch_from_container", return_value=_publish_result())
     cfg = make_cfg(tmp_path)
@@ -3032,6 +3041,7 @@ def test_pr_publication_guard_covers_selection_to_comments(mocker, tmp_path, mak
         events.append("select")
         if outcome == "cancel":
             import typer
+
             raise typer.Abort()
         return source
 
@@ -3059,7 +3069,9 @@ def test_pr_publication_guard_covers_selection_to_comments(mocker, tmp_path, mak
     mocker.patch("jailbee.pr.create_pr", side_effect=create)
     mocker.patch("jailbee.pr.view_existing_pr", return_value=_pr_created(already=True))
     mocker.patch("jailbee.pr.edit_pr", side_effect=edit)
-    mocker.patch("jailbee.pr_outbox.record_consumed", side_effect=lambda *a, **k: events.append("consume"))
+    mocker.patch(
+        "jailbee.pr_outbox.record_consumed", side_effect=lambda *a, **k: events.append("consume")
+    )
     updates = mocker.spy(pr_flow, "apply_pr_updates")
 
     def offer(*args, **kwargs):
@@ -3081,8 +3093,8 @@ def test_pr_publication_guard_covers_selection_to_comments(mocker, tmp_path, mak
     else:
         assert result.exit_code == 0, result.exception
         mutation = "edit" if outcome in {"update", "existing", "failed_edit"} else "create"
-        assert events[events.index(mutation)-1] == "validate"
-        assert events.index(mutation) < events.index("offer") < len(events)-1
+        assert events[events.index(mutation) - 1] == "validate"
+        assert events.index(mutation) < events.index("offer") < len(events) - 1
         if outcome == "failed_edit":
             assert "consume" not in events
         else:
@@ -3097,6 +3109,7 @@ def test_pr_publication_guard_covers_selection_to_comments(mocker, tmp_path, mak
 @pytest.mark.parametrize("change", ["manifest", "body", "progress", "identity"])
 def test_pr_changed_source_after_prompt_never_publishes(mocker, tmp_path, make_cfg, change):
     import json
+
     from jailbee import pr_flow, pr_outbox
     from jailbee.outbox_io import ContainerIdentity
 
@@ -3107,13 +3120,35 @@ def test_pr_changed_source_after_prompt_never_publishes(mocker, tmp_path, make_c
     cfg = make_cfg(tmp_path)
     mocker.patch("jailbee.cli._load_or_exit", return_value=cfg)
     identity = ContainerIdentity("sampleapp-feat-foo", "2026-09-30T12:00:00Z")
-    raw = json.dumps({"version": 1, "repo": "acme/widgets", "pr": None, "head_sha": None,
-        "actions": [{"type": "description", "title": "Selected", "branch": "feat/foo", "body_file": "body.md"}]})
+    raw = json.dumps(
+        {
+            "version": 1,
+            "repo": "acme/widgets",
+            "pr": None,
+            "head_sha": None,
+            "actions": [
+                {
+                    "type": "description",
+                    "title": "Selected",
+                    "branch": "feat/foo",
+                    "body_file": "body.md",
+                }
+            ],
+        }
+    )
     original = pr_outbox.Outbox({"d.json": raw, "body.md": "Original"}, identity=identity)
     from jailbee.pr_ai import PrText
+
     text = PrText("Selected", "Original", "feat/foo")
-    source = pr_outbox.OutboxPrText(text, "d.json", 0, identity,
-        pr_outbox.description_source_digest(original, "d.json", 0, text), raw, (("body.md", "Original"),))
+    source = pr_outbox.OutboxPrText(
+        text,
+        "d.json",
+        0,
+        identity,
+        pr_outbox.description_source_digest(original, "d.json", 0, text),
+        raw,
+        (("body.md", "Original"),),
+    )
     fresh = dict(original.files)
 
     def prompt(proposed, branch):
@@ -3127,8 +3162,15 @@ def test_pr_changed_source_after_prompt_never_publishes(mocker, tmp_path, make_c
 
     mocker.patch.object(pr_flow, "confirm_pr_branch_name", side_effect=prompt)
     pending = mocker.patch("jailbee.pr_outbox.pending_pr_text", return_value=source)
-    reader = mocker.patch("jailbee.pr_outbox.read_outbox", side_effect=lambda *a, **k:
-        pr_outbox.Outbox(fresh, identity=ContainerIdentity(identity.full_name, "new") if change == "identity" else identity))
+    reader = mocker.patch(
+        "jailbee.pr_outbox.read_outbox",
+        side_effect=lambda *a, **k: pr_outbox.Outbox(
+            fresh,
+            identity=ContainerIdentity(identity.full_name, "new")
+            if change == "identity"
+            else identity,
+        ),
+    )
     create = mocker.patch("jailbee.pr.create_pr")
     consumed = mocker.patch("jailbee.pr_outbox.record_consumed")
     result = CliRunner().invoke(app, ["pr", "feat-foo", "--no-ai"])
@@ -3140,11 +3182,10 @@ def test_pr_changed_source_after_prompt_never_publishes(mocker, tmp_path, make_c
     assert reader.call_args.kwargs["strict"] is True
 
 
-
 def _individual_delete_after_publication(root, identity, connection):
-    from jailbee.outbox.io import PrManagement
     from jailbee.outbox.delete import DeleteSelection, plan_delete
     from jailbee.outbox.inspect import build_views
+    from jailbee.outbox.io import PrManagement
     from jailbee.outbox.models import ContainerView, OutboxError, ProposalId, StoreSnapshot
     from jailbee.outbox_io import JournalStore
 
@@ -3164,10 +3205,14 @@ def _individual_delete_after_publication(root, identity, connection):
 
 
 @pytest.mark.parametrize("outcome", ["create", "cancel", "failure"])
-def test_pr_real_lock_keeps_individual_delete_outside_receipt_window(mocker, tmp_path, make_cfg, outcome):
+def test_pr_real_lock_keeps_individual_delete_outside_receipt_window(
+    mocker, tmp_path, make_cfg, outcome
+):
     import json
     from multiprocessing import get_context
+
     import typer
+
     from jailbee import pr_flow, pr_outbox
     from jailbee.outbox.io import PrManagement
     from jailbee.outbox_io import ContainerIdentity
@@ -3181,21 +3226,40 @@ def test_pr_real_lock_keeps_individual_delete_outside_receipt_window(mocker, tmp
     identity = ContainerIdentity("sampleapp-feat-foo", "2026-09-30T12:00:00Z")
     root = tmp_path / "publication"
     (root / "store").mkdir(parents=True)
-    raw = json.dumps({"version": 1, "repo": "acme/widgets", "pr": 123, "head_sha": None,
-        "actions": [{"type": "comment", "body": "Comment"}, {"type": "description", "title": "T", "body": "B"}]})
+    raw = json.dumps(
+        {
+            "version": 1,
+            "repo": "acme/widgets",
+            "pr": 123,
+            "head_sha": None,
+            "actions": [
+                {"type": "comment", "body": "Comment"},
+                {"type": "description", "title": "T", "body": "B"},
+            ],
+        }
+    )
     (root / "store" / "d.json").write_text(raw)
     original = pr_outbox.Outbox({"d.json": raw}, identity=identity)
     from jailbee.pr_ai import PrText
+
     text = PrText("T", "B", "feat/foo")
-    source = pr_outbox.OutboxPrText(text, "d.json", 1, identity,
-        pr_outbox.description_source_digest(original, "d.json", 1, text), raw)
+    source = pr_outbox.OutboxPrText(
+        text,
+        "d.json",
+        1,
+        identity,
+        pr_outbox.description_source_digest(original, "d.json", 1, text),
+        raw,
+    )
     mocker.patch("jailbee.pr_outbox.read_outbox", return_value=original)
     mocker.patch("jailbee.pr_flow.confirm_pr_branch_name", side_effect=lambda p, b: p)
     manager = PrManagement(root / "locks")
     mocker.patch("jailbee.outbox.io.PrManagement", return_value=manager)
     context = get_context("spawn")
     parent, child = context.Pipe()
-    process = context.Process(target=_individual_delete_after_publication, args=(root, identity, child))
+    process = context.Process(
+        target=_individual_delete_after_publication, args=(root, identity, child)
+    )
 
     def select(*args, **kwargs):
         process.start()
@@ -3215,7 +3279,9 @@ def test_pr_real_lock_keeps_individual_delete_outside_receipt_window(mocker, tmp
     def consume(*args, **kwargs):
         assert args[2:4] == ("d.json", 1)
         assert not parent.poll(0.2), "delete entered before receipt recording"
-        (root / "store" / "d.json.progress.json").write_text(json.dumps({"applied": [1], "urls": {"1": args[4]}}))
+        (root / "store" / "d.json.progress.json").write_text(
+            json.dumps({"applied": [1], "urls": {"1": args[4]}})
+        )
 
     mocker.patch("jailbee.pr_outbox.pending_pr_text", side_effect=select)
     mocker.patch("jailbee.pr.create_pr", side_effect=create)
