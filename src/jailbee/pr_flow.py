@@ -18,7 +18,8 @@ PR and a submodule PR:
 from __future__ import annotations
 
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Never, Protocol
@@ -30,6 +31,7 @@ from jailbee.tui import error, info, success, warn
 if TYPE_CHECKING:
     from jailbee.config import Config
     from jailbee.incus import Incus as IncusType
+    from jailbee.outbox.io import PrManagement
     from jailbee.pr import PrCreated
     from jailbee.pr_ai import PrText
     from jailbee.pr_outbox import OutboxPrText
@@ -377,6 +379,31 @@ def resolve_pr_text_and_head(
             outbox_source=outbox_source,
         )
     return HeadPlan(publish_name=source_branch, ai_text=ai_text, outbox_source=outbox_source)
+
+
+@contextmanager
+def outbox_publication_guard(
+    cfg: Config,
+    incus: IncusType,
+    container: str,
+    *,
+    enabled: bool,
+    management: PrManagement,
+) -> Iterator[None]:
+    """Hold one identity lock from description selection through its receipt."""
+    if not enabled:
+        yield
+        return
+
+    from jailbee.outbox.models import OutboxError
+    from jailbee.outbox_io import JournalError, container_identity
+
+    try:
+        identity = container_identity(incus, container)
+    except JournalError as exc:
+        raise OutboxError(str(exc)) from exc
+    with management.lock(identity):
+        yield
 
 
 def validate_outbox_source(
@@ -1354,6 +1381,7 @@ def apply_pr_updates(
     url: str,
     use_outbox: bool = False,
     outbox_hint: OutboxPrText | None = None,
+    management: PrManagement | None = None,
 ) -> PrUpdate:
     """Apply description and ready/draft updates to an already-existing PR.
 
@@ -1379,65 +1407,72 @@ def apply_pr_updates(
     """
     from jailbee import pr as pr_module
 
-    title_changed = False
-    body_changed = False
-    description_source: str | None = None
-    edit = resolve_pr_description_update(
-        cfg,
-        incus,
-        full,
-        scope,
-        branch=branch,
-        base=base,
-        title=title,
-        body=body,
-        description=description,
-        ai_on=ai_on,
-        foreign_head=foreign_head,
-        use_outbox=use_outbox,
-        for_pr=number,
-        outbox_hint=outbox_hint,
-    )
-    repo_args: dict[str, str] = {}
-    if (edit is not None or ready is not None) and (
-        use_outbox or (edit is not None and edit.source is not None)
+    from jailbee.outbox.io import PrManagement
+
+    manager = management if management is not None else PrManagement()
+    with outbox_publication_guard(
+        cfg, incus, full, enabled=use_outbox, management=manager
     ):
-        try:
-            repo_args["repo"] = _outbox_repo(scope)
-        except pr_module.PrError as exc:
-            warn(f"{scope.prefix}Updating the PR failed: {exc}")
-            return PrUpdate(title_changed=False, body_changed=False, state_note="")
-    if edit is not None:
-        try:
-            pr_module.edit_pr(
-                scope.repo_root, number, title=edit.title, body=edit.body, **repo_args
-            )
-            title_changed = edit.title is not None
-            body_changed = edit.body is not None
-        except pr_module.PrError as exc:
-            warn(f"{scope.prefix}Updating the PR description failed: {exc}")
-        else:
-            if edit.source is not None:
-                description_source = edit.source.manifest
-            # After the edit landed, and never before it: a `FinalizeError` in
-            # here is reported and swallowed, so a bookkeeping failure cannot
-            # turn a successful `gh pr edit` into a failed command.
-            record_outbox_consumption(cfg, incus, full, edit.source, url, announce=False)
+        title_changed = False
+        body_changed = False
+        description_source: str | None = None
+        edit = resolve_pr_description_update(
+            cfg,
+            incus,
+            full,
+            scope,
+            branch=branch,
+            base=base,
+            title=title,
+            body=body,
+            description=description,
+            ai_on=ai_on,
+            foreign_head=foreign_head,
+            use_outbox=use_outbox,
+            for_pr=number,
+            outbox_hint=outbox_hint,
+        )
+        repo_args: dict[str, str] = {}
+        if (edit is not None or ready is not None) and (
+            use_outbox or (edit is not None and edit.source is not None)
+        ):
+            try:
+                repo_args["repo"] = _outbox_repo(scope)
+            except pr_module.PrError as exc:
+                warn(f"{scope.prefix}Updating the PR failed: {exc}")
+                return PrUpdate(title_changed=False, body_changed=False, state_note="")
+        if edit is not None:
+            try:
+                validate_outbox_source(cfg, incus, full, edit.source)
+                pr_module.edit_pr(
+                    scope.repo_root, number, title=edit.title, body=edit.body, **repo_args
+                )
+                title_changed = edit.title is not None
+                body_changed = edit.body is not None
+            except pr_module.PrError as exc:
+                warn(f"{scope.prefix}Updating the PR description failed: {exc}")
+            else:
+                if edit.source is not None:
+                    description_source = edit.source.manifest
+                # After the edit landed, and never before it: a `FinalizeError` in
+                # here is reported and swallowed, so a bookkeeping failure cannot
+                # turn a successful `gh pr edit` into a failed command.
+                record_outbox_consumption(cfg, incus, full, edit.source, url, announce=False)
 
-    state_note = ""
-    if ready is not None:
-        try:
-            pr_module.set_ready(scope.repo_root, number, ready, **repo_args)
-            state_note = " (marked ready)" if ready else " (marked draft)"
-        except pr_module.PrError as exc:
-            warn(f"{scope.prefix}Toggling PR draft state failed: {exc}")
+        state_note = ""
+        if ready is not None:
+            try:
+                pr_module.set_ready(scope.repo_root, number, ready, **repo_args)
+                state_note = " (marked ready)" if ready else " (marked draft)"
+            except pr_module.PrError as exc:
+                warn(f"{scope.prefix}Toggling PR draft state failed: {exc}")
 
-    return PrUpdate(
-        title_changed=title_changed,
-        body_changed=body_changed,
-        state_note=state_note,
-        description_source=description_source,
-    )
+        return PrUpdate(
+            title_changed=title_changed,
+            body_changed=body_changed,
+            state_note=state_note,
+            description_source=description_source,
+        )
 
 
 def render_pr_outcome(

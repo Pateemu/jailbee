@@ -1193,6 +1193,9 @@ def test_create_or_view_forwards_record_context_with_the_pr_number(tmp_path, moc
 def _apply_updates(tmp_path, mocker, **kwargs):
     """`apply_pr_updates` with the superproject update path's usual arguments."""
     mocker.patch("jailbee.git.get_remote_url", return_value="https://github.com/acme/widgets")
+    mocker.patch("jailbee.pr_flow.validate_outbox_source")
+    incus = mocker.MagicMock()
+    incus.list_containers.return_value = [{"name": "c1", "created_at": "2026-09-30T12:00:00Z"}]
     call = {
         "number": 1234,
         "branch": "feat/foo",
@@ -1207,7 +1210,7 @@ def _apply_updates(tmp_path, mocker, **kwargs):
     }
     call.update(kwargs)
     return pr_flow.apply_pr_updates(
-        _cfg(tmp_path), mocker.MagicMock(), "c1", _super_scope(tmp_path), **call
+        _cfg(tmp_path), incus, "c1", _super_scope(tmp_path), **call
     )
 
 
@@ -1238,9 +1241,11 @@ def test_outbox_updates_refuse_mutations_without_a_repository(tmp_path, mocker, 
     run = mocker.patch("subprocess.run", return_value=CompletedProcess([], 0, "", ""))
     warn = mocker.patch("jailbee.pr_flow.warn")
 
+    incus = mocker.MagicMock()
+    incus.list_containers.return_value = [{"name": "c1", "created_at": "2026-09-30T12:00:00Z"}]
     updated = pr_flow.apply_pr_updates(
         _cfg(tmp_path),
-        mocker.MagicMock(),
+        incus,
         "c1",
         _super_scope(tmp_path),
         number=42,
@@ -1800,3 +1805,83 @@ def test_validate_synthetic_outbox_source_requires_revision(mocker, make_cfg, tm
     with pytest.raises(OutboxChanged, match=r"revision evidence.*refresh"):
         validate_outbox_source(make_cfg(tmp_path), incus, "c", _outbox_source())
     assert incus.mock_calls == []
+
+
+@pytest.mark.parametrize("outcome", ["edit", "cancel", "failure", "early_return", "changed"])
+def test_standalone_updates_guard_and_revalidate_after_prompt(mocker, tmp_path, make_cfg, outcome):
+    from contextlib import contextmanager
+    from jailbee.outbox.io import PrManagement
+    from jailbee.outbox.models import OutboxChanged
+    from jailbee.pr import PrEditError
+
+    cfg = make_cfg(tmp_path)
+    incus = mocker.MagicMock()
+    incus.list_containers.return_value = [{"name": "c1", "created_at": "created"}]
+    events = []
+    manager = PrManagement(tmp_path / "locks")
+
+    @contextmanager
+    def lock(identity):
+        events.append("enter")
+        try:
+            yield
+        finally:
+            events.append("exit")
+
+    mocker.patch.object(manager, "lock", side_effect=lock)
+    source = _outbox_source()
+    mocker.patch("jailbee.pr_outbox.pending_pr_text", return_value=source)
+    mocker.patch("jailbee.lifecycle._stdin_is_interactive", return_value=True)
+
+    def confirm(*args, **kwargs):
+        events.append("prompt")
+        if outcome == "cancel":
+            raise typer.Abort()
+        return True
+
+    mocker.patch("typer.confirm", side_effect=confirm)
+    mocker.patch("jailbee.git.get_remote_url", return_value=None if outcome == "early_return" else "https://github.com/acme/widgets")
+
+    def validate(*args):
+        assert args[3] is source
+        events.append("validate")
+        if outcome == "changed":
+            raise OutboxChanged("refresh required")
+
+    mocker.patch.object(pr_flow, "validate_outbox_source", side_effect=validate)
+
+    def edit(*args, **kwargs):
+        events.append("edit")
+        if outcome == "failure":
+            raise PrEditError("denied")
+
+    mocker.patch("jailbee.pr.edit_pr", side_effect=edit)
+    mocker.patch("jailbee.pr_outbox.record_consumed", side_effect=lambda *a, **k: events.append("consume"))
+    def apply():
+        return pr_flow.apply_pr_updates(cfg, incus, "c1", _super_scope(tmp_path),
+            number=42, branch="feat/foo", base="main", title=None, body=None,
+            description=False, ready=None, ai_on=False, foreign_head=True,
+            url="https://x/pull/42", use_outbox=True, management=manager)
+    if outcome in {"cancel", "changed"}:
+        with pytest.raises(typer.Abort if outcome == "cancel" else OutboxChanged):
+            apply()
+    else:
+        apply()
+    assert events[0] == "enter" and events[-1] == "exit"
+    assert events.index("enter") < events.index("prompt")
+    if outcome == "edit":
+        assert events == ["enter", "prompt", "validate", "edit", "consume", "exit"]
+    elif outcome == "failure":
+        assert events == ["enter", "prompt", "validate", "edit", "exit"]
+    else:
+        assert "edit" not in events and "consume" not in events
+
+
+def test_disabled_publication_guard_never_looks_up_identity(mocker, tmp_path, make_cfg):
+    from jailbee.outbox.io import PrManagement
+    incus = mocker.MagicMock()
+    manager = PrManagement(tmp_path / "locks")
+    with pr_flow.outbox_publication_guard(make_cfg(tmp_path), incus, "missing", enabled=False, management=manager):
+        pass
+    assert incus.mock_calls == []
+    assert not manager.root.exists()
