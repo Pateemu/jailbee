@@ -1919,8 +1919,8 @@ def render(
     folded_note = f" · {n_folded} folded" if n_folded else ""
     git_note = "" if git_enabled else "  ·  [dim](no-git)[/dim]"
     title = (
-        f"[bold]jailbee dashboard[/]  ·  [dim]h/? help[/]  ·  {n_repos} repos · {n_ctr} containers"
-        f"{folded_note}{git_note}  ·  {now:%H:%M:%S}"
+        f"[bold]🐝 jailbee dashboard[/]  ·  [dim]h/? help[/]"
+        f"  ·  {n_repos} repos · {n_ctr} containers{folded_note}{git_note}  ·  {now:%H:%M:%S}"
     )
     # Subtitle is notice-only: a short transient message on the bottom border
     # cannot push the table around. Should the terminal still be narrower than

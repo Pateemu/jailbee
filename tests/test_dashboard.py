@@ -3522,7 +3522,7 @@ def test_render_title_is_left_aligned(tmp_path):
         "alpha", "/repos/alpha", tmp_path / "a.yaml", [_ci("alpha-one", "alpha")]
     )
     line = _title_line([g])
-    assert line.index("jailbee dashboard") <= 3
+    assert line.index("🐝 jailbee dashboard") <= 3
 
 
 def test_render_title_carries_the_no_git_marker(tmp_path):
