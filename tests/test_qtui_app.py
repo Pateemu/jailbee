@@ -1719,7 +1719,9 @@ def test_run_wires_config_edit_signal(mocker):
 
 
 @pytest.mark.parametrize("operation", ["load", "delete"])
-def test_run_persistence_error_still_joins_outbox_and_stops_refresh(qtbot, mocker, make_cfg, tmp_path, operation):
+def test_run_persistence_error_still_joins_outbox_and_stops_refresh(
+    qtbot, mocker, make_cfg, tmp_path, operation
+):
     from threading import Event, Thread
 
     from jailbee.dashboard import RepoTarget
@@ -1764,6 +1766,7 @@ def test_run_persistence_error_still_joins_outbox_and_stops_refresh(qtbot, mocke
         controller = original_controller(*args, **kwargs)
         controllers.append(controller)
         return controller
+
     mocker.patch.object(qapp, "AppController", side_effect=controller_factory)
 
     def blocked(*args, **kwargs):
@@ -1788,8 +1791,9 @@ def test_run_persistence_error_still_joins_outbox_and_stops_refresh(qtbot, mocke
         qtbot.waitUntil(entered.is_set)
         requests.append(dialog._request)
         return 0
+
     fake_app.exec.side_effect = event_loop
-    releaser = Thread(target=lambda: entered.wait(3) and release.wait(0.1) or release.set())
+    releaser = Thread(target=lambda: (entered.wait(3) and release.wait(0.1)) or release.set())
     releaser.start()
     try:
         with pytest.raises(OSError) as caught:
