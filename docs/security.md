@@ -120,8 +120,8 @@ add`/`rm` (which accept the host's own and its LAN's addresses), `registry
 up`/`down`, `display up`/`down`, the `account` commands that write, `mount`,
 `port to-container`, and the GUI launchers (`gui`, `ide`, the browsers, `apps
 run`). With `remote.ssh.gui` on, `ide`, the browsers and `apps run` are
-permitted and draw on the shared display instead; `gui` stays host-only. The startup
-log names any allowlisted command that stays refused this way, and every
+permitted and draw on the shared display instead; `gui` stays host-only.
+The startup log names any allowlisted command that stays refused this way, and every
 public command is classified one way or the other by the test suite, so a
 new one cannot land unclassified.
 
@@ -194,13 +194,12 @@ Wayland display socket, attached whenever the host session is Wayland. Any
 process in the container — a remote session's shell included — can open a
 window on the host's screen with it, and JailBee's own GUI launchers are
 withheld remotely (unless `remote.ssh.gui` is on) only because a window there
-helps no remote user. A
-Wayland client draws its own surfaces and cannot read or drive other
+helps no remote user. A Wayland client draws its own surfaces and cannot read or drive other
 windows, and no X11 socket is shared. The host's session D-Bus and
 PulseAudio sockets, which do reach further, are opt-in
 ([`gui`](config.md#gui)). With `remote.ssh.gui` on, a second such resource
-exists: the shared display directory, mounted into every container, through
-which any process can draw on the shared RDP display (see
+exists: the shared display directory, mounted read-only into every container,
+through which any process can draw on the shared RDP display (see
 [Remote GUI](#remote-gui)).
 
 A server imports its routing and session marking when it starts, so one left
@@ -240,9 +239,15 @@ display (see [Remote GUI over SSH](remote-gui.md)):
   `remote.ssh.gui` is off when the forward is requested.
 - All containers share one screen and the RDP clipboard: one container can
   draw over another's windows and read what is on the clipboard.
-- The shared display directory is mounted into the containers and is the one
-  channel every container shares; a process in any container can connect to
-  the compositor through it.
+- The shared display directory is mounted into the client containers
+  read-only, and only while `remote.ssh.gui` is on. Every client shares the
+  host user's idmap, so a writable mount would let a compromised container
+  delete or replace weston's socket with its own and capture every other
+  container's windows, keystrokes and clipboard; read-only means a container
+  cannot replace the socket. Connecting to the socket needs no write access,
+  so any process in a container can still open a window on the shared
+  display. That is the exposure below, and it is why containers are not
+  isolated from each other on this screen.
 - The display container uses the dev user's idmap, like the client containers,
   so the shared socket is owned by the same host user.
 - With SSH repository exclusions active, the GUI launchers are refused over

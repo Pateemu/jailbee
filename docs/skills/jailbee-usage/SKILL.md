@@ -876,8 +876,11 @@ chrome`, `ide` and `apps run` over an SSH session draw on one shared RDP
 display (weston, one screen for every container) instead of being refused.
 They print how to connect: tunnel `ssh -N -L 3389:127.0.0.1:13389 -p <port>
 jailbee@<host>`, then an RDP client to `localhost:3389` (no password). The
-launch waits up to 120 s for a client. These host commands (`display
-up|down|status`) are not available inside a container.
+launch waits up to 120 s for a client, and the tunnel is accepted only once
+the SSH key has launched an app, so launch first, then connect. For an
+arbitrary command use `jailbee exec <name> -d --gui -- <cmd>`; a plain `exec
+-d` never touches the display. `display up|down` are host-only (not
+available inside a container); `display status` works over SSH.
 
 ## Other day-to-day commands
 
@@ -939,7 +942,8 @@ up|down|status`) are not available inside a container.
   `--detach`) runs any command detached — needed for a GUI app run by hand
   (`jailbee exec smoke -d -- some-gui-tool`), useful for anything
   long-running. It returns immediately; output goes to a log file inside
-  the container.
+  the container. Over a GUI-enabled remote SSH session add `--gui` for a GUI
+  app so it draws on the shared RDP display.
 - **Cache pools:** `jailbee pool ls [NAME]` / `jailbee pool prune [NAME]` — any
   cache configured with `pooled_caches`/`SharedCache.pool` (Gradle, Maven,
   Chrome and Firefox by default) gets one private slot per container instead

@@ -5154,18 +5154,26 @@ explicitly authorized checks.
 ## Remote GUI over SSH (shared RDP display)
 
 Host-only checks; they need a real Incus daemon, the SSH service with
-`remote.ssh.gui: true` (restarted), and an RDP client. Background:
+`remote.ssh.gui: true`, and an RDP client. Background:
 [Remote GUI over SSH](remote-gui.md).
+
+The tunnel is accepted only after the SSH key has launched an app, so the
+launch comes first and the tunnel and RDP client connect while it waits.
 
 1. `jb display up` from cold (no `jailbee-display` container). Expected: the
    image is pulled, weston installed, the service reported active, and the
-   connection recipe printed.
+   connection recipe printed, including the "launch first, then connect"
+   line. With `remote.ssh.gui` off it also warns that SSH sessions cannot use
+   the display.
 2. `jb display status`. Expected: running, plus the same recipe.
-3. Open the tunnel (`ssh -N -L 3389:127.0.0.1:13389 -p <port> jailbee@<host>`)
-   and connect an RDP client to `localhost:3389`. Expected: a weston desktop
-   with a panel.
-4. In an SSH session, run `jb chrome` against a running container. Expected:
-   a Chrome window on the RDP desktop.
+3. In an SSH session, run `jb chrome` against a running container, with no
+   RDP client connected. Expected: the recipe is printed, "Waiting for an RDP
+   client..." and the launch waits (up to 120 s).
+4. While it waits, open the tunnel (`ssh -N -L 3389:127.0.0.1:13389 -p <port>
+   jailbee@<host>`) and connect an RDP client to `localhost:3389`. Expected:
+   the forward is accepted, a weston desktop with a panel appears, and a few
+   seconds later the launch proceeds and a Chrome window shows on the RDP
+   desktop.
 5. Do the same from a second container. Expected: its window lands on the
    same screen.
 6. In the remote dashboard, choose a launch. Expected: with no client
@@ -5173,13 +5181,25 @@ Host-only checks; they need a real Incus daemon, the SSH service with
    lets it proceed.
 7. `jb display down`, then try a new forward with the same key. Expected: the
    tunnel refuses it.
-8. Set `remote.ssh.gui: false`, restart the service, run `jb chrome` over SSH.
-   Expected: refused.
+8. Set `remote.ssh.gui: false` (no service restart), run `jb chrome` over SSH.
+   Expected: refused, and a forward with a previously granted key is refused.
 9. From the host and from a sibling container, `nc -vz <display container
    bridge address> 3389`. Expected: refused in both cases.
+10. In a client container, `rm /run/jailbee-display/wayland-0` and `touch
+    /run/jailbee-display/x`. Expected: both fail with "Read-only file system",
+    while connecting to the socket (an app launch) still works.
+11. With `remote.ssh.gui: false`, restart a client container. Expected: no
+    `display-socket` device (`incus config device show`), even though
+    `jb display up` was run earlier.
+12. In a GUI SSH session, `jb exec <name> -d -- sleep 1`. Expected: runs at
+    once, with no display start and no wait. `jb exec <name> -d --gui --
+    xterm` goes through the display as in step 3.
 
 Not yet verified on a real host: the shared directory mount under `/run` in
 the display container surviving a boot; whether the few-second settle delay is
 long enough for an RDP seat to exist; the TCP forward through asyncssh with a
 real RDP client; weston cold provisioning; and the remote dashboard menu in a
-pty.
+pty. The display container image is `images:ubuntu/26.04/cloud`, while the
+original spike used Ubuntu 24.04 with weston 13: check the installed weston
+version, and that the `--rdp-tls-key`, `--rdp-tls-cert` and `--shell=desktop`
+flags in the unit still work with it.
