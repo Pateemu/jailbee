@@ -213,18 +213,23 @@ section {
 }
 
 /* The newest article's title, written into the bar by scripts/news_site.py.
-   Left of the News link, which carries the auto margin; hidden where the bar
-   has no room for it. */
+   Centred in the space between the brand and the News link, whose own auto
+   margin yields to the chip's; hidden where the bar has no room for it. */
 .topbar__latest {
   display: none;
   min-width: 0;
-  margin-left: 20px;
+  margin: 0 auto;
+  padding: 0 20px;
   overflow: hidden;
   color: var(--muted);
   font-size: 14px;
   line-height: 48px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.topbar__latest + .topbar__link--news {
+  margin-left: 0;
 }
 
 .topbar__latest span {
