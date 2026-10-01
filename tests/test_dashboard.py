@@ -1662,7 +1662,13 @@ def test_menu_actions_network_entries_ordered_after_chrome_before_restart():
 
 def test_menu_actions_running_includes_open_pr_when_pr_known():
     actions = dashboard.menu_actions(_ctx(pr_number=123))
-    assert [verb for _, verb in actions[:5]] == ["tmux", "shell", "outbox browse", "pr --open", "pr"]
+    assert [verb for _, verb in actions[:5]] == [
+        "tmux",
+        "shell",
+        "outbox browse",
+        "pr --open",
+        "pr",
+    ]
 
 
 def test_menu_actions_stopped_includes_open_pr_when_pr_known():
@@ -1769,9 +1775,13 @@ def test_group_menu_actions_keeps_relative_order_and_unclassified_leaves():
 
 
 def test_menu_actions_mount_mode_keeps_outbox_without_git():
-    grouped = dashboard.group_menu_actions(dashboard.menu_actions(_ctx(mode="mount")), include_network=True)
+    grouped = dashboard.group_menu_actions(
+        dashboard.menu_actions(_ctx(mode="mount")), include_network=True
+    )
     assert ("Outbox", "outbox browse") in grouped
-    assert [item.label for item in grouped if isinstance(item, dashboard.MenuGroup)] == ["Network →"]
+    assert [item.label for item in grouped if isinstance(item, dashboard.MenuGroup)] == [
+        "Network →"
+    ]
 
 
 def test_grouped_git_leaves_respect_known_clean_and_unknown_status():
@@ -1832,7 +1842,9 @@ def test_menu_actions_omits_pr_refresh_when_the_bridge_is_impossible():
 @pytest.mark.parametrize("count", [None, 0, 2])
 @pytest.mark.parametrize("mode", ["clone", "mount"])
 def test_menu_has_one_outbox_regardless_of_counts(count, mode):
-    actions = dashboard.menu_actions(_ctx(mode=mode, git_status=_dirty(pending_pr_actions=count, pending_issue_actions=count)))
+    actions = dashboard.menu_actions(
+        _ctx(mode=mode, git_status=_dirty(pending_pr_actions=count, pending_issue_actions=count))
+    )
     assert actions.count(("Outbox", "outbox browse")) == 1
     assert not {"review apply", "issue apply"} & {v for _, v in actions}
     for ctx in (_ctx(state="Stopped", mode=mode), _ctx(has_repo=False, mode=mode)):
@@ -1844,7 +1856,11 @@ def test_outbox_dispatch_uses_target_config_and_no_pause(mocker, tmp_path):
     run.return_value.returncode = 0
     pause = mocker.patch.object(dashboard, "_wait_for_return")
     dashboard._dispatch_action(_dispatch_target(tmp_path), "outbox browse", "alpha-x")
-    run.assert_called_once_with(["jailbee", "outbox", "browse", "alpha-x", "--config", str(tmp_path / "config.yaml")], check=False, cwd=tmp_path)
+    run.assert_called_once_with(
+        ["jailbee", "outbox", "browse", "alpha-x", "--config", str(tmp_path / "config.yaml")],
+        check=False,
+        cwd=tmp_path,
+    )
     pause.assert_not_called()
 
 
@@ -1859,7 +1875,16 @@ def test_menu_actions_mount_mode_has_no_workflow_verbs():
     """A mount-mode container has no clone of its own, so every one of these
     would fail in `sync.assert_container_publishable`."""
     verbs = [v for _, v in dashboard.menu_actions(_ctx(mode="mount"))]
-    assert verbs == ["tmux", "shell", "outbox browse", "net loose", "net egress ls", "restart", "stop", "destroy"]
+    assert verbs == [
+        "tmux",
+        "shell",
+        "outbox browse",
+        "net loose",
+        "net egress ls",
+        "restart",
+        "stop",
+        "destroy",
+    ]
 
 
 def test_menu_actions_stopped_has_no_workflow_verbs():
@@ -1904,7 +1929,15 @@ def test_menu_actions_job_log_precedes_the_pr_entries():
     verbs = [
         v for _, v in dashboard.menu_actions(_ctx(job_clearable=True, has_job=True, pr_number=7))
     ]
-    assert verbs[:7] == ["tmux", "shell", "outbox browse", "job clear", "job log", "pr --open", "pr"]
+    assert verbs[:7] == [
+        "tmux",
+        "shell",
+        "outbox browse",
+        "job clear",
+        "job log",
+        "pr --open",
+        "pr",
+    ]
 
 
 def test_menu_actions_orphan_ignores_every_workflow_field():
@@ -5061,7 +5094,16 @@ def test_run_escape_backs_out_but_q_closes_submenu(mocker, tmp_path):
 
     overlays = [call.kwargs.get("overlay") for call in render.call_args_list]
     menus = [item for item in overlays if isinstance(item, dashboard.MenuState)]
-    assert [menu.active_group for menu in menus] == [None, None, None, None, None, "PR →", None, "PR →"]
+    assert [menu.active_group for menu in menus] == [
+        None,
+        None,
+        None,
+        None,
+        None,
+        "PR →",
+        None,
+        "PR →",
+    ]
     assert menus[6].index == 4
     assert overlays[-1] is None
     child.assert_not_called()
@@ -9237,8 +9279,11 @@ def test_a_terminal_only_container_entry_never_reaches_the_shared_dispatcher(
 def test_outbox_dispatch_rechecks_ssh_policy(mocker, tmp_path):
     from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
     from jailbee.remote_ssh.router import RouteError
+
     child = mocker.patch.object(dashboard.subprocess, "run")
     policy = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="allowlist", allow=["git merge"]))
     with pytest.raises(RouteError):
-        dashboard._dispatch_action(_dispatch_target(tmp_path), "outbox browse", "alpha-x", over_ssh=True, ssh_policy=policy)
+        dashboard._dispatch_action(
+            _dispatch_target(tmp_path), "outbox browse", "alpha-x", over_ssh=True, ssh_policy=policy
+        )
     child.assert_not_called()

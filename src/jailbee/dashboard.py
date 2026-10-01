@@ -892,7 +892,9 @@ def menu_actions(ctx: MenuContext) -> list[tuple[str, str]]:
         return []
     actions: list[tuple[str, str]] = []
     if ctx.state == "Running":
-        actions.extend([("Attach tmux", "tmux"), ("Open shell", "shell"), ("Outbox", "outbox browse")])
+        actions.extend(
+            [("Attach tmux", "tmux"), ("Open shell", "shell"), ("Outbox", "outbox browse")]
+        )
         for app in [] if ctx.remote else ctx.apps:
             actions.append((f"Launch {app.label}", app.verb))
     elif ctx.state == "Stopped":
