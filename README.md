@@ -16,7 +16,8 @@ full stacks in parallel on one host — each with its own services, Docker daemo
 IDE, and browser — without port conflicts, Docker name clashes, or
 shared-database collisions.
 
-The CLI is `jailbee`, or `jb` for short.
+The CLI is `jailbee`, or `jb` for short. Release announcements are at
+[jailbee.gisgro.io/news](https://jailbee.gisgro.io/news/).
 
 **JailBee** is project-agnostic: every repo supplies its own `.jailbee/config.yaml`. The
 golden image ships stack-neutral by default — language toolchains (JDK, Node,
@@ -100,13 +101,28 @@ sped up and say so on screen; nothing else is edited.
   repo's config; see
   [Running an agent without prompts](https://jailbee.gisgro.io/docs/security/#running-an-agent-without-prompts)
   for what it does and doesn't cover.
-- **PR review outbox** — a container's `gh` is read-only, so an agent
-  reviewing a PR inside it stages comments, replies and description
-  rewrites as JSON manifests instead of posting them straight to GitHub. A
-  human reviews the exact text and publishes it with one confirmation:
-  `jailbee review apply` (also `ls`/`show`/`drop`); `jailbee ls` and both
-  dashboards mark a container carrying pending manifests, and `jailbee pr`
-  picks up a pending description in place of its own Claude run.
+- **PR and issue outbox** — a container's `gh` is read-only, so an agent
+  reviewing a PR or triaging issues inside it stages comments, replies,
+  description rewrites and issue changes as JSON manifests instead of posting
+  them straight to GitHub. A human reviews the exact text and publishes it
+  with one confirmation: `jailbee review apply` and `jailbee issue apply`
+  (also `ls`/`show`/`drop`), or `jailbee outbox` to browse both in one place;
+  `jailbee ls` and both dashboards mark a container carrying pending
+  manifests, and `jailbee pr` picks up a pending description in place of its
+  own Claude run.
+- **Claude Code on other models** — `claude-jb` runs Claude Code against a
+  LiteLLM proxy that JailBee keeps in its own container, so the same agent
+  can work on a ChatGPT subscription or on any provider you have an API key
+  for, while plain `claude` stays native. One proxy per account, per-repo
+  route overrides, live route reloads; see
+  [Claude Code through LiteLLM](https://jailbee.gisgro.io/docs/litellm/).
+- **Remote access over SSH** — an optional, key-only SSH service
+  (`jailbee remote ssh enable`) opens the dashboard, a restricted console or
+  policy-limited one-shot commands from another computer; host-management
+  commands stay refused. With `remote.ssh.gui` on, GUI apps launched over SSH
+  appear on a shared RDP display (`jailbee display`) you open in any RDP
+  client; see
+  [Remote GUI over SSH](https://jailbee.gisgro.io/docs/remote-gui/).
 - **Generic agent support** — `agents: {codex: {enabled: true}}` wires any
   terminal coding agent into the same mount/egress/install/autostart
   pipeline Claude Code uses, via a shipped preset or one you write yourself.
@@ -125,9 +141,10 @@ sped up and say so on screen; nothing else is edited.
 - **Fast, cheap containers** — copy-on-write clones of one golden image; a live
   TUI dashboard (`jailbee dashboard`, alias `jailbee tui`) or Qt GUI dashboard
   (`jailbee gui`) spans
-  every repo, and acts on what it shows: attach a shell or tmux, open the IDE,
-  create or update the PR, update a container from its base, read its diff —
-  without leaving the view that told you it was needed.
+  every repo, shows what each container's agent is doing, and acts on what it
+  shows: attach a shell or tmux, open the IDE, create or update the PR,
+  update a container from its base, read its diff — without leaving the view
+  that told you it was needed.
 
 ## Getting started
 
@@ -231,6 +248,7 @@ Start here:
 | [Getting started](https://jailbee.gisgro.io/docs/getting-started/) | Concepts, configure a repo, build the image, and a "typical day" walkthrough |
 | [Commands](https://jailbee.gisgro.io/docs/commands/) | Full command + flag reference table |
 | [Configuration reference](https://jailbee.gisgro.io/docs/config/) | Every `.jailbee/config.yaml` and `global.yaml` key |
+| [News](https://jailbee.gisgro.io/news/) | Release announcements (also as an [RSS feed](https://jailbee.gisgro.io/news/feed.xml)) |
 | [FAQ](https://jailbee.gisgro.io/docs/faq/) | Short answers to the common questions, each linking to the page that covers it in full |
 
 **Project internals** — maintainer procedure, kept in the repository:
