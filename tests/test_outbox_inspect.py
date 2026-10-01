@@ -131,6 +131,10 @@ def test_bad_pr_sidecar_is_unknown_not_empty(tmp_path, sidecar):
         "actions=broken urls=https://x pr=7 actions=1 urls=https://y",
         "pr=42 urls=https://x pr=7 actions=1 urls=https://y",
         "pr=42 actions=broken url=https://x pr=7 actions=1 urls=https://y",
+        "pr=42 urls=notes.json pr=7 actions=1 urls=https://y",
+        "actions=broken urls=notes.json pr=7 actions=1 urls=https://y",
+        "pr=42 actions=broken url=notes.json pr=7 actions=1 urls=https://y",
+        "unknown=notes.json pr=7 actions=1 urls=receipt.json",
     ],
 )
 def test_whitespace_receipt_blocks_exact_proposal(tmp_path, name, suffix):
@@ -170,16 +174,23 @@ def test_whitespace_receipt_blocks_exact_proposal(tmp_path, name, suffix):
         "one.json actions=notes.json",
         "one.json pr = 7 longer.json",
         " one.json pr=7 longer.json",
+        "one.json-more pr=7.json",
+        "one pr=7 longer.json",
+        "one.jsonx longer.json",
     ],
 )
-def test_longer_receipt_filename_is_not_selected_name(tmp_path, other):
+def test_complete_name_prefix_receipt_is_conservatively_ambiguous(tmp_path, other):
     text = pr_files()["001.json"]
     files = {"one.json": text, other: text, "applied.log": f"now {other} pr=42 actions=1 urls=x"}
     views = build_views(IDENTITY, (store("pr", files),), journal_store=JournalStore(tmp_path))
     selected = next(v for v in views if v.id.name == "one.json")
     logged = next(v for v in views if v.id.name == other)
-    assert selected.state == "pending"
-    assert selected.edit_block is None and selected.error is None
+    if other.startswith("one.json "):
+        assert selected.state == "uncertain"
+        assert selected.edit_block and selected.error
+    else:
+        assert selected.state == "pending"
+        assert selected.edit_block is None and selected.error is None
     assert logged.edit_block and logged.error
 
 

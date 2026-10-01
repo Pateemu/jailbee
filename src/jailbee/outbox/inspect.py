@@ -94,23 +94,9 @@ def pr_progress_evidence(
         matching_name = remainder == name or remainder.startswith(prefix)
         suffix = remainder[len(prefix) :] if remainder.startswith(prefix) else ""
         exact = re.fullmatch(r"pr=([^ ]+) actions=([0-9]+) urls=(.+)", suffix) is not None
-        # A later suffix can disambiguate only a supported longer manifest name,
-        # not an arbitrary prefix swallowed from malformed fields or URL text.
-        other_record = re.fullmatch(r"(.*) pr=([^ ]+) actions=([0-9]+) urls=(.+)", remainder)
-        other_name = False
-        if other_record is not None:
-            try:
-                ProposalId("pr", other_record.group(1))
-                other_name = True
-            except OutboxError:
-                pass
-        # Receipt-shaped text within a filename is inherently ambiguous in this
-        # unescaped legacy format. Recognize fields independently of their values
-        # and separators; validation of the actual suffix remains strict above.
-        matching_fields = (
-            re.match(r"\s*pr\s*=\s*\S*\s+actions\s*=\s*\S*\s+urls\s*=", suffix) is not None
-        )
-        if separator and matching_name and (exact or matching_fields or not other_name):
+        # Legacy records do not escape filenames. Even an existing longer name
+        # cannot prove this is not malformed history for the selected proposal.
+        if separator and matching_name:
             inputs.append(("applied.log", line))
             block = "recorded publication evidence prevents editing"
             if not exact:

@@ -187,6 +187,10 @@ def env(mocker, make_cfg, tmp_path):
         "actions=broken urls=https://x pr=7 actions=1 urls=https://y",
         "pr=42 urls=https://x pr=7 actions=1 urls=https://y",
         "pr=42 actions=broken url=https://x pr=7 actions=1 urls=https://y",
+        "pr=42 urls=notes.json pr=7 actions=1 urls=https://y",
+        "actions=broken urls=notes.json pr=7 actions=1 urls=https://y",
+        "pr=42 actions=broken url=notes.json pr=7 actions=1 urls=https://y",
+        "unknown=notes.json pr=7 actions=1 urls=receipt.json",
     ],
 )
 def test_existing_whitespace_receipt_refuses_actual_selected_replay(env, name, suffix):
@@ -223,22 +227,71 @@ def test_existing_whitespace_receipt_refuses_actual_selected_replay(env, name, s
         "001.json actions=notes.json",
         "001.json pr = 7 longer.json",
         " 001.json pr=7 longer.json",
+        "001.json-more pr=7.json",
+        "001 pr=7 longer.json",
+        "001.jsonx longer.json",
     ],
 )
-def test_longer_receipt_filename_does_not_block_actual_selected_publication(env, other):
+def test_complete_name_prefix_receipt_refuses_ambiguous_publication(env, other):
     files = env[2]["pr"].as_dict()
     files[other] = files["001.json"]
     history = f"now {other} pr=42 actions=1 urls=https://old\n"
     files["applied.log"] = history
     env[2]["pr"] = store("pr", files)
 
-    assert selected(env, "pr") == 0
-    assert env[4]["pr_comment"].call_count == 2
+    if other.startswith("001.json "):
+        assert selected(env, "pr") == 1
+        env[4]["pr_comment"].assert_not_called()
+        env[1].exec_with_input.assert_not_called()
+        assert env[2]["pr"].as_dict() == files
+    else:
+        assert selected(env, "pr") == 0
+        assert env[4]["pr_comment"].call_count == 2
+        remaining = env[2]["pr"].as_dict()
+        assert "001.json" not in remaining
+        assert remaining[other] == files[other]
+        assert remaining["applied.log"].startswith(history)
+        assert "001.json pr=42 actions=2" in remaining["applied.log"]
+
+
+@pytest.mark.parametrize("longer_present", [False, True])
+@pytest.mark.parametrize("fields", [
+    "pr=42 urls=notes.json", "actions=broken urls=notes.json",
+    "pr=42 actions=broken url=notes.json", "unknown=notes.json",
+])
+def test_filename_shaped_receipt_values_never_prove_other_ownership(env, longer_present, fields):
+    name = "001.json"
+    longer = f"{name} {fields}"
+    files = env[2]["pr"].as_dict()
+    if longer_present:
+        files[longer] = files[name]
+    files["applied.log"] = f"now {longer} pr=42 actions=1 urls=receipt.json\n"
+    env[2]["pr"] = store("pr", files)
+    assert selected(env, "pr") == 1
+    env[4]["pr_comment"].assert_not_called()
+    env[1].exec_with_input.assert_not_called()
+    assert env[2]["pr"].as_dict() == files
+
+
+def test_ambiguous_longer_name_with_valid_sidecar_keeps_existing_progress_rules(env):
+    from jailbee.outbox.publish import PublishOptions, publish_selected
+
+    name = "001.json pr=42 urls=notes.json"
+    files = env[2]["pr"].as_dict()
+    files[name] = files["001.json"]
+    files[f"{name}.progress.json"] = '{"applied":[0],"urls":{"0":"https://old"}}'
+    files["applied.log"] = f"now {name} pr=42 actions=1 urls=https://old\n"
+    env[2]["pr"] = store("pr", files)
+    assert publish_selected(
+        env[0], env[1], IDENTITY.full_name, ProposalId("pr", name),
+        journal_store=env[3], options=PublishOptions(), confirm=lambda count: True,
+    ) == 0
+    assert [c.args[2] for c in env[4]["pr_comment"].call_args_list] == ["Second action"]
     remaining = env[2]["pr"].as_dict()
-    assert "001.json" not in remaining
-    assert remaining[other] == files[other]
-    assert remaining["applied.log"].startswith(history)
-    assert "001.json pr=42 actions=2" in remaining["applied.log"]
+    assert name not in remaining and f"{name}.progress.json" not in remaining
+    assert remaining["001.json"] == files["001.json"]
+    assert remaining["body.md"] == files["body.md"]
+    assert remaining["applied.log"].startswith(files["applied.log"])
 
 
 def selected(
