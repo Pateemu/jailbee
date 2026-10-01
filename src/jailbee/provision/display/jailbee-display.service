@@ -5,7 +5,6 @@ After=network.target
 [Service]
 User=__USER__
 Environment=XDG_RUNTIME_DIR=/srv/jailbee-display
-Environment=WINPR_NTLM_SAM_FILE=/etc/winpr/SAM
 ExecStartPre=/bin/rm -f /srv/jailbee-display/wayland-0 /srv/jailbee-display/wayland-0.lock
 ExecStart=/usr/bin/weston --backend=rdp --address=127.0.0.1 --port=3389 --socket=wayland-0 --shell=desktop --rdp-tls-key=/etc/jailbee-display/tls.key --rdp-tls-cert=/etc/jailbee-display/tls.crt
 Restart=on-failure

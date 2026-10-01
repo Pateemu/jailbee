@@ -55,13 +55,15 @@ case "$NT_HASH" in
   *:*) SAM_LINE="$NT_HASH" ;;
   *) SAM_LINE="$JAILBEE_RDP_USER:::$NT_HASH:::" ;;
 esac
-# WinPR opens its default /etc/winpr/SAM, whatever WINPR_NTLM_SAM_FILE says
-# (weston logs "SamOpen: Could not open SAM file!" otherwise). The directory
-# must be traversable by the service user, the file readable only by it.
-install -d -m 0755 /etc/winpr
-printf '%s\n' "$SAM_LINE" > /etc/winpr/SAM
-chown "$RUN_USER" /etc/winpr/SAM
-chmod 0600 /etc/winpr/SAM
+# WinPR looks the login up in /etc/FreeRDP/FreeRDP/SAM (/etc/<vendor>/<product>/SAM),
+# not at WINPR_NTLM_SAM_FILE and not at /etc/winpr/SAM: strace of weston showed
+# openat("/etc/FreeRDP/FreeRDP/SAM") = ENOENT, after which weston reports
+# "Could not find user in SAM database". The directory must be traversable by
+# the service user, the file readable only by it.
+install -d -m 0755 /etc/FreeRDP /etc/FreeRDP/FreeRDP
+printf '%s\n' "$SAM_LINE" > /etc/FreeRDP/FreeRDP/SAM
+chown "$RUN_USER" /etc/FreeRDP/FreeRDP/SAM
+chmod 0600 /etc/FreeRDP/FreeRDP/SAM
 
 sed "s/__USER__/$RUN_USER/" /root/jailbee-display.service \
   > /etc/systemd/system/jailbee-display.service

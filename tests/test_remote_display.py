@@ -97,10 +97,9 @@ def test_provisioning_script_carries_both_files_and_the_identity():
     # weston 14 does NLA and needs a SAM entry, or every client is refused.
     assert f"JAILBEE_RDP_USER={rd.RDP_USER}" in provisioning
     assert f"JAILBEE_RDP_PASSWORD={rd.RDP_PASSWORD}" in provisioning
-    assert "WINPR_NTLM_SAM_FILE=/etc/winpr/SAM" in provisioning
-    # WinPR opens its default path; the directory must be traversable (0755).
-    assert "install -d -m 0755 /etc/winpr" in provisioning
-    assert "/etc/winpr/SAM" in provisioning
+    # WinPR reads /etc/FreeRDP/FreeRDP/SAM (found with strace), not an env var.
+    assert "install -d -m 0755 /etc/FreeRDP /etc/FreeRDP/FreeRDP" in provisioning
+    assert "/etc/FreeRDP/FreeRDP/SAM" in provisioning
     assert "winpr-utils" in provisioning
     # winpr-hash prints a bare hash; the SAM line user:::hash::: is built here.
     assert '"$JAILBEE_RDP_USER:::$NT_HASH:::"' in provisioning
