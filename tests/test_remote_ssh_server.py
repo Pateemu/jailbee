@@ -1489,9 +1489,9 @@ def test_an_upgrade_drains_live_sessions_before_hanging_up(listener, mocker):
     live_sets: list[set] = []
     real_server = server.JailbeeSSHServer
 
-    def capture(live=None):
+    def capture(live=None, gui_enabled=None):
         live_sets.append(live)
-        return real_server(live)
+        return real_server(live, gui_enabled)
 
     mocker.patch.object(server, "JailbeeSSHServer", side_effect=capture)
 
@@ -1541,3 +1541,47 @@ def test_non_gui_session_has_no_gui_port_but_keeps_the_fingerprint(child, mocker
     spec = child.call_args.args[1]
     assert spec.gui_port is None
     assert spec.fingerprint == FINGERPRINT
+
+
+def _gui_server(connection, enabled=True):
+    instance = server.JailbeeSSHServer(gui_enabled=lambda: enabled)
+    instance.connection_made(connection)
+    return instance
+
+
+def test_forwarding_is_allowed_to_a_granted_destination(connection, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    from jailbee.remote_ssh.display_grants import record_grant
+
+    record_grant(FINGERPRINT, "127.0.0.1", 13389, "feat-1")
+    connection.set_extra_info(jailbee_key_fingerprint=FINGERPRINT)
+
+    assert _gui_server(connection).connection_requested("127.0.0.1", 13389, "::1", 50000) is True
+
+
+def test_forwarding_is_refused_for_another_key(connection, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    from jailbee.remote_ssh.display_grants import record_grant
+
+    record_grant("SHA256:someone-else", "127.0.0.1", 13389, "feat-1")
+    connection.set_extra_info(jailbee_key_fingerprint=FINGERPRINT)
+
+    assert _gui_server(connection).connection_requested("127.0.0.1", 13389, "::1", 50000) is False
+
+
+def test_forwarding_is_refused_when_the_feature_is_off(connection, tmp_path, monkeypatch):
+    """Review focus 1: turning remote.ssh.gui off revokes running grants."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    from jailbee.remote_ssh.display_grants import record_grant
+
+    record_grant(FINGERPRINT, "127.0.0.1", 13389, "feat-1")
+    connection.set_extra_info(jailbee_key_fingerprint=FINGERPRINT)
+
+    assert (
+        _gui_server(connection, enabled=False).connection_requested("127.0.0.1", 13389, "::1", 1)
+        is False
+    )
+
+
+def test_a_connection_without_an_authenticated_key_gets_no_forwarding(connection):
+    assert _gui_server(connection).connection_requested("127.0.0.1", 13389, "::1", 1) is False

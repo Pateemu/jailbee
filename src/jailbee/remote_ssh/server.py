@@ -18,6 +18,7 @@ from jailbee import __version__
 from jailbee.config import ConfigError
 from jailbee.db import state_dir
 from jailbee.global_config import default_global_config_path, load_global_config
+from jailbee.remote_ssh.display_grants import is_allowed
 from jailbee.remote_ssh.keys import AuthorizedKey, SSHKeyError, read_authorized_keys, ssh_paths
 from jailbee.remote_ssh.overrides import ServeOverrides, apply_ssh_overrides, describe_overrides
 from jailbee.remote_ssh.pty import ChildSpec, PTYError, run_child
@@ -91,11 +92,18 @@ class UpdateWatch:
 class JailbeeSSHServer(asyncssh.SSHServer):
     """Keep authentication state local to one connection and refuse forwarding."""
 
-    def __init__(self, live: set[asyncssh.SSHServerConnection] | None = None) -> None:
+    def __init__(
+        self,
+        live: set[asyncssh.SSHServerConnection] | None = None,
+        gui_enabled: Callable[[], bool] | None = None,
+    ) -> None:
         # `live`, when given, is a shared registry `serve_async` uses to hang
         # up every connection on SIGTERM. It is `None` for tests and any other
         # caller that constructs a server directly.
         self._live = live
+        # `remote.ssh.gui`, re-read per request so turning it off revokes
+        # grants at once. `None` means never: forwarding stays refused.
+        self._gui_enabled = gui_enabled
 
     def connection_made(self, conn: asyncssh.SSHServerConnection) -> None:
         self._conn = conn
@@ -149,7 +157,15 @@ class JailbeeSSHServer(asyncssh.SSHServer):
     def connection_requested(
         self, dest_host: str, dest_port: int, orig_host: str, orig_port: int
     ) -> bool:
-        return False
+        """Allow a tunnel only to a destination this very key was granted.
+
+        Everything else stays refused: reverse, unix and any other TCP
+        forwarding (`docs/security.md`).
+        """
+        if self._gui_enabled is None or not self._gui_enabled():
+            return False
+        fingerprint = self._conn.get_extra_info("jailbee_key_fingerprint")
+        return fingerprint is not None and is_allowed(fingerprint, dest_host, dest_port)
 
     def server_requested(self, listen_host: str, listen_port: int) -> bool:
         return False
@@ -492,8 +508,18 @@ async def serve_async(
 
     update = UpdateWatch(__version__, stop_for_update)
 
+    def gui_enabled() -> bool:
+        try:
+            global_config, _ = load_global_config(default_global_config_path())
+            current = global_config.remote.ssh
+            if overrides is not None:
+                current = apply_ssh_overrides(current, overrides)
+        except ConfigError:
+            return False
+        return current.gui
+
     def server_factory() -> JailbeeSSHServer:
-        return JailbeeSSHServer(live)
+        return JailbeeSSHServer(live, gui_enabled)
 
     def process_factory(process: asyncssh.SSHServerProcess[bytes]) -> Coroutine[Any, Any, None]:
         effective = None if overrides is None or overrides.is_empty() else overrides
