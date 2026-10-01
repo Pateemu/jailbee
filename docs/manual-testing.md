@@ -4984,3 +4984,152 @@ in-container pid if you can arrange it: both rows show their own state.
 Then, with `agents.claude.agent_view: true` (apply, restart), a `claude --bg`
 job runs to completion — this guards against a rename across the new
 `daemon/` and `jobs/` mount boundaries.
+
+## Unified outbox: isolated inspection and deletion
+
+These checks must use a disposable fixture or an explicitly approved,
+isolated nested Incus rig, never real postbox entries. Do not start system
+services or create a rig implicitly. Record PTY, offscreen Qt and rig results
+separately; mocked tests alone do not verify real terminal navigation or
+container ownership. No recipe in this section authorizes a GitHub write,
+`jb pr`, push, or a real-display GUI launch. The older publication smoke
+tests above require separate explicit authorization before their write steps.
+Even `outbox apply --dry-run` may read GitHub: use mocked publication
+preflight for the freshness check below.
+
+### Disposable fixture
+
+In an approved disposable container named `smoke`, or in the fixture's
+container-home directory, stage these files. The fixture's Incus wrapper
+must read only those temporary files, and its journal/state DB must also
+live under the fixture root. The fake repository/PR/head below are suitable
+for local inspection, not publication.
+
+```bash
+# Inside the disposable container, as its normal dev user only:
+mkdir -p ~/.jailbee/pr-outbox ~/.jailbee/issue-outbox
+printf 'Shared proposal body.\n' > ~/.jailbee/issue-outbox/shared.md
+cat > ~/.jailbee/issue-outbox/901-shared-a.json <<'JSON'
+{"version":1,"actions":[{"type":"create","repo":".","ref":"a","title":"Disposable A","body_file":"shared.md"}]}
+JSON
+cat > ~/.jailbee/issue-outbox/902-shared-b.json <<'JSON'
+{"version":1,"actions":[{"type":"create","repo":".","ref":"b","title":"Disposable B","body_file":"shared.md"}]}
+JSON
+cat > ~/.jailbee/issue-outbox/903-dependent.json <<'JSON'
+{"version":1,"actions":[
+  {"type":"create","repo":".","ref":"new","title":"Disposable dependency","body":"Do not publish."},
+  {"type":"comment","repo":".","issue_ref":"new","body":"Dependent comment."}
+]}
+JSON
+cat > ~/.jailbee/pr-outbox/904-review.json <<'JSON'
+{"version":1,"repo":"example/disposable","pr":1,
+ "head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","actions":[
+  {"type":"review","event":"COMMENT","body":"Do not publish.","comments":[
+    {"path":"sample.txt","line":1,"side":"RIGHT","body":"First disposable comment."},
+    {"path":"sample.txt","line":2,"side":"RIGHT","body":"Second disposable comment."}
+  ]}
+]}
+JSON
+```
+
+From the fixture CLI or the host controlling only that approved rig:
+
+```bash
+jb outbox ls smoke -o json
+jb outbox show smoke pr/904-review.json
+jb outbox drop smoke pr/904-review.json --action 0 --comment 1
+jb outbox show smoke pr/904-review.json -o json
+jb outbox drop smoke issue/901-shared-a.json
+jb outbox drop smoke issue/902-shared-b.json
+jb outbox drop smoke issue/903-dependent.json --action 0
+jb outbox drop smoke issue/903-dependent.json --action 0 --with-dependents
+```
+
+Confirm each exact deletion scope. After the comment deletion, action 0
+remains with only comment 0, its original body and envelope values unchanged.
+After deleting shared A, `shared.md` and shared B remain intact; after deleting
+B, the now-unreferenced body is removed. Deleting the create alone refuses
+because action 1 depends on it; `--with-dependents` previews removal of both
+and deletes the empty manifest only after consent. Re-inspect after every
+mutation; indices are not stable across edits.
+
+### Blocked progress and changed-body refusal (injected fixture only)
+
+Re-seed `904-review.json` in the temporary fixture, then add
+`904-review.json.progress.json` beside it with:
+
+```json
+{"applied":[0],"urls":{"0":"https://github.com/example/disposable/pull/1#pullrequestreview-1"}}
+```
+
+`show` must display applied action 0 and its receipt; selective deletion must
+refuse. For a genuinely **partial** example, first append a second PR
+`comment` action (`{"type":"comment","body":"Still pending."}`) to the
+fixture manifest before adding that sidecar. Action 0 is applied, action 1
+pending, and neither child nor whole PR deletion may discard that evidence.
+Malformed sidecars must block, not silently reset progress. For issues,
+inject a settled journal via the existing `JournalStore` fixture API: a
+create applied with its number/receipt and its dependent comment pending.
+Selective deletion refuses; whole `--archive-journal` deletion may proceed
+with receipt preview. Injecting an uncertain record must refuse that escape.
+Never fabricate journals or progress in real stores, and never call a real
+publication command to manufacture this state.
+
+Re-seed shared A/B. Copy A's revision token from `show`, change only
+`shared.md` in the fixture, then invoke `drop` with that old `--revision`.
+Expect a refresh-required refusal with both manifests/body unchanged. The
+injected `apply` path with mocked domain preflight must likewise refuse the
+old token before any mocked publisher runs. Refresh, read the new body and
+obtain a new token; do not automatically retry approval. Exercise an agent
+change while the deletion confirmation is open too: accepting the stale
+scope must refuse. Check raw survivor JSON, not just displayed text.
+
+### Terminal PTY and native Qt lifetimes
+
+Drive `outbox browse smoke` through a real PTY with the injected fixture:
+select proposal, action 0, comment 1; Back returns one level at a time.
+Delete that comment after confirmation, Refresh, and verify it is absent.
+Decline dependent-create cascade consent and verify no change; accept it on
+a fresh attempt and verify the exact displayed scope. While a child is
+selected, change its referenced body through the fixture and Refresh: the
+proposal may remain selected, but stale action/comment selections must reset.
+Exit/cancel must return without recursion or a hanging prompt. Off-TTY
+`outbox smoke` prints the overview, not an interactive picker. Exercise
+`outbox browse ls` with a disposable container named `ls`.
+
+Run a dedicated `QT_QPA_PLATFORM=offscreen` harness with mocked Incus and
+temporary journals; do not launch `jb gui` on the operator's display.
+Open the native `OutboxDialog`: tree selection shows full plain text,
+Refresh reloads and Delete selected uses the frozen revision-checked plan.
+Hold the injected loader at a barrier, close during load, then release it:
+the hidden dialog must remain owned until the worker finishes, retire once,
+and neither crash nor update a destroyed widget. Repeat during deletion and
+application shutdown, including a persistence failure; workers must finish
+and mutation completion must still invalidate counts. Mock terminal launch:
+publication must pass exactly the selected logical ID and revision to
+`outbox apply`, without `--yes`, and launch is not a receipt. Refresh on
+return. This harness does not verify a real terminal emulator or display.
+
+Over a separately approved disposable SSH fixture, browsing must expose no
+mutation callbacks even under full policy. Check shorthand routes to
+`outbox browse`, and explicit `outbox drop`/`apply` independently honor
+command and host-protection policy. Mock publication; do not test by posting.
+
+### Nested Incus ownership and unavailable containers (separate gate)
+
+Only after the controller approves the rig, use an already available daemon
+and isolated disposable repo/config/state. Create new containers with
+`--no-clone --no-autostart`; inspect both fixed directories with `stat` as
+the normal container user. They must be user-owned, writable and not
+symlinks, before any agent runs. Repeat the disposable inspection/deletion
+recipes only; no publication, remote writes or real postbox entries.
+
+Stop only that disposable container. `outbox ls smoke -o json` must include
+an unavailable record/error (exit 2), not an empty queue; `outbox show` and
+`drop` refuse without auto-starting it. In a disposable older-container
+fixture with absent stores, inspection reports absence without creating
+directories. Idempotent user `mkdir -p` can then stage proposals. Destroy only
+resources created by this approved rig. If the daemon, PTY, Qt dependency
+or approved rig is unavailable, report the exact omitted check as pending,
+not verified. Real-display and live GitHub publication remain separate,
+explicitly authorized checks.
