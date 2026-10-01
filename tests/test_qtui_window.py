@@ -120,9 +120,7 @@ def test_outbox_browse_launches_in_terminal_with_repo_target(config_path):
     assert action.cwd == Path("/repo")
     assert action.verb == "outbox browse"
     assert action.confirm is False
-    assert resolve_launch(action, TerminalSpec("xterm", ["-e"])) == [
-        "xterm", "-e", *expected
-    ]
+    assert resolve_launch(action, TerminalSpec("xterm", ["-e"])) == ["xterm", "-e", *expected]
     with pytest.raises(TerminalNotFoundError):
         resolve_launch(action, None)
 
