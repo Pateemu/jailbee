@@ -299,6 +299,7 @@ def container_profiles(
             "base_url": base_urls[account],
             "key_file": container_key_file(account),
             "effort": profile.effort,
+            "instructions": profile.instructions,
             "tiers": {t: tier_alias(scope, name, t) for t in profile.tiers},
             "context_window": max(routes[r].context_window for r in profile.tiers.values()),
         }

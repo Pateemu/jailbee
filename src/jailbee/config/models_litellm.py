@@ -112,6 +112,12 @@ _SECRET_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
 _RESERVED_SECRET_NAMES = frozenset({"PORT", "PATH", "HOME"})
 _RESERVED_SECRET_PREFIXES = ("LITELLM_", "JAILBEE_", "CHATGPT_", "PYTHON", "LD_")
 
+INSTRUCTIONS_MAX_BYTES = 64 * 1024
+"""Cap on `LiteLLMProfile.instructions`, in UTF-8 bytes. Linux limits one argv
+string to 128 KiB (`MAX_ARG_STRLEN`) and `claude-jb` passes the text as one
+argument next to the user's own `--append-system-prompt`, so half of that is
+the most a profile may take."""
+
 _BUILTIN_ROUTES: dict[str, dict[str, object]] = {
     "astra": {"model": "chatgpt/gpt-6-astra"},
     "sol-xhigh": {"model": "chatgpt/gpt-6-sol", "effort": "xhigh"},
@@ -313,6 +319,25 @@ class LiteLLMProfile(BaseModel):
             "you pass `--effort` yourself."
         ),
     )
+    instructions: str | None = Field(
+        default=None,
+        description=(
+            "Model-policy text `claude-jb` appends to Claude Code's system prompt in "
+            "sessions of this profile (at most 64 KiB; use a YAML `|` block for several "
+            "lines). A higher layer replaces it whole; `null` removes it."
+        ),
+    )
+
+    @field_validator("instructions")
+    @classmethod
+    def _instructions_usable(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("is empty; write `null` to remove it")
+        if len(value.encode()) > INSTRUCTIONS_MAX_BYTES:
+            raise ValueError(f"exceeds {INSTRUCTIONS_MAX_BYTES // 1024} KiB")
+        return value
 
 
 class LiteLLMRepoOverlay(BaseModel):
@@ -390,6 +415,7 @@ class ResolvedProfile:
     tiers: dict[str, str]
     effort: str | None
     account: str | None = None
+    instructions: str | None = None
 
 
 def _overlay(builtin: dict[str, object], user: BaseModel | None) -> dict[str, object]:
@@ -605,6 +631,7 @@ class LiteLLMConfig(BaseModel):
                 tiers=tiers,
                 effort=_optional_str(raw.get("effort")),
                 account=_optional_str(raw.get("account")),
+                instructions=_optional_str(raw.get("instructions")),
             )
         return out
 

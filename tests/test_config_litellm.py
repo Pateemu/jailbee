@@ -29,6 +29,7 @@ def test_defaults_are_disabled_with_builtin_codex_profile():
         tiers={"fable": "astra", "opus": "sol-xhigh", "sonnet": "sol-medium", "haiku": "luna-high"},
         effort=None,
         account="default",
+        instructions=None,
     )
 
 
@@ -186,7 +187,7 @@ def test_custom_route_and_profile_with_params_and_effort():
     )
     assert cfg.effective_routes()["custom"].params == {"temperature": 0.6}
     assert cfg.effective_profiles()["mine"] == ResolvedProfile(
-        name="mine", tiers={"opus": "custom"}, effort="max", account="default"
+        name="mine", tiers={"opus": "custom"}, effort="max", account="default", instructions=None
     )
 
 
@@ -456,3 +457,44 @@ def test_the_default_view_is_the_disabled_host_config():
     view = LiteLLMRepoView()
     assert view.scope is None and view.origin is None
     assert view.config.enabled is False
+
+
+def test_profile_instructions_default_to_none():
+    assert LiteLLMConfig().effective_profiles()["codex"].instructions is None
+
+
+def test_profile_instructions_reach_the_resolved_profile_and_keep_the_builtin_tiers():
+    cfg = LiteLLMConfig.model_validate(
+        {"profiles": {"codex": {"instructions": "Prefer cheap tiers."}}}
+    )
+    codex = cfg.effective_profiles()["codex"]
+    assert codex.instructions == "Prefer cheap tiers."
+    assert codex.tiers["opus"] == "sol-xhigh"
+
+
+def test_overlay_replaces_instructions_whole_and_null_removes_them():
+    host = LiteLLMConfig.model_validate({"profiles": {"codex": {"instructions": "host text"}}})
+
+    replaced = host.with_overlay(_overlay(profiles={"codex": {"instructions": "repo text"}}))
+    removed = host.with_overlay(_overlay(profiles={"codex": {"instructions": None}}))
+    kept = host.with_overlay(_overlay(profiles={"codex": {"effort": "low"}}))
+
+    assert replaced.effective_profiles()["codex"].instructions == "repo text"
+    assert removed.effective_profiles()["codex"].instructions is None
+    assert kept.effective_profiles()["codex"].instructions == "host text"
+
+
+@pytest.mark.parametrize("text", ["", "  \n\t"])
+def test_empty_instructions_are_rejected(text):
+    with pytest.raises(ValidationError, match="write `null`"):
+        LiteLLMConfig.model_validate({"profiles": {"codex": {"instructions": text}}})
+
+
+def test_instructions_are_capped_at_64_kib_of_utf8():
+    at_cap = "a" * 65536
+    LiteLLMConfig.model_validate({"profiles": {"codex": {"instructions": at_cap}}})
+    with pytest.raises(ValidationError, match="64 KiB"):
+        LiteLLMConfig.model_validate({"profiles": {"codex": {"instructions": at_cap + "a"}}})
+    # Bytes, not characters: 32769 two-byte characters are 65538 bytes.
+    with pytest.raises(ValidationError, match="64 KiB"):
+        LiteLLMConfig.model_validate({"profiles": {"codex": {"instructions": "ä" * 32769}}})

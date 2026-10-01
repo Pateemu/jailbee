@@ -173,6 +173,7 @@ def test_container_profiles():
             "base_url": "http://10.0.0.3:4100",
             "key_file": "/etc/jailbee/litellm-default.key",
             "effort": None,
+            "instructions": None,
             "tiers": {
                 "fable": "jb.codex.most-capable",
                 "opus": "jb.codex.capable",
@@ -194,6 +195,14 @@ def test_profile_context_window_is_the_largest_of_the_profiles_routes():
     profiles = container_profiles(cfg, base_urls={"default": "u"})
     assert profiles["small"]["context_window"] == 400_000
     assert profiles["codex"]["context_window"] == 922_000
+
+
+def test_container_profiles_carry_the_profile_instructions():
+    cfg = LiteLLMConfig.model_validate(
+        {"profiles": {"codex": {"instructions": "Use sonnet for edits."}}}
+    )
+    profiles = container_profiles(cfg, base_urls={"default": "u"})
+    assert profiles["codex"]["instructions"] == "Use sonnet for edits."
 
 
 def test_egress_hosts_for_chatgpt():
