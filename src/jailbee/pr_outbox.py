@@ -30,6 +30,7 @@ from jailbee import git, pr
 from jailbee.config import CONTAINER_USERNAME
 from jailbee.github_repo import github_slug
 from jailbee.incus import Incus, IncusError
+from jailbee.outbox.cleanup import exclusive_body_names
 from jailbee.outbox.io import PrManagement
 from jailbee.outbox.models import (
     OutboxChanged,
@@ -1093,11 +1094,7 @@ def _orphaned_body_files(outbox: Outbox, exclude_name: str) -> list[str]:
                 referenced_elsewhere.update(_body_references(outbox.files[name]))
     except (KeyError, ValueError, RecursionError, ManifestError):
         return []
-    return sorted(
-        n
-        for n in candidates - referenced_elsewhere
-        if n in outbox.files and n != "applied.log" and not n.endswith(".json")
-    )
+    return list(exclusive_body_names(candidates, outbox.files, referenced_elsewhere))
 
 
 def _delete_from_outbox(
@@ -1125,7 +1122,13 @@ def _delete_from_outbox(
     if with_sidecar:
         names.append(f"{name}.progress.json")
     names.extend(_orphaned_body_files(outbox, name))
-    incus.exec(container, ["rm", "-f", "--", *(f"{outbox_dir()}/{n}" for n in names)], uid=uid)
+    from jailbee.outbox import io as store_io
+
+    store_io.mutate_store(
+        incus, container, "pr", uid=uid, expected=outbox.files,
+        new_manifest=None, delete_names=tuple(names), forbidden_progress=None,
+        rejected_names=outbox.rejected,
+    )
     return names
 
 
@@ -1221,8 +1224,27 @@ def finalize(
 
     if merged_applied == set(range(len(manifest.actions))):
         try:
-            _delete_from_outbox(incus, container, outbox, manifest.name, uid=uid, with_sidecar=True)
-        except IncusError as e:
+            from jailbee.outbox import io as store_io
+
+            fresh_store = store_io.read_store(incus, container, "pr", uid=uid)
+            if outbox.identity is not None:
+                _same_identity(incus, container, outbox.identity)
+            files = fresh_store.as_dict()
+            bodies = _body_references(outbox.files[manifest.name])
+            if files.get(manifest.name) != outbox.files[manifest.name] or any(
+                files.get(body) != outbox.files.get(body) for body in bodies
+            ):
+                raise OutboxChanged("proposal changed after publication; cleanup refused")
+            from jailbee.outbox.inspect import pr_progress_evidence
+
+            evidence = pr_progress_evidence(fresh_store, manifest.name, len(manifest.actions))
+            if evidence.error:
+                raise OutboxError(evidence.error)
+            recorded = Progress(evidence.applied, {str(i): url for i, url in evidence.receipts})
+            if recorded.applied != merged_applied or any(recorded.urls.get(k) != v for k, v in merged_urls.items()):
+                raise OutboxChanged("publication progress changed; cleanup refused")
+            _delete_from_outbox(incus, container, Outbox(files, fresh_store.rejected, outbox.identity), manifest.name, uid=uid, with_sidecar=True)
+        except (IncusError, OutboxExecutionError, OutboxError, JournalError) as e:
             raise FinalizeError(
                 f"manifest {manifest.name} is fully applied but could not be "
                 f"deleted ({e}); it will be cleaned up on a later run"
@@ -2289,20 +2311,6 @@ def _offer_locked(
             error_plain(f"{target.manifest.name}: {outcome.failure}")
             warn_plain(f"{target.manifest.name} is still pending; re-running skips what landed.")
             stop = True
-        # `finalize` deletes a spent manifest together with the body files no
-        # *other* manifest in this snapshot references. Drop the spent one from
-        # the snapshot so a `.md` shared by two completed manifests doesn't
-        # look referenced by each of them in turn and outlive them both — the
-        # same hazard `jailbee review drop` guards against.
-        if not pending_indices(
-            target.manifest,
-            Progress(applied=progress.applied | set(outcome.applied), urls={}),
-        ):
-            outbox = Outbox(
-                files={k: v for k, v in outbox.files.items() if k != target.manifest.name},
-                rejected=outbox.rejected,
-                identity=identity,
-            )
         if stop:
             failures += 1
             left = [t.manifest.name for t, _, _ in plans[position + 1 :]]

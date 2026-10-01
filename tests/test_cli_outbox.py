@@ -230,6 +230,19 @@ def publication_env(env, mocker, tmp_path):
         return result
 
     env[1].exec_with_input.side_effect = mutate
+
+    def execute(container, command, **kwargs):
+        if command[0] == "bash" and command[-1].endswith("progress.json"):
+            files = env[2]["pr"].as_dict()
+            files[command[-1].rsplit("/", 1)[-1]] = command[4]
+            env[2]["pr"] = store("pr", files, rejected=env[2]["pr"].rejected)
+        elif command[0] == "bash" and command[-1].endswith("applied.log"):
+            files = env[2]["pr"].as_dict()
+            files["applied.log"] = files.get("applied.log", "") + command[4] + "\n"
+            env[2]["pr"] = store("pr", files, rejected=env[2]["pr"].rejected)
+        return ""
+
+    env[1].exec.side_effect = execute
     mocker.patch.object(io, "read_store", side_effect=lambda i, c, k, **kw: env[2][k])
     mocker.patch.object(
         issue_outbox, "read_text_outbox", side_effect=lambda *a, **kw: env[2]["issue"].as_dict()
@@ -313,15 +326,9 @@ def test_apply_real_domain_orchestration(publication_env, mocker, kind, mode):
         assert "fully applied" in result.output
     else:
         review.assert_called_once()
-    if mode == "yes" and kind == "issue":
+    if mode == "yes":
         assert "001.json" not in env[2][kind].as_dict()
         assert "002.json" in env[2][kind].as_dict()
-    elif mode == "yes":
-        removed = next(
-            call.args[1] for call in env[1].exec.call_args_list if call.args[1][0] == "rm"
-        )
-        assert any(n.endswith("/001.json") for n in removed)
-        assert not any(n.endswith("/002.json") for n in removed)
 
 
 @pytest.mark.parametrize("kind", ["issue", "pr"])

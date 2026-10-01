@@ -68,6 +68,19 @@ def env(mocker, make_cfg, tmp_path):
 
     incus.exec_with_input.side_effect = mutate
 
+    def execute(container, command, **kwargs):
+        if command[0] == "bash" and command[-1].endswith("progress.json"):
+            files = snapshots["pr"].as_dict()
+            files[command[-1].rsplit("/", 1)[-1]] = command[4]
+            snapshots["pr"] = store("pr", files, rejected=snapshots["pr"].rejected)
+        elif command[0] == "bash" and command[-1].endswith("applied.log"):
+            files = snapshots["pr"].as_dict()
+            files["applied.log"] = files.get("applied.log", "") + command[4] + "\n"
+            snapshots["pr"] = store("pr", files, rejected=snapshots["pr"].rejected)
+        return ""
+
+    incus.exec.side_effect = execute
+
     def read(i, c, k, **kw):
         return snapshots[k]
 
@@ -409,8 +422,8 @@ def test_pr_publishes_selected_all_actions_and_full_plain_text(env, capsys):
         env[2]["pr"].as_dict()["body.md"],
         "Second action",
     ]
-    removed = next(c.args[1] for c in env[1].exec.call_args_list if c.args[1][0] == "rm")
-    assert not any(n.endswith(("/002.json", "/body.md")) for n in removed)
+    assert "001.json" not in env[2]["pr"].as_dict()
+    assert {"002.json", "body.md", "applied.log"} <= set(env[2]["pr"].as_dict())
     assert env[7].identity is None
 
 
