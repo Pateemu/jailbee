@@ -38,15 +38,18 @@ class StubDeployment:
         if "litellm_params" not in kw:
             raise ValueError("litellm_params: field required")
         self.model_info = _Info((kw.get("model_info") or {}).get("id"))
+        self.litellm_params = kw["litellm_params"]
 
 
 class FakeRouter:
     def __init__(self, ids=()):
         self.model_list = [{"model_info": {"id": i}} for i in ids]
         self.calls: list[tuple[str, str]] = []
+        self.params: dict[str, dict] = {}
 
     def upsert_deployment(self, deployment):
         self.calls.append(("upsert", deployment.model_info.id))
+        self.params[deployment.model_info.id] = deployment.litellm_params
 
     def delete_deployment(self, dep_id):
         self.calls.append(("delete", dep_id))
@@ -350,3 +353,58 @@ def test_the_watcher_starts_in_a_running_loop_and_reloads(cb, tmp_path, monkeypa
 
     digest = asyncio.run(scenario())
     assert ("upsert", "jb:a") in router.calls and _ack(tmp_path)["hot_digest"] == digest
+
+
+def _keyed(dep_id: str, params: dict) -> dict:
+    return {"model_name": dep_id, "litellm_params": params, "model_info": {"id": dep_id}}
+
+
+def test_environ_references_are_resolved_before_the_upsert(cb, tmp_path, monkeypatch):
+    monkeypatch.setenv("MY_KEY", "s3cret")
+    monkeypatch.setenv("OTHER", "o")
+    params = {
+        "model": "openai/x",
+        "api_key": "os.environ/MY_KEY",
+        "extra_headers": {"X-Other": "os.environ/OTHER", "X-Plain": "keep"},
+        "stops": ["os.environ/OTHER", "plain", 3],
+    }
+    _write_hot(tmp_path, TABLE, [_keyed("jb:a", params)])
+    handler, router = cb.JailbeeCallback(), FakeRouter()
+    handler.reload_once(router)
+    assert router.params["jb:a"] == {
+        "model": "openai/x",
+        "api_key": "s3cret",
+        "extra_headers": {"X-Other": "o", "X-Plain": "keep"},
+        "stops": ["o", "plain", 3],
+    }
+    assert params["api_key"] == "os.environ/MY_KEY"  # the hot file's data is not mutated
+
+
+def test_an_unset_variable_changes_nothing_and_names_the_variable(cb, tmp_path, monkeypatch):
+    monkeypatch.delenv("MISSING_KEY", raising=False)
+    monkeypatch.setenv("MY_KEY", "s3cret")
+    handler, router = cb.JailbeeCallback(), FakeRouter(["jb:old"])
+    handler.reload_once(router)
+    router.calls.clear()
+    good = _keyed("jb:a", {"model": "m", "api_key": "os.environ/MY_KEY"})
+    bad = _keyed("jb:b", {"model": "m", "api_key": "os.environ/MISSING_KEY"})
+    _write_hot(tmp_path, {"aliases": {}, "catch_all": None}, [good, bad])
+    handler.reload_once(router)
+    assert router.calls == []  # no upsert, no delete of jb:old
+    assert handler._table == TABLE
+    error = _ack(tmp_path)["error"]
+    assert "MISSING_KEY" in error and "jb:b" in error
+    assert "s3cret" not in error
+
+
+def test_the_ack_never_contains_a_resolved_secret(cb, tmp_path, monkeypatch):
+    monkeypatch.setenv("MY_KEY", "s3cret")
+    monkeypatch.delenv("MISSING_KEY", raising=False)
+    models = [
+        _keyed("jb:a", {"model": "m", "api_key": "os.environ/MY_KEY"}),
+        _keyed("jb:b", {"model": "m", "api_key": "os.environ/MISSING_KEY"}),
+    ]
+    _write_hot(tmp_path, TABLE, models)
+    handler = cb.JailbeeCallback()
+    handler.reload_once(FakeRouter())
+    assert "s3cret" not in (tmp_path / "applied.json").read_text()

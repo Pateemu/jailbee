@@ -92,6 +92,29 @@ def _router() -> Any | None:
     return proxy_server.llm_router
 
 
+_ENV_PREFIX = "os.environ/"
+
+
+def _resolve_env(value: Any, model_name: object) -> Any:
+    """Copy `value` with every ``os.environ/NAME`` string replaced by the variable.
+
+    LiteLLM resolves these when it loads config.yaml, but not on the
+    ``upsert_deployment`` path, which would send the literal as the API key.
+    An unset variable raises; the message names the variable, never its value.
+    """
+    if isinstance(value, str) and value.startswith(_ENV_PREFIX):
+        name = value[len(_ENV_PREFIX) :]
+        resolved = os.environ.get(name)
+        if resolved is None:
+            raise ValueError(f"deployment {model_name!r}: environment variable {name} is not set")
+        return resolved
+    if isinstance(value, dict):
+        return {k: _resolve_env(v, model_name) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve_env(v, model_name) for v in value]
+    return value
+
+
 def reconcile_router(router: Any, models: list[dict[str, Any]]) -> None:
     """Bring the router's deployments to exactly `models`.
 
@@ -105,6 +128,11 @@ def reconcile_router(router: Any, models: list[dict[str, Any]]) -> None:
         dep_id = (entry.get("model_info") or {}).get("id")
         if not dep_id:
             raise ValueError(f"deployment {entry.get('model_name')!r} has no model_info.id")
+        if "litellm_params" in entry:
+            entry = {
+                **entry,
+                "litellm_params": _resolve_env(entry["litellm_params"], entry.get("model_name")),
+            }
         wanted[dep_id] = Deployment(**entry)
     present = {
         info["id"] for item in router.model_list if (info := item.get("model_info") or {}).get("id")
