@@ -14,6 +14,7 @@ import typer
 import yaml
 
 from jailbee import __version__, completion, table_format
+from jailbee.cli_outbox import app as outbox_app
 from jailbee.config import ConfigError, load_config, load_config_unsanitized
 from jailbee.constants import LEGACY_REMOVAL_VERSION
 from jailbee.global_config import (
@@ -40,6 +41,8 @@ app = typer.Typer(
     help="Manage isolated development environments using Incus.",
     no_args_is_help=True,
 )
+
+app.add_typer(outbox_app)
 
 config_app = typer.Typer(
     name="config",
@@ -3694,6 +3697,7 @@ if TYPE_CHECKING:
     from jailbee.issue_manifest import IssueManifest
     from jailbee.issue_outbox import ApplyReport, OutboxSnapshot, PreparedBatch
     from jailbee.lifecycle import ContainerInfo, NewContainerOptions, ResolvedContainer
+    from jailbee.outbox.io import PrManagement
     from jailbee.outbox_io import IssueJournal
     from jailbee.pool import Pool
     from jailbee.pr_outbox import Manifest, Outbox
@@ -7472,7 +7476,13 @@ app.command(
 
 
 def _offer_outbox_comments(
-    cfg: "Config", incus: "IncusType", container: str, short: str, *, number: int
+    cfg: "Config",
+    incus: "IncusType",
+    container: str,
+    short: str,
+    *,
+    number: int,
+    management: "PrManagement | None" = None,
 ) -> int:
     """Offer to publish the PR comments the container still has pending.
 
@@ -7503,6 +7513,7 @@ def _offer_outbox_comments(
         pr_number=number,
         confirm=_confirm,
         can_prompt=_stdin_is_interactive(),
+        management=management,
     )
 
 
@@ -7864,205 +7875,231 @@ def pr_cmd(
         raise typer.Exit(1)
 
     ai_on = cfg.claude.enabled and cfg.claude.ai_pr_description and not no_ai
-    plan = pr_flow.resolve_pr_text_and_head(
-        cfg,
-        incus,
-        full,
-        scope,
-        is_update=bool(record.author or stored_pr_branch),
-        stored_head=stored_pr_branch,
-        source_branch=container_branch,
-        base=resolved_base,
-        title=title,
-        body=body,
-        as_name=as_name,
-        no_ai=no_ai,
-        status_label=f"Generating PR title/description with Claude in '{short}'…",
-        use_outbox=not no_outbox,
-    )
-    publish_name, ai_text = plan.publish_name, plan.ai_text
-    # A container-written description is text that already exists, so `--no-ai`
-    # (which clears `ai_on`) must not discard it. `ai_on` itself stays as it is:
-    # it still governs the update path's Claude offer below.
-    text_on = ai_on or plan.outbox_source is not None
+    from jailbee.outbox.io import PrManagement
+    from jailbee.outbox.models import OutboxError
 
-    # A stacked PR under the reviewed head's own name would not be a stacked PR
-    # at all: the push would update the reviewed PR and this run would then try
-    # to open a PR from that branch onto itself. Reached with `--no-ai` (the
-    # name defaults to the container branch, which IS the reviewed head) or an
-    # AI proposal that echoed it.
-    if (
-        review_target is not None
-        and review_target.stacked
-        and publish_name == (review_target.parent_head)
-    ):
-        error(
-            f"A stacked PR needs a head branch of its own: '{publish_name}' is PR "
-            f"#{review_target.parent_number}'s own head, so publishing there would "
-            f"update that PR instead. Name one with --as <branch>."
-        )
-        raise typer.Exit(2)
-
-    # --- Publish (fetch + push under the chosen name) ---
-    # On a foreign PR head the generic push-failure hint's "--as" advice does
-    # not apply, so `is_foreign_pr_head` (resolved above) tailors it.
+    management = PrManagement()
     try:
-        publish = sync.publish_branch_from_container(
-            cfg,
-            incus,
-            short,
-            branch=branch,
-            publish_name=publish_name,
-            force=force,
-            on_before_push=lambda result: _print_publish_progress(cfg, short, result),
-            tags=cfg.pull.tags,
-        )
-    except sync.SyncError as exc:
-        error(str(exc))
-        if is_foreign_pr_head:
-            info(
-                "This container publishes to an existing PR's head branch. A "
-                "rejected push usually means the PR author pushed in the "
-                f"meantime — bring their commits in with `jailbee git push {short} "
-                "--pr --rebase`, then re-run `jailbee pr`. It can also mean you lack "
-                "write access to the repository."
+        with pr_flow.outbox_publication_guard(
+            cfg, incus, full, enabled=not no_outbox, management=management
+        ):
+            plan = pr_flow.resolve_pr_text_and_head(
+                cfg,
+                incus,
+                full,
+                scope,
+                is_update=bool(record.author or stored_pr_branch),
+                stored_head=stored_pr_branch,
+                source_branch=container_branch,
+                base=resolved_base,
+                title=title,
+                body=body,
+                as_name=as_name,
+                no_ai=no_ai,
+                status_label=f"Generating PR title/description with Claude in '{short}'…",
+                use_outbox=not no_outbox,
             )
-        raise typer.Exit(1) from exc
+            pr_flow.bind_outbox_source(management, plan.outbox_source)
+            publish_name, ai_text = plan.publish_name, plan.ai_text
+            # A container-written description is text that already exists, so `--no-ai`
+            # (which clears `ai_on`) must not discard it. `ai_on` itself stays as it is:
+            # it still governs the update path's Claude offer below.
+            text_on = ai_on or plan.outbox_source is not None
 
-    # The fetch summary and the dirty-tree warning were printed by
-    # `_print_publish_progress` before the push, not here.
-
-    # --- Reconcile a local branch to the external name (create path) ---
-    # Never on the stacked path: the container's branch is the reviewed PR's
-    # head, and the host's own copy of it belongs to that PR, not to this run —
-    # renaming it to the stacked PR's head would hijack the author's branch.
-    is_stacked_create = review_target is not None and review_target.stacked
-    if (
-        not (is_author or stored_pr_branch or is_stacked_create)
-        and publish.publish_name != publish.fetch.branch
-    ):
-        if git_mod.local_branch_exists(cfg.repo_root, publish.fetch.branch):
-            if git_mod.local_branch_exists(cfg.repo_root, publish.publish_name):
-                warn(
-                    f"Local branch '{publish.publish_name}' already exists; leaving "
-                    f"'{publish.fetch.branch}' as-is (no rename)."
+            # A stacked PR under the reviewed head's own name would not be a stacked PR
+            # at all: the push would update the reviewed PR and this run would then try
+            # to open a PR from that branch onto itself. Reached with `--no-ai` (the
+            # name defaults to the container branch, which IS the reviewed head) or an
+            # AI proposal that echoed it.
+            if (
+                review_target is not None
+                and review_target.stacked
+                and publish_name == (review_target.parent_head)
+            ):
+                error(
+                    f"A stacked PR needs a head branch of its own: '{publish_name}' is PR "
+                    f"#{review_target.parent_number}'s own head, so publishing there would "
+                    f"update that PR instead. Name one with --as <branch>."
                 )
-            else:
-                try:
-                    git_mod.rename_branch(cfg.repo_root, publish.fetch.branch, publish.publish_name)
-                    success(
-                        f"Renamed local branch '{publish.fetch.branch}' → "
-                        f"'{publish.publish_name}' to match the PR head."
-                    )
-                    if git_mod.remote_ref_exists(
-                        cfg.repo_root, cfg.upstream_remote, publish.publish_name
-                    ):
-                        git_mod.set_upstream(
-                            cfg.repo_root, publish.publish_name, f"origin/{publish.publish_name}"
-                        )
-                except git_mod.GitError as exc:
-                    warn(f"Could not rename local branch: {exc}")
+                raise typer.Exit(2)
 
-    is_update_path = bool(is_author or stored_pr_branch)
-    resolved_title, resolved_body = ("", "")
-    if not is_update_path:
-        resolved_title, resolved_body = pr_flow.resolve_create_text(
-            scope,
-            ai_on=text_on,
-            ai_text=ai_text,
-            title=title,
-            body=body,
-            fallback_ref=f"refs/jailbee/{short}/{publish.fetch.branch}",
-            publish_name=publish.publish_name,
-            origin_label=f"container '{short}'",
-        )
-    try:
-        created = pr_flow.create_or_view_pr(
-            scope,
-            active_state,
-            use_outbox=not no_outbox,
-            is_update=is_update_path,
-            head=publish.publish_name,
-            base=resolved_base,
-            title=resolved_title,
-            body=resolved_body,
-            draft=ready is not True,
-            label="jailbee pr",
-            record_context=f"failed to record the PR label on '{short}'",
-        )
-    except pr_mod.PrError as exc:
+            # --- Publish (fetch + push under the chosen name) ---
+            # On a foreign PR head the generic push-failure hint's "--as" advice does
+            # not apply, so `is_foreign_pr_head` (resolved above) tailors it.
+            try:
+                publish = sync.publish_branch_from_container(
+                    cfg,
+                    incus,
+                    short,
+                    branch=branch,
+                    publish_name=publish_name,
+                    force=force,
+                    on_before_push=lambda result: _print_publish_progress(cfg, short, result),
+                    tags=cfg.pull.tags,
+                )
+            except sync.SyncError as exc:
+                error(str(exc))
+                if is_foreign_pr_head:
+                    info(
+                        "This container publishes to an existing PR's head branch. A "
+                        "rejected push usually means the PR author pushed in the "
+                        f"meantime — bring their commits in with `jailbee git push {short} "
+                        "--pr --rebase`, then re-run `jailbee pr`. It can also mean you lack "
+                        "write access to the repository."
+                    )
+                raise typer.Exit(1) from exc
+
+            # The fetch summary and the dirty-tree warning were printed by
+            # `_print_publish_progress` before the push, not here.
+
+            # --- Reconcile a local branch to the external name (create path) ---
+            # Never on the stacked path: the container's branch is the reviewed PR's
+            # head, and the host's own copy of it belongs to that PR, not to this run —
+            # renaming it to the stacked PR's head would hijack the author's branch.
+            is_stacked_create = review_target is not None and review_target.stacked
+            if (
+                not (is_author or stored_pr_branch or is_stacked_create)
+                and publish.publish_name != publish.fetch.branch
+            ):
+                if git_mod.local_branch_exists(cfg.repo_root, publish.fetch.branch):
+                    if git_mod.local_branch_exists(cfg.repo_root, publish.publish_name):
+                        warn(
+                            f"Local branch '{publish.publish_name}' already exists; leaving "
+                            f"'{publish.fetch.branch}' as-is (no rename)."
+                        )
+                    else:
+                        try:
+                            git_mod.rename_branch(
+                                cfg.repo_root, publish.fetch.branch, publish.publish_name
+                            )
+                            success(
+                                f"Renamed local branch '{publish.fetch.branch}' → "
+                                f"'{publish.publish_name}' to match the PR head."
+                            )
+                            if git_mod.remote_ref_exists(
+                                cfg.repo_root, cfg.upstream_remote, publish.publish_name
+                            ):
+                                git_mod.set_upstream(
+                                    cfg.repo_root,
+                                    publish.publish_name,
+                                    f"origin/{publish.publish_name}",
+                                )
+                        except git_mod.GitError as exc:
+                            warn(f"Could not rename local branch: {exc}")
+
+            is_update_path = bool(is_author or stored_pr_branch)
+            resolved_title, resolved_body = ("", "")
+            if not is_update_path:
+                resolved_title, resolved_body = pr_flow.resolve_create_text(
+                    scope,
+                    ai_on=text_on,
+                    ai_text=ai_text,
+                    title=title,
+                    body=body,
+                    fallback_ref=f"refs/jailbee/{short}/{publish.fetch.branch}",
+                    publish_name=publish.publish_name,
+                    origin_label=f"container '{short}'",
+                )
+            if not is_update_path:
+                pr_flow.bind_outbox_source(management, plan.outbox_source)
+                pr_flow.validate_outbox_source(cfg, incus, full, plan.outbox_source)
+            try:
+                created = pr_flow.create_or_view_pr(
+                    scope,
+                    active_state,
+                    use_outbox=not no_outbox,
+                    is_update=is_update_path,
+                    head=publish.publish_name,
+                    base=resolved_base,
+                    title=resolved_title,
+                    body=resolved_body,
+                    draft=ready is not True,
+                    label="jailbee pr",
+                    record_context=f"failed to record the PR label on '{short}'",
+                )
+            except pr_mod.PrError as exc:
+                error(str(exc))
+                raise typer.Exit(1) from exc
+
+            is_update = is_author or created.already_existed
+            update = None
+            if is_update:
+                update = pr_flow.apply_pr_updates(
+                    cfg,
+                    incus,
+                    full,
+                    scope,
+                    number=created.number,
+                    branch=publish.fetch.branch,
+                    base=resolved_base,
+                    title=title,
+                    body=body,
+                    description=description,
+                    ready=ready,
+                    ai_on=ai_on,
+                    foreign_head=is_foreign_pr_head,
+                    url=created.url,
+                    use_outbox=not no_outbox,
+                    # What the create path already resolved this run, when `gh pr
+                    # create` turned out to find an existing PR. Passing it forward is
+                    # what keeps the "which pending description?" question to one
+                    # asking; `None` (the plain update path) makes the update path do
+                    # its own, first, lookup.
+                    outbox_hint=plan.outbox_source,
+                    management=management,
+                )
+            pr_flow.render_pr_outcome(
+                scope,
+                url=created.url,
+                number=created.number,
+                is_update=is_update,
+                publish_name=publish.publish_name,
+                forced=publish.forced,
+                ready=ready,
+                update=update,
+            )
+            if not is_update:
+                # Only the create path published *this* text. When `gh pr create` found
+                # a PR that already existed, this run's create-path text never landed:
+                # `apply_pr_updates` above decided the description instead, did its own
+                # outbox lookup (against the PR's real number) and recorded whatever it
+                # consumed. Recording here as well would burn the action twice.
+                pr_flow.record_outbox_consumption(cfg, incus, full, plan.outbox_source, created.url)
+            if is_stacked_create and review_target is not None:
+                info(
+                    f"PR #{created.number} is stacked on PR #{review_target.parent_number} "
+                    f"(base '{review_target.parent_head}'). Merge that one first."
+                )
+                pr_flow.record_stacked_base(incus, full, short, review_target.parent_head)
+                pr_flow.maybe_retarget_to_parent(
+                    cfg, incus, full, short, review_target, retarget=retarget
+                )
+            elif retarget is not None:
+                warn(
+                    "--retarget/--no-retarget is only acted on when a stacked PR is opened; "
+                    f"ignored. To move the base later: jailbee git retarget {short} <branch>"
+                )
+            # The offer to publish what else the container wrote, deliberately *not*
+            # adjacent to `render_pr_outcome`: the description this run consumed is
+            # recorded just above (here on the create path, inside `apply_pr_updates`
+            # on the update path), and re-reading the outbox before that record exists
+            # would show the spent description as still pending and publish it twice.
+            outbox_failures = (
+                0
+                if no_outbox
+                else _offer_outbox_comments(
+                    cfg, incus, full, short, number=created.number, management=management
+                )
+            )
+            if web:
+                pr_mod.open_pr_in_browser(cfg.repo_root, created.number)
+            if outbox_failures:
+                # The PR itself landed and its URL is already on screen; this says only
+                # that the comments did not follow it.
+                raise typer.Exit(1)
+    except OutboxError as exc:
         error(str(exc))
         raise typer.Exit(1) from exc
-
-    is_update = is_author or created.already_existed
-    update = None
-    if is_update:
-        update = pr_flow.apply_pr_updates(
-            cfg,
-            incus,
-            full,
-            scope,
-            number=created.number,
-            branch=publish.fetch.branch,
-            base=resolved_base,
-            title=title,
-            body=body,
-            description=description,
-            ready=ready,
-            ai_on=ai_on,
-            foreign_head=is_foreign_pr_head,
-            url=created.url,
-            use_outbox=not no_outbox,
-            # What the create path already resolved this run, when `gh pr
-            # create` turned out to find an existing PR. Passing it forward is
-            # what keeps the "which pending description?" question to one
-            # asking; `None` (the plain update path) makes the update path do
-            # its own, first, lookup.
-            outbox_hint=plan.outbox_source,
-        )
-    pr_flow.render_pr_outcome(
-        scope,
-        url=created.url,
-        number=created.number,
-        is_update=is_update,
-        publish_name=publish.publish_name,
-        forced=publish.forced,
-        ready=ready,
-        update=update,
-    )
-    if not is_update:
-        # Only the create path published *this* text. When `gh pr create` found
-        # a PR that already existed, this run's create-path text never landed:
-        # `apply_pr_updates` above decided the description instead, did its own
-        # outbox lookup (against the PR's real number) and recorded whatever it
-        # consumed. Recording here as well would burn the action twice.
-        pr_flow.record_outbox_consumption(cfg, incus, full, plan.outbox_source, created.url)
-    if is_stacked_create and review_target is not None:
-        info(
-            f"PR #{created.number} is stacked on PR #{review_target.parent_number} "
-            f"(base '{review_target.parent_head}'). Merge that one first."
-        )
-        pr_flow.record_stacked_base(incus, full, short, review_target.parent_head)
-        pr_flow.maybe_retarget_to_parent(cfg, incus, full, short, review_target, retarget=retarget)
-    elif retarget is not None:
-        warn(
-            "--retarget/--no-retarget is only acted on when a stacked PR is opened; "
-            f"ignored. To move the base later: jailbee git retarget {short} <branch>"
-        )
-    # The offer to publish what else the container wrote, deliberately *not*
-    # adjacent to `render_pr_outcome`: the description this run consumed is
-    # recorded just above (here on the create path, inside `apply_pr_updates`
-    # on the update path), and re-reading the outbox before that record exists
-    # would show the spent description as still pending and publish it twice.
-    outbox_failures = (
-        0 if no_outbox else _offer_outbox_comments(cfg, incus, full, short, number=created.number)
-    )
-    if web:
-        pr_mod.open_pr_in_browser(cfg.repo_root, created.number)
-    if outbox_failures:
-        # The PR itself landed and its URL is already on screen; this says only
-        # that the comments did not follow it.
-        raise typer.Exit(1)
 
 
 # `jailbee pr` is the visible, canonical command; `jailbee git pr` is a hidden alias.
@@ -8583,146 +8620,168 @@ def submodule_pr_cmd(
     if force and pr_label and not record.author:
         pr_flow.confirm_foreign_force_push(scope, short, pr_label, record.head, yes=yes)
 
-    plan = pr_flow.resolve_pr_text_and_head(
-        cfg,
-        incus,
-        full,
-        scope,
-        is_update=is_update,
-        stored_head=record.head,
-        source_branch=source_branch,
-        base=resolved_base,
-        title=title,
-        body=body,
-        as_name=as_name,
-        no_ai=no_ai,
-        status_label=f"Generating PR title/description with Claude in '{short}:{subpath}'…",
-        use_outbox=not no_outbox,
-    )
-    publish_name = plan.publish_name
-    if publish_name is None:
-        error(
-            f"Submodule '{subpath}' is detached in '{short}' and no head branch name "
-            f"was chosen. Name one with --as, or pass --branch to publish an "
-            f"existing submodule branch."
-        )
-        raise typer.Exit(2)
+    from jailbee.outbox.io import PrManagement
+    from jailbee.outbox.models import OutboxError
 
-    # Publish step 4 of the spec: the submodule's own upstream must be a GitHub
-    # one, checked BEFORE anything is pushed. `create_pr` validates too, but
-    # only after the branch is already on the remote.
+    management = PrManagement()
     try:
-        pr_mod.assert_github_remote(scope.repo_root, remote, label="jailbee submodule pr")
-    except pr_mod.PrError as exc:
-        error(str(exc))
-        raise typer.Exit(1) from exc
-
-    try:
-        published = submodule_pr.publish_submodule_branch(
-            cfg,
-            short,
-            subpath=subpath,
-            branch=source_branch,
-            publish_name=publish_name,
-            remote=remote,
-            force=force,
-        )
-    except submodule_pr.SubmodulePrError as exc:
-        error(str(exc))
-        raise typer.Exit(1) from exc
-
-    ai_on = cfg.claude.enabled and cfg.claude.ai_pr_description and not no_ai
-    text_on = ai_on or plan.outbox_source is not None
-    resolved_title, resolved_body = ("", "")
-    if not is_update:
-        resolved_title, resolved_body = pr_flow.resolve_create_text(
-            scope,
-            ai_on=text_on,
-            ai_text=plan.ai_text,
-            title=title,
-            body=body,
-            fallback_ref=published.src_ref,
-            publish_name=published.publish_name,
-            origin_label=f"container '{short}' submodule '{subpath}'",
-        )
-    try:
-        created = pr_flow.create_or_view_pr(
-            scope,
-            state,
-            use_outbox=not no_outbox,
-            is_update=is_update,
-            head=published.publish_name,
-            base=resolved_base,
-            title=resolved_title,
-            body=resolved_body,
-            draft=ready is not True,
-            label="jailbee submodule pr",
-            record_context=f"failed to record the PR label for submodule '{subpath}' on '{short}'",
-        )
-    except pr_mod.PrError as exc:
-        error(str(exc))
-        raise typer.Exit(1) from exc
-
-    did_update = is_update or created.already_existed
-    update = None
-    if did_update and source_branch:
-        update = pr_flow.apply_pr_updates(
-            cfg,
-            incus,
-            full,
-            scope,
-            number=created.number,
-            branch=source_branch,
-            base=resolved_base,
-            title=title,
-            body=body,
-            description=description,
-            ready=ready,
-            ai_on=ai_on,
-            foreign_head=is_foreign,
-            url=created.url,
-            use_outbox=not no_outbox,
-            outbox_hint=plan.outbox_source,
-        )
-    elif did_update:
-        # The submodule is detached and no --branch resolved a source: there
-        # is no branch to regenerate a description from or a state to toggle
-        # against. `render_pr_outcome` defaults a missing `update` to a no-op
-        # on the update path, so nothing further is needed here beyond the
-        # user-facing warning — and only when the user actually asked for
-        # something that needed the missing branch; a bare re-run with no
-        # such flag has nothing to silently ignore.
-        if description or title is not None or body is not None or ready is not None:
-            warn(
-                f"{scope.prefix}--description/--title/--body/--ready/--draft "
-                f"could not be applied to PR #{created.number}: the submodule "
-                f"is detached and no source branch was resolved. Pass --branch "
-                f"to select one."
+        with pr_flow.outbox_publication_guard(
+            cfg, incus, full, enabled=not no_outbox, management=management
+        ):
+            plan = pr_flow.resolve_pr_text_and_head(
+                cfg,
+                incus,
+                full,
+                scope,
+                is_update=is_update,
+                stored_head=record.head,
+                source_branch=source_branch,
+                base=resolved_base,
+                title=title,
+                body=body,
+                as_name=as_name,
+                no_ai=no_ai,
+                status_label=f"Generating PR title/description with Claude in '{short}:{subpath}'…",
+                use_outbox=not no_outbox,
             )
-    pr_flow.render_pr_outcome(
-        scope,
-        url=created.url,
-        number=created.number,
-        is_update=did_update,
-        publish_name=published.publish_name,
-        forced=published.forced,
-        ready=ready,
-        update=update,
-    )
-    if not did_update:
-        pr_flow.record_outbox_consumption(cfg, incus, full, plan.outbox_source, created.url)
-    if incus.config_get(full, "user.jailbee.pr"):
-        info(
-            "Merge this submodule PR first; the superproject PR's gitlink bump "
-            "then points at a merged commit."
-        )
-    outbox_failures = (
-        0 if no_outbox else _offer_outbox_comments(cfg, incus, full, short, number=created.number)
-    )
-    if web:
-        pr_mod.open_pr_in_browser(scope.repo_root, created.number)
-    if outbox_failures:
-        raise typer.Exit(1)
+            pr_flow.bind_outbox_source(management, plan.outbox_source)
+            publish_name = plan.publish_name
+            if publish_name is None:
+                error(
+                    f"Submodule '{subpath}' is detached in '{short}' and no head branch name "
+                    f"was chosen. Name one with --as, or pass --branch to publish an "
+                    f"existing submodule branch."
+                )
+                raise typer.Exit(2)
+
+            # Publish step 4 of the spec: the submodule's own upstream must be a GitHub
+            # one, checked BEFORE anything is pushed. `create_pr` validates too, but
+            # only after the branch is already on the remote.
+            try:
+                pr_mod.assert_github_remote(scope.repo_root, remote, label="jailbee submodule pr")
+            except pr_mod.PrError as exc:
+                error(str(exc))
+                raise typer.Exit(1) from exc
+
+            try:
+                published = submodule_pr.publish_submodule_branch(
+                    cfg,
+                    short,
+                    subpath=subpath,
+                    branch=source_branch,
+                    publish_name=publish_name,
+                    remote=remote,
+                    force=force,
+                )
+            except submodule_pr.SubmodulePrError as exc:
+                error(str(exc))
+                raise typer.Exit(1) from exc
+
+            ai_on = cfg.claude.enabled and cfg.claude.ai_pr_description and not no_ai
+            text_on = ai_on or plan.outbox_source is not None
+            resolved_title, resolved_body = ("", "")
+            if not is_update:
+                resolved_title, resolved_body = pr_flow.resolve_create_text(
+                    scope,
+                    ai_on=text_on,
+                    ai_text=plan.ai_text,
+                    title=title,
+                    body=body,
+                    fallback_ref=published.src_ref,
+                    publish_name=published.publish_name,
+                    origin_label=f"container '{short}' submodule '{subpath}'",
+                )
+            if not is_update:
+                pr_flow.bind_outbox_source(management, plan.outbox_source)
+                pr_flow.validate_outbox_source(cfg, incus, full, plan.outbox_source)
+            try:
+                created = pr_flow.create_or_view_pr(
+                    scope,
+                    state,
+                    use_outbox=not no_outbox,
+                    is_update=is_update,
+                    head=published.publish_name,
+                    base=resolved_base,
+                    title=resolved_title,
+                    body=resolved_body,
+                    draft=ready is not True,
+                    label="jailbee submodule pr",
+                    record_context=(
+                        f"failed to record the PR label for submodule '{subpath}' on '{short}'"
+                    ),
+                )
+            except pr_mod.PrError as exc:
+                error(str(exc))
+                raise typer.Exit(1) from exc
+
+            did_update = is_update or created.already_existed
+            update = None
+            if did_update and source_branch:
+                update = pr_flow.apply_pr_updates(
+                    cfg,
+                    incus,
+                    full,
+                    scope,
+                    number=created.number,
+                    branch=source_branch,
+                    base=resolved_base,
+                    title=title,
+                    body=body,
+                    description=description,
+                    ready=ready,
+                    ai_on=ai_on,
+                    foreign_head=is_foreign,
+                    url=created.url,
+                    use_outbox=not no_outbox,
+                    outbox_hint=plan.outbox_source,
+                    management=management,
+                )
+            elif did_update:
+                # The submodule is detached and no --branch resolved a source: there
+                # is no branch to regenerate a description from or a state to toggle
+                # against. `render_pr_outcome` defaults a missing `update` to a no-op
+                # on the update path, so nothing further is needed here beyond the
+                # user-facing warning — and only when the user actually asked for
+                # something that needed the missing branch; a bare re-run with no
+                # such flag has nothing to silently ignore.
+                if description or title is not None or body is not None or ready is not None:
+                    warn(
+                        f"{scope.prefix}--description/--title/--body/--ready/--draft "
+                        f"could not be applied to PR #{created.number}: the submodule "
+                        f"is detached and no source branch was resolved. Pass --branch "
+                        f"to select one."
+                    )
+            pr_flow.render_pr_outcome(
+                scope,
+                url=created.url,
+                number=created.number,
+                is_update=did_update,
+                publish_name=published.publish_name,
+                forced=published.forced,
+                ready=ready,
+                update=update,
+            )
+            if not did_update:
+                pr_flow.record_outbox_consumption(cfg, incus, full, plan.outbox_source, created.url)
+            if incus.config_get(full, "user.jailbee.pr"):
+                info(
+                    "Merge this submodule PR first; the superproject PR's gitlink bump "
+                    "then points at a merged commit."
+                )
+            outbox_failures = (
+                0
+                if no_outbox
+                else _offer_outbox_comments(
+                    cfg, incus, full, short, number=created.number, management=management
+                )
+            )
+            if web:
+                pr_mod.open_pr_in_browser(scope.repo_root, created.number)
+            if outbox_failures:
+                raise typer.Exit(1)
+    except OutboxError as exc:
+        error(str(exc))
+        raise typer.Exit(1) from exc
 
 
 net_app = typer.Typer(
@@ -12041,7 +12100,9 @@ def review_drop_cmd(
         # manifests being dropped doesn't look referenced by each of them in
         # turn and outlive them both.
         remaining = pr_outbox.Outbox(
-            files={k: v for k, v in remaining.files.items() if k not in deleted}
+            files={k: v for k, v in remaining.files.items() if k not in deleted},
+            rejected=remaining.rejected,
+            identity=remaining.identity,
         )
         success_plain(f"dropped {manifest_name} ({len(deleted)} file(s))")
 
@@ -12572,45 +12633,10 @@ def issue_apply_cmd(
 
 
 def _report_issue_apply_outcome(batch: "PreparedBatch", report: "ApplyReport") -> None:
-    """Print what landed, what failed, and what is still pending.
+    """Delegate domain outcome rendering to the shared outbox service."""
+    from jailbee.outbox.publish import print_issue_outcome
 
-    Always shown, success or not: `applied` (dispatched this run) and
-    `skipped` (already applied by an earlier run) both count as applied.
-    On a partial or uncertain failure, the action that stopped the run is
-    named, and every action in the batch that was never attempted is listed
-    as still pending.
-    """
-    attempted: set[tuple[str, int]] = set()
-    for manifest_name, receipt in (*report.applied, *report.skipped):
-        attempted.add((manifest_name, receipt.index))
-        detail = f" ({receipt.url})" if receipt.url else ""
-        success_plain(f"{manifest_name} action {receipt.index}: applied{detail}")
-
-    failure = report.failure
-    if failure is None:
-        for manifest_name in report.cleaned:
-            success_plain(f"{manifest_name}: fully applied and removed from the outbox")
-        return
-
-    label = "uncertain" if failure.uncertain else "failed"
-    if failure.manifest is None:
-        error_plain(f"apply stopped: {failure.detail}")
-    elif failure.index is None:
-        error_plain(f"{failure.manifest}: {label} — {failure.detail}")
-    else:
-        attempted.add((failure.manifest, failure.index))
-        error_plain(f"{failure.manifest} action {failure.index}: {label} — {failure.detail}")
-        if failure.uncertain:
-            info_plain(
-                f"  resolve: jailbee issue resolve {batch.container} {failure.manifest} "
-                f"{failure.index} (--applied --url <url> [--issue <n>] | --retry)"
-            )
-
-    for prepared in batch.manifests:
-        for resolved in prepared.actions:
-            key = (prepared.manifest.name, resolved.index)
-            if key not in attempted:
-                info_plain(f"{prepared.manifest.name} action {resolved.index}: pending")
+    print_issue_outcome(batch, report)
 
 
 @issue_app.command("drop")
@@ -12650,6 +12676,8 @@ def issue_drop_cmd(
     from jailbee import issue_outbox
     from jailbee.issue_manifest import IssueManifestError, parse_manifest
     from jailbee.lifecycle import _stdin_is_interactive, short_name
+    from jailbee.outbox.io import MutationExecutionError
+    from jailbee.outbox.models import OutboxExecutionError
     from jailbee.outbox_io import (
         JournalError,
         JournalStore,
@@ -12739,6 +12767,14 @@ def issue_drop_cmd(
             )
         except JournalError as e:
             error_plain(str(e))
+            raise typer.Exit(1) from e
+        except OutboxExecutionError as e:
+            # The typed domain failure keeps its cause; the journal is never
+            # archived before a checked deletion succeeds.
+            error_plain(f"{manifest_name}: could not drop ({e}); its journal was retained")
+            if isinstance(e, MutationExecutionError) and e.removed_names:
+                error_plain(f"Already removed before the failure: {', '.join(e.removed_names)}")
+            error_plain(f"Re-read the outbox and retry: jailbee issue drop {short} {manifest_name}")
             raise typer.Exit(1) from e
         # Shrink the snapshot as we go, so a body file shared by two of the
         # manifests being dropped doesn't look referenced by each of them in

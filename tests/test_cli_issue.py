@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from jailbee.cli import app
@@ -771,6 +772,122 @@ def test_drop_archive_journal_still_refuses_uncertainty(mocker, tmp_path):
     assert result.exit_code == 1
     assert "uncertain" in result.output.lower()
     drop.assert_not_called()
+
+
+def _real_drop_rig(mocker, make_cfg, tmp_path, files):
+    """Real CLI, drop_manifest, strict read and checked mutation over tmp_path."""
+    import subprocess
+
+    from jailbee.outbox import io as store_io
+
+    cfg = make_cfg(tmp_path)
+    container = f"{cfg.container_prefix}-feat-foo"
+    incus = mocker.Mock()
+    incus.list_containers.return_value = [{"name": container, "created_at": "2026-10-01T00:00:00Z"}]
+    mocker.patch("jailbee.cli._load_or_exit", return_value=cfg)
+    mocker.patch("jailbee.cli._resolve_existing", return_value=(incus, container))
+    directory = tmp_path / "issue-outbox"
+    directory.mkdir()
+    for file_name, text in files.items():
+        (directory / file_name).write_bytes(text.encode("utf-8"))
+    run_shell = subprocess.run
+    store = store_io.store_directory("issue")
+
+    def remap(command):
+        command = list(command)
+        assert command[:2] == ["bash", "-c"] and command[4] == store, command
+        command[4] = str(directory)
+        return command
+
+    def execute(container_name, command, **kwargs):
+        return run_shell(remap(command), text=True, capture_output=True, check=True).stdout
+
+    def mutate(container_name, command, text, **kwargs):
+        command = remap(command)
+        return run_shell(command, input=text, text=True, capture_output=True, check=True).stdout
+
+    incus.exec.side_effect = execute
+    incus.exec_with_input.side_effect = mutate
+    run_api = mocker.patch("jailbee.issue_github._run_api")
+    return cfg, container, incus, directory, run_api
+
+
+@pytest.mark.parametrize("archive", [False, True])
+def test_drop_refused_checked_mutation_is_controlled_diagnostic(
+    mocker, make_cfg, tmp_path, archive
+):
+    from jailbee.outbox_io import (
+        ContainerIdentity,
+        JournalStore,
+        journal_key,
+        proposal_digest,
+    )
+
+    text = _manifest_text(
+        actions=[
+            {"type": "comment", "repo": ".", "issue": 42, "body": "first"},
+            {"type": "comment", "repo": ".", "issue": 42, "body": "second"},
+        ]
+    )
+    _cfg, container, incus, directory, run_api = _real_drop_rig(
+        mocker, make_cfg, tmp_path, {"001.json": text}
+    )
+    key = journal_key(ContainerIdentity(container, "2026-10-01T00:00:00Z"), "001.json")
+    journals = JournalStore()
+    if archive:
+        journals.create(key, proposal_digest("001.json", text, {}), 2)
+        journals.mark_prepared(key, 0, repo="acme/widgets")
+        journals.mark_applied(key, 0, repo="acme/widgets", url="https://x/1", issue=42)
+    transport = incus.exec_with_input.side_effect
+
+    def late_writer(*args, **kwargs):
+        # A genuine concurrent agent write after the strict preview read.
+        (directory / "late.md").write_text("late")
+        return transport(*args, **kwargs)
+
+    incus.exec_with_input.side_effect = late_writer
+    args = ["issue", "drop", "feat-foo", "001.json", "-y"]
+    result = runner.invoke(app, args + (["--archive-journal"] if archive else []))
+
+    assert result.exit_code == 1, result.output
+    assert "001.json" in result.output
+    assert "refused or failed" in result.output
+    assert "dropped 001.json" not in result.output
+    assert isinstance(result.exception, SystemExit)
+    assert (directory / "001.json").read_text() == text
+    assert (directory / "late.md").read_text() == "late"
+    run_api.assert_not_called()
+    journal = journals.load(key)
+    assert (journal is not None) == archive
+    assert not list(journals.root.rglob("archive/*.json"))
+
+
+def test_drop_strict_transport_failure_is_controlled_diagnostic(mocker, make_cfg, tmp_path):
+    from jailbee.incus import IncusError
+
+    text = _manifest_text()
+    _cfg, _container, incus, directory, run_api = _real_drop_rig(
+        mocker, make_cfg, tmp_path, {"001.json": text}
+    )
+    from jailbee.outbox import io as store_io
+
+    transport = incus.exec.side_effect
+
+    def strict_down(container_name, command, **kwargs):
+        if command[2] == store_io._READ_SCRIPT:
+            raise IncusError("exit 255: transport down")
+        return transport(container_name, command, **kwargs)
+
+    incus.exec.side_effect = strict_down
+    result = runner.invoke(app, ["issue", "drop", "feat-foo", "001.json", "-y"])
+
+    assert result.exit_code == 1, result.output
+    assert "001.json" in result.output and "transport down" in result.output
+    assert "dropped 001.json" not in result.output
+    assert isinstance(result.exception, SystemExit)
+    assert (directory / "001.json").read_text() == text
+    incus.exec_with_input.assert_not_called()
+    run_api.assert_not_called()
 
 
 def test_drop_asks_first_and_keeps_the_manifest_on_no(mocker, tmp_path):

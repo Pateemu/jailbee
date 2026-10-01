@@ -763,10 +763,8 @@ MenuItem = tuple[str, str] | MenuGroup
 
 _PR_MENU_VERBS = frozenset({"pr --open", "pr", "review apply"})
 _GIT_MENU_VERBS = frozenset({"merge", "git pull", "git push", "git push --pr", "git diff"})
-# The two "act on what the container left for you" verbs. The terminal menu
-# hoists them to the top, where the most time-sensitive thing belongs; Qt keeps
-# `review apply` inside its PR submenu.
-_PENDING_APPLY_VERBS = frozenset({"review apply", "issue apply"})
+# Hoist the browser in the terminal; legacy leaves remain groupable for callers.
+_PENDING_APPLY_VERBS = frozenset({"outbox browse", "review apply", "issue apply"})
 
 
 def group_menu_actions(
@@ -781,7 +779,7 @@ def group_menu_actions(
     this function never changes eligibility or adds executable verbs.
 
     ``terminal_order`` is the terminal dashboard's presentation: pending
-    outbox applies lead the menu and ``Git →`` sits above ``PR →``. It is
+    outbox browser leads the menu and ``Git →`` sits above ``PR →``. It is
     opt-in because the Qt dashboard shares this function and keeps its order.
     """
     pr_verbs = _PR_MENU_VERBS - _PENDING_APPLY_VERBS if terminal_order else _PR_MENU_VERBS
@@ -853,20 +851,6 @@ def _has_diff_to_show(git: GitStatus | None) -> bool:
     return not (git.wt == _NO_CHANGES and git.ahead_count == _NO_COMMITS)
 
 
-def _pending_pr_actions(git: GitStatus | None) -> int:
-    """Manifests waiting in the container's PR outbox — `None` and `0` both
-    mean "nothing pending". One place for that rule, mirroring
-    `lifecycle._pending_pr_actions`, which every `jb ls` surface already
-    goes through."""
-    return (git.pending_pr_actions or 0) if git else 0
-
-
-def _pending_issue_actions(git: GitStatus | None) -> int:
-    """Manifests waiting in the container's issue outbox. Mirrors
-    `_pending_pr_actions` for the separate issue outbox."""
-    return (git.pending_issue_actions or 0) if git else 0
-
-
 def menu_actions(ctx: MenuContext) -> list[tuple[str, str]]:
     """(label, jailbee-subcommand) options for the highlighted container.
 
@@ -883,7 +867,7 @@ def menu_actions(ctx: MenuContext) -> list[tuple[str, str]]:
     dispatching the two-token ``jailbee net <mode>`` subcommand.
 
     Running rows lead with session and app actions, followed by job diagnostics,
-    PR leaves, Git leaves, issue actions, network modes and lifecycle actions.
+    Outbox, PR leaves, Git leaves, network modes and lifecycle actions.
     Git pull and diff are hidden when status proves they would do nothing;
     unknown status still offers them. Stopped rows lead with Start, followed
     by eligible diagnostics and Open PR, then Destroy.
@@ -895,20 +879,9 @@ def menu_actions(ctx: MenuContext) -> list[tuple[str, str]]:
     the container's branch is upstream of, so the refresh could only be a
     no-op.
 
-    "Apply N PR action(s)" (``review apply``) appears whenever the container's
-    PR outbox is non-empty (``ctx.git_status.pending_pr_actions``), gated only
-    on ``ctx.state == "Running"`` — deliberately *not* on ``_bridge_possible``:
-    the outbox lives at a fixed in-container path regardless of how the repo
-    got there, and neither `pr_outbox.py` nor the probe behind the count has a
-    mode check, unlike the ``git push``/``pr`` verbs above, which need
-    `sync.assert_container_publishable`'s own clone. A mount-mode container
-    can genuinely accumulate manifests, so excluding it here would hide the
-    one route to acting on them. Also not gated by ``pr_number is not None``:
-    a container can hold a description for a PR ``jailbee pr`` has not opened
-    yet. After the Git leaves, "Apply N issue action(s)" (``issue apply``)
-    appears under the identical rule for the container's separate issue
-    outbox (``ctx.git_status.pending_issue_actions``) — same fixed in-container
-    path, same no-mode-check probe, same mount-mode reachability.
+    "Outbox" (``outbox browse``) is always available on addressable running
+    containers, including mount mode and unknown/empty counts. Its fixed stores
+    do not require a clone or an existing PR; publication stays in the browser.
 
     Verbs may carry flags (``"pr --open"``, ``"job log --follow"``,
     ``"apps run <name> --container"`` for a config-sourced app — see
@@ -919,7 +892,9 @@ def menu_actions(ctx: MenuContext) -> list[tuple[str, str]]:
         return []
     actions: list[tuple[str, str]] = []
     if ctx.state == "Running":
-        actions.extend([("Attach tmux", "tmux"), ("Open shell", "shell")])
+        actions.extend(
+            [("Attach tmux", "tmux"), ("Open shell", "shell"), ("Outbox", "outbox browse")]
+        )
         for app in [] if ctx.remote else ctx.apps:
             actions.append((f"Launch {app.label}", app.verb))
     elif ctx.state == "Stopped":
@@ -933,9 +908,6 @@ def menu_actions(ctx: MenuContext) -> list[tuple[str, str]]:
         actions.append(("Open PR", "pr --open"))
     if _bridge_possible(ctx):
         actions.append(("Create/update PR", "pr"))
-    pending = _pending_pr_actions(ctx.git_status)
-    if ctx.state == "Running" and pending:
-        actions.append((f"Apply {pending} PR action(s) (review apply)", "review apply"))
     if _bridge_possible(ctx):
         actions.append(("Merge into…", "merge"))
         if _has_commits_for_host(ctx.git_status):
@@ -945,9 +917,6 @@ def menu_actions(ctx: MenuContext) -> list[tuple[str, str]]:
             actions.append(("Refresh from PR head (git push --pr)", "git push --pr"))
         if _has_diff_to_show(ctx.git_status):
             actions.append(("Show diff (git diff)", "git diff"))
-    pending_issues = _pending_issue_actions(ctx.git_status)
-    if ctx.state == "Running" and pending_issues:
-        actions.append((f"Apply {pending_issues} issue action(s) (issue apply)", "issue apply"))
     if ctx.state == "Running":
         for mode in _NETWORK_MODES:
             if mode != ctx.current_network:

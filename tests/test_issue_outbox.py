@@ -6,6 +6,9 @@ from pathlib import Path
 
 import pytest
 
+# Captured before fixtures replace it, so one test can drive the real reader.
+from jailbee.outbox.io import read_store as _strict_read_store
+
 
 def _write_gitdir(path: Path) -> None:
     (path / ".git").mkdir(parents=True)
@@ -373,6 +376,36 @@ def test_preflight_caches_issues_and_canonicalizes_labels_read_only(preflight):
     assert preflight["fetch"].call_count == 2
     assert preflight["labels"].call_count == 1
     assert not preflight["store"].root.exists()
+
+
+@pytest.mark.parametrize("boundary", ["login", "fetch", "labels", "reader"])
+def test_domain_transport_has_execution_type_and_original_cause(preflight, boundary):
+    from jailbee.issue_github import IssueGithubReadError
+    from jailbee.issue_outbox import IssueExecutionError, IssueGateError
+    from jailbee.outbox_io import OutboxReadError
+
+    failure = (
+        OutboxReadError("read failed")
+        if boundary == "reader"
+        else IssueGithubReadError("read failed")
+    )
+    preflight[boundary].side_effect = failure
+    with pytest.raises(IssueExecutionError) as caught:
+        preflight["prepare"]({"a.json": [_comment(), _create()]})
+    assert isinstance(caught.value, IssueGateError)
+    assert caught.value.__cause__ is failure
+
+
+def test_domain_revalidation_transport_is_not_stale(preflight):
+    from jailbee.issue_github import IssueGithubReadError
+    from jailbee.issue_outbox import IssueExecutionError, revalidate_batch
+
+    batch = preflight["prepare"]({"a.json": [_edit(title="New", expected={"title": "Old title"})]})
+    failure = IssueGithubReadError("late read failed")
+    preflight["fetch"].side_effect = failure
+    with pytest.raises(IssueExecutionError) as caught:
+        revalidate_batch(batch)
+    assert caught.value.__cause__ is failure
 
 
 def test_preflight_rejects_pull_requests_and_caches_failed_reads(preflight):
@@ -849,18 +882,72 @@ def execution(tmp_path, mocker):
         side_effect=lambda *a, **kw: issue_outbox.OutboxSnapshot(dict(files)),
     )
 
+    from jailbee.outbox_io import append_applied_log as real_append
+
     def append(incus, container, directory, lines, *, uid):
         events.append(("log", tuple(lines)))
+        real_append(incus, container, directory, lines, uid=uid)
 
-    def delete(incus, container, directory, names, *, uid):
-        events.append(("delete", tuple(names)))
-        for name in names:
-            files.pop(name, None)
+    import subprocess
+
+    from jailbee.outbox import io
+
+    run_shell = subprocess.run
+    directory = tmp_path / "container-outbox"
+    directory.mkdir()
+
+    def sync():
+        for path in directory.iterdir():
+            path.unlink()
+        for name, text in files.items():
+            (directory / name).write_bytes(text.encode("utf-8"))
+
+    def save():
+        files.clear()
+        files.update({p.name: p.read_bytes().decode("utf-8") for p in directory.iterdir()})
+
+    def append_transport(container, command, **kwargs):
+        sync()
+        command = list(command)
+        command[4] = str(directory)
+        result = run_shell(command, text=True, capture_output=True, check=True).stdout
+        save()
+        return result
+
+    incus.exec.side_effect = append_transport
+
+    def strict_read(*args, **kwargs):
+        # Keep legacy read injections meaningful while exercising strict decoding.
+        issue_outbox.read_issue_outbox(*args, **kwargs)
+        sync()
+        command = [
+            "bash",
+            "-c",
+            io._READ_SCRIPT,
+            "bash",
+            str(directory),
+            str(io.FILE_LIMIT),
+            str(io.SNAPSHOT_LIMIT),
+        ]
+        return io._decode(
+            "issue", run_shell(command, text=True, capture_output=True, check=True).stdout
+        )
+
+    mocker.patch.object(io, "read_store", side_effect=strict_read)
+
+    def delete(container, command, text, **kwargs):
+        sync()
+        command = list(command)
+        command[4] = str(directory)
+        result = run_shell(command, input=text, text=True, capture_output=True, check=True).stdout
+        fields = result.split("\0")
+        events.append(("delete", tuple(fields[3:-1])))
+        save()
+        return result
 
     log = mocker.patch.object(issue_outbox, "append_applied_log", side_effect=append, create=True)
-    remove = mocker.patch.object(
-        issue_outbox, "delete_outbox_files", side_effect=delete, create=True
-    )
+    incus.exec_with_input.side_effect = delete
+    remove = incus.exec_with_input
     mutations = {
         name: mocker.patch.object(
             issue_github,
@@ -937,7 +1024,219 @@ def execution(tmp_path, mocker):
         "remove": remove,
         "mutations": mutations,
         "events": events,
+        "directory": directory,
     }
+
+
+@pytest.mark.parametrize("original", ["Original", "Original\n", "ääö\r\nTail"])
+@pytest.mark.parametrize("count", [1, 2])
+def test_applied_log_body_cleans_up_after_actual_owned_append(execution, original, count):
+    from jailbee.outbox_io import journal_key
+
+    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "applied.log"}
+    batch = execution["batch"]({"a.json": [action] * count}, extras={"applied.log": original})
+    result = _apply(execution, batch)
+    assert result.failure is None
+    assert [c.kwargs["body"] for c in execution["mutations"]["add_comment"].call_args_list] == [
+        original
+    ] * count
+    remaining = execution["files"]
+    assert "a.json" not in remaining
+    assert (
+        remaining["applied.log"] == original + "\n".join(execution["log"].call_args.args[3]) + "\n"
+    )
+    assert execution["store"].load(journal_key(batch.identity, "a.json")) is None
+
+
+@pytest.mark.parametrize("original", ["Original", "äö\r\nTail"])
+@pytest.mark.parametrize("failure", ["delete", "after-append", "before-append"])
+def test_owned_log_body_fresh_prepare_retry_after_refused_delete(
+    execution, mocker, make_cfg, tmp_path, original, failure
+):
+    from jailbee import issue_outbox
+    from jailbee.outbox_io import JournalStore, journal_key
+
+    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "applied.log"}
+    from jailbee.incus import IncusError
+
+    batch = execution["batch"]({"a.json": [action, action]}, extras={"applied.log": original})
+    original_transport = execution["incus"].exec_with_input.side_effect
+    append_transport = execution["incus"].exec.side_effect
+    if failure == "delete":
+
+        def refuse(*args, **kwargs):
+            execution["files"]["late.md"] = (
+                execution["files"].get("late.md", "") + "Changed inventory"
+            )
+            return original_transport(*args, **kwargs)
+
+        execution["incus"].exec_with_input.side_effect = refuse
+    else:
+
+        def interrupted(*args, **kwargs):
+            if failure == "after-append":
+                append_transport(*args, **kwargs)
+            raise IncusError("append interrupted")
+
+        execution["incus"].exec.side_effect = interrupted
+    assert _apply(execution, batch).failure is not None
+    assert "a.json" in execution["files"]
+    assert (execution["files"]["applied.log"] != original) == (failure != "before-append")
+    key = journal_key(batch.identity, "a.json")
+    original_journal = execution["store"].load(key)
+    assert original_journal.digest == batch.manifests[0].digest
+    execution["incus"].exec_with_input.side_effect = original_transport
+    execution["incus"].exec.side_effect = append_transport
+    execution["store"] = JournalStore(execution["store"].root)
+    cfg = make_cfg(tmp_path)
+    mocker.patch.object(
+        issue_outbox, "resolve_repo_targets", return_value={".": batch.manifests[0].actions[0].repo}
+    )
+    mocker.patch("jailbee.issue_github.current_login", return_value="alice")
+    retry = issue_outbox.prepare_batch(
+        cfg,
+        execution["incus"],
+        batch.container,
+        ("a.json",),
+        uid=1000,
+        journal_store=execution["store"],
+    )
+    assert retry.manifests[0].digest == original_journal.digest
+    if failure == "delete":
+        execution["incus"].exec_with_input.side_effect = refuse
+        assert _apply(execution, retry).failure is not None
+        assert execution["mutations"]["add_comment"].call_count == 2
+        execution["incus"].exec_with_input.side_effect = original_transport
+        execution["store"] = JournalStore(execution["store"].root)
+        retry = issue_outbox.prepare_batch(
+            cfg,
+            execution["incus"],
+            batch.container,
+            ("a.json",),
+            uid=1000,
+            journal_store=execution["store"],
+        )
+    assert _apply(execution, retry).failure is None
+    assert execution["mutations"]["add_comment"].call_count == 2
+    assert "a.json" not in execution["files"]
+    assert execution["store"].load(key) is None
+
+
+@pytest.mark.parametrize("timing", ["remote", "before-append", "after-append"])
+@pytest.mark.parametrize("change", ["log", "manifest", "other-body", "identity"])
+def test_owned_log_cleanup_refuses_external_change(execution, timing, change):
+    from jailbee.outbox_io import journal_key
+
+    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "applied.log"}
+    batch = execution["batch"](
+        {"a.json": [action, {**action, "body_file": "other.md"}]},
+        extras={"applied.log": "Original", "other.md": "Other"},
+    )
+
+    def alter():
+        if change == "identity":
+            execution["incus"].list_containers.return_value[0]["created_at"] = "replacement"
+        else:
+            execution["files"][
+                {"log": "applied.log", "manifest": "a.json", "other-body": "other.md"}[change]
+            ] += "external\n"
+
+    if timing == "remote":
+
+        def publish(*args, **kwargs):
+            if execution["mutations"]["add_comment"].call_count == 2:
+                alter()
+            return execution["mutations"]["add_comment"].return_value
+
+        execution["mutations"]["add_comment"].side_effect = publish
+    else:
+        transport = execution["incus"].exec.side_effect
+
+        def append(*args, **kwargs):
+            if timing == "before-append":
+                alter()
+            result = transport(*args, **kwargs)
+            if timing == "after-append":
+                alter()
+            return result
+
+        execution["incus"].exec.side_effect = append
+    result = _apply(execution, batch)
+    assert result.failure is not None
+    assert "a.json" in execution["files"] and "other.md" in execution["files"]
+    assert (
+        execution["store"].load(journal_key(batch.identity, "a.json")).digest
+        == batch.manifests[0].digest
+    )
+    execution["remove"].assert_not_called()
+    assert execution["mutations"]["add_comment"].call_count == 2
+
+
+def test_owned_log_inspection_revision_and_settled_drop(execution):
+    from jailbee.issue_outbox import OutboxSnapshot
+    from jailbee.outbox.inspect import build_views
+    from jailbee.outbox.models import StoreSnapshot
+
+    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "applied.log"}
+    batch = execution["batch"]({"a.json": [action]}, extras={"applied.log": "Original"})
+    transport = execution["incus"].exec_with_input.side_effect
+
+    def refuse(*args, **kwargs):
+        execution["files"]["late.md"] = "Keep"
+        return transport(*args, **kwargs)
+
+    execution["incus"].exec_with_input.side_effect = refuse
+    assert _apply(execution, batch).failure is not None
+
+    def view():
+        snapshot = StoreSnapshot("issue", tuple(execution["files"].items()), (), ())
+        return build_views(batch.identity, (snapshot,), journal_store=execution["store"])[0]
+
+    first = view()
+    assert first.state == "applied" and first.error is None
+    original = execution["files"]["applied.log"]
+    execution["files"]["applied.log"] += "external\n"
+    changed = view()
+    assert changed.state == "uncertain" and changed.revision != first.revision
+    execution["files"]["applied.log"] = original
+    execution["incus"].exec_with_input.side_effect = transport
+    current = replace(batch, outbox=OutboxSnapshot(dict(execution["files"])))
+    assert _drop(execution, current, archive_journal=True) == ("a.json",)
+    assert execution["files"]["applied.log"] == original
+
+
+def test_owned_log_retry_rejects_external_append_after_failed_cleanup(
+    execution, mocker, make_cfg, tmp_path
+):
+    from jailbee import issue_outbox
+    from jailbee.outbox_io import JournalStore
+
+    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "applied.log"}
+    batch = execution["batch"]({"a.json": [action]}, extras={"applied.log": "Original"})
+    transport = execution["incus"].exec_with_input.side_effect
+
+    def refuse(*args, **kwargs):
+        execution["files"]["late.md"] = "Keep"
+        return transport(*args, **kwargs)
+
+    execution["incus"].exec_with_input.side_effect = refuse
+    assert _apply(execution, batch).failure is not None
+    execution["files"]["applied.log"] += "external\n"
+    fresh_store = JournalStore(execution["store"].root)
+    mocker.patch.object(
+        issue_outbox, "resolve_repo_targets", return_value={".": batch.manifests[0].actions[0].repo}
+    )
+    with pytest.raises(issue_outbox.IssueGateError, match="changed after recorded progress"):
+        issue_outbox.prepare_batch(
+            make_cfg(tmp_path),
+            execution["incus"],
+            batch.container,
+            ("a.json",),
+            uid=1000,
+            journal_store=fresh_store,
+        )
+    assert "a.json" in execution["files"]
+    assert execution["mutations"]["add_comment"].call_count == 1
 
 
 def _apply(execution, batch):
@@ -1191,7 +1490,7 @@ def test_apply_replaces_an_empty_old_digest_only_inside_lock(execution, mocker):
     batch = execution["batch"]({"a.json": [_comment()]})
     key = journal_key(batch.identity, "a.json")
     store = execution["store"]
-    store.create(key, "0" * 64, 1)
+    store.create(key, "0" * 64, 2)
     archive = store.archive
 
     def checked_archive(key):
@@ -1401,8 +1700,9 @@ def test_cleanup_logs_receipts_then_deletes_only_unshared_bodies_then_archives(e
 
     assert report.failure is None
     assert [event[0] for event in execution["events"]] == ["log", "delete", "archive"]
-    assert set(execution["remove"].call_args.args[3]) == {"a.json", "private.md"}
-    assert set(execution["files"]) == {"b.json", "shared.md", "unrelated.md"}
+    assert execution["events"][1] == ("delete", ("a.json", "private.md"))
+    assert set(execution["files"]) == {"b.json", "shared.md", "unrelated.md", "applied.log"}
+    assert execution["files"]["applied.log"] == "\n".join(execution["log"].call_args.args[3]) + "\n"
     lines = execution["log"].call_args.args[3]
     assert len(lines) == 2
     for index, line in enumerate(lines):
@@ -1448,6 +1748,117 @@ def test_cleanup_preserves_shared_files_added_since_approval(execution):
     execution["mutations"]["add_comment"].side_effect = mutate
     assert _apply(execution, batch).failure is None
     assert "shared.md" in execution["files"]
+
+
+@pytest.mark.parametrize("route", ["apply", "drop"])
+@pytest.mark.parametrize(
+    "rejected_content", [b"\xff", b"x" * (256 * 1024 + 1)], ids=["nonutf8", "oversized"]
+)
+def test_cleanup_retains_body_hidden_in_rejected_sibling(
+    execution, mocker, tmp_path, route, rejected_content
+):
+    import subprocess
+
+    from jailbee.outbox import io
+
+    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "body.md"}
+    batch = execution["batch"]({"a.json": [action]}, extras={"body.md": "Shared"})
+    directory = tmp_path / "outbox"
+    directory.mkdir()
+    for name, text in execution["files"].items():
+        (directory / name).write_text(text)
+    (directory / "rejected.json").write_bytes(rejected_content)
+
+    def read(*args, **kwargs):
+        command = [
+            "bash",
+            "-c",
+            io._READ_SCRIPT,
+            "bash",
+            str(directory),
+            str(io.FILE_LIMIT),
+            str(io.SNAPSHOT_LIMIT),
+        ]
+        result = subprocess.run(command, text=True, capture_output=True, check=True)
+        return io._decode("issue", result.stdout)
+
+    def mutate(container, command, text, **kwargs):
+        command = list(command)
+        command[4] = str(directory)
+        return subprocess.run(
+            command, input=text, text=True, capture_output=True, check=True
+        ).stdout
+
+    def append(container, command, **kwargs):
+        command = list(command)
+        command[4] = str(directory)
+        return subprocess.run(command, text=True, capture_output=True, check=True).stdout
+
+    mocker.patch.object(io, "read_store", side_effect=read)
+    execution["incus"].exec.side_effect = append
+    execution["incus"].exec_with_input.side_effect = mutate
+    if route == "apply":
+        assert _apply(execution, batch).failure is None
+    else:
+        assert _drop(execution, batch) == ("a.json",)
+    assert (directory / "body.md").read_text() == "Shared"
+    assert (directory / "rejected.json").read_bytes() == rejected_content
+    assert "body.md" in execution["files"]
+
+
+@pytest.mark.parametrize("route", ["apply", "drop"])
+@pytest.mark.parametrize("body", ["b.json", "b.json.progress.json", "applied.log"])
+def test_issue_cleanup_preserves_metadata_body_references(execution, route, body):
+    sibling = json.dumps({"version": 1, "actions": [_comment()]})
+    batch = execution["batch"](
+        {"a.json": [{"type": "comment", "repo": ".", "issue": 7, "body_file": body}]},
+        extras={body: sibling},
+    )
+    if route == "apply":
+        assert _apply(execution, batch).failure is None
+    else:
+        assert _drop(execution, batch) == ("a.json",)
+    if route == "apply" and body == "applied.log":
+        assert (
+            execution["files"][body]
+            == sibling + "\n".join(execution["log"].call_args.args[3]) + "\n"
+        )
+    else:
+        assert execution["files"][body] == sibling
+
+
+@pytest.mark.parametrize("change", ["manifest", "body", "inventory"])
+def test_issue_cleanup_refuses_late_change_retaining_receipts(execution, change):
+    from jailbee.outbox_io import journal_key
+
+    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "body.md"}
+    batch = execution["batch"]({"a.json": [action]}, extras={"body.md": "Original"})
+    if change == "inventory":
+        transport = execution["incus"].exec_with_input.side_effect
+
+        def mutate(*args, **kwargs):
+            execution["files"]["later.json"] = json.dumps({"version": 1, "actions": [action]})
+            return transport(*args, **kwargs)
+
+        execution["incus"].exec_with_input.side_effect = mutate
+    else:
+
+        def publish(*args, **kwargs):
+            if change == "manifest":
+                execution["files"]["a.json"] += "\n"
+            else:
+                execution["files"]["body.md"] = "Changed"
+            return execution["mutations"]["add_comment"].return_value
+
+        execution["mutations"]["add_comment"].side_effect = publish
+    report = _apply(execution, batch)
+    assert report.failure is not None
+    assert "a.json" in execution["files"]
+    assert "body.md" in execution["files"]
+    assert (
+        execution["store"].load(journal_key(batch.identity, "a.json")).actions[0].state == "applied"
+    )
+    assert execution["mutations"]["add_comment"].call_count == 1
 
 
 def test_cleanup_invalid_pending_manifest_conservatively_keeps_body_files(execution):
@@ -1521,13 +1932,33 @@ def test_drop_refuses_progress_by_default_and_never_discards_uncertainty(
 
 def test_drop_delete_failure_keeps_settled_partial_journal(execution):
     from jailbee.incus import IncusError
+    from jailbee.outbox.models import OutboxExecutionError
 
     batch = execution["batch"]({"a.json": [_comment(), _comment()]})
     key = _seed_execution(execution, batch)
     execution["remove"].side_effect = IncusError("offline")
-    with pytest.raises(IncusError):
+    with pytest.raises(OutboxExecutionError) as caught:
         _drop(execution, batch, archive_journal=True)
+    assert isinstance(caught.value.__cause__, IncusError)
     assert execution["store"].load(key).actions[0].state == "applied"
+
+
+def test_drop_strict_read_transport_preserves_execution_cause(execution, mocker):
+    from jailbee.incus import IncusError
+    from jailbee.outbox import io
+    from jailbee.outbox.models import OutboxExecutionError
+
+    batch = execution["batch"]({"a.json": [_comment(), _comment()]})
+    key = _seed_execution(execution, batch)
+    failure = IncusError("transport down")
+    execution["incus"].exec.side_effect = failure
+    mocker.patch.object(io, "read_store", side_effect=_strict_read_store)
+    with pytest.raises(OutboxExecutionError) as caught:
+        _drop(execution, batch, archive_journal=True)
+    assert caught.value.__cause__ is failure
+    assert execution["store"].load(key).actions[0].state == "applied"
+    execution["remove"].assert_not_called()
+    assert "a.json" in execution["files"]
 
 
 def test_drop_refuses_changed_proposal_and_preserves_shared_bodies(execution):
@@ -1556,3 +1987,202 @@ def test_drop_preserves_shared_bodies_referenced_by_a_manifest_added_since_the_r
     assert _drop(execution, batch) == ("a.json",)
 
     assert "shared.md" in execution["files"]
+
+
+@pytest.mark.parametrize("change", ["manifest", "body", "identity", "progress"])
+def test_apply_rechecks_after_waiting_for_selected_locks(execution, mocker, change):
+    from contextlib import contextmanager
+
+    from jailbee.outbox_io import journal_key
+
+    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "body.md"}
+    batch = execution["batch"]({"a.json": [action]}, extras={"body.md": "Approved"})
+    store = execution["store"]
+    key = journal_key(batch.identity, "a.json")
+    store.create(key, batch.manifests[0].digest, 1)
+    lock = store.lock
+    waited = False
+
+    @contextmanager
+    def wait_then_lock(selected):
+        nonlocal waited
+        if not waited:
+            waited = True
+            if change == "manifest":
+                execution["files"]["a.json"] += "\n"
+            elif change == "body":
+                execution["files"]["body.md"] = "Changed"
+            elif change == "identity":
+                execution["incus"].list_containers.return_value[0]["created_at"] = "replacement"
+            else:
+                store.mark_prepared(key, 0, repo="acme/app")
+        with lock(selected):
+            yield
+
+    mocker.patch.object(store, "lock", side_effect=wait_then_lock)
+    report = _apply(execution, batch)
+    assert report.failure is not None
+    assert all(not mutation.called for mutation in execution["mutations"].values())
+    execution["remove"].assert_not_called()
+    if change == "progress":
+        assert store.load(key).actions[0].state == "uncertain"
+
+
+def test_apply_holds_all_sorted_selected_locks_through_cleanup(execution, mocker):
+    from contextlib import contextmanager
+
+    from jailbee import issue_outbox
+    from tests.test_outbox_io import _other_process_can_lock
+
+    batch = execution["batch"]({"z.json": [_comment()], "a.json": [_comment()]})
+    store = execution["store"]
+    lock = store.lock
+    entered = []
+
+    @contextmanager
+    def observe(key):
+        with lock(key):
+            entered.append(key.manifest_name)
+            yield
+
+    mocker.patch.object(store, "lock", side_effect=observe)
+
+    def check():
+        paths = list(store.root.rglob("*.lock"))
+        assert len(paths) == 2
+        assert all(not _other_process_can_lock(path) for path in paths)
+
+    def read(*args, **kwargs):
+        check()
+        return issue_outbox.OutboxSnapshot(dict(execution["files"]))
+
+    mocker.patch.object(issue_outbox, "read_issue_outbox", side_effect=read)
+    for boundary in (execution["log"], execution["remove"], execution["mutations"]["add_comment"]):
+        original = boundary.side_effect
+        receipt = boundary.return_value
+
+        def checked(*args, _original=original, _receipt=receipt, **kwargs):
+            check()
+            return _original(*args, **kwargs) if _original else _receipt
+
+        boundary.side_effect = checked
+    assert _apply(execution, batch).failure is None
+    assert entered[:2] == ["a.json", "z.json"]
+
+
+@pytest.mark.parametrize("change", ["body", "identity", "journal"])
+def test_drop_refuses_changed_body_identity_or_recorded_digest(execution, change):
+    from jailbee.outbox_io import JournalError
+
+    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "body.md"}
+    batch = execution["batch"]({"a.json": [action]}, extras={"body.md": "Approved"})
+    if change == "body":
+        execution["files"]["body.md"] = "Changed"
+    elif change == "identity":
+        execution["incus"].list_containers.return_value[0]["created_at"] = "replacement"
+    else:
+        old = replace(batch, manifests=(replace(batch.manifests[0], digest="0" * 64),))
+        _seed_execution(execution, old)
+    with pytest.raises(JournalError):
+        _drop(execution, batch, archive_journal=True)
+    execution["remove"].assert_not_called()
+    assert "a.json" in execution["files"]
+
+
+def test_drop_holds_one_lock_across_fresh_read_progress_delete_and_archive(execution, mocker):
+    from jailbee import issue_outbox
+    from tests.test_outbox_io import _other_process_can_lock
+
+    batch = execution["batch"]({"a.json": [_comment(), _comment()]})
+    _seed_execution(execution, batch)
+    store = execution["store"]
+    seen = []
+
+    for owner, method in (
+        (issue_outbox, "container_identity"),
+        (issue_outbox, "read_issue_outbox"),
+        (store, "load"),
+        (execution["incus"], "exec_with_input"),
+        (store, "archive"),
+    ):
+        original = getattr(owner, method)
+
+        def checked(*args, _original=original, _method=method, **kwargs):
+            (path,) = store.root.rglob("*.lock")
+            assert not _other_process_can_lock(path)
+            seen.append(_method)
+            return _original(*args, **kwargs)
+
+        mocker.patch.object(owner, method, side_effect=checked)
+    assert _drop(execution, batch, archive_journal=True) == ("a.json",)
+    assert seen == [
+        "container_identity",
+        "read_issue_outbox",
+        "load",
+        "exec_with_input",
+        "archive",
+    ]
+
+
+@pytest.mark.parametrize("change", ["manifest", "body"])
+def test_apply_rejects_edit_in_fresh_read_window(execution, mocker, change):
+    from jailbee import issue_outbox
+
+    action = {"type": "comment", "repo": ".", "issue": 7, "body_file": "body.md"}
+    batch = execution["batch"]({"a.json": [action]}, extras={"body.md": "Approved"})
+
+    def read(*args, **kwargs):
+        if change == "manifest":
+            execution["files"]["a.json"] += "\n"
+        else:
+            execution["files"]["body.md"] = "Changed"
+        return issue_outbox.OutboxSnapshot(dict(execution["files"]))
+
+    mocker.patch.object(issue_outbox, "read_issue_outbox", side_effect=read)
+    assert _apply(execution, batch).failure is not None
+    assert all(not mutation.called for mutation in execution["mutations"].values())
+    execution["remove"].assert_not_called()
+
+
+def test_preflight_allows_empty_journal_with_old_digest_and_action_count(preflight):
+    from jailbee.outbox_io import journal_key
+
+    key = journal_key(preflight["identity"], "a.json")
+    preflight["store"].create(key, "0" * 64, 2)
+    batch = preflight["prepare"]({"a.json": [_create()]})
+    assert batch.manifests[0].journal is None
+    assert batch.manifests[0].actions[0].status == "pending"
+    assert preflight["store"].load(key).action_count == 2
+
+
+@pytest.mark.parametrize("change", ["identity", "progress"])
+def test_drop_rechecks_after_lock_wait_without_losing_progress(execution, mocker, change):
+    from contextlib import contextmanager
+
+    from jailbee.outbox_io import JournalError, journal_key
+
+    batch = execution["batch"]({"a.json": [_comment()]})
+    store = execution["store"]
+    key = journal_key(batch.identity, "a.json")
+    store.create(key, batch.manifests[0].digest, 1)
+    lock = store.lock
+    waited = False
+
+    @contextmanager
+    def wait_then_lock(selected):
+        nonlocal waited
+        if not waited:
+            waited = True
+            if change == "identity":
+                execution["incus"].list_containers.return_value[0]["created_at"] = "replacement"
+            else:
+                store.mark_prepared(key, 0, repo="acme/app")
+        with lock(selected):
+            yield
+
+    mocker.patch.object(store, "lock", side_effect=wait_then_lock)
+    with pytest.raises(JournalError):
+        _drop(execution, batch, archive_journal=True)
+    execution["remove"].assert_not_called()
+    if change == "progress":
+        assert store.load(key).actions[0].state == "uncertain"

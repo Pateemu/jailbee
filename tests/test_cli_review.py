@@ -93,14 +93,35 @@ def _running_ci(name: str = "acme-feat-foo", *, pending: int | None = 1, state: 
     )
 
 
-def _setup(mocker, tmp_path, *, files=None):
-    cfg = mocker.MagicMock()
-    cfg.repo_root = tmp_path
-    cfg.container_prefix = "acme"
-    cfg.upstream_remote = "origin"
-    cfg.container_user.uid = 1000
+def _mock_store(mocker, files, *, rejected=(), warnings=()):
+    from jailbee.outbox.models import StoreSnapshot
+    from jailbee.pr_outbox import Outbox
+
+    snapshot = StoreSnapshot("pr", tuple(sorted(files.items())), tuple(rejected), tuple(warnings))
+    mocker.patch("jailbee.outbox.io.read_store", return_value=snapshot)
+    from jailbee.outbox_io import ContainerIdentity
+
+    def read(incus, container, *, uid):
+        return Outbox(
+            files=files,
+            rejected=tuple(rejected),
+            identity=ContainerIdentity(container, "2026-09-30T12:00:00Z"),
+        )
+
+    return mocker.patch("jailbee.pr_outbox.read_outbox", side_effect=read)
+
+
+def _setup(mocker, tmp_path, *, files=None, rejected=(), warnings=()):
+    from tests.conftest import make_cfg
+
+    cfg = make_cfg(tmp_path, container_prefix="acme")
     mocker.patch("jailbee.cli._load_or_exit", return_value=cfg)
     incus = mocker.MagicMock()
+    incus.list_containers.return_value = [
+        {"name": name, "created_at": "2026-09-30T12:00:00Z"}
+        for name in ("acme-feat-foo", "acme-feat-a", "acme-feat-b", "allowed-feat")
+    ]
+    mocker.patch("jailbee.incus.Incus", return_value=incus)
     mocker.patch("jailbee.cli._resolve_existing", return_value=(incus, "acme-feat-foo"))
     mocker.patch("jailbee.lifecycle.short_name", return_value="feat-foo")
     # The plan's identity line calls `gh` for real otherwise, and the
@@ -108,10 +129,92 @@ def _setup(mocker, tmp_path, *, files=None):
     # exercises the interactive path deliberately.
     mocker.patch("jailbee.pr.gh_login", return_value="octocat")
     mocker.patch("jailbee.lifecycle._stdin_is_interactive", return_value=True)
-    from jailbee.pr_outbox import Outbox
+    _mock_store(mocker, files or {}, rejected=rejected, warnings=warnings)
+    import subprocess
 
-    mocker.patch("jailbee.pr_outbox.read_outbox", return_value=Outbox(files=files or {}))
+    from jailbee.outbox import io
+    from jailbee.outbox.models import StoreSnapshot
+
+    run_shell = subprocess.run
+    directory = tmp_path / "review-store"
+    directory.mkdir(exist_ok=True)
+    for name, text in (files or {}).items():
+        (directory / name).write_text(text)
+    for name in rejected:
+        (directory / name).write_bytes(b"\xff")
+
+    def snapshot(*args, **kwargs):
+        contents = {p.name: p.read_text() for p in directory.iterdir() if p.name not in rejected}
+        return StoreSnapshot(
+            "pr", tuple(sorted(contents.items())), tuple(rejected), tuple(warnings)
+        )
+
+    mocker.patch.object(io, "read_store", side_effect=snapshot)
+
+    def execute(container, command, **kwargs):
+        command = list(command)
+        command[-1] = str(directory / command[-1].rsplit("/", 1)[-1])
+        return run_shell(command, text=True, capture_output=True, check=True).stdout
+
+    def mutate(container, command, text, **kwargs):
+        command = list(command)
+        command[4] = str(directory)
+        return run_shell(command, input=text, text=True, capture_output=True, check=True).stdout
+
+    incus.exec.side_effect = execute
+    incus.exec_with_input.side_effect = mutate
     return cfg, incus
+
+
+def test_review_fixture_has_identity_and_strict_evidence(mocker, tmp_path):
+    from jailbee.outbox import io as outbox_io
+    from jailbee.outbox.inspect import pr_progress_evidence
+    from jailbee.outbox_io import ContainerIdentity, container_identity
+
+    files = {"001-x.json": _manifest_text(), "001-x.md": "body"}
+    _, incus = _setup(mocker, tmp_path, files=files)
+    assert container_identity(incus, "acme-feat-foo") == ContainerIdentity(
+        "acme-feat-foo", "2026-09-30T12:00:00Z"
+    )
+    store = outbox_io.read_store(incus, "acme-feat-foo", "pr", uid=1000)
+    assert store.as_dict() == files
+    assert store.rejected == ()
+    assert store.warnings == ()
+    evidence = pr_progress_evidence(store, "001-x.json", 1)
+    assert evidence.error is None
+    assert evidence.applied == frozenset()
+    incus.exec.assert_not_called()
+
+
+@pytest.mark.parametrize("rejected", [False, True])
+def test_review_fixture_keeps_recorded_or_rejected_progress(mocker, tmp_path, rejected):
+    from jailbee.outbox import io as outbox_io
+    from jailbee.outbox.inspect import pr_progress_evidence
+
+    sidecar = "001-x.json.progress.json"
+    files = {"001-x.json": _manifest_text()}
+    if not rejected:
+        files[sidecar] = '{"applied": [0], "urls": {"0": "https://x/c"}}'
+    _, incus = _setup(
+        mocker,
+        tmp_path,
+        files=files,
+        rejected=(sidecar,) if rejected else (),
+        warnings=("Rejected unsafe progress",) if rejected else (),
+    )
+    store = outbox_io.read_store(incus, "acme-feat-foo", "pr", uid=1000)
+    assert store.as_dict() == files
+    assert store.rejected == ((sidecar,) if rejected else ())
+    assert store.warnings == (("Rejected unsafe progress",) if rejected else ())
+    evidence = pr_progress_evidence(store, "001-x.json", 1)
+    assert evidence.edit_block is not None
+    if rejected:
+        assert evidence.error == "publication evidence was rejected"
+    else:
+        assert evidence.error is None
+        assert evidence.applied == frozenset({0})
+        assert evidence.receipts == ((0, "https://x/c"),)
+    incus.exec.assert_not_called()
 
 
 # ---- apply ----------------------------------------------------------------
@@ -150,9 +253,10 @@ def test_apply_submodule_repo_manifest_without_an_extra_option(mocker, tmp_path)
 
     assert result.exit_code == 0, result.output
     assert "https://x/sub-comment" in result.output
-    resolve.assert_called_once_with(
+    expected_resolution = mocker.call(
         cfg.repo_root / "deps/library", 42, remote="upstream", repo="acme/library"
     )
+    assert resolve.call_args_list == [expected_resolution, expected_resolution]
     comment.assert_called_once_with(
         cfg.repo_root / "deps/library", 42, "looks good", repo="acme/library"
     )
@@ -217,12 +321,17 @@ def test_apply_exits_1_when_publishing_fails(mocker, tmp_path):
 
 
 def test_apply_refuses_a_stopped_container(mocker, tmp_path):
+    from jailbee.outbox.models import OutboxExecutionError
     from jailbee.pr_outbox import OutboxReadError
 
     _setup(mocker, tmp_path)
     mocker.patch(
         "jailbee.pr_outbox.read_outbox",
         side_effect=OutboxReadError("could not read the outbox in acme-feat-foo: not running"),
+    )
+    mocker.patch(
+        "jailbee.outbox.io.read_store",
+        side_effect=OutboxExecutionError("outbox unavailable: acme-feat-foo: not running"),
     )
     apply_mock = mocker.patch("jailbee.pr_outbox.apply_manifest")
 
@@ -431,29 +540,34 @@ def test_apply_deletes_a_body_file_shared_by_two_completed_manifests(mocker, tmp
 
     mocker.patch(
         "jailbee.pr_outbox.resolve_target",
-        side_effect=[_target("001-x.json"), _target("002-y.json")],
+        side_effect=[
+            _target("001-x.json"),
+            _target("002-y.json"),
+            _target("001-x.json"),
+            _target("002-y.json"),
+        ],
     )
-    mocker.patch(
-        "jailbee.pr_outbox.apply_manifest",
-        return_value=ApplyOutcome(applied=(0,), urls=("https://x/c",), failure=None),
-    )
+
+    def publish(cfg, incus, container, target, progress, **kwargs):
+        if target.manifest.name == "002-y.json":
+            assert (tmp_path / "review-store" / "shared.md").read_text() == "the body"
+            assert not (tmp_path / "review-store" / "001-x.json").exists()
+        return ApplyOutcome(applied=(0,), urls=("https://x/c",), failure=None)
+
+    mocker.patch("jailbee.pr_outbox.apply_manifest", side_effect=publish)
 
     result = runner.invoke(app, ["review", "apply", "feat-foo", "-y"])
 
     assert result.exit_code == 0, result.output
-    removals = [" ".join(c.args[1]) for c in incus.exec.call_args_list if c.args[1][0] == "rm"]
-    assert len(removals) == 2, removals
-    assert "shared.md" not in removals[0], "002-y.json still references it"
-    assert "shared.md" in removals[1], "nothing references it once both are gone"
+    assert incus.exec_with_input.call_count == 2
+    assert not (tmp_path / "review-store" / "001-x.json").exists()
+    assert not (tmp_path / "review-store" / "002-y.json").exists()
+    assert not (tmp_path / "review-store" / "shared.md").exists()
 
 
 def test_apply_asks_which_container_when_several_may_be_pending(mocker, tmp_path):
-    from jailbee.pr_outbox import Outbox
-
     _setup(mocker, tmp_path)
-    read = mocker.patch(
-        "jailbee.pr_outbox.read_outbox", return_value=Outbox(files={"001-x.json": _manifest_text()})
-    )
+    read = _mock_store(mocker, {"001-x.json": _manifest_text()})
     mocker.patch(
         "jailbee.lifecycle.list_containers",
         return_value=[_running_ci(name="acme-feat-a"), _running_ci(name="acme-feat-b")],
@@ -487,12 +601,8 @@ def test_apply_refuses_off_a_tty_rather_than_showing_the_picker(mocker, tmp_path
 
 def test_apply_reads_a_container_whose_pending_count_is_unknown(mocker, tmp_path):
     """`None` means the probe could not say — never "nothing pending"."""
-    from jailbee.pr_outbox import Outbox
-
     _setup(mocker, tmp_path)
-    read = mocker.patch(
-        "jailbee.pr_outbox.read_outbox", return_value=Outbox(files={"001-x.json": _manifest_text()})
-    )
+    read = _mock_store(mocker, {"001-x.json": _manifest_text()})
     mocker.patch(
         "jailbee.lifecycle.list_containers",
         return_value=[_running_ci(name="acme-feat-a", pending=None)],
@@ -529,7 +639,12 @@ def test_apply_stops_before_the_next_manifest_after_a_failed_publish(mocker, tmp
     )
     mocker.patch(
         "jailbee.pr_outbox.resolve_target",
-        side_effect=[_a_target("001-x.json"), _a_target("002-y.json")],
+        side_effect=[
+            _a_target("001-x.json"),
+            _a_target("002-y.json"),
+            _a_target("001-x.json"),
+            _a_target("002-y.json"),
+        ],
     )
     apply_mock = mocker.patch(
         "jailbee.pr_outbox.apply_manifest",
@@ -540,6 +655,7 @@ def test_apply_stops_before_the_next_manifest_after_a_failed_publish(mocker, tmp
     result = runner.invoke(app, ["review", "apply", "feat-foo", "-y"])
 
     assert result.exit_code == 1
+    assert apply_mock.call_args.args[3].manifest.name == "001-x.json"
     assert apply_mock.call_count == 1, "the second manifest must not be attempted"
     assert "002-y.json" in result.output, "and the user must be told it is still pending"
 
@@ -555,7 +671,12 @@ def test_apply_stops_before_the_next_manifest_when_it_cannot_record(mocker, tmp_
     )
     mocker.patch(
         "jailbee.pr_outbox.resolve_target",
-        side_effect=[_a_target("001-x.json"), _a_target("002-y.json")],
+        side_effect=[
+            _a_target("001-x.json"),
+            _a_target("002-y.json"),
+            _a_target("001-x.json"),
+            _a_target("002-y.json"),
+        ],
     )
     apply_mock = mocker.patch(
         "jailbee.pr_outbox.apply_manifest",
@@ -566,6 +687,7 @@ def test_apply_stops_before_the_next_manifest_when_it_cannot_record(mocker, tmp_
     result = runner.invoke(app, ["review", "apply", "feat-foo", "-y"])
 
     assert result.exit_code == 1
+    assert apply_mock.call_args.args[3].manifest.name == "001-x.json"
     assert apply_mock.call_count == 1
     assert "002-y.json" in result.output
 
@@ -623,10 +745,7 @@ def test_ls_all_repos_filters_hidden_repo_before_review_probe(mocker, tmp_path):
     hidden.repo = "secret"
     scope = RemoteRepoScope(frozenset({"secret"}))
     mocker.patch("jailbee.remote_ssh.repo_scope.scope_for_session", return_value=scope)
-    reads = mocker.patch("jailbee.pr_outbox.read_outbox")
-    from jailbee.pr_outbox import Outbox
-
-    reads.return_value = Outbox(files={"001-x.json": _manifest_text()})
+    reads = _mock_store(mocker, {"001-x.json": _manifest_text()})
     mocker.patch("jailbee.pr_outbox.resolve_target", return_value=_a_target())
 
     def scoped_rows(*args, **kwargs):
@@ -758,14 +877,14 @@ def test_show_reports_a_malformed_manifest_without_crashing(mocker, tmp_path):
 
 
 def test_drop_deletes_without_publishing(mocker, tmp_path):
-    _, incus = _setup(mocker, tmp_path, files={"001-x.json": _manifest_text()})
+    _setup(mocker, tmp_path, files={"001-x.json": _manifest_text()})
     apply_mock = mocker.patch("jailbee.pr_outbox.apply_manifest")
 
     result = runner.invoke(app, ["review", "drop", "feat-foo", "-y"])
 
     assert result.exit_code == 0, result.output
     apply_mock.assert_not_called()
-    assert any("rm" in c.args[1] for c in incus.exec.call_args_list)
+    assert not (tmp_path / "review-store" / "001-x.json").exists()
 
 
 def test_drop_asks_first_and_keeps_the_manifest_on_no(mocker, tmp_path):
@@ -778,7 +897,7 @@ def test_drop_asks_first_and_keeps_the_manifest_on_no(mocker, tmp_path):
 
 
 def test_drop_takes_one_named_manifest(mocker, tmp_path):
-    _, incus = _setup(
+    _setup(
         mocker,
         tmp_path,
         files={"001-x.json": _manifest_text(), "002-y.json": _manifest_text()},
@@ -787,9 +906,8 @@ def test_drop_takes_one_named_manifest(mocker, tmp_path):
     result = runner.invoke(app, ["review", "drop", "feat-foo", "002-y.json", "-y"])
 
     assert result.exit_code == 0, result.output
-    deleted = [arg for call in incus.exec.call_args_list for arg in call.args[1]]
-    assert any(a.endswith("002-y.json") for a in deleted)
-    assert not any(a.endswith("001-x.json") for a in deleted)
+    assert not (tmp_path / "review-store" / "002-y.json").exists()
+    assert (tmp_path / "review-store" / "001-x.json").exists()
 
 
 def test_drop_rejects_an_unknown_manifest(mocker, tmp_path):
@@ -813,3 +931,51 @@ def test_drop_reports_nothing_to_drop(mocker, tmp_path):
     assert result.exit_code == 0, result.output
     assert "nothing pending" in result.output.lower()
     incus.exec.assert_not_called()
+
+
+def test_drop_replacement_during_confirmation_never_deletes(mocker, tmp_path):
+    from jailbee.outbox.models import StoreSnapshot
+    from jailbee.pr_outbox import read_outbox
+
+    files = {
+        "one.json": _manifest_text(actions=[{"type": "comment", "body_file": "body.md"}]),
+        "body.md": "same body",
+        "one.json.progress.json": '{"applied": [], "urls": {}}',
+    }
+    _, incus = _setup(mocker, tmp_path, files=files)
+    mocker.patch("jailbee.pr_outbox.read_outbox", wraps=read_outbox)
+    mocker.patch("jailbee.pr_outbox.read_text_outbox", return_value=files)
+    store = StoreSnapshot("pr", tuple(sorted(files.items())), (), ())
+    mocker.patch("jailbee.outbox.io.read_store", return_value=store)
+
+    def confirm(question):
+        incus.list_containers.return_value[0]["created_at"] = "replacement"
+        return True
+
+    mocker.patch("jailbee.cli.typer.confirm", side_effect=confirm)
+    result = runner.invoke(app, ["review", "drop", "feat-foo"])
+    assert result.exit_code == 1, result.output
+    assert "refresh" in result.output
+    incus.exec.assert_not_called()
+
+
+def test_drop_multiple_preserves_preview_identity(mocker, tmp_path):
+    from jailbee.outbox.models import StoreSnapshot
+    from jailbee.pr_outbox import read_outbox
+
+    files = {"one.json": _manifest_text(), "two.json": _manifest_text()}
+    _, incus = _setup(mocker, tmp_path, files=files)
+    mocker.patch("jailbee.pr_outbox.read_outbox", wraps=read_outbox)
+    mocker.patch("jailbee.pr_outbox.read_text_outbox", return_value=files)
+    mocker.patch(
+        "jailbee.outbox.io.read_store",
+        side_effect=[
+            StoreSnapshot("pr", tuple(sorted(files.items())), (), ()),
+            StoreSnapshot("pr", (("two.json", files["two.json"]),), (), ()),
+        ],
+    )
+    result = runner.invoke(app, ["review", "drop", "feat-foo", "-y"])
+    assert result.exit_code == 0, result.output
+    assert incus.exec_with_input.call_count == 2
+    assert not (tmp_path / "review-store" / "one.json").exists()
+    assert not (tmp_path / "review-store" / "two.json").exists()

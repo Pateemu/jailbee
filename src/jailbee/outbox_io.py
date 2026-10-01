@@ -7,10 +7,12 @@ import fcntl
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import tarfile
 import tempfile
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -113,6 +115,81 @@ def proposal_digest(
     return _hash_parts(tuple(parts))
 
 
+def issue_receipt_line(manifest_name: str, action: JournalAction, timestamp: str) -> str:
+    """Canonical issue receipt bytes, shared by writing and recovery proof."""
+    return json.dumps(
+        {
+            "timestamp": timestamp,
+            "manifest": manifest_name,
+            "index": action.index,
+            "repo": action.repo,
+            "issue": action.issue,
+            "url": action.url,
+        },
+        sort_keys=True,
+    )
+
+
+def issue_proposal_digest(
+    key: JournalKey,
+    manifest_text: str,
+    body_files: Mapping[str, str],
+    journal: IssueJournal | None,
+) -> str:
+    """Prove complete owned receipt suffixes reconstruct the original proposal.
+
+    No input is excluded from the digest. Only exact canonical, fully settled
+    journal receipt blocks may be removed, and only a matching original hash
+    authorizes cleanup-only recovery. Partial or unproved suffixes stay changed.
+    """
+    raw_digest = proposal_digest(key.manifest_name, manifest_text, body_files)
+    if (
+        journal is None
+        or journal.identity != key.identity
+        or journal.manifest_name != key.manifest_name
+        or journal.action_count <= 0
+        or len(journal.actions) != journal.action_count
+        or any(action.index != index for index, action in enumerate(journal.actions))
+        or any(a.state != "applied" for a in journal.actions)
+        or "applied.log" not in body_files
+        or raw_digest == journal.digest
+    ):
+        return raw_digest
+    text = body_files["applied.log"]
+    candidate = text
+    while candidate.endswith("\n"):
+        end = len(candidate)
+        for action in reversed(journal.actions):
+            # The first appended JSON can abut original text without a newline.
+            # Derive its exact length from the durable fields and fixed timestamp.
+            template = issue_receipt_line(key.manifest_name, action, "2000-01-01T00:00:00Z") + "\n"
+            start = end - len(template)
+            if start < 0:
+                return raw_digest
+            record = candidate[start:end]
+            try:
+                value = json.loads(record)
+                if not isinstance(value, dict):
+                    return raw_digest
+                timestamp = value["timestamp"]
+                if not isinstance(timestamp, str):
+                    return raw_digest
+                parsed = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+                if parsed.strftime("%Y-%m-%dT%H:%M:%SZ") != timestamp:
+                    return raw_digest
+            except (ValueError, TypeError, KeyError, RecursionError):
+                return raw_digest
+            if record != issue_receipt_line(key.manifest_name, action, timestamp) + "\n":
+                return raw_digest
+            end = start
+        candidate = candidate[:end]
+        restored = dict(body_files)
+        restored["applied.log"] = candidate
+        if proposal_digest(key.manifest_name, manifest_text, restored) == journal.digest:
+            return journal.digest
+    return raw_digest
+
+
 def container_identity(incus: Incus, container: str) -> ContainerIdentity:
     """Return the full Incus name and raw, nonzero creation timestamp."""
     raw = next((item for item in incus.list_containers() if item.get("name") == container), None)
@@ -176,6 +253,29 @@ def journal_has_uncertainty(journal: IssueJournal) -> bool:
     return any(action.state == "uncertain" for action in journal.actions)
 
 
+def acquire_outbox_lock(descriptor: int, timeout: float | None = None) -> None:
+    """Acquire an exclusive flock; opt-in deadlines bound only lock contention.
+
+    Callers own the descriptor and translate OSError/TimeoutError into their
+    domain errors. None preserves publication's existing blocking behavior.
+    """
+    if timeout is None:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        return
+    if not math.isfinite(timeout) or timeout < 0:
+        raise ValueError("lock timeout must be finite non-negative seconds")
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("outbox lock deadline expired") from None
+            time.sleep(min(0.05, remaining))
+
+
 class JournalStore:
     """Crash-safe host storage for issue mutation progress."""
 
@@ -212,8 +312,8 @@ class JournalStore:
         return held
 
     @contextmanager
-    def lock(self, key: JournalKey) -> Iterator[None]:
-        """Serialize one journal, including an optional remote mutation window."""
+    def lock(self, key: JournalKey, *, timeout: float | None = None) -> Iterator[None]:
+        """Serialize one journal; None waits indefinitely, finite seconds bound contention."""
         path = self._lock_path(key)
         held = self._held_lock_paths()
         if path in held:
@@ -224,10 +324,17 @@ class JournalStore:
             path.parent.mkdir(parents=True, exist_ok=True)
             descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
             os.chmod(path, 0o600)
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
-        except OSError as exc:
+            acquire_outbox_lock(descriptor, timeout)
+        except (OSError, ValueError) as exc:
             if descriptor is not None:
                 os.close(descriptor)
+            if isinstance(exc, TimeoutError):
+                raise JournalError(
+                    f"Timed out waiting for journal lock for {key.manifest_name}; "
+                    "refresh and retry after the current operation finishes"
+                ) from exc
+            if isinstance(exc, ValueError):
+                raise JournalError(str(exc)) from exc
             raise JournalError(f"could not lock journal for {key.manifest_name}") from exc
         assert descriptor is not None
         held.add(path)

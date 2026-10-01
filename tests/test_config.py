@@ -4962,6 +4962,28 @@ def test_tag_policy_rejects_unknown_value(make_cfg, tmp_path):
         make_cfg(tmp_path, pull={"tags": "sometimes"})
 
 
+@pytest.mark.parametrize("configured", [True, False])
+def test_repo_config_local_git_timeout_keeps_effective_config(
+    tmp_path, monkeypatch, mocker, configured
+):
+    import subprocess
+
+    from jailbee.config import load_repo_config
+
+    _write_global(tmp_path, monkeypatch)
+    repo = _write_repo(tmp_path) if configured else _write_bare_repo(tmp_path)
+
+    def expire(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout") or 30)
+
+    mocker.patch("jailbee.git.subprocess.run", side_effect=expire)
+    cfg = load_repo_config(repo)
+    assert cfg.repo_root == repo
+    assert cfg.upstream_remote == "origin"
+    assert cfg.default_branch == "main"
+    assert cfg.is_synthetic is not configured
+
+
 def test_ff_policy_rejects_unknown_value(make_cfg, tmp_path):
     import pydantic
     import pytest

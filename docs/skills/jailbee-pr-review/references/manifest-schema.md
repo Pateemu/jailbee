@@ -24,7 +24,7 @@ manifest by hand, follow it exactly rather than guessing from the examples.
     },
     {"type": "reply", "comment_id": 99887, "body": "…"},
     {"type": "comment", "body_file": "001-general.md", "reply_to": 4455},
-    {"type": "description", "body_file": "001-body.md", "title": null, "branch": null}
+    {"type": "description", "body_file": "001-body.md", "title": "Improve onboarding", "branch": null}
   ]
 }
 ```
@@ -94,10 +94,23 @@ sees the intent, not just a link.
 The existing `pr.edit_pr`, i.e. `gh pr edit`, when applied by
 `jb review apply`; consumed directly by `jb pr` when that command runs first.
 `body_file`/`body` replaces the whole description. `title` and `branch` are
-optional; `null` means "unchanged" on the update path. `branch` is the
-proposed head branch name and is used **only** on the `jb pr` create path —
-`jb review apply` ignores it, because renaming the head of an existing PR is
-not a description edit. At most one `description` action per manifest.
+optional in the schema, but `title` has different behavior depending on which
+command consumes the manifest:
+
+- `jb pr` / `jb submodule pr` (create **or** update): provide a non-blank
+  `title` string with the intended PR title. If the PR already exists and
+  only its body should change, copy its current title from
+  `gh pr view <n> --json title`. A missing, `null`, or blank title instead
+  becomes the body's first non-blank line after stripping leading Markdown
+  `#` markers; if the body has no such line, the source branch or container
+  name is used. For example, a body starting `Why?` yields PR title `Why?`.
+- `jb review apply` (existing PR only): a missing or `null` title leaves the
+  current title unchanged. It does not derive a title from the body.
+
+`branch` is the proposed head branch name and is used **only** on the `jb pr`
+create path — `jb review apply` ignores it, because renaming the head of an
+existing PR is not a description edit. At most one `description` action per
+manifest.
 
 ## Caps (refusal, not truncation)
 

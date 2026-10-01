@@ -722,3 +722,208 @@ def test_publishing_itself_stays_allowed(argv, monkeypatch) -> None:
     monkeypatch.delenv("JAILBEE_REMOTE_SSH", raising=False)
 
     assert policy_allows(argv, FULL)
+
+
+@pytest.mark.parametrize("leaf", ["browse", "ls", "show", "drop", "apply"])
+def test_outbox_leaves_follow_policy(leaf):
+    argv = ("outbox", leaf)
+    if leaf in {"show", "drop", "apply"}:
+        argv += ("box", "pr/a.json")
+    assert command_path(argv) == f"outbox {leaf}"
+    assert policy_allows(argv, FULL) == f"outbox {leaf}"
+    assert (
+        policy_allows(argv, RemoteCommandPolicy(mode="allowlist", allow=[f"outbox {leaf}"]))
+        == f"outbox {leaf}"
+    )
+
+
+@pytest.mark.parametrize(
+    "argv", [("outbox",), ("outbox", "feature"), ("outbox", "lss"), ("outbox", "browse", "apply")]
+)
+def test_outbox_shorthand_is_browse_not_help(argv):
+    assert command_path(argv) == "outbox browse"
+    assert command_leaf(argv)[0] == "outbox browse"
+    assert policy_allows(argv, FULL) == "outbox browse"
+    with pytest.raises(RouteError, match="not allowed: outbox browse"):
+        policy_allows(argv, RemoteCommandPolicy(mode="allowlist", allow=["outbox apply"]))
+    with pytest.raises(RouteError, match="disabled"):
+        policy_allows(argv, RemoteCommandPolicy())
+
+
+@pytest.mark.parametrize(
+    "options", [("--yes",), ("-y",), ("-yy",), ("--yes=true",), ("--yes=false",), ("-fy",)]
+)
+def test_outbox_apply_never_skips_confirmation(options):
+    argv = ("outbox", "apply", "box", "pr/a.json", *options)
+    for policy in (FULL, RemoteCommandPolicy(mode="allowlist", allow=["outbox apply"])):
+        with pytest.raises(RouteError):
+            policy_allows(argv, policy)
+    with pytest.raises(RouteError):
+        check_arguments(argv)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("outbox", "feature", "-c/x"),
+        ("outbox", "browse", "--config=/x"),
+        ("outbox", "apply", "box", "pr/a.json", "-yc/x"),
+        ("outbox", "--config", "ls", "apply", "box", "pr/a.json", "-y"),
+        ("outbox", "--config=/x", "feature"),
+        ("outbox", "-c/x"),
+    ],
+)
+def test_outbox_host_config_is_denied(argv):
+    with pytest.raises(RouteError):
+        policy_allows(argv, FULL)
+    with pytest.raises(RouteError):
+        check_arguments(argv)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("outbox",),
+        ("outbox", "feature"),
+        ("outbox", "ls", "--all-repos"),
+        ("outbox", "show", "secret-box", "pr/a.json"),
+        ("outbox", "drop", "box", "pr/a.json"),
+        ("outbox", "apply", "box", "pr/a.json"),
+    ],
+)
+def test_outbox_exclusions_remain_fail_closed(argv):
+    with pytest.raises(RouteError, match="unavailable when SSH repository exclusions"):
+        policy_allows(argv, FULL, scope=RemoteRepoScope(frozenset({"secret"})))
+
+
+def test_outbox_group_help_remains_available():
+    policy = RemoteCommandPolicy(mode="allowlist", allow=["outbox apply"])
+    assert policy_allows(("outbox", "--help"), policy) == "outbox"
+    assert policy_allows(("outbox", "apply", "--help"), policy) == "outbox apply"
+
+
+@pytest.mark.parametrize("options", [("--yes",), ("-y",), ("-yy",)])
+def test_outbox_confirmation_denial_uses_real_parameter_source(options):
+    from typer._click.core import ParameterSource
+
+    argv = ("outbox", "apply", "box", "pr/a.json", *options)
+    _, command = command_leaf(argv)
+    with command.make_context("apply", list(argv[2:])) as ctx:
+        assert ctx.params["yes"] is True
+        assert ctx.get_parameter_source("yes") is ParameterSource.COMMANDLINE
+    with pytest.raises(RouteError, match="may not set --yes: outbox apply"):
+        policy_allows(argv, FULL)
+
+
+def test_outbox_normalized_argument_is_not_an_option():
+    assert policy_allows(("outbox", "browse", "--", "--config=/x"), FULL) == "outbox browse"
+    assert (
+        policy_allows(("outbox", "apply", "box", "pr/a.json", "--dry-run", "--force"), FULL)
+        == "outbox apply"
+    )
+
+
+def test_outbox_shorthand_route_preserves_argv(engine, repo, configured_ssh):
+    result = route("--repo project outbox feature", configured_ssh, engine=engine)
+    assert result.argv == ("outbox", "feature")
+    assert result.repo_root == repo
+
+
+@pytest.mark.parametrize("restricted", [True, False])
+@pytest.mark.parametrize("args", [[], ["feature"], ["browse"], ["browse", "apply"]])
+def test_ssh_outbox_browser_is_read_only_through_real_cli(
+    restricted, args, monkeypatch, mocker, make_cfg, tmp_path
+):
+    from typer.testing import CliRunner
+
+    from jailbee.cli import app
+    from jailbee.incus import Incus
+    from jailbee.remote_ssh.session import child_environment
+
+    env = child_environment({}, restricted=restricted)
+    for key in ("JAILBEE_REMOTE_SSH", "JAILBEE_SSH_SESSION", "JAILBEE_SSH_EXCLUDED_REPOS"):
+        monkeypatch.delenv(key, raising=False)
+        if key in env:
+            monkeypatch.setenv(key, env[key])
+    cfg = make_cfg(tmp_path)
+    mocker.patch("jailbee.config.load_repo_config", return_value=cfg)
+    mocker.patch("jailbee.incus.Incus", return_value=mocker.Mock(spec=Incus))
+    mocker.patch("jailbee.outbox_io.JournalStore")
+    overview = mocker.patch("jailbee.outbox.commands.show_overview", return_value=0)
+    drop = mocker.patch("jailbee.outbox.commands.drop_selected")
+    publish = mocker.patch("jailbee.outbox.commands.apply_selected")
+    policy = RemoteCommandPolicy(mode="allowlist", allow=["outbox browse"])
+    assert policy_allows(["outbox", *args], policy, restrict_host=restricted) == "outbox browse"
+
+    result = CliRunner().invoke(app, ["outbox", *args])
+
+    assert result.exit_code == 0, result.output
+    assert "read-only" in result.output
+    assert "outbox drop" in result.output and "outbox apply" in result.output
+    from jailbee.cli_outbox import browser_read_only
+
+    assert browser_read_only() is True
+    assert overview.call_count == 1
+    assert "confirm" not in overview.call_args.kwargs
+    drop.assert_not_called()
+    publish.assert_not_called()
+    for leaf in ("drop", "apply"):
+        with pytest.raises(RouteError, match=f"not allowed: outbox {leaf}"):
+            policy_allows(["outbox", leaf, "box", "pr/a.json"], policy)
+
+
+def test_local_outbox_browser_policy_is_writable(monkeypatch):
+    from jailbee.cli_outbox import browser_read_only
+
+    monkeypatch.delenv("JAILBEE_REMOTE_SSH", raising=False)
+    monkeypatch.delenv("JAILBEE_SSH_SESSION", raising=False)
+    assert browser_read_only() is False
+
+
+@pytest.mark.parametrize("restrict_host", [True, False])
+def test_outbox_exclusions_hold_for_unrestricted_ssh_children(
+    restrict_host, monkeypatch, engine, repo, mocker
+):
+    from jailbee.remote_ssh.repo_scope import scope_for_session
+    from jailbee.remote_ssh.session import child_environment
+
+    env = child_environment({}, restricted=restrict_host, excluded_repos=["secret"])
+    monkeypatch.delenv("JAILBEE_REMOTE_SSH", raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    scope = scope_for_session()
+    assert scope == RemoteRepoScope(frozenset({"secret"}))
+    # Config validation forbids this combination; the scope gate must still
+    # hold for an inherited snapshot and callers with host restrictions off.
+    cfg = RemoteSSHConfig(exec=True, excluded_repos=["secret"], commands=FULL).model_copy(
+        update={"restrict_host": restrict_host}
+    )
+    resolve = mocker.patch("jailbee.remote_ssh.router.resolve_repo")
+    for args in (
+        "outbox",
+        "outbox secret-box",
+        "outbox ls --all-repos",
+        "outbox show secret-box pr/a.json",
+        "outbox drop box pr/a.json",
+        "outbox apply box pr/a.json",
+    ):
+        with pytest.raises(RouteError, match="unavailable when SSH repository exclusions"):
+            route(f"--repo project {args}", cfg, engine=engine)
+        with pytest.raises(RouteError, match="unavailable when SSH repository exclusions"):
+            policy_allows(args.split(), FULL, restrict_host=restrict_host, scope=scope)
+    resolve.assert_not_called()
+
+
+@pytest.mark.parametrize("leaf", ["drop", "apply"])
+def test_explicit_outbox_mutation_remains_allowed_without_browser_privileges(leaf):
+    argv = ["outbox", leaf, "box", "pr/a.json"]
+    policy = RemoteCommandPolicy(mode="allowlist", allow=[f"outbox {leaf}"])
+    assert policy_allows(argv, policy) == f"outbox {leaf}"
+    _, command = command_leaf(argv)
+    with command.make_context(leaf, argv[2:]) as ctx:
+        assert ctx.params["yes"] is False
+    if leaf == "apply":
+        with pytest.raises(RouteError, match="may not set --yes"):
+            policy_allows([*argv, "-y"], policy)
+    else:
+        assert policy_allows([*argv, "-y"], policy) == "outbox drop"

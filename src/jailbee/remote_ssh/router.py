@@ -209,6 +209,9 @@ def known_command_short_help() -> dict[str, str]:
 
 def _resolve_leaf(argv: Sequence[str]) -> tuple[str, str]:
     """(typed, canonical) paths of the longest public or aliased leaf `argv` names."""
+    from jailbee.cli_outbox import normalize_outbox_argv
+
+    argv = normalize_outbox_argv(argv)
     tree = _command_tree()
     candidates = tree.public_leaves | tree.aliases.keys()
     matches = [
@@ -335,6 +338,11 @@ _CONTAINER_COMMANDS = frozenset(
         "net status",
         "net strict",
         "new",
+        "outbox browse",
+        "outbox ls",
+        "outbox show",
+        "outbox drop",
+        "outbox apply",
         "pool ls",
         "pool prune",
         "port ls",
@@ -392,6 +400,7 @@ _REMOTE_DENIED_PARAMS: dict[str, frozenset[str]] = {
     "submodule pr": frozenset({"web", "open_only", "yes"}),
     "review apply": frozenset({"yes"}),
     "issue apply": frozenset({"yes"}),
+    "outbox apply": frozenset({"yes"}),
 }
 
 
@@ -426,7 +435,11 @@ def check_arguments(argv: Sequence[str]) -> None:
     cannot complete is refused — the real one would fail too.
     """
     from typer._click.core import ParameterSource
+    from typer.exceptions import Exit
 
+    from jailbee.cli_outbox import normalize_outbox_argv
+
+    argv = normalize_outbox_argv(argv)
     typed, canonical = _resolve_leaf(argv)
     command = _command_tree().leaf_commands[typed]
     params = _host_reaching_params(command, canonical)
@@ -434,7 +447,17 @@ def check_arguments(argv: Sequence[str]) -> None:
         return
     words = typed.split()
     try:
-        ctx = command.make_context(words[-1], list(argv[len(words) :]), resilient_parsing=True)
+        # Outbox flags must fail closed on parser errors; resilient parsing
+        # discards parameter sources for malformed equals/short-option forms.
+        ctx = command.make_context(
+            words[-1],
+            list(argv[len(words) :]),
+            resilient_parsing=not canonical.startswith("outbox "),
+        )
+    except Exit as error:
+        if error.exit_code == 0:
+            return
+        raise RouteError(f"cannot parse remote command arguments: {canonical}") from error
     except Exception as error:
         raise RouteError(f"cannot parse remote command arguments: {canonical}") from error
     with ctx:
@@ -517,6 +540,9 @@ def policy_allows(
     `remote.ssh.restrict_host: false` (``restrict_host``) skips it, and not
     even that inside an already restricted session (`host_restricted`).
     """
+    from jailbee.cli_outbox import normalize_outbox_argv
+
+    argv = normalize_outbox_argv(argv)
     if policy.mode == "disabled":
         raise RouteError("remote Jailbee commands are disabled")
     help_path = _help_only_path(argv)
