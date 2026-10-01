@@ -11,6 +11,7 @@ rest are fire and forget — see :data:`LaunchMode`.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -143,6 +144,21 @@ def build_action(
         argv += extra_flags
     return ActionCommand(
         argv=argv, launch=launch_mode(verb), confirm=confirm, cwd=target.cwd(), verb=verb
+    )
+
+
+def build_outbox_publish(
+    container: str, proposal: str, revision: str, target: RepoTarget
+) -> ActionCommand:
+    """Publish one inspected manifest; only the terminal may approve mutations."""
+    from jailbee.outbox.models import ProposalId
+
+    selected = ProposalId.parse(proposal)
+    if re.fullmatch(r"[0-9a-f]{64}", revision) is None:
+        raise ValueError("invalid outbox revision; refresh required")
+    return ActionCommand(
+        ["jailbee", "outbox", "apply", container, str(selected), "--revision", revision, *target.flags()],
+        "terminal", False, target.cwd(), "outbox apply",
     )
 
 

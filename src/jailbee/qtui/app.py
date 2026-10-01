@@ -39,8 +39,10 @@ from jailbee.qtui.actions import (
     ActionCommand,
     TerminalNotFoundError,
     build_action,
+    build_outbox_publish,
     resolve_launch,
 )
+from jailbee.qtui.outbox import OutboxDialog
 from jailbee.qtui.output import CommandOutputDialog
 from jailbee.qtui.prompts import (
     NewContainerDialog,
@@ -55,6 +57,7 @@ from jailbee.qtui.prompts import (
 from jailbee.qtui.refresh import RefreshWorker
 from jailbee.qtui.terminal import detect_terminal
 from jailbee.qtui.window import MainWindow
+from jailbee.remote_ssh.session import is_ssh_session
 from jailbee.tui import error
 
 if TYPE_CHECKING:
@@ -121,6 +124,7 @@ class AppController(QObject):
         self._last_refresh_at: datetime | None = None
         # Latest snapshot, kept for resolving a clicked action's config path.
         self._latest: list[RepoGroup] = []
+        self._outboxes: dict[tuple[RepoTarget, str], OutboxDialog] = {}
 
     @Slot(object)
     def on_groups(self, groups: list[RepoGroup]) -> None:
@@ -423,6 +427,9 @@ class AppController(QObject):
         target = RepoTarget.of(group)
         if target is None:
             return  # an orphan group: no repo root to address a child at
+        if verb == "outbox browse" and not is_ssh_session():
+            self._open_outbox(target, name)
+            return
         container = next((c for c in group.containers if c.name == name), None)
         extra = self._collect_answers(verb, name, group, container)
         if extra is None:
@@ -587,6 +594,64 @@ class AppController(QObject):
             return
         self._worker.force()  # the config may have changed under every card
 
+    def _open_outbox(self, target: RepoTarget, container: str) -> None:
+        if is_ssh_session():
+            self.on_action("outbox browse", container)
+            return
+        key = (target, container)
+        dialog = self._outboxes.get(key)
+        if dialog is not None:
+            if not dialog.closing:
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+            return  # A closing worker still owns this slot until completion.
+        dialog = OutboxDialog(target, container, parent=self._window)
+        self._outboxes[key] = dialog
+        dialog.changed.connect(self.on_refresh_requested)
+        dialog.publishRequested.connect(self._on_outbox_publish)
+        dialog.retired.connect(self._on_outbox_retired)
+        dialog.show()
+
+    @Slot(str, str)
+    def _on_outbox_publish(self, proposal: str, revision: str) -> None:
+        dialog = self.sender()
+        for (target, container), candidate in self._outboxes.items():
+            if candidate is dialog and not candidate.closing:
+                if self._publish_outbox(target, container, proposal, revision):
+                    candidate.publication_started()
+                return
+
+    def _publish_outbox(self, target: RepoTarget, container: str, proposal: str, revision: str) -> bool:
+        if is_ssh_session():
+            QMessageBox.warning(self._window, "Read-only browser", "Use explicit outbox apply over SSH.")
+            return False
+        try:
+            action = build_outbox_publish(container, proposal, revision, target)
+            argv = resolve_launch(action, detect_terminal(env=_env(), which=shutil.which))
+        except (TerminalNotFoundError, ValueError) as exc:
+            QMessageBox.warning(self._window, "No terminal or invalid proposal", str(exc))
+            return False
+        try:
+            subprocess.Popen(argv, start_new_session=True, cwd=action.cwd)
+        except OSError as exc:
+            QMessageBox.warning(self._window, "Launch failed", str(exc))
+            return False
+        return True  # No success receipt: refresh on reactivation or explicitly.
+
+    @Slot()
+    def _on_outbox_retired(self) -> None:
+        dialog = self.sender()
+        for key, candidate in list(self._outboxes.items()):
+            if candidate is dialog:
+                del self._outboxes[key]
+                candidate.deleteLater()
+                return
+
+    def _finish_outboxes(self) -> None:
+        for dialog in list(self._outboxes.values()):
+            dialog.finish_on_shutdown()
+
     def _open_output(self, argv: list[str], title: str, cwd: Path) -> None:
         """Show a command's output in its own window.
 
@@ -738,6 +803,7 @@ def run(
         return int(app.exec())
     finally:
         controller.persist_on_close()
+        controller._finish_outboxes()
         worker.request_stop()
         worker.force()
         thread.quit()
