@@ -479,11 +479,6 @@ def test_probe_four_field_output_yields_no_submodules(mocker):
     assert result.submodules == ()
 
 
-def _payload(*fields: str) -> str:
-    """NUL-terminated probe fields, in wire order."""
-    return "".join(f"{f}\x00" for f in fields)
-
-
 def test_probe_parses_head_sha_and_remote_contained(mocker):
     from jailbee.git_status import probe_container_git
 
