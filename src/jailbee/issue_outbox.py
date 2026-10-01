@@ -870,18 +870,32 @@ def _cleanup_manifest(
     except OutboxExecutionError as exc:
         return f"{name}: logged, but the outbox could not be re-read to clean it up ({exc})"
     files = fresh_outbox.as_dict()
-    if container_identity(incus, container) != identity or proposal_digest(
-        name, files.get(name, ""), {body: files.get(body, "") for body in prepared.manifest.body_files}
-    ) != prepared.digest:
+    if (
+        container_identity(incus, container) != identity
+        or proposal_digest(
+            name,
+            files.get(name, ""),
+            {body: files.get(body, "") for body in prepared.manifest.body_files},
+        )
+        != prepared.digest
+    ):
         return f"{name}: proposal changed after publication; cleanup refused, journal retained"
     referenced = _referenced_elsewhere(fresh_outbox, name)
     names = [name]
     if referenced is not None:
         names.extend(exclusive_body_names(prepared.manifest.body_files, files, referenced))
     try:
-        store_io.mutate_store(incus, container, "issue", uid=uid, expected=files,
-            new_manifest=None, delete_names=tuple(names), forbidden_progress=None,
-            rejected_names=fresh_outbox.rejected)
+        store_io.mutate_store(
+            incus,
+            container,
+            "issue",
+            uid=uid,
+            expected=files,
+            new_manifest=None,
+            delete_names=tuple(names),
+            forbidden_progress=None,
+            rejected_names=fresh_outbox.rejected,
+        )
     except (IncusError, OutboxExecutionError) as exc:
         return (
             f"{name}: applied and logged, but its outbox files could not be "
@@ -1318,9 +1332,17 @@ def drop_manifest(
         if referenced is not None:
             names.extend(exclusive_body_names(body_files, fresh.files, referenced))
 
-        store_io.mutate_store(incus, container, "issue", uid=uid, expected=fresh.files,
-            new_manifest=None, delete_names=tuple(names), forbidden_progress=None,
-            rejected_names=strict.rejected)
+        store_io.mutate_store(
+            incus,
+            container,
+            "issue",
+            uid=uid,
+            expected=fresh.files,
+            new_manifest=None,
+            delete_names=tuple(names),
+            forbidden_progress=None,
+            rejected_names=strict.rejected,
+        )
 
         if archive_journal and journal is not None and journal.actions:
             journal_store.archive(key)

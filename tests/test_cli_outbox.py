@@ -201,11 +201,11 @@ def test_typo_is_missing_container_not_silent_overview(env):
 
 @pytest.fixture
 def publication_env(env, mocker, tmp_path):
+    import subprocess
+
     from jailbee import issue_github, issue_outbox, pr
     from jailbee.outbox import io
     from jailbee.outbox.io import PrManagement
-
-    import subprocess
 
     run_shell = subprocess.run
     directory = tmp_path / "mutation-outbox"
@@ -223,7 +223,9 @@ def publication_env(env, mocker, tmp_path):
         command = list(command)
         command[4] = str(directory)
         result = run_shell(command, input=text, text=True, capture_output=True, check=True).stdout
-        files = {p.name: p.read_text() for p in directory.iterdir() if p.name not in snapshot.rejected}
+        files = {
+            p.name: p.read_text() for p in directory.iterdir() if p.name not in snapshot.rejected
+        }
         env[2][kind] = store(kind, files, rejected=snapshot.rejected)
         return result
 

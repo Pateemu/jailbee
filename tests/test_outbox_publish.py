@@ -60,7 +60,9 @@ def env(mocker, make_cfg, tmp_path):
         command = list(command)
         command[4] = str(directory)
         result = run_shell(command, input=text, text=True, capture_output=True, check=True).stdout
-        files = {p.name: p.read_text() for p in directory.iterdir() if p.name not in snapshot.rejected}
+        files = {
+            p.name: p.read_text() for p in directory.iterdir() if p.name not in snapshot.rejected
+        }
         snapshots[kind] = store(kind, files, rejected=snapshot.rejected)
         return result
 

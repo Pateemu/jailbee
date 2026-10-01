@@ -900,8 +900,18 @@ def execution(tmp_path, mocker):
         # Keep legacy read injections meaningful while exercising strict decoding.
         issue_outbox.read_issue_outbox(*args, **kwargs)
         sync()
-        command = ["bash", "-c", io._READ_SCRIPT, "bash", str(directory), str(io.FILE_LIMIT), str(io.SNAPSHOT_LIMIT)]
-        return io._decode("issue", run_shell(command, text=True, capture_output=True, check=True).stdout)
+        command = [
+            "bash",
+            "-c",
+            io._READ_SCRIPT,
+            "bash",
+            str(directory),
+            str(io.FILE_LIMIT),
+            str(io.SNAPSHOT_LIMIT),
+        ]
+        return io._decode(
+            "issue", run_shell(command, text=True, capture_output=True, check=True).stdout
+        )
 
     mocker.patch.object(io, "read_store", side_effect=strict_read)
 
@@ -1509,8 +1519,12 @@ def test_cleanup_preserves_shared_files_added_since_approval(execution):
 
 
 @pytest.mark.parametrize("route", ["apply", "drop"])
-@pytest.mark.parametrize("rejected_content", [b"\xff", b"x" * (256 * 1024 + 1)], ids=["nonutf8", "oversized"])
-def test_cleanup_retains_body_hidden_in_rejected_sibling(execution, mocker, tmp_path, route, rejected_content):
+@pytest.mark.parametrize(
+    "rejected_content", [b"\xff", b"x" * (256 * 1024 + 1)], ids=["nonutf8", "oversized"]
+)
+def test_cleanup_retains_body_hidden_in_rejected_sibling(
+    execution, mocker, tmp_path, route, rejected_content
+):
     import subprocess
 
     from jailbee.outbox import io
@@ -1524,14 +1538,24 @@ def test_cleanup_retains_body_hidden_in_rejected_sibling(execution, mocker, tmp_
     (directory / "rejected.json").write_bytes(rejected_content)
 
     def read(*args, **kwargs):
-        command = ["bash", "-c", io._READ_SCRIPT, "bash", str(directory), str(io.FILE_LIMIT), str(io.SNAPSHOT_LIMIT)]
+        command = [
+            "bash",
+            "-c",
+            io._READ_SCRIPT,
+            "bash",
+            str(directory),
+            str(io.FILE_LIMIT),
+            str(io.SNAPSHOT_LIMIT),
+        ]
         result = subprocess.run(command, text=True, capture_output=True, check=True)
         return io._decode("issue", result.stdout)
 
     def mutate(container, command, text, **kwargs):
         command = list(command)
         command[4] = str(directory)
-        return subprocess.run(command, input=text, text=True, capture_output=True, check=True).stdout
+        return subprocess.run(
+            command, input=text, text=True, capture_output=True, check=True
+        ).stdout
 
     mocker.patch.object(io, "read_store", side_effect=read)
     execution["incus"].exec_with_input.side_effect = mutate
@@ -1574,6 +1598,7 @@ def test_issue_cleanup_refuses_late_change_retaining_receipts(execution, change)
 
         execution["incus"].exec_with_input.side_effect = mutate
     else:
+
         def publish(*args, **kwargs):
             if change == "manifest":
                 execution["files"]["a.json"] += "\n"
@@ -1586,7 +1611,9 @@ def test_issue_cleanup_refuses_late_change_retaining_receipts(execution, change)
     assert report.failure is not None
     assert "a.json" in execution["files"]
     assert "body.md" in execution["files"]
-    assert execution["store"].load(journal_key(batch.identity, "a.json")).actions[0].state == "applied"
+    assert (
+        execution["store"].load(journal_key(batch.identity, "a.json")).actions[0].state == "applied"
+    )
     assert execution["mutations"]["add_comment"].call_count == 1
 
 
