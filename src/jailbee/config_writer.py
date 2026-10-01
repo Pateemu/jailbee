@@ -141,8 +141,23 @@ def _spelled(value: object) -> object:
     Without this a long instruction text lands in the file as one quoted line
     full of `\\n` escapes. Only how the string is *spelled* changes, never its
     value, and only a top-level `str` is converted.
+
+    A literal block is only safe when the string contains only printable
+    characters (except `\\n` and `\\t`), so that YAML line-break normalisation
+    does not alter the value on round-trip. If the string contains `\\r`,
+    `\\x85`, `\\x00`, or other non-printable characters, it is returned plain
+    and ruamel quotes/escapes it instead.
     """
     if isinstance(value, str) and "\n" in value:
+        # Check if the string is safe for literal blocks: only printable chars
+        # except \n and \t are allowed.
+        for char in value:
+            if char in ("\n", "\t"):
+                continue
+            if not char.isprintable():
+                # Contains unsafe character; let ruamel quote/escape it.
+                return value
+        # Safe to use literal block.
         return LiteralScalarString(value)
     return value
 

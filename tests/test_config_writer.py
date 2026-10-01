@@ -491,3 +491,18 @@ def test_a_nested_multiline_string_is_indented_under_its_key():
 def test_a_single_line_string_is_still_a_plain_scalar():
     out = patch_yaml("a: 1\n", [YamlChange(("note",), "one line")])
     assert "note: one line" in out and "|" not in out
+
+
+def test_a_string_with_carriage_return_round_trips_exactly():
+    out = patch_yaml("a: 1\n", [YamlChange(("note",), "a\r\nb")])
+    assert yaml.safe_load(out)["note"] == "a\r\nb"
+
+
+def test_a_string_with_nel_character_round_trips_exactly():
+    out = patch_yaml("a: 1\n", [YamlChange(("note",), "a\x85b\nc")])
+    assert yaml.safe_load(out)["note"] == "a\x85b\nc"
+
+
+def test_a_string_with_null_byte_round_trips_exactly():
+    out = patch_yaml("a: 1\n", [YamlChange(("note",), "a\x00\nb")])
+    assert yaml.safe_load(out)["note"] == "a\x00\nb"
