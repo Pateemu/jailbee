@@ -12609,45 +12609,10 @@ def issue_apply_cmd(
 
 
 def _report_issue_apply_outcome(batch: "PreparedBatch", report: "ApplyReport") -> None:
-    """Print what landed, what failed, and what is still pending.
+    """Delegate domain outcome rendering to the shared outbox service."""
+    from jailbee.outbox.publish import print_issue_outcome
 
-    Always shown, success or not: `applied` (dispatched this run) and
-    `skipped` (already applied by an earlier run) both count as applied.
-    On a partial or uncertain failure, the action that stopped the run is
-    named, and every action in the batch that was never attempted is listed
-    as still pending.
-    """
-    attempted: set[tuple[str, int]] = set()
-    for manifest_name, receipt in (*report.applied, *report.skipped):
-        attempted.add((manifest_name, receipt.index))
-        detail = f" ({receipt.url})" if receipt.url else ""
-        success_plain(f"{manifest_name} action {receipt.index}: applied{detail}")
-
-    failure = report.failure
-    if failure is None:
-        for manifest_name in report.cleaned:
-            success_plain(f"{manifest_name}: fully applied and removed from the outbox")
-        return
-
-    label = "uncertain" if failure.uncertain else "failed"
-    if failure.manifest is None:
-        error_plain(f"apply stopped: {failure.detail}")
-    elif failure.index is None:
-        error_plain(f"{failure.manifest}: {label} — {failure.detail}")
-    else:
-        attempted.add((failure.manifest, failure.index))
-        error_plain(f"{failure.manifest} action {failure.index}: {label} — {failure.detail}")
-        if failure.uncertain:
-            info_plain(
-                f"  resolve: jailbee issue resolve {batch.container} {failure.manifest} "
-                f"{failure.index} (--applied --url <url> [--issue <n>] | --retry)"
-            )
-
-    for prepared in batch.manifests:
-        for resolved in prepared.actions:
-            key = (prepared.manifest.name, resolved.index)
-            if key not in attempted:
-                info_plain(f"{prepared.manifest.name} action {resolved.index}: pending")
+    print_issue_outcome(batch, report)
 
 
 @issue_app.command("drop")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from jailbee import issue_outbox, pr, pr_outbox
 from jailbee.incus import IncusError
@@ -26,7 +26,7 @@ from jailbee.outbox_io import (
     OutboxReadError,
     journal_key,
 )
-from jailbee.tui import console, error_plain, info_plain
+from jailbee.tui import console, error_plain, info_plain, success_plain
 
 if TYPE_CHECKING:
     from jailbee.config import Config
@@ -59,42 +59,62 @@ def _checked(
     return fresh, view.revision
 
 
+@dataclass(frozen=True)
+class OutcomeLine:
+    severity: Literal["success", "error", "info"]
+    text: str
+
+
 def issue_outcome_lines(
     batch: issue_outbox.PreparedBatch,
     report: issue_outbox.ApplyReport,
-) -> tuple[str, ...]:
-    """Format domain receipts, recovery advice and untouched actions without CLI handlers."""
+) -> tuple[OutcomeLine, ...]:
+    """Preserve domain receipt order, recovery advice and output severity for all callers."""
     lines = []
     attempted = set()
     for name, receipt in (*report.applied, *report.skipped):
         attempted.add((name, receipt.index))
         detail = f" ({receipt.url})" if receipt.url else ""
-        lines.append(f"{name} action {receipt.index}: applied{detail}")
+        lines.append(OutcomeLine("success", f"{name} action {receipt.index}: applied{detail}"))
     failure = report.failure
     if failure is None:
         lines.extend(
-            f"{name}: fully applied and removed from the outbox" for name in report.cleaned
+            OutcomeLine("success", f"{name}: fully applied and removed from the outbox")
+            for name in report.cleaned
         )
     else:
         label = "uncertain" if failure.uncertain else "failed"
-        target = failure.manifest or "apply stopped"
-        if failure.index is not None:
-            target += f" action {failure.index}"
-            if failure.manifest is not None:
-                attempted.add((failure.manifest, failure.index))
-        lines.append(f"{target}: {label} - {failure.detail}")
+        if failure.manifest is None:
+            text = f"apply stopped: {failure.detail}"
+        elif failure.index is None:
+            text = f"{failure.manifest}: {label} — {failure.detail}"
+        else:
+            attempted.add((failure.manifest, failure.index))
+            text = f"{failure.manifest} action {failure.index}: {label} — {failure.detail}"
+        lines.append(OutcomeLine("error", text))
         if failure.uncertain and failure.manifest is not None and failure.index is not None:
-            lines.append(
-                f"  resolve: jailbee issue resolve {batch.container} {failure.manifest} "
+            lines.append(OutcomeLine(
+                "info", f"  resolve: jailbee issue resolve {batch.container} {failure.manifest} "
                 f"{failure.index} (--applied --url <url> [--issue <n>] | --retry)"
-            )
+            ))
         lines.extend(
-            f"{prepared.manifest.name} action {resolved.index}: pending"
+            OutcomeLine("info", f"{prepared.manifest.name} action {resolved.index}: pending")
             for prepared in batch.manifests
             for resolved in prepared.actions
             if (prepared.manifest.name, resolved.index) not in attempted
         )
     return tuple(lines)
+
+
+def print_issue_outcome(batch: issue_outbox.PreparedBatch, report: issue_outbox.ApplyReport) -> None:
+    """Render the shared pure formatter through the established stdout/stderr helpers."""
+    for line in issue_outcome_lines(batch, report):
+        if line.severity == "error":
+            error_plain(safe_text(line.text))
+        elif line.severity == "success":
+            success_plain(safe_text(line.text))
+        else:
+            info_plain(safe_text(line.text))
 
 
 def _print_lines(lines: list[str] | tuple[str, ...]) -> None:
@@ -190,7 +210,7 @@ def publish_selected(
             report = issue_outbox.apply_batch(
                 batch, incus=incus, uid=cfg.container_user.uid, journal_store=journal_store
             )
-            _print_lines(issue_outcome_lines(batch, report))
+            print_issue_outcome(batch, report)
             return int(report.failure is not None)
     except (
         OutboxError,
