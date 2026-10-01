@@ -88,6 +88,15 @@ def test_explicit_config_path_that_does_not_exist_exits_1() -> None:
     assert "Config file not found" in result.stderr
 
 
+def test_list_is_a_hidden_alias_of_ls() -> None:
+    """`jailbee list` behaves like `ls` but stays out of the help listing."""
+    alias = run_cli("list", "--config", "/nonexistent/config.yaml")
+    assert alias.returncode == 1
+    assert "Config file not found" in alias.stderr
+    top = run_cli("--help")
+    assert not any(line.split()[1:2] == ["list"] for line in top.stdout.splitlines())
+
+
 def test_config_validate_failure_for_missing_repo() -> None:
     result = run_cli("config", "validate", "--config", str(FIXTURES / "minimal_config.yaml"))
     # exit 2 = runtime issues; exit 0 if /tmp/test-repo happens to exist
