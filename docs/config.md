@@ -2480,7 +2480,7 @@ host-local per-repo file may carry a narrower override (`routes`, `profiles`,
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | Permit `jailbee litellm up` and dev-container proxy settings. |
-| `version` | pinned `1.103.0` | LiteLLM version. An explicit version bypasses the bundled hash lock and warns. |
+| `version` | pinned `1.103.1` | LiteLLM version. An explicit version bypasses the bundled hash lock and warns. |
 | `default_profile` | `codex` | Profile used by `claude-jb` unless overridden by its `--profile` or `JAILBEE_LITELLM_PROFILE`. |
 | `autostart` | `false` | Start the Claude autostart window with `claude-jb` instead of `claude`. A repo's host-local file can override it. See [Autostart](litellm.md#autostart). |
 | `accounts` | `[default]` | ChatGPT logins, one proxy instance each. The built-in `codex` profile uses `default`. |
@@ -2500,11 +2500,13 @@ for, unless `api_base` is set) and `params` (raw LiteLLM deployment parameters;
 keys that change the provider, endpoint or credential, such as `model`,
 `api_base`, `api_key` or `extra_headers`, are rejected there: use the route's own
 fields). A route's `egress`, like `litellm.egress`, reaches the proxy's allowlist
-whenever `jailbee apply` restarts an instance for another reason; an edit that
+whenever `jailbee apply` reloads or restarts an instance for another reason; an edit that
 changes nothing else needs `jailbee litellm up`. Profiles also accept `account` (from `accounts`; required when the
 profile maps a `chatgpt/` route) and `effort` as the default session effort, and `instructions` (model-policy text appended to Claude Code's system prompt; see [Profile instructions](litellm.md#profile-instructions)). `jailbee litellm up` renders changes
-and restarts the instance if needed; `jailbee apply` also re-renders the proxy
-and restarts the instances whose routes changed (`--no-restart` defers it), and
+and restarts the instance if needed; `jailbee apply` also re-renders the proxy,
+reloads route changes into the running instances (restarting only for secrets,
+`extra` outside its `model_list`, settings or an unconfirmed reload; `--no-restart` defers only the
+restarts), and
 synchronizes the gateway file/key into each running dev container.
 
 ### `remote.ssh`

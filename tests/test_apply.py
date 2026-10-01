@@ -2906,6 +2906,35 @@ def test_apply_reconciles_the_proxy_and_honours_no_restart(make_cfg, tmp_path, m
         assert any("in-flight" in c.args[0] for c in info.call_args_list)
 
 
+def test_apply_reports_a_live_reload(make_cfg, tmp_path, mocker):
+    from jailbee import litellm as ll
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+
+    cfg, incus = _apply_harness(make_cfg, tmp_path, mocker)
+    mocker.patch(
+        "jailbee.litellm.litellm_reconcile", return_value=ll.ReconcileResult(reloaded=["default"])
+    )
+    info = mocker.patch("jailbee.tui.info")
+    run_apply(cfg, incus, GlobalConfig(), no_restart=False)
+    assert any("without a restart" in str(c) for c in info.call_args_list)
+
+
+def test_apply_names_why_a_pending_instance_could_not_reload(make_cfg, tmp_path, mocker):
+    from jailbee import litellm as ll
+    from jailbee.apply import run_apply
+    from jailbee.global_config import GlobalConfig
+
+    cfg, incus = _apply_harness(make_cfg, tmp_path, mocker)
+    outcome = ll.ReconcileResult(pending=["default"], fallbacks={"default": "no ack"})
+    mocker.patch("jailbee.litellm.litellm_reconcile", return_value=outcome)
+    warn_plain = mocker.patch("jailbee.tui.warn_plain")
+    run_apply(cfg, incus, GlobalConfig(), no_restart=True)
+    assert any(
+        "no ack" in str(c) and "previous routes" in str(c) for c in warn_plain.call_args_list
+    )
+
+
 def test_apply_says_a_stopped_instance_is_not_running_not_serving_old_routes(
     make_cfg, tmp_path, mocker
 ):

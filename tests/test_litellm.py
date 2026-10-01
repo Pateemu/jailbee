@@ -1,6 +1,8 @@
 """`jailbee-litellm` lifecycle through a MagicMock Incus (style of test_registry.py)."""
 
 import base64
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -66,8 +68,9 @@ def _incus(
     *,
     present: bool,
     running: bool = True,
-    installed: str | None = "1.103.0",
+    installed: str | None = "1.103.1",
     login: str = "present",
+    ack: str = "auto",
 ) -> MagicMock:
     incus = MagicMock()
     incus.network_get.return_value = "10.79.115.1/24"
@@ -87,6 +90,8 @@ def _incus(
         else []
     )
 
+    reads = {"ack": 0}
+
     def exec_(name, cmd, **_kw):
         text = " ".join(cmd)
         if "importlib.metadata" in text:
@@ -99,6 +104,19 @@ def _incus(
             return "ok\n"
         if "auth.json" in text:
             return f"{login}\n"
+        if text.startswith("cat ") and text.endswith("/applied.json"):
+            if ack == "none":
+                raise IncusError("no such file")
+            account = text.split(f"{ll.CONTAINER_STATE_DIR}/")[1].split("/")[0]
+            pushed = _pushed(incus).get(f"{ll.CONTAINER_STATE_DIR}/{account}/hot.json")
+            if pushed is None:
+                raise IncusError("no such file")
+            digest = hashlib.sha256(pushed.encode()).hexdigest()
+            reads["ack"] += 1
+            # "stale": the proxy only ever acknowledged an older file; "late": it catches up.
+            if ack == "stale" or (ack == "late" and reads["ack"] == 1):
+                digest = hashlib.sha256(b"old").hexdigest()
+            return json.dumps({"hot_digest": digest, "error": "boom" if ack == "error" else None})
         return ""
 
     incus.exec.side_effect = exec_
@@ -122,6 +140,11 @@ def _install_script(incus: MagicMock) -> str:
 
 def _execs(incus: MagicMock) -> list[str]:
     return [" ".join(c.args[1]) for c in incus.exec.call_args_list]
+
+
+def _rotate_key(xdg: Path, account: str = "default") -> None:
+    """A cold change: the master key sits in instance.env, which only a restart re-reads."""
+    (xdg / "jailbee" / "litellm" / account / "master.key").write_text("sk-jb-rotated\n")
 
 
 def test_up_refuses_when_disabled():
@@ -186,11 +209,11 @@ def test_provision_streams_real_lock_at_subprocess_boundary(mocker):
 
     run = mocker.patch("jailbee.incus.subprocess.run")
     run.return_value = subprocess.CompletedProcess([], 0, "", "")
-    ll._provision(Incus(), "1.103.0", True)
+    ll._provision(Incus(), "1.103.1", True)
     args, kwargs = run.call_args
     assert args[0][-2:] == ["bash", "-s"]
     assert len(kwargs["input"]) > 200_000
-    assert "litellm==1.103.0" in kwargs["input"]
+    assert "litellm==1.103.1" in kwargs["input"]
     assert all(len(arg) < 4096 for arg in args[0])
 
 
@@ -202,9 +225,9 @@ def test_provision_failure_does_not_echo_install_script_in_error(mocker):
         return_value=subprocess.CompletedProcess([], 1, "", "apt failed"),
     )
     with pytest.raises(IncusError) as caught:
-        ll._provision(Incus(), "1.103.0", True)
+        ll._provision(Incus(), "1.103.1", True)
     assert "apt failed" in str(caught.value)
-    assert "litellm==1.103.0" not in str(caught.value)
+    assert "litellm==1.103.1" not in str(caught.value)
 
 
 def test_reinstall_detaches_auth_before_package_egress_and_reattaches_after():
@@ -358,25 +381,22 @@ def test_up_is_quiet_when_nothing_changed():
     assert not any("systemctl restart" in e for e in _execs(incus))
 
 
-def test_up_restarts_once_after_config_change():
+def test_up_restarts_once_after_config_change(xdg):
     incus = _incus(present=True)
     ll.litellm_up(incus, _gcfg())
     incus.exec.reset_mock()
-    changed = GlobalConfig.model_validate(
-        {"litellm": {"enabled": True, "routes": {"sol-xhigh": {"effort": "max"}}}}
-    )
-    result = ll.litellm_up(incus, changed)
+    _rotate_key(xdg)
+    result = ll.litellm_up(incus, _gcfg())
     assert result.restarted == ["default"]
     assert sum("systemctl restart" in e for e in _execs(incus)) == 1
 
 
-def test_up_restarts_again_after_a_run_that_failed_before_the_restart():
+def test_up_restarts_again_after_a_run_that_failed_before_the_restart(xdg):
     """Files are on disk after the failed run, so `changed` alone would skip the restart."""
     incus = _incus(present=True)
     ll.litellm_up(incus, _gcfg())
-    changed = GlobalConfig.model_validate(
-        {"litellm": {"enabled": True, "routes": {"sol-xhigh": {"effort": "max"}}}}
-    )
+    _rotate_key(xdg)
+    changed = _gcfg()
     healthy = incus.exec.side_effect
 
     def restart_fails(name, cmd, **kw):
@@ -503,7 +523,7 @@ def test_status_running_reports_instance_and_login(xdg):
     ll.litellm_up(incus, _gcfg())
     status = ll.litellm_status(incus, _gcfg())
     assert status.container == ll.ContainerState.RUNNING
-    assert status.version == "1.103.0"
+    assert status.version == "1.103.1"
     assert status.instances == [
         ll.InstanceStatus(account="default", port=4100, active=True, healthy=True, login="present")
     ]
@@ -534,10 +554,10 @@ def test_install_uses_only_hash_locked_requirements_by_default():
 
 def test_unlocked_version_is_shell_quoted():
     incus = _incus(present=False)
-    malicious = "1.103.0; touch /root/unwanted"
+    malicious = "1.103.1; touch /root/unwanted"
     ll._provision(incus, malicious, pinned=False)
     command = incus.exec_with_input.call_args.args[2]
-    assert "JAILBEE_LITELLM_UNLOCKED_VERSION='1.103.0; touch /root/unwanted'" in command
+    assert "JAILBEE_LITELLM_UNLOCKED_VERSION='1.103.1; touch /root/unwanted'" in command
 
 
 def test_up_fails_closed_to_dev_containers_on_install_error():
@@ -1072,6 +1092,7 @@ def test_host_keeps_no_rendered_file_or_token(xdg: Path):
     names = sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
     assert names == [
         ".allocation.lock",
+        "default/applied-hot.sha256",
         "default/applied.sha256",
         "default/master.key",
         "ports.json",
@@ -1158,12 +1179,12 @@ def test_up_runs_one_instance_per_account_on_its_own_port():
     }
 
 
-def test_up_restarts_only_the_account_whose_files_changed():
+def test_up_restarts_only_the_account_whose_files_changed(xdg):
     incus = _incus(present=True)
     ll.litellm_up(incus, _gcfg(**_TWO))
     incus.exec.reset_mock()
-    changed = {**_TWO, "routes": {"sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "medium"}}}
-    assert ll.litellm_up(incus, _gcfg(**changed)).restarted == ["work"]
+    _rotate_key(xdg, "work")
+    assert ll.litellm_up(incus, _gcfg(**_TWO)).restarted == ["work"]
 
 
 def test_up_retires_the_unit_of_a_removed_account():
@@ -1493,13 +1514,12 @@ def test_reconcile_after_up_changes_nothing(xdg):
     incus.exec_with_input.assert_not_called()
 
 
-def test_reconcile_restarts_only_the_account_whose_routes_changed(xdg):
-    two = {**_TWO, "routes": {"sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "low"}}}
+def test_reconcile_restarts_only_the_account_whose_cold_files_changed(xdg):
     incus = _incus(present=True)
-    ll.litellm_up(incus, _gcfg(**two))
+    ll.litellm_up(incus, _gcfg(**_TWO))
     incus.reset_mock(return_value=False, side_effect=False)
-    changed = {**two, "routes": {"sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "high"}}}
-    result = ll.litellm_reconcile(incus, _gcfg(**changed))
+    _rotate_key(xdg, "work")
+    result = ll.litellm_reconcile(incus, _gcfg(**_TWO))
     assert result.restarted == ["work"]
     assert _restarts(incus) == [f"systemctl restart {ll.unit('work')}"]
     assert f"{ll.CONTAINER_STATE_DIR}/personal/config.yaml" not in _pushed(incus)
@@ -1549,7 +1569,7 @@ def test_reconcile_picks_up_a_new_repo_scope(xdg):
     _repo(xdg, "myrepo", {"routes": {"sol-xhigh": {"effort": "max"}}})
     incus.reset_mock(return_value=False, side_effect=False)
     result = ll.litellm_reconcile(incus, _gcfg())
-    assert result.restarted == ["default"]
+    assert (result.reloaded, result.restarted) == (["default"], [])
     config = _pushed(incus)[f"{ll.CONTAINER_STATE_DIR}/default/config.yaml"]
     assert "jb-myrepo.sol-xhigh" in config
 
@@ -1557,7 +1577,8 @@ def test_reconcile_picks_up_a_new_repo_scope(xdg):
 def test_reconcile_without_restart_touches_nothing_and_stays_pending(xdg):
     incus = _incus(present=True)
     ll.litellm_up(incus, _gcfg())
-    changed = _gcfg(routes={"sol-xhigh": {"effort": "max"}})
+    _rotate_key(xdg)
+    changed = _gcfg()
     incus.reset_mock(return_value=False, side_effect=False)
     first = ll.litellm_reconcile(incus, changed, restart=False)
     assert (first.pending, first.restarted) == (["default"], [])
@@ -1580,9 +1601,8 @@ def test_reconcile_without_restart_tells_a_stopped_instance_from_a_changed_one(x
     result = ll.litellm_reconcile(incus, _gcfg(), restart=False)
     assert (result.pending, result.stopped) == (["default"], ["default"])
     incus.exec.side_effect = real_exec
-    changed = ll.litellm_reconcile(
-        incus, _gcfg(routes={"sol-xhigh": {"effort": "max"}}), restart=False
-    )
+    _rotate_key(xdg)
+    changed = ll.litellm_reconcile(incus, _gcfg(), restart=False)
     assert (changed.pending, changed.stopped) == (["default"], [])
 
 
@@ -1597,7 +1617,7 @@ def test_reconcile_leaves_structural_changes_to_up(xdg):
 
     stale = _incus(present=True, installed="1.0.0")
     result = ll.litellm_reconcile(stale, _gcfg())
-    assert result.needs_up is not None and "1.103.0" in result.needs_up
+    assert result.needs_up is not None and "1.103.1" in result.needs_up
 
 
 def test_reconcile_reports_a_broken_override_and_still_applies_the_rest(xdg):
@@ -1606,7 +1626,7 @@ def test_reconcile_reports_a_broken_override_and_still_applies_the_rest(xdg):
     broken = _repo(xdg, "broken", {"profiles": {"codex": {"opus": "gone"}}})
     incus.reset_mock(return_value=False, side_effect=False)
     result = ll.litellm_reconcile(incus, _gcfg(routes={"sol-xhigh": {"effort": "max"}}))
-    assert result.restarted == ["default"]
+    assert result.reloaded == ["default"]
     assert len(result.issues) == 1 and str(broken) in result.issues[0]
 
 
@@ -1624,4 +1644,118 @@ def test_reconcile_leaves_a_detached_state_volume_to_up(xdg):
     assert _restarts(incus) == []
     # No digest was recorded: once the volume is back, the change is still seen.
     incus.config_show.return_value = yaml.safe_dump({"devices": {"state": {"type": "disk"}}})
-    assert ll.litellm_reconcile(incus, changed).restarted == ["default"]
+    assert ll.litellm_reconcile(incus, changed).reloaded == ["default"]
+
+
+def test_up_reloads_instead_of_restarting_when_only_routes_changed(xdg):
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    incus.exec.reset_mock()
+    result = ll.litellm_up(incus, _gcfg(routes={"sol-xhigh": {"effort": "max"}}))
+    assert (result.restarted, result.reloaded) == ([], ["default"])
+    assert not any("systemctl restart" in e for e in _execs(incus))
+
+
+def test_up_restarts_when_the_callback_source_changed(xdg, monkeypatch):
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    real = ll._read
+    monkeypatch.setattr(
+        ll, "_read", lambda n: real(n) + "\n# new\n" if n == "jailbee_callback.py" else real(n)
+    )
+    result = ll.litellm_up(incus, _gcfg())
+    assert (result.restarted, result.reloaded) == (["default"], [])
+
+
+@pytest.mark.parametrize("ack", ["none", "error", "stale"])
+def test_up_falls_back_to_a_restart_when_the_reload_is_not_confirmed(xdg, ack):
+    ll.litellm_up(_incus(present=True), _gcfg())
+    incus = _incus(present=True, ack=ack)
+    result = ll.litellm_up(incus, _gcfg(routes={"sol-xhigh": {"effort": "max"}}))
+    assert (result.restarted, result.reloaded) == (["default"], [])
+    assert ("refused" if ack == "error" else "did not acknowledge") in result.fallbacks["default"]
+    assert sum("systemctl restart" in e for e in _execs(incus)) == 1
+
+
+def test_up_keeps_polling_until_the_ack_matches(xdg):
+    ll.litellm_up(_incus(present=True), _gcfg())
+    incus = _incus(present=True, ack="late")
+    result = ll.litellm_up(incus, _gcfg(routes={"sol-xhigh": {"effort": "max"}}))
+    assert (result.restarted, result.reloaded, result.fallbacks) == ([], ["default"], {})
+    assert sum(e.endswith("/applied.json") for e in _execs(incus)) == 2
+
+
+def test_a_restart_records_the_hot_stamp_so_the_next_run_is_quiet(xdg):
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    _rotate_key(xdg)
+    assert ll.litellm_up(incus, _gcfg()).restarted == ["default"]
+    again = ll.litellm_up(incus, _gcfg())
+    assert (again.restarted, again.reloaded) == ([], [])
+
+
+def test_reconcile_reloads_only_the_account_whose_routes_changed(xdg):
+    two = {**_TWO, "routes": {"sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "low"}}}
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg(**two))
+    incus.reset_mock(return_value=False, side_effect=False)
+    changed = {**two, "routes": {"sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "high"}}}
+    result = ll.litellm_reconcile(incus, _gcfg(**changed))
+    assert (result.reloaded, result.restarted) == (["work"], [])
+    assert _restarts(incus) == []
+    assert f"{ll.CONTAINER_STATE_DIR}/personal/hot.json" not in _pushed(incus)
+
+
+def test_reconcile_without_restart_still_reloads(xdg):
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    incus.reset_mock(return_value=False, side_effect=False)
+    result = ll.litellm_reconcile(
+        incus, _gcfg(routes={"sol-xhigh": {"effort": "max"}}), restart=False
+    )
+    assert (result.reloaded, result.pending, result.restarted) == (["default"], [], [])
+    assert _restarts(incus) == []
+
+
+def test_reconcile_without_restart_leaves_an_unconfirmed_reload_pending_then_retries(xdg):
+    ll.litellm_up(_incus(present=True), _gcfg())
+    changed = _gcfg(routes={"sol-xhigh": {"effort": "max"}})
+    stuck = _incus(present=True, ack="none")
+    first = ll.litellm_reconcile(stuck, changed, restart=False)
+    assert (first.pending, first.reloaded) == (["default"], [])
+    assert "did not acknowledge" in first.fallbacks["default"]
+    assert _restarts(stuck) == []
+    second = ll.litellm_reconcile(_incus(present=True), changed)
+    assert (second.reloaded, second.restarted) == (["default"], [])
+
+
+def test_reverting_after_an_unconfirmed_reload_pushes_the_old_routes_again(xdg):
+    # The proxy may have taken the unconfirmed B; reverting to A must not be
+    # skipped just because A was the last confirmed state.
+    ll.litellm_up(_incus(present=True), _gcfg())
+    stuck = _incus(present=True, ack="none")
+    pending = ll.litellm_reconcile(
+        stuck, _gcfg(routes={"sol-xhigh": {"effort": "max"}}), restart=False
+    )
+    assert (pending.pending, pending.restarted) == (["default"], [])
+    reverted = ll.litellm_reconcile(_incus(present=True), _gcfg(), restart=False)
+    assert (reverted.reloaded, reverted.pending) == (["default"], [])
+
+
+@pytest.mark.parametrize("restart", [True, False])
+def test_a_hot_only_change_still_rewrites_the_egress_allowlist(xdg, monkeypatch, restart):
+    from jailbee.litellm_render import egress_hosts
+
+    incus = _incus(present=True)
+    ll.litellm_up(incus, _gcfg())
+    seen: list[list[str]] = []
+    monkeypatch.setattr(
+        ll, "_set_egress", lambda _i, entries, _ports: seen.append([e.description for e in entries])
+    )
+    route = {"model": "openai/x", "context_window": 1000, "api_base": "https://llm.example.com/v1"}
+    gcfg = _gcfg(routes={"mine": route})
+    result = ll.litellm_reconcile(incus, gcfg, restart=restart)
+    expected = [h if ":" in h else f"{h}:443" for h in egress_hosts(gcfg.litellm)]
+    assert (result.reloaded, result.restarted) == (["default"], [])
+    assert seen
+    assert seen[-1] == expected and any("llm.example.com" in h for h in expected)

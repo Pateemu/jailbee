@@ -148,12 +148,16 @@ never Astra.
 
 1. Write `$XDG_CONFIG_HOME/jailbee/repos/<prefix>.yaml` with
    `litellm: {routes: {luna-high: {effort: low}}}` and run `jailbee apply`.
-   Expect `Restarted LiteLLM instance(s) default on the new routes`. In the
+   Expect `Reloaded the routes of LiteLLM instance(s) default without a restart.` In the
    container `claude-jb -p 'say hi' --model haiku` answers, and
    `jailbee litellm logs` shows requests for `jb-<prefix>.codex.cheap`.
    `jailbee litellm ls` lists a `repo <prefix>` block with `luna-high  chatgpt/gpt-6-luna  low (fixed)`.
-2. Run `jailbee apply` again: no restart message.
-3. Change the effort to `medium` and run `jailbee apply --no-restart`: it warns
+2. Run `jailbee apply` again: no reload or restart message.
+3. Change the effort to `medium` and run `jailbee apply --no-restart`: it still
+   reloads (`Reloaded the routes of LiteLLM instance(s) default without a
+   restart.`). Then make a genuinely cold change instead: edit a key of the
+   `litellm.extra` fragment outside `model_list` (for example `litellm_settings`), or rotate
+   a secret (an `extra` edit touching only `model_list` is hot). Run `jailbee apply --no-restart`: it warns
    that instance `default` still serves the previous routes. A plain
    `jailbee apply` then restarts it.
 4. Break the file (`litellm: {enabled: true}`): `jailbee litellm ls`, and
@@ -163,7 +167,7 @@ never Astra.
    A YAML syntax error in the file is reported as `is not valid YAML (line N)`
    without quoting the line.
 5. Add `egress: [example.org]` to an existing route in the file and run `jailbee apply`:
-   it reports nothing to restart (egress is not part of the rendered instance
+   it prints nothing at all (egress is not part of the rendered instance
    files). `jailbee litellm up` then rewrites the allowlist.
 6. Set `litellm: {autostart: true}` in the same file, run `jailbee apply`, then
    `jailbee restart <container>` and `jailbee tmux`: the Claude window runs
@@ -5150,3 +5154,20 @@ resources created by this approved rig. If the daemon, PTY, Qt dependency
 or approved rig is unavailable, report the exact omitted check as pending,
 not verified. Real-display and live GitHub publication remain separate,
 explicitly authorized checks.
+
+## LiteLLM live reload (host-unverified)
+
+1. `jailbee litellm up`, then `jailbee apply` in a repo with `litellm.enabled`.
+2. In a container start a long `claude-jb` turn.
+3. Edit `litellm.routes.<name>.context_window` (or an `effort`) in `global.yaml`; run `jailbee apply`.
+   Expect: "Reloaded the routes of LiteLLM instance(s) default without a restart."; the turn finishes.
+4. `incus exec jailbee-litellm -- cat /var/lib/jailbee-litellm/default/applied.json`
+   Expect `"error": null` and a `hot_digest` equal to `sha256sum` of the neighbouring `hot.json`.
+5. Rotate a secret in `secrets.env` and `apply`: expect a restart message (cold change).
+6. Break the reload on purpose: `incus exec jailbee-litellm -- sh -c 'rm /var/lib/jailbee-litellm/default/applied.json && mkdir /var/lib/jailbee-litellm/default/applied.json'`
+   (the callback's `os.replace` of a file onto a directory fails, so no acknowledgement arrives).
+   Edit a route and run `jailbee apply`: expect "could not reload live (the proxy did not
+   acknowledge the new routes in time); restarted it.". Undo with
+   `incus exec jailbee-litellm -- rmdir /var/lib/jailbee-litellm/default/applied.json`.
+   Even after the restart the callback cannot write its acknowledgement until the
+   directory is gone, so undo this before the next recipe step.

@@ -4,6 +4,7 @@
       ports.json                      account -> port
       <account>/master.key            0600, created once (dev containers get a copy)
       <account>/applied.sha256        digest of the files the running unit last restarted on
+      <account>/applied-hot.sha256    digest of the hot.json the running unit last confirmed
 
 Everything the proxy itself reads (rendered config, instance.env with its
 secrets, ChatGPT tokens) lives in the `jailbee-litellm-state` Incus volume,
@@ -147,19 +148,37 @@ def master_key_path(account: str) -> Path:
     return state_dir() / check_account(account) / "master.key"
 
 
-def config_applied(account: str, digest: str) -> bool:
-    """Whether the running unit was last restarted on files with this digest.
-
-    Files are pushed before the restart, so a run that fails in between would
-    otherwise leave a stale proxy that a re-run never restarts. A missing
-    stamp counts as not applied.
-    """
+def _stamped(account: str, name: str, digest: str) -> bool:
     try:
-        stamp = (state_dir() / check_account(account) / "applied.sha256").read_text().strip()
+        stamp = (state_dir() / check_account(account) / name).read_text().strip()
     except OSError:
         return False
     return stamp == digest
 
 
+def config_applied(account: str, digest: str) -> bool:
+    """Whether the running unit was last restarted on files with this (cold) digest.
+
+    Files are pushed before the restart, so a run that fails in between would
+    otherwise leave a stale proxy that a re-run never restarts. A missing
+    stamp counts as not applied.
+    """
+    return _stamped(account, "applied.sha256", digest)
+
+
+def hot_applied(account: str, digest: str) -> bool:
+    """Whether the running unit last confirmed (or restarted on) a `hot.json` with this digest."""
+    return _stamped(account, "applied-hot.sha256", digest)
+
+
 def record_applied(account: str, digest: str) -> None:
     _write_private(_account_dir(account) / "applied.sha256", digest + "\n")
+
+
+def record_hot_applied(account: str, digest: str) -> None:
+    _write_private(_account_dir(account) / "applied-hot.sha256", digest + "\n")
+
+
+def clear_hot_applied(account: str) -> None:
+    """Forget the hot stamp: the proxy may now serve routes no recorded digest describes."""
+    (state_dir() / check_account(account) / "applied-hot.sha256").unlink(missing_ok=True)

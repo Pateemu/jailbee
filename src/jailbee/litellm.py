@@ -27,7 +27,9 @@ from jailbee.config.local_layer import local_litellm_scopes, scope_files
 from jailbee.incus import IncusError
 from jailbee.litellm_inputs import load_host_inputs
 from jailbee.litellm_render import (
+    ACK_FILE,
     CONTAINER_STATE_DIR,
+    HOT_FILE,
     InstanceFiles,
     container_key_file,
     container_profiles,
@@ -57,6 +59,9 @@ UNIT = "jailbee-litellm@{account}.service"
 _IMAGE = "images:ubuntu/26.04/cloud"
 _IP_INDEX = 1
 _WAIT_SECONDS = 60
+# A poll count, not a deadline: tests with `time.sleep` patched stay instant.
+_ACK_POLLS = 20
+_ACK_INTERVAL = 0.5
 _PY = "/opt/litellm/bin/python"
 _PACKAGE_ENDPOINTS = (
     "pypi.org:443",
@@ -127,6 +132,10 @@ class UpResult:
     # Left stopped: no ChatGPT login yet, and the proxy would block at startup
     # on LiteLLM's own device-code prompt, never answering its health probe.
     awaiting_login: list[str] = field(default_factory=list)
+    # Route changes loaded into a running proxy without a restart.
+    reloaded: list[str] = field(default_factory=list)
+    # Why a live reload did not take; the account is then in `restarted`.
+    fallbacks: dict[str, str] = field(default_factory=dict)
 
 
 def _resolve_egress(hosts: list[str]) -> list[EgressEntry]:
@@ -244,9 +253,10 @@ def _push_state(incus: Incus, files: list[InstanceFiles], callback_source: str) 
         base = f"{root}/{litellm_state.check_account(f.account)}"
         lines += [
             f"mkdir -p {base}/auth; chmod 0700 {base} {base}/auth",
-            f"put {base}/config.yaml {_b64(f.config_yaml)}",
-            f"put {base}/callback.json {_b64(f.callback_json)}",
             f"put {base}/instance.env {_b64(f.instance_env)}",
+            f"put {base}/config.yaml {_b64(f.config_yaml)}",
+            # Last: the running proxy reloads when this file changes.
+            f"put {base}/{HOT_FILE} {_b64(f.hot_json)}",
         ]
     incus.exec_with_input(LITELLM_CONTAINER, ["bash", "-s"], "\n".join(lines) + "\n", timeout=60)
 
@@ -413,6 +423,34 @@ def _wait_healthy(incus: Incus, account: str, port: int, on_step: Callable[[str]
         time.sleep(2)
 
 
+def _ack_path(account: str) -> str:
+    return f"{CONTAINER_STATE_DIR}/{litellm_state.check_account(account)}/{ACK_FILE}"
+
+
+def _read_ack(incus: Incus, account: str) -> dict[str, object] | None:
+    try:
+        raw = incus.exec(LITELLM_CONTAINER, ["cat", _ack_path(account)], timeout=10)
+    except IncusError:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _reload_hot(incus: Incus, instance: InstanceFiles) -> str | None:
+    """Wait for the running proxy to confirm the `hot.json` just pushed. None = loaded."""
+    expected = instance.hot_digest()
+    for _ in range(_ACK_POLLS):
+        ack = _read_ack(incus, instance.account)
+        if ack is not None and ack.get("hot_digest") == expected:
+            error = ack.get("error")
+            return None if error is None else f"the proxy refused the new routes ({error})"
+        time.sleep(_ACK_INTERVAL)
+    return "the proxy did not acknowledge the new routes in time"
+
+
 def _deployed_accounts(incus: Incus) -> set[str]:
     """Accounts with a loaded or enabled unit in the proxy container."""
     script = (
@@ -452,48 +490,78 @@ def _render_all(
     ]
 
 
-def _restart_changed(
+@dataclass
+class Converged:
+    restarted: list[str] = field(default_factory=list)
+    reloaded: list[str] = field(default_factory=list)
+    awaiting_login: list[str] = field(default_factory=list)
+    # Accounts whose instance needed a restart but was not allowed one (`allow_restart=False`).
+    unreloaded: list[str] = field(default_factory=list)
+    # Why a live reload did not take; the account is then in `restarted` or `unreloaded`.
+    fallbacks: dict[str, str] = field(default_factory=dict)
+
+
+def _converge(
     incus: Incus,
     files: list[InstanceFiles],
     ports: dict[str, int],
     callback_source: str,
     *,
     force: bool,
+    allow_restart: bool,
     on_step: Callable[[str], None],
-) -> tuple[list[str], list[str]]:
-    """Restart each instance whose files changed (or whose unit is down); wait for health.
+) -> Converged:
+    """Bring each pushed instance in line: restart if its cold half changed, else reload.
 
-    Returns `(restarted, awaiting_login)`. An account with no login is kept
-    stopped instead: its proxy would sit in LiteLLM's device-code prompt and
-    never turn healthy. `jailbee litellm login` then `up` starts it.
+    A changed `hot.json` is loaded into the running proxy and confirmed by its
+    acknowledgement; only when that fails is the instance restarted (when
+    `allow_restart`), so a bad reload never leaves a silently stale proxy.
+    An account with no login is kept stopped instead: its proxy would sit in
+    LiteLLM's device-code prompt and never turn healthy. `jailbee litellm login`
+    then `up` starts it.
 
-    The digest is recorded only after the unit is healthy on the new files, so
-    a run that fails in between is retried by the next one.
+    The stamps are recorded only after the unit is confirmed on the new files,
+    so a run that fails in between is retried by the next one.
     """
-    restarted: list[str] = []
-    awaiting: list[str] = []
+    done = Converged()
     for instance in files:
         account = instance.account
         if auth_state(incus, account) == "missing":
             incus.exec(
                 LITELLM_CONTAINER, ["systemctl", "disable", "--now", unit(account)], timeout=60
             )
-            awaiting.append(account)
+            done.awaiting_login.append(account)
             continue
-        digest = instance.digest(callback_source)
+        cold, hot = instance.digest(callback_source), instance.hot_digest()
         restart = (
-            force
-            or not litellm_state.config_applied(account, digest)
-            or not _active(incus, account)
+            force or not litellm_state.config_applied(account, cold) or not _active(incus, account)
         )
+        reloaded = False
+        if not restart and not litellm_state.hot_applied(account, hot):
+            problem = _reload_hot(incus, instance)
+            if problem is None:
+                reloaded = True
+            else:
+                done.fallbacks[account] = problem
+                # The proxy may already serve (part of) the new routes, so the old
+                # stamp no longer describes it: reverting the config must push again.
+                litellm_state.clear_hot_applied(account)
+                restart = True
+        if restart and not allow_restart:
+            done.unreloaded.append(account)
+            continue
         if restart:
             incus.exec(LITELLM_CONTAINER, ["systemctl", "enable", unit(account)], timeout=30)
             incus.exec(LITELLM_CONTAINER, ["systemctl", "restart", unit(account)], timeout=60)
         _wait_healthy(incus, account, ports[account], on_step)
         if restart:
-            litellm_state.record_applied(account, digest)
-            restarted.append(account)
-    return restarted, awaiting
+            litellm_state.record_applied(account, cold)
+            litellm_state.record_hot_applied(account, hot)
+            done.restarted.append(account)
+        elif reloaded:
+            litellm_state.record_hot_applied(account, hot)
+            done.reloaded.append(account)
+    return done
 
 
 def litellm_up(
@@ -601,19 +669,27 @@ def litellm_up(
     # enabled symlink of an account that has since been removed.
     retired = _retire_accounts(incus, set(cfg.accounts))
 
-    restarted, awaiting_login = _restart_changed(
-        incus, files, ports, callback_source, force=needs_install, on_step=on_step
+    done = _converge(
+        incus,
+        files,
+        ports,
+        callback_source,
+        force=needs_install,
+        allow_restart=True,
+        on_step=on_step,
     )
 
     set_services_endpoint(incus, (ip, listen))
     return UpResult(
         ip=ip,
         ports=ports,
-        restarted=restarted,
+        restarted=done.restarted,
         retired=retired,
         installed=needs_install,
         issues=issues,
-        awaiting_login=awaiting_login,
+        awaiting_login=done.awaiting_login,
+        reloaded=done.reloaded,
+        fallbacks=done.fallbacks,
     )
 
 
@@ -633,8 +709,8 @@ class ReconcileResult:
     """What `jailbee apply` did to the proxy."""
 
     restarted: list[str] = field(default_factory=list)
-    # Changed but left alone (`--no-restart`); the digest is not recorded, so
-    # the next `apply` restarts them.
+    # Changed but left alone (`--no-restart`) because it needs a restart; the
+    # stamps are not recorded, so the next plain `apply` converges them.
     pending: list[str] = field(default_factory=list)
     # The subset of `pending` whose unit is not running at all (not merely on old routes).
     stopped: list[str] = field(default_factory=list)
@@ -643,6 +719,9 @@ class ReconcileResult:
     issues: list[str] = field(default_factory=list)
     # Skipped, not started: no login yet (see `UpResult.awaiting_login`).
     awaiting_login: list[str] = field(default_factory=list)
+    reloaded: list[str] = field(default_factory=list)
+    # Why a live reload did not take; the account is then in `restarted` or `pending`.
+    fallbacks: dict[str, str] = field(default_factory=dict)
 
 
 def litellm_reconcile(
@@ -702,28 +781,52 @@ def litellm_reconcile(
     callback_source = _read("jailbee_callback.py")
     files = _render_all(cfg, scopes, known, inputs)
     down = {f.account for f in files if not _active(incus, f.account)}
-    changed = [
+    cold = [
         f
         for f in files
         if not litellm_state.config_applied(f.account, f.digest(callback_source))
         or f.account in down
     ]
-    if not changed:
+    cold_accounts = {f.account for f in cold}
+    hot = [
+        f
+        for f in files
+        if f.account not in cold_accounts
+        and not litellm_state.hot_applied(f.account, f.hot_digest())
+    ]
+    if not cold and not hot:
         return ReconcileResult(issues=issues)
-    if not restart:
-        return ReconcileResult(
-            pending=[f.account for f in changed],
-            stopped=[f.account for f in changed if f.account in down],
-            issues=issues,
+    # Reloads interrupt nothing, so `--no-restart` still applies them; only an
+    # instance needing a restart stays pending; a cold one is not written to.
+    pending = [] if restart else [f.account for f in cold]
+    stopped = [] if restart else [f.account for f in cold if f.account in down]
+    targets = [*cold, *hot] if restart else hot
+    done = Converged()
+    if targets:
+        on_step("writing the proxy's egress allowlist")
+        _set_egress(
+            incus, _resolve_egress(egress_hosts(cfg, scopes=scopes)), sorted(known.values())
         )
-    on_step("writing the proxy's egress allowlist")
-    _set_egress(incus, _resolve_egress(egress_hosts(cfg, scopes=scopes)), sorted(known.values()))
-    on_step("writing the proxy configuration")
-    _push_state(incus, changed, callback_source)
-    restarted, awaiting_login = _restart_changed(
-        incus, changed, known, callback_source, force=False, on_step=on_step
+        on_step("writing the proxy configuration")
+        _push_state(incus, targets, callback_source)
+        done = _converge(
+            incus,
+            targets,
+            known,
+            callback_source,
+            force=False,
+            allow_restart=restart,
+            on_step=on_step,
+        )
+    return ReconcileResult(
+        restarted=done.restarted,
+        reloaded=done.reloaded,
+        pending=[*pending, *done.unreloaded],
+        stopped=stopped,
+        issues=issues,
+        awaiting_login=done.awaiting_login,
+        fallbacks=done.fallbacks,
     )
-    return ReconcileResult(restarted=restarted, issues=issues, awaiting_login=awaiting_login)
 
 
 def container_sync_payload(

@@ -29,6 +29,9 @@ for `/model` and for sessions started before tier aliases existed.
 
 Secrets appear in the rendered config only as `os.environ/<NAME>`; their
 values live in the per-instance `instance.env`.
+
+`hot.json` is what the callback re-reads while the proxy runs (alias table +
+`model_list`); everything else is read at start and needs a restart.
 """
 
 from __future__ import annotations
@@ -49,6 +52,8 @@ if TYPE_CHECKING:
 
 CATCH_ALL = "claude-*"
 CONTAINER_STATE_DIR = "/var/lib/jailbee-litellm"
+HOT_FILE = "hot.json"
+ACK_FILE = "applied.json"
 _CHEAPEST_FIRST = ("haiku", "sonnet", "opus", "fable")
 TIER_LEVELS: Mapping[str, str] = {
     "fable": "most-capable",
@@ -149,13 +154,21 @@ def catch_all_route(cfg: LiteLLMConfig, account: str) -> ResolvedRoute | None:
     return None
 
 
+def deployment_id(model_name: str) -> str:
+    """The stable id the hot reload addresses a deployment by (`upsert`/`delete` key on it)."""
+    return f"jb:{model_name}"
+
+
 def _deployment(model_name: str, route: ResolvedRoute) -> dict[str, object]:
     params: dict[str, object] = {"model": route.model, **route.params}
     if route.api_key:
         params["api_key"] = f"os.environ/{route.api_key}"
     if route.api_base:
         params["api_base"] = route.api_base
-    info: dict[str, object] = {"max_input_tokens": route.context_window}
+    info: dict[str, object] = {
+        "id": deployment_id(model_name),
+        "max_input_tokens": route.context_window,
+    }
     if route.subscription:
         info = {"mode": "responses", **info}
     return {"model_name": model_name, "litellm_params": params, "model_info": info}
@@ -179,6 +192,28 @@ def merge_extra(base: dict[str, object], extra: Mapping[str, object]) -> dict[st
     return out
 
 
+def _with_ids(rendered: dict[str, object]) -> dict[str, object]:
+    """Give every `extra` deployment the `model_info.id` the hot reload needs.
+
+    Derived from the entry's own content, so it is identical across renders and
+    changes when the entry does (the reload then adds the new one and deletes the old).
+    """
+    models = rendered.get("model_list")
+    if not isinstance(models, list):
+        return rendered
+    out: list[object] = []
+    for entry in models:
+        if isinstance(entry, dict):
+            info = entry.get("model_info")
+            if info is None or (isinstance(info, dict) and "id" not in info):
+                blob = json.dumps(entry, sort_keys=True, default=str).encode()
+                name = entry.get("model_name", "?")
+                digest = hashlib.sha256(blob).hexdigest()[:10]
+                entry = {**entry, "model_info": {**(info or {}), "id": f"jb-extra:{name}:{digest}"}}
+        out.append(entry)
+    return {**rendered, "model_list": out}
+
+
 def render_instance_config(
     cfg: LiteLLMConfig,
     account: str,
@@ -199,7 +234,7 @@ def render_instance_config(
         },
         "general_settings": {"master_key": "os.environ/LITELLM_MASTER_KEY"},
     }
-    return merge_extra(rendered, extra) if extra else rendered
+    return _with_ids(merge_extra(rendered, extra) if extra else rendered)
 
 
 def _entry(route: ResolvedRoute) -> dict[str, object]:
@@ -230,7 +265,8 @@ def render_instance_env(
         f"PORT={port}",
         f"LITELLM_MASTER_KEY={master_key}",
         f"CHATGPT_TOKEN_DIR={base}/auth",
-        f"JAILBEE_LITELLM_CALLBACK_DATA={base}/callback.json",
+        f"JAILBEE_LITELLM_HOT_FILE={base}/{HOT_FILE}",
+        f"JAILBEE_LITELLM_ACK_FILE={base}/{ACK_FILE}",
         "LITELLM_LOCAL_MODEL_COST_MAP=True",
     ]
     for name, value in sorted((secrets or {}).items()):
@@ -242,24 +278,32 @@ def render_instance_env(
 
 @dataclass(frozen=True)
 class InstanceFiles:
-    """What one instance reads from `<CONTAINER_STATE_DIR>/<account>/`."""
+    """What one instance reads from `<CONTAINER_STATE_DIR>/<account>/`.
+
+    `settings_yaml` is `config_yaml` without its `model_list`: the part of the
+    config only a restart re-reads. It is the digest's basis and is never pushed.
+    """
 
     account: str
     config_yaml: str
-    callback_json: str
+    settings_yaml: str
+    hot_json: str
     instance_env: str
 
     def digest(self, callback_source: str) -> str:
-        """Digest of everything the unit reads, the shared callback included."""
+        """Digest of everything only a restart re-reads (the cold half)."""
         sha = hashlib.sha256()
         for name, text in (
             ("jailbee_callback.py", callback_source),
-            ("config.yaml", self.config_yaml),
-            ("callback.json", self.callback_json),
+            ("settings.yaml", self.settings_yaml),
             ("instance.env", self.instance_env),
         ):
             sha.update(name.encode() + b"\0" + text.encode() + b"\0")
         return sha.hexdigest()
+
+    def hot_digest(self) -> str:
+        """Digest of `hot.json`'s bytes: what the proxy's acknowledgement echoes."""
+        return hashlib.sha256(self.hot_json.encode()).hexdigest()
 
 
 def render_instance_files(
@@ -272,13 +316,18 @@ def render_instance_files(
     extra: Mapping[str, object] | None = None,
     scopes: Scopes | None = None,
 ) -> InstanceFiles:
+    config = render_instance_config(cfg, account, extra=extra, scopes=scopes)
+    hot = {
+        "callback": render_callback_data(cfg, account, scopes=scopes),
+        "models": config["model_list"],
+    }
     return InstanceFiles(
         account=account,
-        config_yaml=yaml.safe_dump(
-            render_instance_config(cfg, account, extra=extra, scopes=scopes), sort_keys=False
+        config_yaml=yaml.safe_dump(config, sort_keys=False),
+        settings_yaml=yaml.safe_dump(
+            {k: v for k, v in config.items() if k != "model_list"}, sort_keys=False
         ),
-        callback_json=json.dumps(render_callback_data(cfg, account, scopes=scopes), indent=2)
-        + "\n",
+        hot_json=json.dumps(hot, indent=2, default=str) + "\n",
         instance_env=render_instance_env(
             port=port, master_key=master_key, account=account, secrets=secrets
         ),

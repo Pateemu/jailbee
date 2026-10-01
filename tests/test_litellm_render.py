@@ -1,7 +1,10 @@
 """Rendering `litellm:` into LiteLLM's config, the callback table and the
 per-container file — pure functions, no Incus."""
 
+import json
+
 import pytest
+import yaml
 
 from jailbee.config.models_litellm import LiteLLMConfig, LiteLLMRepoOverlay
 from jailbee.litellm_render import (
@@ -11,6 +14,7 @@ from jailbee.litellm_render import (
     catch_all_route,
     container_key_file,
     container_profiles,
+    deployment_id,
     egress_hosts,
     merge_extra,
     render_callback_data,
@@ -84,10 +88,16 @@ def test_instance_config_serves_every_route_every_profile_tier_and_the_catch_all
         CATCH_ALL,
     }
     assert models["jb.codex.capable"]["litellm_params"] == {"model": "chatgpt/gpt-6-sol"}
-    assert models["jb.codex.capable"]["model_info"] == models["jb-default-sol-xhigh"]["model_info"]
+    capable = {k: v for k, v in models["jb.codex.capable"]["model_info"].items() if k != "id"}
+    sol_info = {k: v for k, v in models["jb-default-sol-xhigh"]["model_info"].items() if k != "id"}
+    assert capable == sol_info
     sol = models["jb-default-sol-xhigh"]
     assert sol["litellm_params"] == {"model": "chatgpt/gpt-6-sol"}
-    assert sol["model_info"] == {"mode": "responses", "max_input_tokens": 922_000}
+    assert sol["model_info"] == {
+        "mode": "responses",
+        "max_input_tokens": 922_000,
+        "id": deployment_id("jb-default-sol-xhigh"),
+    }
 
 
 def test_effort_is_not_put_in_litellm_params():
@@ -160,7 +170,8 @@ def test_instance_env():
         "PORT=4100",
         "LITELLM_MASTER_KEY=sk-jb-x",
         "CHATGPT_TOKEN_DIR=/var/lib/jailbee-litellm/default/auth",
-        "JAILBEE_LITELLM_CALLBACK_DATA=/var/lib/jailbee-litellm/default/callback.json",
+        "JAILBEE_LITELLM_HOT_FILE=/var/lib/jailbee-litellm/default/hot.json",
+        "JAILBEE_LITELLM_ACK_FILE=/var/lib/jailbee-litellm/default/applied.json",
         "LITELLM_LOCAL_MODEL_COST_MAP=True",
     ]
     assert env.endswith("\n")
@@ -259,7 +270,11 @@ def test_api_key_is_rendered_as_an_env_reference_never_a_value():
         "api_key": "os.environ/OPENROUTER_API_KEY",
         "api_base": "https://openrouter.ai/api/v1",
     }
-    assert kimi["model_info"] == {"max_input_tokens": 262144}  # no Responses mode
+    # no Responses mode
+    assert kimi["model_info"] == {
+        "max_input_tokens": 262144,
+        "id": deployment_id("jb-default-kimi"),
+    }
 
 
 def test_catch_all_is_per_account():
@@ -474,7 +489,9 @@ def test_instance_files_digest_changes_when_a_scope_is_added():
         master_key="k",
         scopes={"myrepo": _scope(routes={"sol-xhigh": {"effort": "max"}})},
     )
-    assert base.digest("cb") != scoped.digest("cb")
+    # A scope only adds routes, which are hot.
+    assert base.hot_digest() != scoped.hot_digest()
+    assert base.digest("cb") == scoped.digest("cb")
 
 
 def _api_route(model: str, effort: str) -> dict[str, object]:
@@ -545,3 +562,52 @@ def test_a_repo_scope_serves_its_profile_tiers_under_its_prefix():
     table = render_callback_data(LiteLLMConfig(), "default", scopes=scopes)["aliases"]
     assert table["jb-myrepo.codex.capable"]["effort"] == "max"
     assert table["jb.codex.capable"]["effort"] == "xhigh"
+
+
+def _files(**kw):
+    return render_instance_files(
+        kw.pop("cfg", LiteLLMConfig()), "default", port=4100, master_key="k", **kw
+    )
+
+
+def test_every_deployment_has_a_stable_unique_id():
+    models = json.loads(_files().hot_json)["models"]
+    ids = [m["model_info"]["id"] for m in models]
+    assert len(ids) == len(set(ids)) and all(i.startswith("jb:") for i in ids)
+    assert json.loads(_files().hot_json)["models"] == models  # stable across renders
+
+
+def test_extra_deployments_get_an_id_from_their_content():
+    def entry(model: str) -> dict:
+        return {"model_name": "mine", "litellm_params": {"model": model}}
+
+    def ids(extra):
+        models = json.loads(_files(extra=extra).hot_json)["models"]
+        return [m["model_info"]["id"] for m in models if m["model_name"] == "mine"]
+
+    first = ids({"model_list": [entry("openai/a")]})
+    assert first == ids({"model_list": [entry("openai/a")]})
+    assert first != ids({"model_list": [entry("openai/b")]})
+    keep = {**entry("openai/a"), "model_info": {"id": "mine-1"}}
+    assert ids({"model_list": [keep]}) == ["mine-1"]
+
+
+def test_hot_json_carries_the_callback_table_and_the_model_list():
+    files = _files()
+    hot = json.loads(files.hot_json)
+    assert hot["callback"] == render_callback_data(LiteLLMConfig(), "default")
+    assert hot["models"] == yaml.safe_load(files.config_yaml)["model_list"]
+    assert "model_list" not in yaml.safe_load(files.settings_yaml)
+
+
+def test_digest_ignores_routes_and_effort_but_not_what_the_proxy_reads_at_start():
+    base = _files()
+    maxed = _files(cfg=LiteLLMConfig.model_validate({"routes": {"sol-xhigh": {"effort": "max"}}}))
+    assert maxed.digest("cb") == base.digest("cb")
+    assert maxed.hot_digest() != base.hot_digest()
+    settings = _files(extra={"router_settings": {"num_retries": 2}})
+    assert settings.digest("cb") != base.digest("cb")
+    assert settings.hot_digest() == base.hot_digest()
+    secret = _files(secrets={"K": "v"})
+    assert secret.digest("cb") != base.digest("cb") and secret.hot_digest() == base.hot_digest()
+    assert base.digest("cb v2") != base.digest("cb")

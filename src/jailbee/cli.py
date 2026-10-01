@@ -10792,6 +10792,10 @@ def litellm_up_cmd(
             f"Restarted {', '.join(result.restarted)}; their in-flight `claude-jb` "
             "requests were interrupted."
         )
+    if result.reloaded:
+        info(f"Reloaded the routes of {', '.join(result.reloaded)} without a restart.")
+    for account, problem in sorted(result.fallbacks.items()):
+        warn_plain(f"{account} could not reload live ({problem}); it was restarted.")
     if result.retired:
         info(
             f"Stopped {', '.join(result.retired)}: no longer in `litellm.accounts`; "

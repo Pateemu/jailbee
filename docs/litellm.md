@@ -193,19 +193,28 @@ container prefixes, so no two of these forms can collide. Inspect the result
 with `jailbee litellm ls`.
 
 After editing an override, run `jailbee apply` in that repo. It re-renders the
-proxy configuration and restarts only the instances whose routes changed,
-saying which, and it syncs the repo's running containers. `jailbee apply
---no-restart` writes nothing to a running instance and warns which ones still
-serve the previous routes; a later plain `jailbee apply` restarts them.
-`jailbee new` does not update the proxy.
+proxy configuration and syncs the repo's running containers. Edits to routes
+and profiles (a model, `context_window`, `effort`, `api_base`, a new route that
+needs no new secret) are **loaded into the running proxy without a restart**:
+open `claude-jb` sessions keep going, and a stream in flight finishes on the
+route it started on. Anything the proxy only reads at start (a secret, `extra`
+outside its `model_list`, the proxy's settings, the callback itself) restarts the instance that changed,
+saying which. If the proxy does not confirm a reload within about ten seconds,
+or refuses it, `apply` restarts the instance instead and says why.
+`jailbee apply --no-restart` still applies reloads, since they interrupt
+nothing, and leaves an instance that needs a restart (or whose reload was not
+confirmed) pending, with a warning; a later plain `jailbee apply` restarts it.
+`jailbee new` does not update the proxy, with one exception: the first container in a
+scratch directory runs an `apply` to create its profiles, and that run can apply a pending
+route reload (waiting up to about ten seconds per instance) but never restarts an instance.
 
 `apply` sees an edit through the rendered instance files, and the proxy's egress
 allowlist is not part of them. An edit that changes **only** egress (a route's
 `egress` list on an existing route, or `litellm.egress` in `global.yaml`) is
 therefore not applied by `jailbee apply`; run `jailbee litellm up`, which rewrites
 the allowlist. An edit that also changes the rendered files, such as an override
-that adds a route (with or without a new egress host), makes `apply` restart the
-instance and rewrite the allowlist along with it. If the proxy needs more than a
+that adds a route (with or without a new egress host), makes `apply` rewrite the
+allowlist along with reloading or restarting the instance. If the proxy needs more than a
 restart (a different LiteLLM version, a new account, an unattached state
 volume), `apply` says so and points at `jailbee litellm up`.
 
@@ -309,7 +318,7 @@ back on; that is your choice.
   standard input. `jailbee litellm down` keeps the volume, so logins survive a
   rebuild; `jailbee litellm down --purge` deletes it. On the host, only
   `~/.local/share/jailbee/litellm/` remains, holding the port map, each
-  account's proxy key (`0600`) and its `applied.sha256` stamp. Dev containers get only the proxy keys, one
+  account's proxy key (`0600`) and its `applied.sha256` and `applied-hot.sha256` stamps. Dev containers get only the proxy keys, one
   `/etc/jailbee/litellm-<account>.key` (`0640`, readable by the dev group) per
   account. `jailbee litellm logout [ACCOUNT]` deletes that account's token.
 - The proxy has default-deny egress restricted to the hosts the routes need
@@ -319,7 +328,7 @@ back on; that is your choice.
   the state volume is detached until package access is removed.
   Dev containers can reach its static address through the
   `jailbee-services` ACL; a proxy key is not a provider token.
-- The default LiteLLM installation is pinned to version `1.103.0` and a
+- The default LiteLLM installation is pinned to version `1.103.1` and a
   hash-locked requirements file. Setting `litellm.version` bypasses the hash
   lock and emits a warning. Prompt/message logging and the remote model-cost
   map fetch are disabled. Treat this as risk reduction, not a guarantee that
@@ -330,9 +339,12 @@ back on; that is your choice.
 - Claude Code's claude.ai connectors are disabled in gateway sessions.
   Resuming a native session with signed Opus thinking blocks through
   `claude-jb` is untested.
-- Changing a route restarts that account's instance (`jailbee litellm up`, or
-  `jailbee apply` in any repo), interrupting every container's streams on that
-  account. `apply --no-restart` defers it.
+- Changing a route reloads it into the account's running instance; changing a
+  secret, `litellm.extra` outside its `model_list` or the proxy's own settings restarts it, interrupting
+  every container's streams on that account (`jailbee litellm up`, or
+  `jailbee apply` in any repo). `apply --no-restart` defers the restart.
+  An instance that serves no route at all cannot take its first route by
+  reload and is restarted.
 
 ## Troubleshooting
 
