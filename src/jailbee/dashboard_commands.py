@@ -45,6 +45,7 @@ def check_dashboard_command(
         policy.commands,
         restrict_host=policy.restrict_host,
         scope=RemoteRepoScope(snapshot_scope.excluded | frozenset(policy.excluded_repos)),
+        gui=policy.gui,
     )
 
 
@@ -172,6 +173,7 @@ def completion_candidates(
     allowed_paths: frozenset[str] | None = None,
     *,
     restrict_host: bool = False,
+    gui: bool = False,
 ) -> tuple[str, ...]:
     """Complete cached command paths, Click options, or selected-repo containers."""
     words, fragment = _partial_words(text)
@@ -183,7 +185,7 @@ def completion_candidates(
         canonical = aliases.get(path, path)
         if allowed_paths is not None and canonical not in allowed_paths:
             continue
-        if restrict_host and router.is_host_command(canonical):
+        if restrict_host and router.is_host_command(canonical, gui=gui):
             continue
         pieces = path.split()
         prefix_words = words

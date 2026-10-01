@@ -432,7 +432,9 @@ def _startup_summary(
         f"  connect example: {_connect_example(config.listen, port, config)}",
     ]
     if restricted and config.commands.mode == "allowlist":
-        refused = sorted(path for path in config.commands.allow if is_host_command(path))
+        refused = sorted(
+            path for path in config.commands.allow if is_host_command(path, gui=config.gui)
+        )
         if refused:
             lines.append(
                 "  allowlisted but refused while host restrictions are on: " + ", ".join(refused)

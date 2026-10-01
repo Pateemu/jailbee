@@ -253,3 +253,28 @@ def test_remote_completion_hides_options_and_containers_for_disallowed_leaf() ->
 )
 def test_permitted_mirrors_check_dashboard_command(argv, over_ssh, policy, expected) -> None:
     assert permitted(argv, policy, over_ssh=over_ssh) is expected
+
+
+def test_ssh_dashboard_gui_launchers_follow_the_gui_flag() -> None:
+    full = RemoteCommandPolicy(mode="full")
+    off = RemoteSSHConfig(exec=True, commands=full)
+    on = RemoteSSHConfig(exec=True, commands=full, gui=True)
+
+    with pytest.raises(RouteError, match="manages the host"):
+        check_dashboard_command(["chrome", "feat-1", "--force"], off, over_ssh=True)
+    check_dashboard_command(["chrome", "feat-1", "--force"], on, over_ssh=True)
+    with pytest.raises(RouteError, match="manages the host"):
+        check_dashboard_command(["gui"], on, over_ssh=True)
+
+
+def test_gui_flag_adds_the_launchers_to_the_allowed_and_offered_paths() -> None:
+    from jailbee.remote_ssh.router import allowed_command_paths
+
+    full = RemoteCommandPolicy(mode="full")
+
+    assert "chrome" not in allowed_command_paths(full)
+    on = allowed_command_paths(full, gui=True)
+    assert {"chrome", "ide", "apps run"} <= on
+    assert "gui" not in on
+    assert "chrome" not in completion_candidates("chr", (), on, restrict_host=True)
+    assert "chrome" in completion_candidates("chr", (), on, restrict_host=True, gui=True)

@@ -1106,3 +1106,31 @@ def test_full_help_keeps_generic_cli_help_without_exclusions(mocker, capsys, tmp
         [sys.executable, "-m", "jailbee", "--help"], cwd=tmp_path, check=False
     )
     assert "Allowed Jailbee commands" not in capsys.readouterr().out
+
+
+def test_gui_flag_adds_the_launchers_to_completion_and_help(capsys, tmp_path) -> None:
+    allow = RemoteCommandPolicy(mode="allowlist", allow=["ls", "chrome"])
+
+    assert "chrome" not in console._allowed_paths(allow)
+    assert "chrome" in console._allowed_paths(allow, gui=True)
+
+    console._print_help(allow, dashboard_enabled=False, repo_root=tmp_path, gui=True)
+    assert "chrome" in capsys.readouterr().out
+
+
+def test_console_runs_a_gui_launcher_only_when_the_gui_flag_is_on(
+    console_env: ConsoleEnv, mocker, capsys
+) -> None:
+    def run_with(gui: bool) -> Mock:
+        ssh = RemoteSSHConfig(shell=True, gui=gui, commands=RemoteCommandPolicy(mode="full"))
+        run = mocker.patch(
+            "jailbee.remote_ssh.console.subprocess.run",
+            return_value=CompletedProcess([], 0),
+        )
+        console_env.lines(["chrome feat-1", "exit"])
+        console.run("project", ssh.model_dump_json())
+        return run
+
+    run_with(False).assert_not_called()
+    assert "manages the host itself" in capsys.readouterr().err
+    run_with(True).assert_called_once()
