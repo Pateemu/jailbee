@@ -466,3 +466,28 @@ def test_write_text_atomic_leaves_no_temp_file_behind(tmp_path):
     target = tmp_path / "x.yaml"
     write_text_atomic(target, "a: 1\n")
     assert sorted(p.name for p in tmp_path.iterdir()) == ["x.yaml"]
+
+
+def test_a_multiline_string_is_written_as_a_literal_block():
+    out = patch_yaml("a: 1\n", [YamlChange(("note",), "first\nsecond\n")])
+    assert "note: |\n  first\n  second\n" in out
+    assert yaml.safe_load(out)["note"] == "first\nsecond\n"
+
+
+def test_a_multiline_string_without_a_final_newline_round_trips():
+    out = patch_yaml("a: 1\n", [YamlChange(("note",), "first\nsecond")])
+    assert "|-" in out
+    assert yaml.safe_load(out)["note"] == "first\nsecond"
+
+
+def test_a_nested_multiline_string_is_indented_under_its_key():
+    out = patch_yaml(
+        "", [YamlChange(("litellm", "profiles", "codex", "instructions"), "a\nb\n")]
+    )
+    assert yaml.safe_load(out)["litellm"]["profiles"]["codex"]["instructions"] == "a\nb\n"
+    assert "instructions: |\n" in out
+
+
+def test_a_single_line_string_is_still_a_plain_scalar():
+    out = patch_yaml("a: 1\n", [YamlChange(("note",), "one line")])
+    assert "note: one line" in out and "|" not in out

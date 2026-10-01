@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.scalarstring import LiteralScalarString
 
 from jailbee.accounts.engine import _fsync_dir
 
@@ -134,6 +135,18 @@ def patch_yaml(text: str, changes: Sequence[YamlChange]) -> str:
     return stream.getvalue()
 
 
+def _spelled(value: object) -> object:
+    """`value` as ruamel should write it: a multi-line string as a `|` block.
+
+    Without this a long instruction text lands in the file as one quoted line
+    full of `\\n` escapes. Only how the string is *spelled* changes, never its
+    value, and only a top-level `str` is converted.
+    """
+    if isinstance(value, str) and "\n" in value:
+        return LiteralScalarString(value)
+    return value
+
+
 def _apply(data: CommentedMap, change: YamlChange) -> None:
     *parents, leaf = change.path
     node: Any = data
@@ -144,12 +157,12 @@ def _apply(data: CommentedMap, change: YamlChange) -> None:
         if change.value is DELETE:
             del node[leaf]
         else:
-            node[leaf] = change.value
+            node[leaf] = _spelled(change.value)
         return
     if change.value is DELETE:
         node.pop(leaf, None)
     else:
-        node[leaf] = change.value
+        node[leaf] = _spelled(change.value)
 
 
 def _descend(node: Any, key: str | int, so_far: KeyPath) -> Any:
