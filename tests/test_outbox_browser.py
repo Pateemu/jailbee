@@ -278,9 +278,8 @@ def test_cli_browser_real_publication(publication_env, mocker, kind):
     else:
         create.assert_called_once()
         assert comment.call_count == 2
-    removed = next(call.args[1] for call in env[1].exec.call_args_list if call.args[1][0] == "rm")
-    assert any(n.endswith("/001.json") for n in removed)
-    assert not any(n.endswith("/002.json") for n in removed)
+    assert "001.json" not in env[2][kind].as_dict()
+    assert "002.json" in env[2][kind].as_dict()
 
 
 def test_cli_delete_scope_change_after_consent_refuses(env, mocker):

@@ -130,6 +130,37 @@ def _setup(mocker, tmp_path, *, files=None, rejected=(), warnings=()):
     mocker.patch("jailbee.pr.gh_login", return_value="octocat")
     mocker.patch("jailbee.lifecycle._stdin_is_interactive", return_value=True)
     _mock_store(mocker, files or {}, rejected=rejected, warnings=warnings)
+    import subprocess
+
+    from jailbee.outbox import io
+    from jailbee.outbox.models import StoreSnapshot
+
+    run_shell = subprocess.run
+    directory = tmp_path / "review-store"
+    directory.mkdir(exist_ok=True)
+    for name, text in (files or {}).items():
+        (directory / name).write_text(text)
+    for name in rejected:
+        (directory / name).write_bytes(b"\xff")
+
+    def snapshot(*args, **kwargs):
+        contents = {p.name: p.read_text() for p in directory.iterdir() if p.name not in rejected}
+        return StoreSnapshot("pr", tuple(sorted(contents.items())), tuple(rejected), tuple(warnings))
+
+    mocker.patch.object(io, "read_store", side_effect=snapshot)
+
+    def execute(container, command, **kwargs):
+        command = list(command)
+        command[-1] = str(directory / command[-1].rsplit("/", 1)[-1])
+        return run_shell(command, text=True, capture_output=True, check=True).stdout
+
+    def mutate(container, command, text, **kwargs):
+        command = list(command)
+        command[4] = str(directory)
+        return run_shell(command, input=text, text=True, capture_output=True, check=True).stdout
+
+    incus.exec.side_effect = execute
+    incus.exec_with_input.side_effect = mutate
     return cfg, incus
 
 
@@ -514,18 +545,21 @@ def test_apply_deletes_a_body_file_shared_by_two_completed_manifests(mocker, tmp
             _target("002-y.json"),
         ],
     )
-    mocker.patch(
-        "jailbee.pr_outbox.apply_manifest",
-        return_value=ApplyOutcome(applied=(0,), urls=("https://x/c",), failure=None),
-    )
+    def publish(cfg, incus, container, target, progress, **kwargs):
+        if target.manifest.name == "002-y.json":
+            assert (tmp_path / "review-store" / "shared.md").read_text() == "the body"
+            assert not (tmp_path / "review-store" / "001-x.json").exists()
+        return ApplyOutcome(applied=(0,), urls=("https://x/c",), failure=None)
+
+    mocker.patch("jailbee.pr_outbox.apply_manifest", side_effect=publish)
 
     result = runner.invoke(app, ["review", "apply", "feat-foo", "-y"])
 
     assert result.exit_code == 0, result.output
-    removals = [" ".join(c.args[1]) for c in incus.exec.call_args_list if c.args[1][0] == "rm"]
-    assert len(removals) == 2, removals
-    assert "shared.md" not in removals[0], "002-y.json still references it"
-    assert "shared.md" in removals[1], "nothing references it once both are gone"
+    assert incus.exec_with_input.call_count == 2
+    assert not (tmp_path / "review-store" / "001-x.json").exists()
+    assert not (tmp_path / "review-store" / "002-y.json").exists()
+    assert not (tmp_path / "review-store" / "shared.md").exists()
 
 
 def test_apply_asks_which_container_when_several_may_be_pending(mocker, tmp_path):
@@ -847,7 +881,7 @@ def test_drop_deletes_without_publishing(mocker, tmp_path):
 
     assert result.exit_code == 0, result.output
     apply_mock.assert_not_called()
-    assert any("rm" in c.args[1] for c in incus.exec.call_args_list)
+    assert not (tmp_path / "review-store" / "001-x.json").exists()
 
 
 def test_drop_asks_first_and_keeps_the_manifest_on_no(mocker, tmp_path):
@@ -869,9 +903,8 @@ def test_drop_takes_one_named_manifest(mocker, tmp_path):
     result = runner.invoke(app, ["review", "drop", "feat-foo", "002-y.json", "-y"])
 
     assert result.exit_code == 0, result.output
-    deleted = [arg for call in incus.exec.call_args_list for arg in call.args[1]]
-    assert any(a.endswith("002-y.json") for a in deleted)
-    assert not any(a.endswith("001-x.json") for a in deleted)
+    assert not (tmp_path / "review-store" / "002-y.json").exists()
+    assert (tmp_path / "review-store" / "001-x.json").exists()
 
 
 def test_drop_rejects_an_unknown_manifest(mocker, tmp_path):
@@ -940,7 +973,6 @@ def test_drop_multiple_preserves_preview_identity(mocker, tmp_path):
     )
     result = runner.invoke(app, ["review", "drop", "feat-foo", "-y"])
     assert result.exit_code == 0, result.output
-    removed = [c.args[1] for c in incus.exec.call_args_list if c.args[1][0] == "rm"]
-    assert len(removed) == 2
-    assert removed[0][-1].endswith("one.json")
-    assert removed[1][-1].endswith("two.json")
+    assert incus.exec_with_input.call_count == 2
+    assert not (tmp_path / "review-store" / "one.json").exists()
+    assert not (tmp_path / "review-store" / "two.json").exists()
