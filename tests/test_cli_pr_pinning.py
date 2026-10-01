@@ -16,7 +16,6 @@ from jailbee.submodule_pr import SubCandidate, SubPublishResult
 from jailbee.sync import FetchResult, PublishResult
 from tests.conftest import make_cfg
 
-
 IDENTITY = ContainerIdentity("sampleapp-feat-foo", "2026-09-30T12:00:00Z")
 
 
@@ -260,7 +259,7 @@ def test_already_exists_without_outbox_hint_uses_scoped_number(
 def test_update_mutations_keep_lookup_repository(
     mocker, tmp_path, submodule, no_outbox, flags, edit_fields, ready
 ):
-    cfg, _incus, args, root, slug = _setup_command(
+    _cfg, _incus, args, root, slug = _setup_command(
         mocker, tmp_path, submodule=submodule, authored=True
     )
     _mock_store(mocker, {})
