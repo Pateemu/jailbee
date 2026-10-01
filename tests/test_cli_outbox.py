@@ -329,11 +329,20 @@ def assert_publication_refused(publication_env):
 
 def issue_edit(env):
     files = env[2]["issue"].as_dict()
-    files["001.json"] = json.dumps({
-        "version": 1,
-        "actions": [{"type": "edit", "repo": ".", "issue": 42,
-                     "body": "New", "expected": {"body": "Body"}}],
-    })
+    files["001.json"] = json.dumps(
+        {
+            "version": 1,
+            "actions": [
+                {
+                    "type": "edit",
+                    "repo": ".",
+                    "issue": 42,
+                    "body": "New",
+                    "expected": {"body": "Body"},
+                }
+            ],
+        }
+    )
     env[2]["issue"] = store("issue", files)
 
 
@@ -341,6 +350,7 @@ def issue_edit(env):
 @pytest.mark.parametrize("late", [False, True])
 def test_apply_target_staleness_is_validation(publication_env, mocker, kind, late):
     from dataclasses import replace
+
     from jailbee import issue_github
 
     env = publication_env[0]
@@ -394,6 +404,7 @@ def test_apply_content_changed_during_confirmation_is_validation(publication_env
 @pytest.mark.parametrize("change", ["body", "missing", "identity"])
 def test_apply_final_domain_validation_is_two(publication_env, mocker, change):
     from dataclasses import replace
+
     from jailbee import issue_outbox
 
     env = publication_env[0]
@@ -435,12 +446,23 @@ def test_apply_final_domain_validation_is_two(publication_env, mocker, change):
     assert_publication_refused(publication_env)
 
 
-@pytest.mark.parametrize("boundary, late", [
-    ("login", False), ("issue", False), ("labels", False), ("outbox", False),
-    ("pr-read", False), ("pr-login", False),
-    ("issue", True), ("outbox", True), ("pr-read", True),
-])
-def test_apply_transport_failure_has_safe_execution_diagnostic(publication_env, mocker, boundary, late):
+@pytest.mark.parametrize(
+    "boundary, late",
+    [
+        ("login", False),
+        ("issue", False),
+        ("labels", False),
+        ("outbox", False),
+        ("pr-read", False),
+        ("pr-login", False),
+        ("issue", True),
+        ("outbox", True),
+        ("pr-read", True),
+    ],
+)
+def test_apply_transport_failure_has_safe_execution_diagnostic(
+    publication_env, mocker, boundary, late
+):
     from jailbee import issue_github, issue_outbox, pr
     from jailbee.outbox_io import OutboxReadError
 
@@ -528,8 +550,10 @@ def test_apply_confirmation_rechecks_scope(publication_env, mocker, kind):
 def test_apply_scope_refusal_precedes_local_reads(publication_env, mocker, kind):
     from jailbee.remote_ssh.repo_scope import RemoteRepoScope
 
-    mocker.patch("jailbee.remote_ssh.repo_scope.scope_for_session",
-                 return_value=RemoteRepoScope(frozenset({"acme"})))
+    mocker.patch(
+        "jailbee.remote_ssh.repo_scope.scope_for_session",
+        return_value=RemoteRepoScope(frozenset({"acme"})),
+    )
     result = CliRunner().invoke(app, ["outbox", "apply", "feature", f"{kind}/001.json", "-y"])
     assert result.exit_code == 2, result.output
     publication_env[0][3].assert_not_called()
@@ -539,9 +563,9 @@ def test_apply_scope_refusal_precedes_local_reads(publication_env, mocker, kind)
 @pytest.mark.parametrize("kind", ["issue", "pr"])
 def test_apply_confirmation_reloads_target_config(publication_env, mocker, kind):
     env = publication_env[0]
-    changed = env[0].model_copy(update={
-        "container_user": env[0].container_user.model_copy(update={"uid": 2345})
-    })
+    changed = env[0].model_copy(
+        update={"container_user": env[0].container_user.model_copy(update={"uid": 2345})}
+    )
     loader = mocker.patch("jailbee.config.load_repo_config", return_value=env[0])
 
     def confirm(*args, **kwargs):
@@ -569,8 +593,9 @@ def test_apply_inspected_revision_refuses_drift_before_remote_gate(publication_e
     files["001.json"] = json.dumps(payload)
     env[2][kind] = store(kind, files)
     prompt = mocker.patch("typer.confirm", side_effect=AssertionError("stale token prompted"))
-    result = CliRunner().invoke(app, ["outbox", "apply", "feature", f"{kind}/001.json",
-                                      "--revision", token, "-y"])
+    result = CliRunner().invoke(
+        app, ["outbox", "apply", "feature", f"{kind}/001.json", "--revision", token, "-y"]
+    )
     assert result.exit_code == 2, result.output
     assert "refresh" in result.stderr
     issue_github.current_login.assert_not_called()
@@ -583,7 +608,9 @@ def test_apply_inspected_revision_refuses_drift_before_remote_gate(publication_e
 def test_apply_read_only_plan_runs_one_domain_preflight(publication_env, kind):
     from jailbee import issue_github, pr
 
-    result = CliRunner().invoke(app, ["outbox", "apply", "feature", f"{kind}/001.json", "--dry-run"])
+    result = CliRunner().invoke(
+        app, ["outbox", "apply", "feature", f"{kind}/001.json", "--dry-run"]
+    )
     assert result.exit_code == 0, result.output
     assert "Dry run" in result.output
     if kind == "issue":
@@ -596,7 +623,9 @@ def test_apply_read_only_plan_runs_one_domain_preflight(publication_env, kind):
 
 
 @pytest.mark.parametrize("kind", ["issue", "pr"])
-def test_apply_uses_target_owned_config_before_local_reads(publication_env, mocker, make_cfg, tmp_path, kind):
+def test_apply_uses_target_owned_config_before_local_reads(
+    publication_env, mocker, make_cfg, tmp_path, kind
+):
     from jailbee import git
     from jailbee.outbox import io
     from tests.test_outbox_commands import register
@@ -605,13 +634,14 @@ def test_apply_uses_target_owned_config_before_local_reads(publication_env, mock
     caller_root = tmp_path / "caller"
     caller_root.mkdir()
     caller = make_cfg(caller_root, container_prefix="caller")
-    target = env[0].model_copy(update={
-        "container_user": env[0].container_user.model_copy(update={"uid": 2345})
-    })
+    target = env[0].model_copy(
+        update={"container_user": env[0].container_user.model_copy(update={"uid": 2345})}
+    )
     register("acme", target.repo_root)
-    mocker.patch("jailbee.config.load_repo_config", side_effect=lambda root: (
-        caller if root == caller_root else target
-    ))
+    mocker.patch(
+        "jailbee.config.load_repo_config",
+        side_effect=lambda root: caller if root == caller_root else target,
+    )
     mocker.patch("jailbee.config.load_config", return_value=caller)
     reads = []
 
@@ -623,8 +653,18 @@ def test_apply_uses_target_owned_config_before_local_reads(publication_env, mock
 
     mocker.patch.object(service, "read_store", side_effect=read)
     mocker.patch.object(io, "read_store", side_effect=read)
-    result = CliRunner().invoke(app, ["outbox", "apply", "acme-feature", f"{kind}/001.json",
-                                      "--config", "caller.yaml", "--dry-run"])
+    result = CliRunner().invoke(
+        app,
+        [
+            "outbox",
+            "apply",
+            "acme-feature",
+            f"{kind}/001.json",
+            "--config",
+            "caller.yaml",
+            "--dry-run",
+        ],
+    )
     assert result.exit_code == 0, result.output
     assert set(reads) == {"issue", "pr"}
     assert {call.args[0] for call in git.get_remote_url.call_args_list} == {target.repo_root}
@@ -632,7 +672,9 @@ def test_apply_uses_target_owned_config_before_local_reads(publication_env, mock
 
 
 @pytest.mark.parametrize("kind", ["issue", "pr"])
-def test_apply_retry_preserves_recorded_receipt_and_only_confirms_pending(publication_env, mocker, kind):
+def test_apply_retry_preserves_recorded_receipt_and_only_confirms_pending(
+    publication_env, mocker, kind
+):
     from jailbee import issue_github, pr
     from jailbee.outbox_io import journal_key
 
@@ -643,7 +685,8 @@ def test_apply_retry_preserves_recorded_receipt_and_only_confirms_pending(public
         assert first.exit_code == 1, first.output
         journal = env[5].load(journal_key(IDENTITY, "001.json"))
         assert [(a.index, a.state, a.issue) for a in journal.actions] == [
-            (0, "applied", 73), (1, "uncertain", None)
+            (0, "applied", 73),
+            (1, "uncertain", None),
         ]
         create.reset_mock()
         comment.reset_mock()
@@ -659,9 +702,9 @@ def test_apply_retry_preserves_recorded_receipt_and_only_confirms_pending(public
         payload = json.loads(files["001.json"])
         payload["actions"].append({"type": "comment", "body": "Still pending"})
         files["001.json"] = json.dumps(payload)
-        files["001.json.progress.json"] = json.dumps({
-            "applied": [0], "urls": {"0": "https://github.com/acme/repo/pull/42#review-1"}
-        })
+        files["001.json.progress.json"] = json.dumps(
+            {"applied": [0], "urls": {"0": "https://github.com/acme/repo/pull/42#review-1"}}
+        )
         env[2][kind] = store(kind, files)
         pending = mocker.patch.object(pr, "add_issue_comment", return_value="receipt")
         prompt = mocker.spy(typer, "confirm")

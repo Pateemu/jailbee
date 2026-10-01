@@ -205,6 +205,7 @@ def apply_selected(
     )
     if view.error:
         raise OutboxError(f"{proposal}: {view.error}")
+
     def checked_confirm(total: int) -> bool:
         accepted = confirm(total)
         if accepted:
