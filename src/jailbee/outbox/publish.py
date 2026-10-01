@@ -279,6 +279,8 @@ def publish_selected(
             )
             print_issue_outcome(batch, report)
             if raise_errors and report.failure is not None:
+                if report.failure.kind == "validation":
+                    raise OutboxError(report.failure.detail)
                 raise OutboxExecutionError(report.failure.detail)
             return int(report.failure is not None)
     except (

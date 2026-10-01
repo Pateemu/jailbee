@@ -259,6 +259,46 @@ def test_typed_late_transport_is_execution_not_validation(env, mocker, kind):
     assert_no_mutation(env)
 
 
+@pytest.mark.parametrize("change", ["body", "missing", "identity"])
+def test_typed_final_apply_prechecks_are_validation(env, mocker, change):
+    from jailbee.outbox.models import OutboxError
+
+    read = issue_outbox.read_issue_outbox
+    calls = []
+    def drifting_read(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            files = env[2]["issue"].as_dict()
+            if change == "missing":
+                files.pop("001.json")
+            else:
+                files["body.md"] = "Changed"
+            env[2]["issue"] = store("issue", files)
+        return read(*args, **kwargs)
+    if change == "identity":
+        identify = issue_outbox.container_identity
+        identity_calls = []
+        def drifting_identity(*args, **kwargs):
+            identity_calls.append(1)
+            value = identify(*args, **kwargs)
+            return replace(value, created_at="replacement") if len(identity_calls) == 2 else value
+        mocker.patch.object(issue_outbox, "container_identity", side_effect=drifting_identity)
+    else:
+        mocker.patch.object(issue_outbox, "read_issue_outbox", side_effect=drifting_read)
+    with pytest.raises(OutboxError):
+        selected(env, raise_errors=True)
+    assert_no_mutation(env)
+
+
+def test_typed_pr_mutation_failure_keeps_retry_guidance(env, capsys):
+    from jailbee.outbox.models import OutboxExecutionError
+
+    env[4]["pr_comment"].side_effect = pr.PrError("write failed")
+    with pytest.raises(OutboxExecutionError):
+        selected(env, "pr", raise_errors=True)
+    assert "re-running skips what landed" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("kind", ["issue", "pr"])
 def test_typed_mutation_failure_retains_receipts_and_execution_type(env, kind):
     from jailbee.outbox.models import OutboxExecutionError

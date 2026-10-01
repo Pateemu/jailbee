@@ -644,6 +644,7 @@ class ApplyFailure:
     index: int | None
     uncertain: bool
     detail: str
+    kind: Literal["validation", "execution"] = "execution"
 
 
 @dataclass(frozen=True)
@@ -914,13 +915,14 @@ def apply_batch(
     cleaned: list[str] = []
 
     def failed(
-        manifest: str | None, index: int | None, uncertain: bool, detail: str
+        manifest: str | None, index: int | None, uncertain: bool, detail: str,
+        *, kind: Literal["validation", "execution"] = "execution",
     ) -> ApplyReport:
         return ApplyReport(
             tuple(applied),
             tuple(skipped),
             tuple(cleaned),
-            ApplyFailure(manifest, index, uncertain, detail),
+            ApplyFailure(manifest, index, uncertain, detail, kind),
         )
 
     with ExitStack() as locks:
@@ -940,6 +942,7 @@ def apply_batch(
                 None,
                 False,
                 "the container's identity changed since this batch was approved; re-approve it",
+                kind="validation",
             )
 
         try:
@@ -952,14 +955,14 @@ def apply_batch(
             name = prepared.manifest.name
             text = outbox.files.get(name)
             if text is None:
-                return failed(name, None, False, f"{name}: manifest is no longer in the outbox")
+                return failed(name, None, False, f"{name}: manifest is no longer in the outbox", kind="validation")
             digest = proposal_digest(
                 name,
                 text,
                 {body: outbox.files.get(body, "") for body in prepared.manifest.body_files},
             )
             if digest != prepared.digest:
-                return failed(name, None, False, f"{name}: proposal changed since it was approved")
+                return failed(name, None, False, f"{name}: proposal changed since it was approved", kind="validation")
             key = journal_key(batch.identity, name)
             try:
                 journal = _create_or_replace_journal(
@@ -979,6 +982,7 @@ def apply_batch(
                         f"{name} action {resolved.index}: a previous run's outcome is uncertain "
                         f"({current.detail or 'unknown'}) and must be reconciled before this batch "
                         "can proceed",
+                        kind="validation",
                     )
                 if current is not None and current.repo.casefold() != resolved.repo.identity:
                     return failed(
@@ -987,6 +991,7 @@ def apply_batch(
                         False,
                         f"{name} action {resolved.index}: its recorded repo no longer matches "
                         "the resolved repo; re-approve this batch",
+                        kind="validation",
                     )
             journals[name] = journal
 

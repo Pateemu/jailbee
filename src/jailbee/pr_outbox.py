@@ -2282,6 +2282,7 @@ def _offer_locked(
             stop = True
         if outcome.failure is not None:
             if raise_errors:
+                warn_plain(f"{target.manifest.name} is still pending; re-running skips what landed.")
                 raise OutboxExecutionError(f"{target.manifest.name}: {outcome.failure}")
             error_plain(f"{target.manifest.name}: {outcome.failure}")
             warn_plain(f"{target.manifest.name} is still pending; re-running skips what landed.")
