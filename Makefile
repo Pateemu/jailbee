@@ -51,7 +51,7 @@ ZENSICAL := uv run --only-group docs zensical
 site:
 	python3 scripts/docs_site.py stage
 	$(ZENSICAL) build --clean --strict
-	rsync -a --exclude 'docs-theme/' --exclude 'news/' website/ _site/
+	rsync -a --exclude '/docs-theme/' --exclude '/news/' website/ _site/
 	uv run --only-group docs python -m scripts.news_site
 
 # Enforce the site's no-CDN rule on the generated docs. Run after `make site`;
