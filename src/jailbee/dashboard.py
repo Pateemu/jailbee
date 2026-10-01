@@ -762,7 +762,9 @@ class MenuGroup:
 MenuItem = tuple[str, str] | MenuGroup
 
 _PR_MENU_VERBS = frozenset({"pr --open", "pr", "review apply"})
-_GIT_MENU_VERBS = frozenset({"merge", "git pull", "git push", "git push --pr", "git diff"})
+_GIT_MENU_VERBS = frozenset(
+    {"merge", "git pull", "git push", "git push --pr", "git retarget", "git diff"}
+)
 # Hoist the browser in the terminal; legacy leaves remain groupable for callers.
 _PENDING_APPLY_VERBS = frozenset({"outbox browse", "review apply", "issue apply"})
 
@@ -915,6 +917,7 @@ def menu_actions(ctx: MenuContext) -> list[tuple[str, str]]:
         actions.append(("Update from base (git push)", "git push"))
         if ctx.pr_number is not None and not ctx.pr_author:
             actions.append(("Refresh from PR head (git push --pr)", "git push --pr"))
+        actions.append(("Change base branch (git retarget)", "git retarget"))
         if _has_diff_to_show(ctx.git_status):
             actions.append(("Show diff (git diff)", "git diff"))
     if ctx.state == "Running":
@@ -2326,6 +2329,7 @@ PRINTING_VERBS: frozenset[str] = frozenset(
         "git push --pr",
         "git pull",
         "git diff",
+        "git retarget",
         "merge",
         "job log",
         "job log --follow",

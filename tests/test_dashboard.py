@@ -1709,6 +1709,7 @@ def test_menu_actions_running_offers_the_workflow_verbs():
         "merge",
         "git pull",
         "git push",
+        "git retarget",
         "git diff",
         "net loose",
         "net egress ls",
@@ -1788,9 +1789,9 @@ def test_grouped_git_leaves_respect_known_clean_and_unknown_status():
     clean = _dirty(wt="clean", ahead_diff="clean", ahead_count="0")
     unknown = _dirty(wt="?", ahead_diff="?", ahead_count="?")
     for status, expected in (
-        (clean, ["merge", "git push"]),
-        (unknown, ["merge", "git pull", "git push", "git diff"]),
-        (None, ["merge", "git pull", "git push", "git diff"]),
+        (clean, ["merge", "git push", "git retarget"]),
+        (unknown, ["merge", "git pull", "git push", "git retarget", "git diff"]),
+        (None, ["merge", "git pull", "git push", "git retarget", "git diff"]),
     ):
         grouped = dashboard.group_menu_actions(dashboard.menu_actions(_ctx(git_status=status)))
         git_group = next(
@@ -1807,6 +1808,8 @@ def test_menu_actions_workflow_labels_name_their_verb():
     assert labels["git push"] == "Update from base (git push)"
     assert labels["git pull"] == "Send commits to host (git pull)"
     assert labels["git diff"] == "Show diff (git diff)"
+    assert labels["git retarget"] == "Change base branch (git retarget)"
+    assert dashboard.dispatch_style("git retarget") == "output"
 
 
 def test_menu_actions_offers_pr_refresh_on_a_review_container():

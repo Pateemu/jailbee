@@ -5480,6 +5480,28 @@ app.command(
 )(pull)
 
 
+def _pick_retarget_base(cfg: "Config", *, current_base: str | None) -> str | None:
+    """Open a questionary.select for the new base branch.
+
+    Offers the host's local branches except the container's current base.
+    Returns the branch, or None when the user cancels or there is nothing to
+    choose from.
+    """
+    import questionary
+
+    from jailbee.git import list_branches
+
+    candidates = [b for b in list_branches(cfg.repo_root) if b != current_base]
+    if not candidates:
+        error("No other local branch on the host to retarget onto.")
+        return None
+    result = questionary.select(
+        "Retarget onto which host branch?",
+        choices=[questionary.Choice(title=b, value=b) for b in candidates],
+    ).ask()
+    return None if result is None else str(result)
+
+
 @git_app.command("retarget")
 def retarget(
     name: Annotated[
@@ -5490,12 +5512,13 @@ def retarget(
         ),
     ],
     new_base: Annotated[
-        str,
+        str | None,
         typer.Argument(
-            help="New base branch (must exist on host as refs/heads/...).",
+            help="New base branch (must exist on host as refs/heads/...). "
+            "Asked for on a TTY when omitted.",
             autocompletion=completion.complete_branch,
         ),
-    ],
+    ] = None,
     merge: Annotated[
         bool,
         typer.Option(
@@ -5525,6 +5548,16 @@ def retarget(
     cfg = _load_or_exit(config)
     incus, full = _resolve_existing(cfg, name)
     short = short_name(cfg, full)
+
+    if new_base is None:
+        if not _stdin_is_interactive():
+            error(
+                "No base branch given and no TTY to ask on. Usage: jailbee git retarget NAME BASE"
+            )
+            raise typer.Exit(1)
+        new_base = _pick_retarget_base(cfg, current_base=_container_base_branch(incus, full))
+        if new_base is None:
+            raise typer.Abort()
 
     try:
         result = sync.retarget_container(cfg, incus, short, new_base)

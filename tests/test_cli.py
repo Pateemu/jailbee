@@ -4624,6 +4624,72 @@ def test_git_retarget_merge_failure_keeps_retarget_and_hints_retry(mocker, tmp_p
     assert "re-run 'jailbee git push feat-b --merge'" in result.output
 
 
+def test_git_retarget_without_base_picks_one_on_a_tty(mocker, tmp_path):
+    runner = CliRunner()
+    mock_rt = _retarget_cli_mocks(mocker, tmp_path)
+    mocker.patch("jailbee.lifecycle._stdin_is_interactive", return_value=True)
+    pick = mocker.patch("jailbee.cli._pick_retarget_base", return_value="develop")
+
+    result = runner.invoke(app, ["git", "retarget", "feat-b"])
+
+    assert result.exit_code == 0, result.output
+    pick.assert_called_once()
+    assert mock_rt.call_args.args[3] == "develop"
+
+
+def test_git_retarget_without_base_and_no_tty_exits_1(mocker, tmp_path):
+    runner = CliRunner()
+    mock_rt = _retarget_cli_mocks(mocker, tmp_path)
+    mocker.patch("jailbee.lifecycle._stdin_is_interactive", return_value=False)
+    pick = mocker.patch("jailbee.cli._pick_retarget_base")
+
+    result = runner.invoke(app, ["git", "retarget", "feat-b"])
+
+    assert result.exit_code == 1
+    assert "base branch" in result.output
+    pick.assert_not_called()
+    mock_rt.assert_not_called()
+
+
+def test_git_retarget_cancelled_pick_changes_nothing(mocker, tmp_path):
+    runner = CliRunner()
+    mock_rt = _retarget_cli_mocks(mocker, tmp_path)
+    mocker.patch("jailbee.lifecycle._stdin_is_interactive", return_value=True)
+    mocker.patch("jailbee.cli._pick_retarget_base", return_value=None)
+
+    result = runner.invoke(app, ["git", "retarget", "feat-b"])
+
+    assert result.exit_code != 0
+    mock_rt.assert_not_called()
+
+
+def test_pick_retarget_base_offers_host_branches_except_current_base(mocker, tmp_path):
+    from jailbee.cli import _pick_retarget_base
+
+    cfg = mocker.MagicMock()
+    cfg.repo_root = tmp_path
+    mocker.patch("jailbee.git.list_branches", return_value=["main", "feat/a", "develop"])
+    select = mocker.patch("questionary.select")
+    select.return_value.ask.return_value = "develop"
+
+    assert _pick_retarget_base(cfg, current_base="feat/a") == "develop"
+
+    offered = [c.value for c in select.call_args.kwargs["choices"]]
+    assert offered == ["main", "develop"]
+
+
+def test_pick_retarget_base_with_no_candidates_returns_none(mocker, tmp_path):
+    from jailbee.cli import _pick_retarget_base
+
+    cfg = mocker.MagicMock()
+    cfg.repo_root = tmp_path
+    mocker.patch("jailbee.git.list_branches", return_value=["feat/a"])
+    select = mocker.patch("questionary.select")
+
+    assert _pick_retarget_base(cfg, current_base="feat/a") is None
+    select.assert_not_called()
+
+
 def test_git_retarget_sync_error_exits_1(mocker, tmp_path):
     from jailbee.sync import SyncError
 

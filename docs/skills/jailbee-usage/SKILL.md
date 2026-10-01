@@ -454,9 +454,10 @@ scripting.
 
 **Two more bridge commands:**
 
-- `jailbee git retarget <name> <new-base> [--merge]` — re-point a container at a
+- `jailbee git retarget <name> [<new-base>] [--merge]` — re-point a container at a
   different base branch (rewrites `user.jailbee.base_branch`; `pull`/`push`/`ls`
-  follow it). The stacked-PR tool: when a parent PR merges to `main`, retarget
+  follow it). Without `<new-base>` it asks with a branch picker on a TTY (error
+  off one); the dashboards' "Change base branch" entry relies on this. The stacked-PR tool: when a parent PR merges to `main`, retarget
   its dependent container from the parent branch onto `main`. `--merge` does
   **not** honour `push.tags` or `push.ff` — the merge it runs always behaves
   as `none` for tags and always writes a merge commit for `ff`, and there is
