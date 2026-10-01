@@ -10,6 +10,7 @@ import sys
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, time
 from email.utils import format_datetime
+from html import escape
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -133,7 +134,26 @@ def _sitemap(website_dir: Path, site_dir: Path, urls: list[str]) -> None:
     tree.write(site_dir / "sitemap.xml", encoding="utf-8", xml_declaration=True)
 
 
-def _topbar(website_dir: Path) -> Markup:
+_NEWS_LINK = '<a class="topbar__link topbar__link--news"'
+
+
+def _with_latest(header: str, post: Post | None, prefix: str) -> str:
+    """Put the newest article's title in the bar, ahead of the News link.
+
+    `prefix` is what the article's path hangs from: "" on the home page,
+    "/" everywhere else. The source index.html carries no chip, so the bar
+    stays valid HTML without a build and nothing needs editing per release.
+    """
+    if post is None or _NEWS_LINK not in header:
+        return header
+    chip = (
+        f'<a class="topbar__latest" href="{prefix}news/{post.slug}/">'
+        f"<span>Latest</span> {escape(post.title)}</a>\n        "
+    )
+    return header.replace(_NEWS_LINK, chip + _NEWS_LINK, 1)
+
+
+def _topbar(website_dir: Path, latest: Post | None = None) -> Markup:
     """The home page's top bar, rewritten for pages that are not at the root.
 
     The home page owns the markup (icons, source box, release number kept in
@@ -152,7 +172,18 @@ def _topbar(website_dir: Path) -> Markup:
             return link.group(0)
         return f'{link.group("attr")}="/{target.removeprefix("./")}"'
 
-    return Markup(re.sub(r'(?P<attr>href|src)="(?P<target>[^"]*)"', absolute, header))
+    header = re.sub(r'(?P<attr>href|src)="(?P<target>[^"]*)"', absolute, header)
+    return Markup(_with_latest(header, latest, "/"))
+
+
+def _home(website_dir: Path, site_dir: Path, latest: Post | None) -> None:
+    """Write the home page with the newest title in its top bar."""
+    html = (website_dir / "index.html").read_text(encoding="utf-8")
+    match = re.search(r'<header class="topbar">.*?</header>', html, re.DOTALL)
+    if match is None or latest is None:
+        return
+    html = html.replace(match.group(0), _with_latest(match.group(0), latest, ""), 1)
+    (site_dir / "index.html").write_text(html, encoding="utf-8")
 
 
 def build(website_dir: Path, site_dir: Path) -> None:
@@ -166,10 +197,11 @@ def build(website_dir: Path, site_dir: Path) -> None:
         shutil.rmtree(output)
     output.mkdir(parents=True, exist_ok=True)
     shared = {
-        "topbar": _topbar(website_dir),
+        "topbar": _topbar(website_dir, posts[0] if posts else None),
         "style_hash": _hash(website_dir / "assets" / "style.css"),
         "news_hash": _hash(website_dir / "assets" / "news.css"),
     }
+    _home(website_dir, site_dir, posts[0] if posts else None)
     archives = [posts[start : start + 10] for start in range(0, len(posts), 10)] or [[]]
     sitemap_urls = []
     for number, page_posts in enumerate(archives, 1):

@@ -212,6 +212,40 @@ section {
   margin-left: 0;
 }
 
+/* The newest article's title, written into the bar by scripts/news_site.py.
+   Left of the News link, which carries the auto margin; hidden where the bar
+   has no room for it. */
+.topbar__latest {
+  display: none;
+  min-width: 0;
+  margin-left: 20px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 48px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar__latest span {
+  color: var(--amber);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.topbar__latest:hover,
+.topbar__latest:focus-visible {
+  color: var(--text);
+  text-decoration: none;
+}
+
+@media (min-width: 720px) {
+  .topbar__latest {
+    display: block;
+  }
+}
+
 .topbar__link,
 .topbar__source {
   transition: opacity 0.25s;

@@ -107,6 +107,24 @@ def test_every_news_page_carries_the_home_pages_top_bar(site: tuple[Path, Path])
         assert "<!--" not in header
 
 
+def test_the_newest_title_is_in_the_bar_of_every_page_and_the_home_page(
+    site: tuple[Path, Path],
+) -> None:
+    website, output = site
+    _add(website, "2026-09-01-old.md", "title: Older\ndate: 2026-09-01\nsummary: s\n")
+    _add(website, "2026-10-02-new.md", "title: Newer <1>\ndate: 2026-10-02\nsummary: s\n")
+    build(website, output)
+
+    article = (output / "news" / "old" / "index.html").read_text()
+    assert 'class="topbar__latest" href="/news/new/"' in article
+    assert "Newer &lt;1&gt;" in article and "Older</a>" not in article.split("</header>")[0]
+    home = (output / "index.html").read_text()
+    assert 'class="topbar__latest" href="news/new/"' in home
+    assert home.count("topbar__latest") == 1
+    # The committed page stays chip-free; the chip is a build product.
+    assert "topbar__latest" not in (website / "index.html").read_text()
+
+
 def test_feature_image_and_metadata_are_escaped(site: tuple[Path, Path]) -> None:
     website, output = site
     _add(
@@ -243,7 +261,9 @@ def test_sitemap_contains_only_current_news_pages(site: tuple[Path, Path]) -> No
     for number in range(1, 11):
         (website / "news" / "posts" / f"2026-09-28-post-{number:02}.md").unlink()
     build(website, output)
-    assert (output / "index.html").read_text() == "Home"
+    # The home page is rewritten from its source, with the newest title in the bar;
+    # the docs are never touched.
+    assert "topbar__latest" in (output / "index.html").read_text()
     assert docs.read_text() == "Docs"
     assert not (output / "news" / "page" / "2").exists()
     assert not (output / "news" / "post-01").exists()
