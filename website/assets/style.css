@@ -110,6 +110,11 @@ p {
   max-width: var(--measure);
 }
 
+/* No image beside it, so no reason to hold it to the reading measure. */
+#desktop p {
+  max-width: none;
+}
+
 a {
   color: var(--amber);
   text-decoration: none;
