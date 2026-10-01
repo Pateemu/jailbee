@@ -735,6 +735,8 @@ class MenuContext:
 
     ``remote`` is a remote SSH session (see :func:`run`), which gets no app
     launches: a GUI app would open on the host's display, not the client's.
+    ``gui_remote`` (``remote.ssh.gui``) lets a remote session launch apps,
+    which then draw on the shared RDP display.
     """
 
     state: str
@@ -749,6 +751,7 @@ class MenuContext:
     job_running: bool = False
     git_status: GitStatus | None = None
     remote: bool = False
+    gui_remote: bool = False
 
 
 @dataclass(frozen=True)
@@ -895,7 +898,7 @@ def menu_actions(ctx: MenuContext) -> list[tuple[str, str]]:
         actions.extend(
             [("Attach tmux", "tmux"), ("Open shell", "shell"), ("Outbox", "outbox browse")]
         )
-        for app in [] if ctx.remote else ctx.apps:
+        for app in [] if (ctx.remote and not ctx.gui_remote) else ctx.apps:
             actions.append((f"Launch {app.label}", app.verb))
     elif ctx.state == "Stopped":
         actions.append(("Start", "start"))
@@ -1573,10 +1576,16 @@ def quick_reject_note(
     if note is not None:
         return note
     binding = binding_for_token(token)
-    if remote and binding is not None and binding.verb in _GUI_VERBS:
+    gui = ssh_policy is not None and ssh_policy.gui
+    if remote and binding is not None and binding.verb in _GUI_VERBS and not gui:
         return "GUI apps are not available over remote SSH"
     if over_ssh and binding is not None and binding.verb is not None:
-        eligible = {verb for _label, verb in actions_for_container(groups, name, remote=remote)}
+        eligible = {
+            verb
+            for _label, verb in actions_for_container(
+                groups, name, remote=remote, ssh_policy=ssh_policy
+            )
+        }
         if binding.verb in eligible:
             try:
                 check_dashboard_command(
@@ -2090,6 +2099,7 @@ def actions_for_container(
             job_running=container.job_phase is not None and not job_clearable,
             git_status=container.git_status,
             remote=remote,
+            gui_remote=bool(remote and ssh_policy is not None and ssh_policy.gui),
         )
     )
     if over_ssh:
@@ -2311,6 +2321,10 @@ _GUI_VERBS: frozenset[str] = ATTACH_VERBS - {"shell", "tmux"}
 APPS_RUN_PREFIX = "apps run "
 
 
+def _is_gui_verb(verb: str) -> bool:
+    return verb in _GUI_VERBS or verb.startswith(APPS_RUN_PREFIX)
+
+
 # Verbs whose whole point is the text they print, rather than the state they
 # change. Both front-ends need to know which those are — the TUI to keep their
 # output on screen, the Qt dashboard to route it into a window of its own
@@ -2487,6 +2501,10 @@ def _dispatch_action(
     if verb in ATTACH_VERBS or verb.startswith(APPS_RUN_PREFIX):
         argv.append("--force")
     style = dispatch_style(verb)
+    if over_ssh and ssh_policy is not None and ssh_policy.gui and _is_gui_verb(verb):
+        # The launch prints how to reach the shared display; "plain" would
+        # throw that away the moment the dashboard repaints.
+        style = "output"
     if style == "paged" and remote:
         style = "output"
     if style == "paged":

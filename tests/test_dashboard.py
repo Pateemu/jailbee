@@ -9345,3 +9345,100 @@ def test_outbox_dispatch_rechecks_ssh_policy(mocker, tmp_path):
             _dispatch_target(tmp_path), "outbox browse", "alpha-x", over_ssh=True, ssh_policy=policy
         )
     child.assert_not_called()
+
+
+def test_gui_remote_action_menu_offers_app_launches():
+    """`remote.ssh.gui` lets a remote session launch apps onto the shared display."""
+    apps = [dashboard.AppMenuEntry("chrome", "Chrome")]
+    ctx = _ctx(apps=apps, remote=True)
+    assert not [a for a in dashboard.menu_actions(ctx) if a[1] == "chrome"]
+
+    enabled = dashboard.menu_actions(dataclasses.replace(ctx, gui_remote=True))
+
+    assert ("Launch Chrome", "chrome") in enabled
+
+
+def test_gui_remote_quick_key_reason_follows_the_gui_switch():
+    from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
+
+    group = dashboard.RepoGroup("alpha", "/repos/alpha", None, [_ci("alpha-x", "alpha")])
+    group.apps = _apps("chrome")
+    off = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="full"))
+    on = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="full"), gui=True)
+    kwargs = {"remote": True, "over_ssh": True}
+
+    assert (
+        dashboard.quick_verb([group], "alpha-x", "action:chrome", ssh_policy=off, **kwargs) is None
+    )
+    note = dashboard.quick_reject_note(
+        [group], "alpha-x", "action:chrome", ssh_policy=off, **kwargs
+    )
+    assert note == "GUI apps are not available over remote SSH"
+    assert (
+        dashboard.quick_verb([group], "alpha-x", "action:chrome", ssh_policy=on, **kwargs)
+        == "chrome"
+    )
+    note = dashboard.quick_reject_note([group], "alpha-x", "action:chrome", ssh_policy=on, **kwargs)
+    assert "GUI apps are not available" not in note
+
+
+def test_gui_remote_allowlist_without_chrome_does_not_offer_chrome():
+    """The feature switch is not enough: the command policy still decides."""
+    from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
+
+    group = dashboard.RepoGroup("alpha", "/repos/alpha", None, [_ci("alpha-x", "alpha")])
+    group.apps = _apps("chrome")
+    policy = RemoteSSHConfig(gui=True, commands=RemoteCommandPolicy(mode="allowlist", allow=["ls"]))
+
+    actions = dashboard.actions_for_container(
+        [group], "alpha-x", remote=True, ssh_policy=policy, over_ssh=True
+    )
+
+    assert "chrome" not in {verb for _label, verb in actions}
+
+
+def test_gui_remote_allowlist_naming_chrome_offers_chrome():
+    from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
+
+    group = dashboard.RepoGroup("alpha", "/repos/alpha", None, [_ci("alpha-x", "alpha")])
+    group.apps = _apps("chrome")
+    policy = RemoteSSHConfig(
+        gui=True, commands=RemoteCommandPolicy(mode="allowlist", allow=["chrome"])
+    )
+
+    actions = dashboard.actions_for_container(
+        [group], "alpha-x", remote=True, ssh_policy=policy, over_ssh=True
+    )
+
+    assert "chrome" in {verb for _label, verb in actions}
+
+
+@pytest.mark.parametrize(
+    ("verb", "pauses"),
+    [("chrome", True), ("apps run figma", True), ("shell", False)],
+)
+def test_remote_gui_dispatch_keeps_the_recipe_on_screen(mocker, tmp_path, verb, pauses):
+    from jailbee.config.models_remote import RemoteCommandPolicy, RemoteSSHConfig
+
+    run = mocker.patch.object(dashboard.subprocess, "run")
+    run.return_value.returncode = 0
+    wait = mocker.patch.object(dashboard, "_wait_for_return")
+    policy = RemoteSSHConfig(commands=RemoteCommandPolicy(mode="full"), gui=True)
+
+    dashboard._dispatch_action(
+        _dispatch_target(tmp_path),
+        verb,
+        "alpha-x",
+        remote=True,
+        over_ssh=True,
+        ssh_policy=policy,
+    )
+
+    run.assert_called_once()
+    assert wait.called is pauses
+
+
+def test_is_gui_verb():
+    assert dashboard._is_gui_verb("chrome")
+    assert dashboard._is_gui_verb("apps run figma")
+    assert not dashboard._is_gui_verb("shell")
