@@ -144,7 +144,13 @@ def browse(
     import sys
 
     from jailbee.outbox.browser import BrowserActions, run_browser
-    from jailbee.outbox.commands import apply_selected, discover, drop_selected, print_lines, show_overview
+    from jailbee.outbox.commands import (
+        apply_selected,
+        discover,
+        drop_selected,
+        print_lines,
+        show_overview,
+    )
     from jailbee.outbox.delete import DeletePlan
     from jailbee.outbox.models import OutboxChanged, ProposalId
     from jailbee.outbox.publish import PublishOptions
@@ -154,14 +160,24 @@ def browse(
         journals = JournalStore()
         read_only = browser_read_only()
         if read_only:
-            print_lines(("Outbox browser is read-only over SSH. Use explicit outbox drop or outbox apply commands when permitted by the remote command policy.",))
+            print_lines(
+                (
+                    "Outbox browser is read-only over SSH. Use explicit outbox drop or "
+                    "outbox apply commands when permitted by the remote command policy.",
+                )
+            )
         if not sys.stdin.isatty():
-            return show_overview(cfg, incus, container, all_repos=False, output="table", journal_store=journals)
+            return show_overview(
+                cfg, incus, container, all_repos=False, output="table", journal_store=journals
+            )
 
         def choose(message: str, options: Sequence[tuple[str, str]]) -> str | None:
             import questionary
 
-            result = questionary.select(message, choices=[questionary.Choice(title=label, value=key) for key, label in options]).ask()
+            result = questionary.select(
+                message,
+                choices=[questionary.Choice(title=label, value=key) for key, label in options],
+            ).ask()
             return result if isinstance(result, str) else None
 
         def delete(name: str, plan: DeletePlan) -> tuple[str, ...]:
@@ -170,20 +186,45 @@ def browse(
                     raise OutboxChanged("deletion scope changed; refresh required")
                 return True
 
-            drop_selected(cfg, incus, name, plan.proposal, selection=plan.selection, journal_store=journals, confirm=exact_scope, expected_revision=plan.expected_revision)
+            drop_selected(
+                cfg,
+                incus,
+                name,
+                plan.proposal,
+                selection=plan.selection,
+                journal_store=journals,
+                confirm=exact_scope,
+                expected_revision=plan.expected_revision,
+            )
             return ("Deletion completed.",)
 
         def publish(name: str, proposal: ProposalId, revision: str) -> int:
-            return apply_selected(cfg, incus, name, proposal, options=PublishOptions(), journal_store=journals, confirm=lambda total: typer.confirm(f"Publish {total} pending actions in the whole manifest?", default=False), expected_revision=revision)
+            return apply_selected(
+                cfg,
+                incus,
+                name,
+                proposal,
+                options=PublishOptions(),
+                journal_store=journals,
+                confirm=lambda total: typer.confirm(
+                    f"Publish {total} pending actions in the whole manifest?", default=False
+                ),
+                expected_revision=revision,
+            )
 
-        return run_browser(BrowserActions(
-            load=lambda name: discover(cfg, incus, name, all_repos=False, journal_store=journals),
-            delete=None if read_only else delete,
-            publish=None if read_only else publish,
-            confirm=lambda message: typer.confirm(message, default=False),
-            choose=choose,
-            show=lambda text: print_lines((text,)),
-        ), container)
+        return run_browser(
+            BrowserActions(
+                load=lambda name: discover(
+                    cfg, incus, name, all_repos=False, journal_store=journals
+                ),
+                delete=None if read_only else delete,
+                publish=None if read_only else publish,
+                confirm=lambda message: typer.confirm(message, default=False),
+                choose=choose,
+                show=lambda text: print_lines((text,)),
+            ),
+            container,
+        )
 
     _run(ctx, config, operation)
 
