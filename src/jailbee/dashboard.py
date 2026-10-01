@@ -2252,20 +2252,25 @@ def new_container_argv(target: RepoTarget, branch: str, base: str) -> list[str]:
     not what someone picking their current branch means. (`--from-base` is the
     golden-image alias and has nothing to do with git.)
 
+    `--background`: creation detaches and the terminal returns at once instead
+    of holding the operator for the whole provision; progress shows in the JOB
+    column.
+
     No `--yes`: `jailbee new` asks about reusing an existing branch and about
     the branch-autostart escalation, and both front-ends give it a terminal to
-    ask in rather than answering for the user.
+    ask in rather than answering for the user. Those questions are asked by the
+    foreground parent before it detaches.
 
     Both answers are typed free text, so they follow `--`: a branch named
     `--mount` or `--yes` is refused as a branch name by `jailbee new`, never
     read as the option it spells.
     """
-    return ["jailbee", "new", *target.flags(), "--", branch, base]
+    return ["jailbee", "new", *target.flags(), "--background", "--", branch, base]
 
 
 def new_pr_container_argv(target: RepoTarget, number: int) -> list[str]:
     """Create a review container using the CLI's existing PR resolution flow."""
-    return ["jailbee", "new", *target.flags(), "--pr", str(number)]
+    return ["jailbee", "new", *target.flags(), "--background", "--pr", str(number)]
 
 
 # Verbs routed through the CLI's attach guard, which asks "continue anyway?"
@@ -2996,11 +3001,12 @@ def run(
                 The questions are inline overlays; only the final `jailbee new`
                 gets the real terminal, via `foreground` — it asks its own
                 questions: confirming reuse of an existing branch, and the
-                branch-autostart escalation gate. `--background` does not avoid
-                that — the escalation question is asked by the foreground parent
-                before it detaches (`lifecycle._autostart_approved`). The only
-                other option is `--yes`, i.e. accepting a network-widening
-                branch config unseen.
+                branch-autostart escalation gate. The argv carries
+                `--background`, which does not avoid those questions — the
+                escalation question is asked by the foreground parent before it
+                detaches (`lifecycle._autostart_approved`). The only other
+                option is `--yes`, i.e. accepting a network-widening branch
+                config unseen.
                 """
                 try:
                     check_dashboard_command(["new"], ssh_policy, over_ssh=over_ssh)
@@ -3477,7 +3483,7 @@ def run(
                         if over_ssh:
                             # Remote sessions address their selected repo by
                             # cwd, not by an explicit host config path.
-                            return ["jailbee", "new", "--pr", str(number)]
+                            return ["jailbee", "new", "--background", "--pr", str(number)]
                         return new_pr_container_argv(repo, number)
 
                     run_new_container(prompt.target, pr_argv)
@@ -3496,7 +3502,7 @@ def run(
 
                     def branch_argv(repo: RepoTarget) -> list[str]:
                         if over_ssh:
-                            return ["jailbee", "new", "--", branch, answer]
+                            return ["jailbee", "new", "--background", "--", branch, answer]
                         return new_container_argv(repo, branch, answer)
 
                     run_new_container(prompt.target, branch_argv)

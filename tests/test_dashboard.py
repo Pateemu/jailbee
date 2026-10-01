@@ -3885,6 +3885,7 @@ def test_new_container_argv_passes_the_base_positionally(tmp_path):
         "new",
         "--config",
         str(config_path),
+        "--background",
         "--",
         "dashboard-fixes",
         "config-improvements",
@@ -3895,7 +3896,7 @@ def test_new_container_argv_omits_config_for_a_scratch_repo(tmp_path):
     """No file to point `--config` at — the caller runs it in the repo root."""
     argv = dashboard.new_container_argv(dashboard.RepoTarget(tmp_path, None), "feat/x", "main")
 
-    assert argv == ["jailbee", "new", "--", "feat/x", "main"]
+    assert argv == ["jailbee", "new", "--background", "--", "feat/x", "main"]
 
 
 @pytest.mark.parametrize("answer", ["--mount", "--yes", "--config=/tmp/evil.yaml", "-m"])
@@ -3920,6 +3921,7 @@ def test_new_container_argv_separator_really_stops_option_parsing(tmp_path):
 
     ctx = command.make_context("new", argv[2:])
 
+    assert ctx.params["background"] is True
     assert ctx.params["mount"] is False
     assert ctx.params["yes"] is False
     assert ctx.params["container_branch"] == "--mount"
@@ -3939,6 +3941,7 @@ def test_new_pr_container_argv_targets_configured_repo_without_yes(tmp_path):
         "new",
         "--config",
         str(target.config_path),
+        "--background",
         "--pr",
         "123",
     ]
@@ -3948,6 +3951,7 @@ def test_new_pr_container_argv_targets_scratch_repo(tmp_path):
     assert dashboard.new_pr_container_argv(dashboard.RepoTarget(tmp_path, None), 123) == [
         "jailbee",
         "new",
+        "--background",
         "--pr",
         "123",
     ]
@@ -5191,7 +5195,7 @@ def test_ssh_allowlisted_new_prompts_then_spawns_final_argv(mocker, tmp_path):
 
     prompt.assert_not_called()
     child.assert_called_once_with(
-        ["jailbee", "new", "--", "feature", "main"], check=False, cwd=tmp_path
+        ["jailbee", "new", "--background", "--", "feature", "main"], check=False, cwd=tmp_path
     )
 
 
@@ -5408,7 +5412,7 @@ def test_run_new_from_empty_repo_header_dispatches_to_repo_root(mocker, tmp_path
 
     prompt.assert_not_called()  # the terminal is never handed over for a question
     child.assert_called_once_with(
-        ["jailbee", "new", "--", "feature", "main"], check=False, cwd=tmp_path
+        ["jailbee", "new", "--background", "--", "feature", "main"], check=False, cwd=tmp_path
     )
 
 
@@ -5499,7 +5503,7 @@ def test_run_new_trims_answers_and_rejects_a_blank_base_inline(mocker, tmp_path)
         for c in render.call_args_list
     )
     child.assert_called_once_with(
-        ["jailbee", "new", "--", "feature", "dev"], check=False, cwd=tmp_path
+        ["jailbee", "new", "--background", "--", "feature", "dev"], check=False, cwd=tmp_path
     )
 
 
@@ -5569,7 +5573,9 @@ def test_run_new_from_pr_prompts_for_a_number_and_dispatches(mocker, tmp_path):
     keys = [_ENTER, b"\x1b[B", _ENTER, *_keys("123"), _ENTER]
     assert _drive_run(mocker, keys, [group]) == 0
 
-    child.assert_called_once_with(["jailbee", "new", "--pr", "123"], check=False, cwd=tmp_path)
+    child.assert_called_once_with(
+        ["jailbee", "new", "--background", "--pr", "123"], check=False, cwd=tmp_path
+    )
 
 
 def test_run_new_prompt_whose_repo_vanishes_dispatches_nothing(mocker, tmp_path):
@@ -5637,7 +5643,7 @@ def test_run_empty_repo_header_menu_creates_container(mocker, tmp_path):
     assert _drive_run(mocker, keys, [group]) == 0
 
     child.assert_called_once_with(
-        ["jailbee", "new", "--", "feature", "main"], check=False, cwd=tmp_path
+        ["jailbee", "new", "--background", "--", "feature", "main"], check=False, cwd=tmp_path
     )
 
 
@@ -5778,7 +5784,7 @@ def test_repo_menu_new_runs_the_existing_creation_flow(mocker, tmp_path):
     assert _drive_run(mocker, keys, groups=[group]) == 0
 
     child.assert_called_once_with(
-        ["jailbee", "new", "--", "feature", "main"], check=False, cwd=tmp_path
+        ["jailbee", "new", "--background", "--", "feature", "main"], check=False, cwd=tmp_path
     )
 
 
@@ -5791,7 +5797,9 @@ def test_repo_menu_new_from_pr_runs_review_creation_in_repo(mocker, tmp_path):
     keys = [_ENTER, b"j", _ENTER, *_keys("123"), _ENTER]
     assert _drive_run(mocker, keys, groups=[group]) == 0
 
-    child.assert_called_once_with(["jailbee", "new", "--pr", "123"], check=False, cwd=tmp_path)
+    child.assert_called_once_with(
+        ["jailbee", "new", "--background", "--pr", "123"], check=False, cwd=tmp_path
+    )
 
 
 _NOT_A_PR = "PR number must be a positive whole number"

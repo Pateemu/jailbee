@@ -1511,6 +1511,7 @@ def test_on_new_container_launches_in_a_terminal(mocker):
         "new",
         "--config",
         "/repo/.jailbee/config.yaml",
+        "--background",
         "--",
         "feat-x",
         "main",
@@ -1542,7 +1543,7 @@ def test_on_new_container_omits_config_and_runs_a_scratch_repo_in_its_root(mocke
     controller.on_new_container("s")
 
     action = resolve.call_args.args[0]
-    assert action.argv == ["jailbee", "new", "--", "feat-x", "main"]
+    assert action.argv == ["jailbee", "new", "--background", "--", "feat-x", "main"]
     assert action.cwd == Path("/scratch")
     assert popen.call_args.kwargs["cwd"] == Path("/scratch")
 
@@ -1606,6 +1607,7 @@ def test_on_new_pr_container_launches_in_a_terminal_for_selected_repo(mocker):
         "new",
         "--config",
         "/repo/.jailbee/config.yaml",
+        "--background",
         "--pr",
         "123",
     ]
