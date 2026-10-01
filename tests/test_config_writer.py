@@ -481,9 +481,7 @@ def test_a_multiline_string_without_a_final_newline_round_trips():
 
 
 def test_a_nested_multiline_string_is_indented_under_its_key():
-    out = patch_yaml(
-        "", [YamlChange(("litellm", "profiles", "codex", "instructions"), "a\nb\n")]
-    )
+    out = patch_yaml("", [YamlChange(("litellm", "profiles", "codex", "instructions"), "a\nb\n")])
     assert yaml.safe_load(out)["litellm"]["profiles"]["codex"]["instructions"] == "a\nb\n"
     assert "instructions: |\n" in out
 
