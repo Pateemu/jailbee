@@ -55,17 +55,28 @@ def load_container(
 
 
 def execute_delete(
-    cfg: Config, incus: Incus, container: str, plan: DeletePlan, *, journal_store: JournalStore
+    cfg: Config,
+    incus: Incus,
+    container: str,
+    plan: DeletePlan,
+    *,
+    journal_store: JournalStore,
+    lock_timeout: float | None = None,
 ) -> tuple[str, ...]:
-    """Rebuild the selected revision and exact deletion scope inside its host lock."""
+    """Recheck deletion under its lock, optionally bounding the lock wait only."""
     try:
         identity = _identity(incus, container)
         key = journal_key(identity, plan.proposal.name)
-        lock = (
-            journal_store.lock(key)
-            if plan.proposal.kind == "issue"
-            else PrManagement().lock(identity)
-        )
+        # Preserve the legacy no-keyword call for blocking callers and adapters.
+        if plan.proposal.kind == "issue":
+            lock = journal_store.lock(key) if lock_timeout is None else journal_store.lock(
+                key, timeout=lock_timeout
+            )
+        else:
+            manager = PrManagement()
+            lock = manager.lock(identity) if lock_timeout is None else manager.lock(
+                identity, timeout=lock_timeout
+            )
         with lock:
             if _identity(incus, container) != identity:
                 raise OutboxChanged("container changed while waiting; refresh required")

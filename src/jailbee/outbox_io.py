@@ -7,10 +7,12 @@ import fcntl
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import tarfile
 import tempfile
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -176,6 +178,29 @@ def journal_has_uncertainty(journal: IssueJournal) -> bool:
     return any(action.state == "uncertain" for action in journal.actions)
 
 
+def acquire_outbox_lock(descriptor: int, timeout: float | None = None) -> None:
+    """Acquire an exclusive flock; opt-in deadlines bound only lock contention.
+
+    Callers own the descriptor and translate OSError/TimeoutError into their
+    domain errors. None preserves publication's existing blocking behavior.
+    """
+    if timeout is None:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        return
+    if not math.isfinite(timeout) or timeout < 0:
+        raise ValueError("lock timeout must be finite non-negative seconds")
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("outbox lock deadline expired") from None
+            time.sleep(min(0.05, remaining))
+
+
 class JournalStore:
     """Crash-safe host storage for issue mutation progress."""
 
@@ -212,8 +237,8 @@ class JournalStore:
         return held
 
     @contextmanager
-    def lock(self, key: JournalKey) -> Iterator[None]:
-        """Serialize one journal, including an optional remote mutation window."""
+    def lock(self, key: JournalKey, *, timeout: float | None = None) -> Iterator[None]:
+        """Serialize one journal; None waits indefinitely, finite seconds bound contention."""
         path = self._lock_path(key)
         held = self._held_lock_paths()
         if path in held:
@@ -224,10 +249,17 @@ class JournalStore:
             path.parent.mkdir(parents=True, exist_ok=True)
             descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
             os.chmod(path, 0o600)
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
-        except OSError as exc:
+            acquire_outbox_lock(descriptor, timeout)
+        except (OSError, ValueError) as exc:
             if descriptor is not None:
                 os.close(descriptor)
+            if isinstance(exc, TimeoutError):
+                raise JournalError(
+                    f"Timed out waiting for journal lock for {key.manifest_name}; "
+                    "refresh and retry after the current operation finishes"
+                ) from exc
+            if isinstance(exc, ValueError):
+                raise JournalError(str(exc)) from exc
             raise JournalError(f"could not lock journal for {key.manifest_name}") from exc
         assert descriptor is not None
         held.add(path)

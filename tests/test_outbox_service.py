@@ -48,6 +48,42 @@ def execute(env, plan):
     return service.execute_delete(cfg, incus, IDENTITY.full_name, plan, journal_store=journals)
 
 
+@pytest.mark.parametrize("kind", ["issue", "pr"])
+def test_delete_busy_lock_has_bounded_wait_without_mutation(mocker, make_cfg, tmp_path, kind):
+    import time
+
+    from jailbee.outbox.io import PrManagement
+    from tests.test_outbox_locks import held_by_process
+
+    env = setup_service(mocker, make_cfg, tmp_path, kind)
+    manager = PrManagement(tmp_path / "pr-locks")
+    mocker.patch.object(env[0], "PrManagement", return_value=manager)
+    root = env[7].root if kind == "issue" else manager.root
+    archive = mocker.spy(env[7], "archive")
+    key = journal_key(IDENTITY, "001.json")
+    before = env[7].create(key, "a" * 64, 0)
+    raw = env[7]._path(key).read_bytes()
+    plan = preview(env, DeleteSelection(), kind)
+    env[5].reset_mock()
+    with held_by_process(kind, root, IDENTITY):
+        started = time.monotonic()
+        with pytest.raises(OutboxExecutionError, match="(?i)timed out.*refresh.*retry"):
+            env[0].execute_delete(
+                env[1], env[2], IDENTITY.full_name, plan,
+                journal_store=env[7], lock_timeout=0.1,
+            )
+        assert 0.08 <= time.monotonic() - started < 0.8
+        env[6].assert_not_called()
+        env[5].assert_not_called()
+        archive.assert_not_called()
+        assert env[7].load(key) == before
+        assert env[7]._path(key).read_bytes() == raw
+    assert env[0].execute_delete(
+        env[1], env[2], IDENTITY.full_name, plan,
+        journal_store=env[7], lock_timeout=0.1,
+    ) == plan.delete_names
+
+
 def test_zero_based_action_and_bodies_retained(mocker, make_cfg, tmp_path):
     env = setup_service(mocker, make_cfg, tmp_path)
     plan = preview(env, DeleteSelection(action=0, with_dependents=True))

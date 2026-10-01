@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, cast
 from jailbee.db import state_dir
 from jailbee.incus import IncusError
 from jailbee.outbox.models import Kind, OutboxChanged, OutboxExecutionError, StoreSnapshot
-from jailbee.outbox_io import ContainerIdentity
+from jailbee.outbox_io import ContainerIdentity, acquire_outbox_lock
 
 if TYPE_CHECKING:
     from jailbee.config import Config
@@ -462,7 +462,10 @@ class PrManagement:
         return cast("ContainerIdentity | None", getattr(self._lock_state, "identity", None))
 
     @contextmanager
-    def lock(self, identity: ContainerIdentity) -> Iterator[None]:
+    def lock(
+        self, identity: ContainerIdentity, *, timeout: float | None = None
+    ) -> Iterator[None]:
+        """Serialize the PR store; opt-in finite seconds bound lock contention."""
         if not identity.full_name or not identity.created_at:
             raise OutboxExecutionError("cannot lock an empty container identity")
         if self.identity is not None and self.identity != identity:
@@ -481,10 +484,17 @@ class PrManagement:
             path.parent.mkdir(parents=True, exist_ok=True)
             descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
             os.chmod(path, 0o600)
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
-        except OSError as exc:
+            acquire_outbox_lock(descriptor, timeout)
+        except (OSError, ValueError) as exc:
             if descriptor is not None:
                 os.close(descriptor)
+            if isinstance(exc, TimeoutError):
+                raise OutboxExecutionError(
+                    "Timed out waiting for PR outbox lock; "
+                    "refresh and retry after the current operation finishes"
+                ) from exc
+            if isinstance(exc, ValueError):
+                raise OutboxExecutionError(str(exc)) from exc
             raise OutboxExecutionError("could not lock PR outbox") from exc
         held.add(path)
         self._lock_state.identity = identity
