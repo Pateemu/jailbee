@@ -3979,6 +3979,17 @@ def test_parse_key_maps_the_workflow_action_keys():
     assert dashboard.parse_key(b"P") == "action:pr-update"
     assert dashboard.parse_key(b"u") == "action:push"
     assert dashboard.parse_key(b"d") == "action:diff"
+    assert dashboard.parse_key(b"D") == "action:destroy"
+
+
+def test_quick_verb_destroy_key_follows_the_menu_gate(tmp_path):
+    running = dashboard.RepoGroup(
+        "alpha", str(tmp_path), tmp_path / "c.yaml", [_ci("alpha-x", "alpha")]
+    )
+    orphan = dashboard.RepoGroup("gone", None, None, [_ci("gone-x", "gone")])
+
+    assert dashboard.quick_verb([running], "alpha-x", "action:destroy") == "destroy"
+    assert dashboard.quick_verb([orphan], "gone-x", "action:destroy") is None
 
 
 def test_quick_verb_separates_open_pr_from_update_pr(tmp_path):
