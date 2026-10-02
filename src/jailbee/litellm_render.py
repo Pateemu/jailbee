@@ -110,6 +110,22 @@ def served_routes(cfg: LiteLLMConfig, account: str) -> dict[str, ResolvedRoute]:
     return {n: r for n, r in routes.items() if not r.subscription or n in bound}
 
 
+def account_login_providers(
+    cfg: LiteLLMConfig, account: str, scopes: Scopes | None = None
+) -> tuple[str, ...]:
+    """The subscription logins the account's instance needs, over every scope."""
+    return tuple(
+        sorted(
+            {
+                route.provider
+                for _, view in _scoped(cfg, scopes)
+                for route in served_routes(view, account).values()
+                if route.subscription
+            }
+        )
+    )
+
+
 def _served_aliases(
     cfg: LiteLLMConfig, account: str, scopes: Scopes | None
 ) -> Iterator[tuple[str, ResolvedRoute]]:
@@ -282,6 +298,8 @@ class InstanceFiles:
 
     `settings_yaml` is `config_yaml` without its `model_list`: the part of the
     config only a restart re-reads. It is the digest's basis and is never pushed.
+    `login_providers` are the logins the instance's routes need; `litellm._converge`
+    reads them, the digests do not.
     """
 
     account: str
@@ -289,6 +307,7 @@ class InstanceFiles:
     settings_yaml: str
     hot_json: str
     instance_env: str
+    login_providers: tuple[str, ...] = ()
 
     def digest(self, callback_source: str) -> str:
         """Digest of everything only a restart re-reads (the cold half)."""
@@ -331,6 +350,7 @@ def render_instance_files(
         instance_env=render_instance_env(
             port=port, master_key=master_key, account=account, secrets=secrets
         ),
+        login_providers=account_login_providers(cfg, account, scopes),
     )
 
 

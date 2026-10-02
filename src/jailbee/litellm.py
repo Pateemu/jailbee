@@ -129,7 +129,7 @@ class UpResult:
     retired: list[str]
     installed: bool
     issues: list[str] = field(default_factory=list)
-    # Left stopped: no ChatGPT login yet, and the proxy would block at startup
+    # Left stopped: its routes need a ChatGPT login it lacks, and the proxy would block at startup
     # on LiteLLM's own device-code prompt, never answering its health probe.
     awaiting_login: list[str] = field(default_factory=list)
     # Route changes loaded into a running proxy without a restart.
@@ -516,9 +516,10 @@ def _converge(
     A changed `hot.json` is loaded into the running proxy and confirmed by its
     acknowledgement; only when that fails is the instance restarted (when
     `allow_restart`), so a bad reload never leaves a silently stale proxy.
-    An account with no login is kept stopped instead: its proxy would sit in
-    LiteLLM's device-code prompt and never turn healthy. `jailbee litellm login`
-    then `up` starts it.
+    An account whose routes need a ChatGPT login and lack it is kept stopped
+    instead: its proxy would sit in LiteLLM's device-code prompt and never turn
+    healthy. `jailbee litellm login` then `up` starts it. An account serving no
+    `chatgpt/` route never waits for a login.
 
     The stamps are recorded only after the unit is confirmed on the new files,
     so a run that fails in between is retried by the next one.
@@ -526,7 +527,7 @@ def _converge(
     done = Converged()
     for instance in files:
         account = instance.account
-        if auth_state(incus, account) == "missing":
+        if "chatgpt" in instance.login_providers and auth_state(incus, account) == "missing":
             incus.exec(
                 LITELLM_CONTAINER, ["systemctl", "disable", "--now", unit(account)], timeout=60
             )

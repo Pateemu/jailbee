@@ -346,6 +346,30 @@ def test_up_does_not_start_an_account_without_a_login():
     incus.network_acl_set_yaml.assert_called()
 
 
+def test_up_starts_an_api_key_only_account_without_any_login(xdg):
+    """Only a `chatgpt/` route makes LiteLLM wait in its device-code prompt."""
+    _secrets(xdg, "OPENROUTER_API_KEY=k\n")
+    cfg = _gcfg(
+        routes={"kimi": _KIMI},
+        profiles={"codex": {"fable": "kimi", "opus": "kimi", "sonnet": "kimi", "haiku": "kimi"}},
+    )
+    incus = _incus(present=True, login="missing")
+    result = ll.litellm_up(incus, cfg)
+    assert result.awaiting_login == [] and result.restarted == ["default"]
+    assert not any("auth.json" in e for e in _execs(incus))
+
+
+def test_up_holds_back_only_the_account_that_serves_chatgpt(xdg):
+    _secrets(xdg, "OPENROUTER_API_KEY=k\n")
+    cfg = _gcfg(
+        accounts=["default", "keys"],
+        routes={"kimi": _KIMI},
+        profiles={"kimi": {"account": "keys", "opus": "kimi"}},
+    )
+    result = ll.litellm_up(_incus(present=True, login="missing"), cfg)
+    assert result.awaiting_login == ["default"] and result.restarted == ["keys"]
+
+
 def test_up_after_login_starts_the_instance():
     incus = _incus(present=True, login="present")
     result = ll.litellm_up(incus, _gcfg())

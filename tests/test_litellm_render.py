@@ -10,6 +10,7 @@ from jailbee.config.models_litellm import LiteLLMConfig, LiteLLMRepoOverlay
 from jailbee.litellm_render import (
     CATCH_ALL,
     InstanceFiles,
+    account_login_providers,
     alias,
     catch_all_route,
     container_key_file,
@@ -611,3 +612,35 @@ def test_digest_ignores_routes_and_effort_but_not_what_the_proxy_reads_at_start(
     secret = _files(secrets={"K": "v"})
     assert secret.digest("cb") != base.digest("cb") and secret.hot_digest() == base.hot_digest()
     assert base.digest("cb v2") != base.digest("cb")
+
+
+_KEYS_ONLY = {
+    "accounts": ["default", "keys"],
+    "routes": {
+        "kimi": {
+            "model": "openrouter/moonshotai/kimi-k3",
+            "context_window": 262144,
+            "api_key": "OPENROUTER_API_KEY",
+        }
+    },
+    "profiles": {"kimi": {"account": "keys", "opus": "kimi"}},
+}
+
+
+def test_login_providers_follow_the_routes_an_account_serves():
+    cfg = LiteLLMConfig.model_validate(_KEYS_ONLY)
+    assert account_login_providers(cfg, "default") == ("chatgpt",)
+    assert account_login_providers(cfg, "keys") == ()
+    files = render_instance_files(cfg, "keys", port=4101, master_key="k")
+    assert files.login_providers == ()
+    assert render_instance_files(cfg, "default", port=4100, master_key="k").login_providers == (
+        "chatgpt",
+    )
+
+
+def test_a_repo_scope_can_make_an_account_need_a_login():
+    host = LiteLLMConfig.model_validate(_KEYS_ONLY)
+    scoped = host.with_overlay(
+        LiteLLMRepoOverlay.model_validate({"profiles": {"kimi": {"opus": "luna-high"}}})
+    )
+    assert account_login_providers(host, "keys", {"myrepo": scoped}) == ("chatgpt",)
