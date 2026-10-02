@@ -18,6 +18,7 @@ from jailbee import __version__
 from jailbee.config import ConfigError
 from jailbee.db import state_dir
 from jailbee.global_config import default_global_config_path, load_global_config
+from jailbee.incus import Incus
 from jailbee.remote_ssh.display_forward import is_display_forward
 from jailbee.remote_ssh.keys import AuthorizedKey, SSHKeyError, read_authorized_keys, ssh_paths
 from jailbee.remote_ssh.overrides import (
@@ -27,6 +28,7 @@ from jailbee.remote_ssh.overrides import (
     remote_gui_enabled,
 )
 from jailbee.remote_ssh.pty import ChildSpec, PTYError, run_child
+from jailbee.remote_ssh.repo_scope import RemoteRepoScope
 from jailbee.remote_ssh.router import (
     RouteError,
     command_path,
@@ -36,6 +38,7 @@ from jailbee.remote_ssh.router import (
 )
 from jailbee.remote_ssh.running import clear_running, installed_version, record_running
 from jailbee.remote_ssh.session import host_restricted
+from jailbee.remote_ssh.sftp import MAX_CONCURRENT_EXECS, SFTPService
 
 if TYPE_CHECKING:
     from jailbee.config.models_remote import RemoteSSHConfig
@@ -435,6 +438,8 @@ def _startup_summary(
         f"  {keys_line}",
         f"  connect example: {_connect_example(config.listen, port, config)}",
     ]
+    if config.files:
+        lines.append("  sftp/scp: on (container repo directories only)")
     if restricted and config.commands.mode == "allowlist":
         refused = sorted(
             path for path in config.commands.allow if is_host_command(path, gui=config.gui)
@@ -526,6 +531,16 @@ async def serve_async(
             await asyncio.sleep(update_poll_seconds)
         update.stop()
 
+    sftp_service = (
+        SFTPService(
+            Incus(),
+            RemoteRepoScope(frozenset(config.excluded_repos)),
+            asyncio.Semaphore(MAX_CONCURRENT_EXECS),
+        )
+        if config.files
+        else None
+    )
+
     try:
         listener = await asyncssh.listen(
             config.listen,
@@ -536,8 +551,11 @@ async def serve_async(
             encoding=None,
             agent_forwarding=False,
             x11_forwarding=False,
-            sftp_factory=None,
-            allow_scp=False,
+            # asyncssh serves SFTP and SCP itself, before `process_factory`, so
+            # `handle_process` never sees them; the SFTP server audits each
+            # operation on its own. With `files` off both stay refused.
+            sftp_factory=sftp_service.server if sftp_service is not None else None,
+            allow_scp=sftp_service is not None,
             gss_auth=False,
             gss_kex=False,
             gss_host=None,
