@@ -38,7 +38,10 @@ failed `upgrade actions` check and adds the version you dismissed it at, so
 nothing is hidden from the one place you would go looking.
 
 The same command covers the deprecation notices about `.gie/config.yaml`
-(`legacy-config-dir`) and a legacy `chrome:` block (`legacy-chrome-block`).
+(`legacy-config-dir`), a legacy `chrome:` block (`legacy-chrome-block`), a
+`claude_credentials:` block (`legacy-credentials-block`), per-repo entries
+still kept in `global.yaml` (`legacy-per-repo-map`) and the old
+`agents.claude.ai_pr_*` keys (`legacy-pr-keys`).
 Those cannot grow a new reason on their own, so they stay dismissed until you
 change the config; `jailbee doctor` lists them under its `dismissed notices`
 check. Warnings that answer the command you just typed — what `jailbee config
@@ -65,7 +68,9 @@ rule. The three symptoms are distinct, so the check can tell them apart:
 | IPv4 and DNS fine, nothing reaches out | `ufw route allow in on <bridge>` |
 
 With no container running on a bridge there is no symptom to read, and the
-check stays silent — it never launches one of its own to find out.
+check stays silent — it never launches one of its own to find out. The
+`jailbee-work` check (after `jailbee net migrate`) says "not verified" in that
+case instead.
 
 ### "disk quota exceeded" when starting a container or Docker
 
@@ -104,6 +109,13 @@ Re-run step 2 of the install and restart Incus: see
   before a browser was enabled or before `source` changed to `image`). Run
   `jailbee base build` (for `source: image`) or `jailbee apply` (for
   `source: host`) and check again.
+- The app runs but has no sound, no desktop notifications, or a file dialog
+  that never opens → since 1.6.0 the host's PulseAudio socket and session
+  D-Bus are opt-in: set `gui.audio: true` / `gui.dbus: true` (see
+  [`gui`](config.md#gui)); they attach on the container's next start.
+- Launched over SSH and refused → GUI launches from a remote session need
+  `remote.ssh.gui: true` and the shared display (`jailbee display up`); see
+  [Remote GUI over SSH](remote-gui.md).
 - "Only one IDEA at a time" → the JetBrains profile is shared across
   containers, so a second IDEA won't open while one is running. Chrome and
   Firefox both run **per-container** instead (`jailbee chrome` /
@@ -139,12 +151,15 @@ See [`pooled_caches`](config.md#pooled_caches).
 
 ### `git push` / `gh` fails inside a container
 
-**Cause:** by design, `github.com` is not in the default `strict` egress
-allowlist, so day-to-day work runs offline-of-GitHub. Either bring the
-commits to the host and push from there (`jailbee git checkout <name>` →
-`git push`), or switch the container to loose for the write:
-`jailbee net loose <name>`, push, then `jailbee net strict <name>`. See
-[Security and limitations](security.md).
+**Cause:** by design, a strict container can read GitHub over HTTPS but not
+push to it: `github.com` is not in the base `strict` egress allowlist (Claude's
+plugins and `github.enabled` add only HTTPS hosts), and the token a container
+gets is read-only. Bring the commits to the host and push from there
+(`jailbee git checkout <name>` → `git push`, or `jailbee pr <name>`), or switch
+the container to loose for the write: `jailbee net loose <name>`, push, then
+`jailbee net strict <name>`. If `gh` *reads* fail too, check that
+`github.enabled` is on and the repo's `github.token` is set (`jailbee doctor`
+reports both). See [Git remote & push](security.md#git-remote--push).
 
 ### GPU / NVIDIA passthrough
 
@@ -198,18 +213,51 @@ the repo directory name; `incus profile list` shows the jailbee-owned ones):
 jailbee destroy --all --force              # remove this repo's containers
 jailbee net unregister                     # drop this repo from the egress-refresh timer
 
-for p in base binds net-strict net-loose; do
+for p in base binds net-strict net-loose net-work net-work-strict net-work-loose; do
     incus profile delete "<prefix>-$p"
 done
-incus network acl delete "<prefix>-allowlist"
 incus image delete "<prefix>-base"     # the golden image (by alias)
 rm -rf ~/.local/share/jailbee/shared/<prefix>
+rm -f ~/.config/jailbee/repos/<prefix>.yaml   # the host-local overrides, if any
 ```
+
+Then the repo's ACLs. Incus refuses to delete an ACL a network still
+references, so first take this repo's names out of the shared bridges'
+`security.acls` lists, keeping every other entry:
+
+```bash
+incus network get incusbr0 security.acls        # e.g. other-allowlist,<prefix>-allowlist,...
+incus network set incusbr0 security.acls "<the same list without <prefix>-…>"
+incus network get jailbee-work security.acls    # only if `jailbee net migrate` was run
+incus network set jailbee-work security.acls "<the same list without <prefix>-…>"
+
+incus network acl list                          # the repo's own start with <prefix>-
+incus network acl delete "<prefix>-allowlist"
+incus network acl delete "<prefix>-container-extras"
+incus network acl delete "<prefix>-work-loose"  # these two only exist on a host
+incus network acl delete "<prefix>-work-container-extras"   # that ran `net migrate`
+```
+
+A very long prefix is shortened in the ACL names; `incus network acl list`
+shows the real ones.
 
 ### Host-wide resources (only after the last JailBee repo is gone)
 
 ```bash
+jailbee remote ssh disable                 # stop the SSH service, if you enabled it
+jailbee litellm down --purge               # the LiteLLM proxy and its logins, if enabled
+jailbee display down                       # the shared RDP display, if used
 jailbee registry down                      # stop the shared Docker registry mirror
+systemctl --user disable --now jailbee-net-refresh.timer
+incus delete --force jailbee-display
+incus profile delete jailbee-display-profile
+incus profile delete jailbee-litellm-profile
+incus network acl delete jailbee-litellm-egress
+# remove jailbee-services from incusbr0's (and jailbee-work's) security.acls
+# list as above, then:
+incus network acl delete jailbee-services
+incus network delete jailbee-work          # only if `jailbee net migrate` was run
+incus network acl delete jailbee-work-baseline
 incus network delete jailbee-loose         # shared bridge — only if no jailbee repos remain
 uv tool uninstall jailbee
 ```

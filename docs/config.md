@@ -898,11 +898,14 @@ destination is all-or-nothing via the port-less form (DNS and DHCP are
 allowed unconditionally, independent of this list).
 
 **`github.com` and strict-mode push:** `github.com` is
-intentionally **not** in the default `egress_allow`, so strict-mode work
-runs offline-of-GitHub. The operational workflow — why this is the gate
-against unattended agents producing surprise pushes, and how to switch to
-loose-mode to push/fetch/run `gh` — is documented in
-[Security and limitations](security.md).
+intentionally **not** in the base `egress_allow`. Only HTTPS is added
+automatically — `api.github.com:443` with [`github.enabled`](#github), and
+`github.com:443` plus GitHub's content hosts with
+`agents.claude.plugins_enabled` (on by default) — and the container's token
+is read-only, so strict-mode work can read GitHub but not push to it. Why
+this is the gate against unattended agents producing surprise pushes, and how
+to push instead, is documented in
+[Git remote & push](security.md#git-remote--push).
 
 **Widening the list without editing it.** This key is the committed,
 shared-by-everyone allowlist. `jailbee net egress add <entry> [<name>]`

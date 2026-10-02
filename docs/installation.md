@@ -297,11 +297,12 @@ If your host runs `ufw` with the default `deny (incoming)` and `deny (routed)`
 policies, containers won't get DHCP leases or reach the internet without
 opening up the JailBee bridges. `jailbee doctor` diagnoses this per bridge
 once at least one container is running on it — `network incusbr0
-reachability` / `network jailbee-loose reachability` report which of the
+reachability` / `network jailbee-loose reachability` (and `network
+jailbee-work reachability` after `jailbee net migrate`) report which of the
 three openings below is missing, naming the rule to add. With nothing
 running on a bridge there is no symptom to read, and the check stays
-silent — so on a fresh host, apply the rules below rather than waiting for
-`doctor` to ask for them.
+silent (the `jailbee-work` one says **not verified**) — so on a fresh host,
+apply the rules below rather than waiting for `doctor` to ask for them.
 
 Each active bridge needs the same minimal opening: one `ufw route` rule plus three
 `before.rules` lines, repeated per bridge.

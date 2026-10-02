@@ -87,8 +87,9 @@ checkout is never advised to upgrade.
 ### What is the minimum host setup?
 
 Four one-time steps: install and initialise Incus, add the two
-`/etc/subuid`/`/etc/subgid` delegation lines, install the CLI, and check
-`jailbee version`. Everything past that in the install page is **conditional**
+`/etc/subuid`/`/etc/subgid` delegation lines, install the CLI and check
+`jailbee version`, then run `jailbee setup` for shell completion and the
+refresh timer. Everything past that in the install page is **conditional**
 — apply it only if `jailbee doctor` or the symptom says so.
 
 → [Quick install](installation.md#quick-install)
@@ -112,7 +113,7 @@ check reads both files and names the missing line.
 ```bash
 jailbee config init      # write .jailbee/config.yaml
 jailbee doctor           # sanity-check host + config
-jailbee init             # profiles, ACL, jailbee-loose bridge, shared dirs
+jailbee init             # profiles, ACLs, jailbee-loose bridge, shared dirs
 jailbee registry up      # Docker users only — host-level Docker registry mirror
 jailbee base build       # golden image, ~10–15 min, one time
 jailbee new feat/x       # first container
@@ -309,8 +310,10 @@ container — your own branches are untouched. Requires the `gh` CLI and
 ### How do I open or update a PR from a container?
 
 `jailbee pr <name>` opens a draft PR, or pushes new commits and optionally
-regenerates the description when one exists. With Claude enabled the title,
-body and head branch name are AI-generated (`--no-ai` opts out). On a PR
+regenerates the description when one exists. The title, body and head branch
+name are written by the repo's agent — the one it autostarts, or the one
+`pr.agent` names, as long as it has a `headless` command (`--no-ai` opts out).
+On a PR
 JailBee did not create it stays hands-off: the description is never regenerated
 unless you ask, and `--force` asks a second time.
 
@@ -374,17 +377,24 @@ top-level alias for it.
 `strict` is a default-deny kernel ACL — only `egress_allow` destinations are
 reachable. `loose` permits all egress over a dedicated `jailbee-loose` bridge.
 Switch per container with `jailbee net strict|loose <name>`; the initial mode
-comes from `defaults.network` (`strict`).
+comes from `defaults.network` (`strict`). Containers on the optional
+`jailbee-work` network (`jailbee net migrate`) stay on one bridge with a fixed
+address, and the switch swaps the ACLs on their NIC instead.
 
-→ [Networks](config.md#networks)
+→ [Networks](config.md#networks),
+[Work network](installation.md#optional-work-network-activation-and-rollback)
 
 ### Why does `git push` / `gh` fail inside a container?
 
-By design: `github.com` is **not** in the default strict-mode allowlist, so
-day-to-day work runs offline-of-GitHub and an unattended agent cannot produce a
-surprise push. Either bring the commits to the host
-(`jailbee git checkout <name>` → `git push`), or switch to loose for the write
-and back again.
+By design, a strict container cannot write to GitHub. Strict mode admits
+GitHub only over HTTPS and only where something needs it — `api.github.com`
+with `github.enabled`, and `github.com` plus its content hosts while Claude's
+plugins are on — and the GitHub token JailBee injects (`github.token`) is
+read-only, so `gh` reads work while a push or a `gh` write is refused. Bring
+the commits to the host instead (`jailbee git checkout <name>` → `git push`,
+or `jailbee pr <name>`), and let agents stage issue and PR writes in the
+outbox for you to publish. Loose mode lifts the network half of this, which
+is why it is a deliberate, temporary switch.
 
 → [Git remote & push](security.md#git-remote--push)
 
@@ -467,7 +477,17 @@ MCP servers and agents are shared across the repo's containers and survive
 `(CLAUDE_CONFIG_DIR || $HOME)/.claude.json`. Claude runs its onboarding once,
 inside the first container.
 
-→ [Claude Code in the container](getting-started.md#claude-code-in-the-container)
+The login itself is the one exception to "per repo": a repo in a credential
+group (a generated `global.yaml` puts every repo in `default`) reads it from
+the group's directory, mounted at `~/.claude-creds`, so one `/login` serves
+every repo in the group. `jailbee account ls|use|park|rm` manages the stored
+logins. Instructions you want every container's Claude to follow go in
+`~/.config/jailbee/AGENTS.md` on the host, mounted read-only as Claude Code's
+managed-policy memory.
+
+→ [Claude Code in the container](getting-started.md#claude-code-in-the-container),
+[`credentials`](config.md#credentials),
+[Agent-wide instructions](config.md#agent-wide-instructions-configjailbeeagentsmd)
 
 ### Can I really run an agent with permission prompts off?
 
@@ -538,11 +558,15 @@ differ when both run the same model. Use `min_effort:` for a floor that
 
 ### How do I make `gh` work for an agent inside a container?
 
-Put a fine-grained PAT per GitHub owner in `~/.config/jailbee/global.yaml`
-under `github.api_tokens`, keyed by each repo's `container_prefix`. The
-`github` block is **rejected** in a repo's `.jailbee/config.yaml` so tokens
-can't leak via git. `chmod 600` the file; `jailbee doctor` warns about loose
-permissions and classic (`ghp_*`) tokens.
+Set `github.enabled: true` in `~/.config/jailbee/global.yaml` and put a
+read-only fine-grained PAT (Contents, Issues, Pull requests, Metadata: Read)
+in the repo's host-local file, `~/.config/jailbee/repos/<container_prefix>.yaml`,
+as `github.token`; `chmod 600` that file. The container's `gh` only reads:
+agents stage issue and PR writes in an outbox that you publish from the host.
+The `github` block is **rejected** in a repo's `.jailbee/config.yaml` so
+tokens can't leak via git, and `jailbee doctor` warns about classic (`ghp_*`)
+tokens. A pre-1.6 `github.api_tokens` map in `global.yaml` still works until
+2.0.0; `jailbee config migrate --apply` moves it.
 
 → [GitHub CLI (`gh`) inside containers](git-bridge.md#github-cli-gh-inside-containers)
 
@@ -594,21 +618,29 @@ only `config`, `known_hosts` and `config.d/`; private keys and
 
 ### Where does configuration live, and which file wins?
 
-Two layers, deep-merged: `~/.config/jailbee/global.yaml` (personal, every repo)
-and `<repo>/.jailbee/config.yaml` (checked in, shared with the team). Scalars
-from the repo layer win, **lists append**, and `[]` in the repo resets a list
-to empty. Inspect with `jailbee config show --layer global|repo|effective`.
+Three layers, deep-merged in this order: `~/.config/jailbee/global.yaml`
+(personal, every repo), `<repo>/.jailbee/config.yaml` (checked in, shared with
+the team) and the optional `~/.config/jailbee/repos/<container_prefix>.yaml`
+(personal, this repo only — never committed). Scalars from a later layer win,
+**lists append**, and `[]` resets a list to empty. Inspect with
+`jailbee config show --layer global|repo|local|effective`; edit the host-local
+file with `jailbee config edit --local`. `jailbee config migrate` previews
+moving older per-repo settings out of `global.yaml` into it (`--apply`
+writes).
 
 → [Configuration layers](config.md#configuration-layers),
+[Host-local overrides](config.md#host-local-overrides),
 [Merge rules](config.md#merge-rules)
 
 ### What belongs in the global file and what in the repo file?
 
 Personal things — UID/GID, credential mounts, IDE and Chrome preferences,
-GitHub tokens, agent API keys — go global. Repo-shaped things — stacks,
-autostart, resource limits, repo-specific egress — go in the repo file. All
-fields are technically legal at either layer; the split is convention, except
-that `github` is rejected at the repo layer outright.
+agent API keys — go global. Personal things that concern one repo — its GitHub
+token, its credential group, your own extra egress for it — go in its host-local
+file. Repo-shaped things — stacks, autostart, resource limits, repo-specific
+egress — go in the repo file. Most fields are legal at any layer and the split
+is convention, but `github`, `credentials` and `litellm` are rejected in the
+committed repo file outright.
 
 → [Recommended placement](config.md#recommended-placement)
 
@@ -694,7 +726,8 @@ the firewalld zone entries, or the UFW `route` rules plus the three
 `jailbee doctor`'s `network <bridge> reachability` check tells the three
 missing openings apart — no lease, no DNS, or no forwarding — and names the
 rule to add. It needs a container on the bridge to read a symptom from, so on
-a fresh host it stays silent until one is running.
+a fresh host it stays silent (or, for `jailbee-work`, says "not verified")
+until one is running.
 
 → [Containers get no IPv4 address](troubleshooting.md#containers-get-no-ipv4-address),
 [Host networking](installation.md#host-networking-only-if-you-use-a-firewall)
@@ -718,8 +751,9 @@ archives (the live base is always kept).
 ### How do I remove JailBee?
 
 There is no `jailbee uninstall`; teardown is manual and ordered — per-repo
-resources first (containers, profiles, ACL, image, shared dir), then host-wide
-ones (registry mirror, the `jailbee-loose` bridge, the CLI itself) once the
-last JailBee repo is gone.
+resources first (containers, profiles, ACLs, image, shared dir, host-local
+file), then host-wide ones (SSH service, LiteLLM proxy, shared display,
+registry mirror, refresh timer, shared ACLs, the `jailbee-loose` and
+`jailbee-work` bridges, the CLI itself) once the last JailBee repo is gone.
 
 → [Removing JailBee](troubleshooting.md#removing-jailbee)

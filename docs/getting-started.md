@@ -77,19 +77,23 @@ jailbee config init --global    # writes a fully-commented ~/.config/jailbee/glo
 ```
 
 That file carries your host mounts (`~/.gitconfig`, `~/.gnupg`), your IDE
-preference, your GitHub token, the Docker registry mirror port (default
-3128, rpardini's default), and the **Claude Code** opt-in — see
-[Claude Code in the container](#claude-code-in-the-container) below. The
-two files are deep-merged at load time: the repo config wins on scalar
-collisions, lists are appended, and a few blocks (like
-`github.api_tokens`) are permitted *only* in the global file so tokens
-can't leak via git.
+preference, the Docker registry mirror port (default 3128, rpardini's
+default), and the **Claude Code** opt-in — see
+[Claude Code in the container](#claude-code-in-the-container) below. A third,
+optional file holds what is personal *and* specific to one repo, such as its
+GitHub token: `~/.config/jailbee/repos/<container_prefix>.yaml`, edited with
+`jailbee config edit --local` (see
+[Host-local overrides](config.md#host-local-overrides)). The files are
+deep-merged at load time, global then repo then host-local: a later layer wins
+on scalar collisions, lists are appended, and blocks that hold host secrets
+(`github`, `credentials`, `litellm`) are rejected in the committed repo file so
+they can't leak via git.
 
 ## Initialize and build
 
 ```bash
 jailbee config validate         # verify your config is sane
-jailbee init                    # creates Incus profiles, ACL, jailbee-loose bridge, shared dirs
+jailbee init                    # creates Incus profiles, ACLs, jailbee-loose bridge, shared dirs
 jailbee registry up             # Docker users only — see below
 jailbee base build              # builds the golden image (~10-15 min, one time)
 ```

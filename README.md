@@ -87,10 +87,20 @@ sped up and say so on screen; nothing else is edited.
   of that list — or this machine's copy of the repo's — without editing the
   committed config, so a host only you need never lands in git; see
   [Egress overrides](https://jailbee.gisgro.io/docs/security/#egress-overrides).
-- **First-class Claude Code** — opt in with `claude.enabled: true` and every
-  container gets Claude Code installed, sharing one login and one settings
-  directory across the repo's containers while your host `~/.claude` is
-  never read. The Anthropic hosts are added to the strict-mode allowlist
+  An optional work network (`jailbee net migrate`) gives containers a stable
+  address and switches modes without replacing their NIC.
+- **Personal settings stay out of git** — `~/.config/jailbee/global.yaml`
+  holds what is yours on every repo, and a host-local
+  `~/.config/jailbee/repos/<prefix>.yaml` what is yours on one (its GitHub
+  token, credential group, extra egress), above the committed
+  `.jailbee/config.yaml`; `jailbee config edit --local` edits it.
+- **First-class Claude Code** — opt in with `agents.claude.enabled: true` and
+  every container gets Claude Code installed, sharing one settings directory
+  across the repo's containers and one login across every repo in its
+  credential group (`jailbee account` manages the stored logins), while your
+  host `~/.claude` is never read. Instructions written once in
+  `~/.config/jailbee/AGENTS.md` reach every container's Claude. The Anthropic
+  hosts are added to the strict-mode allowlist
   automatically, JailBee's own skills teach the in-container Claude to drive
   `jailbee`, and `jailbee pr` writes the PR title and body — to your repo's own
   standard, if you state one in `pr.prompt`. Start it
@@ -108,8 +118,8 @@ sped up and say so on screen; nothing else is edited.
   with one confirmation: `jailbee review apply` and `jailbee issue apply`
   (also `ls`/`show`/`drop`), or `jailbee outbox` to browse both in one place;
   `jailbee ls` and both dashboards mark a container carrying pending
-  manifests, and `jailbee pr` picks up a pending description in place of its
-  own Claude run.
+  manifests, and `jailbee pr` picks up a pending description in place of
+  asking an agent to write one.
 - **Claude Code on other models** — `claude-jb` runs Claude Code against a
   LiteLLM proxy that JailBee keeps in its own container, so the same agent
   can work on a ChatGPT subscription or on any provider you have an API key
@@ -126,8 +136,10 @@ sped up and say so on screen; nothing else is edited.
 - **Generic agent support** — `agents: {codex: {enabled: true}}` wires any
   terminal coding agent into the same mount/egress/install/autostart
   pipeline Claude Code uses, via a shipped preset or one you write yourself.
-  Five presets beyond Claude (`codex`, `gemini`, `aider`, `opencode`, `grok`)
-  ship as untested starting points — see
+  An agent that declares a skills directory gets JailBee's skills, and one
+  with a headless command can write `jailbee pr`'s title and body
+  (`pr.agent`). Five presets beyond Claude (`codex`, `gemini`, `aider`,
+  `opencode`, `grok`) ship as untested starting points — see
   [Generic agent support](https://jailbee.gisgro.io/docs/agents/).
 - **One shared state layer per repo** — package-manager caches, the JetBrains
   config, `~/.ssh` and Claude's login live in a shared dir outside the
@@ -170,7 +182,7 @@ end-to-end first. Then, from the repo you want to manage:
 ```bash
 jailbee config init          # write .jailbee/config.yaml
 jailbee doctor               # sanity-check host + config
-jailbee init                 # create Incus profiles, ACL, bridge
+jailbee init                 # create Incus profiles, ACLs, bridge
 jailbee base build           # build the golden image (one-time, ~10–15 min)
 jailbee new feat/my-branch   # spin up an isolated env for a branch
 ```

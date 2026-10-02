@@ -324,12 +324,19 @@ own upstream (see [Which remote is the
 upstream?](config.md#which-remote-is-the-upstream)) — the clone is jailbee's
 own, so its naming is jailbee's invariant rather than something inherited.
 
-**By design, `github.com` is NOT in the default strict-mode
-`egress_allow`.** Day-to-day strict-mode work runs offline-of-GitHub;
-when you need to push or use `gh`, temporarily switch to loose with
-`jailbee net loose <name>`, perform the write op, then go back to strict
-with `jailbee net strict <name>`. This keeps unattended agent runs from
-producing surprise pushes.
+**By design, a strict container cannot push to GitHub.** `github.com` is not
+in the base strict-mode `egress_allow`, and only HTTPS is ever added:
+`api.github.com:443` while `github.enabled` is on, and `github.com:443` with
+GitHub's content hosts while Claude Code's plugins are on
+(`agents.claude.plugins_enabled`, the default when Claude is enabled), so its
+plugin installs and updates work. The GitHub token a container gets is
+read-only (see [GitHub CLI inside
+containers](git-bridge.md#github-cli-gh-inside-containers)), so `gh` reads
+work in strict mode while pushes and `gh` writes do not. Push from the host
+(`jailbee git checkout <name>`, then `git push`, or `jailbee pr <name>`), or
+switch to loose with `jailbee net loose <name>` for the write and back with
+`jailbee net strict <name>`. This keeps unattended agent runs from producing
+surprise pushes.
 
 ### Port forwards
 

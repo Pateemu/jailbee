@@ -24,13 +24,15 @@ New here? [Installation](installation.md) sets up the host, then
 | [Commands](commands.md) | Full command + flag reference table |
 | [Git bridge and branch workflows](git-bridge.md) | Host↔container git bridge, stacked PRs, mount vs clone, PR review, `gh` inside containers |
 | [Setting up JailBee in your own project](project-config.md) | Tutorial for adapting JailBee to your own repo and stack |
+| [Claude Code through LiteLLM](litellm.md) | `claude-jb` and `jailbee litellm`: Claude Code on a ChatGPT subscription or another provider's models |
+| [Remote GUI over SSH](remote-gui.md) | The shared RDP display for GUI apps launched from a remote SSH session |
 | [Troubleshooting](troubleshooting.md) | Common failures by symptom, and how to remove JailBee |
 
 ## Reference
 
 | Doc | What's inside |
 |---|---|
-| [Configuration reference](config.md) | Every `.jailbee/config.yaml` and `global.yaml` key |
+| [Configuration reference](config.md) | Every `.jailbee/config.yaml`, `global.yaml` and host-local `repos/<prefix>.yaml` key |
 | [Generic agent support](agents.md) | Wiring a terminal coding agent (Claude Code or otherwise) into the container lifecycle; the shipped presets and their verification status |
 | [Security and limitations](security.md) | Isolation model, git-remote handling, known limits |
 | [Architecture](architecture.md) | How the pieces fit together |

@@ -929,24 +929,30 @@ duplicate PR for it.
 
 The `gh` binary is baked into every container's golden image. To make
 it authenticate (for AI agents like Claude that call `gh pr view`,
-`gh issue view`, etc. — **read-only** calls; see below), opt in via
+`gh issue view`, etc. — **read-only** calls; see below), switch it on in
 `~/.config/jailbee/global.yaml`:
 
 ```yaml
 github:
   enabled: true
-  api_tokens:
-    sampleapp:     github_pat_AAA...   # one entry per GitHub owner
-    personal-tool: github_pat_BBB...
 ```
 
-The dict keys are `container_prefix` values from each repo's
-`.jailbee/config.yaml`. Each container picks exactly one token — the one
-matching its repo's prefix.
+and give each repo its token in that repo's host-local file,
+`~/.config/jailbee/repos/<container_prefix>.yaml`:
 
-GitHub fine-grained PATs are scoped per **resource owner** (one user
-or one org), which is why this is a map and not a single string:
-a user working across multiple orgs maintains one entry per owner.
+```yaml
+github:
+  token: github_pat_AAA...
+```
+
+Each container gets exactly one token — its own repo's. GitHub fine-grained
+PATs are scoped per **resource owner** (one user or one org), so repos of
+different owners need different tokens; repos of one owner may share one.
+
+Before 1.6.0 the tokens lived in a `github.api_tokens` map in `global.yaml`.
+That map still loads but is deprecated and removed in 2.0.0;
+`jailbee config migrate --apply` moves each entry into its repo's host-local
+file.
 
 **Recommended PAT shape:**
 
@@ -961,10 +967,12 @@ a user working across multiple orgs maintains one entry per owner.
    - Issues: Read
    - Pull requests: Read
    - Metadata: Read
-5. Copy the token (`github_pat_...`), paste into `api_tokens`.
+5. Copy the token (`github_pat_...`) into the repo's host-local file as
+   `github.token` (`jailbee config edit --local` opens it).
 
-After editing, run `chmod 600 ~/.config/jailbee/global.yaml`. `jailbee doctor`
-warns if perms are loose, if the token is empty, or if it's a classic
+After editing, run `chmod 600 ~/.config/jailbee/repos/<container_prefix>.yaml`;
+loading the config fails while a file holding a token is readable by others.
+`jailbee doctor` warns if the token is empty, or if it's a classic
 PAT (`ghp_*`) — those can't be scoped to specific repos, and reports this
 token's expected read-only scope as an informational reminder (it cannot
 verify a fine-grained PAT's *effective* permissions).
@@ -975,16 +983,17 @@ writes to GitHub, because there is no write scope to grant it: every issue
 or PR mutation an in-container agent wants to make is instead written as a
 JSON manifest into a fixed outbox (`~/.jailbee/issue-outbox` or
 `~/.jailbee/pr-outbox`), and a human reviews and publishes it from the
-*host*, with `jailbee issue apply` / `jailbee review apply` — those run the
+*host*, with `jailbee issue apply` / `jailbee review apply` /
+`jailbee outbox apply` — those run the
 host's own, independently authenticated `gh`, not this container token. A
 token scoped wider than read-only would let an agent (or anything running as
 it) write to GitHub directly, bypassing that review step entirely — see the
 `jailbee-issue-management` and `jailbee-pr-review` skills for the workflow
 this token's read-only scope is built around.
 
-The `github` block must live in `~/.config/jailbee/global.yaml`, never a
-repo's `.jailbee/config.yaml` — `jailbee` rejects it at the repo layer so tokens
-can't leak via git commits. See [`config.md`](config.md#github) for the
+The `github` block must never live in a repo's `.jailbee/config.yaml` —
+`jailbee` rejects it at the repo layer so tokens can't leak via git commits.
+See [`config.md`](config.md#github) for the
 full field reference, the `0600` permission requirement, and the
 `jailbee doctor` checks.
 
