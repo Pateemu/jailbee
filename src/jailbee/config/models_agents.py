@@ -751,7 +751,8 @@ class PrConfig(BaseModel):
 class GithubConfig(BaseModel):
     """GitHub CLI (gh) integration inside containers.
 
-    `api_tokens` may only be set in `~/.config/jailbee/global.yaml` —
+    The token is per repo: `token`, in the host-local file. The deprecated
+    `api_tokens` map may only be set in `~/.config/jailbee/global.yaml`.
     `load_config` rejects this block in a repo's `.jailbee/config.yaml`
     outright, since committing a repo file with a token would leak it.
     """
@@ -769,25 +770,25 @@ class GithubConfig(BaseModel):
     api_tokens: dict[str, SecretStr] = Field(
         default_factory=dict,
         description=(
-            "Map from `container_prefix` to a fine-grained GitHub PAT, one entry per GitHub "
-            "resource owner (org or personal account). This token is injected into "
-            "containers and must grant only Contents: Read, Issues: Read, Pull requests: "
-            "Read, and Metadata: Read — every GitHub write (issue create/edit/comment/"
-            "label/close/reopen, PR review/comment/description) goes through the host-side "
-            "outbox commands (`jailbee issue apply`, `jailbee review apply`) instead, "
-            "authenticated by the host's own `gh`, never this token. Each value is a "
-            "secret — masked in `repr(cfg)` / config dumps — and having any entry here "
-            "requires `~/.config/jailbee/global.yaml` to be mode 0600; "
-            "`load_config_from_text` hard-fails otherwise."
+            "Deprecated, removed in 2.0.0: set `token` in each repo's host-local file "
+            "instead (`jailbee config migrate --apply` moves these entries). Map from "
+            "`container_prefix` to a fine-grained GitHub PAT with the same read-only "
+            "scopes as `token`. Each value is a secret — masked in `repr(cfg)` / config "
+            "dumps — and having any entry here requires `~/.config/jailbee/global.yaml` "
+            "to be mode 0600; `load_config_from_text` hard-fails otherwise."
         ),
     )
     token: SecretStr | None = Field(
         default=None,
         description=(
-            "This repo's fine-grained GitHub PAT, with the same read-only scopes as "
-            "`api_tokens`. Valid only in the host-local file "
+            "This repo's fine-grained GitHub PAT, injected into its containers. Grant only "
+            "Contents: Read, Issues: Read, Pull requests: Read, and Metadata: Read — every "
+            "GitHub write (issue create/edit/comment/label/close/reopen, PR review/comment/"
+            "description) goes through the host-side outbox commands (`jailbee issue "
+            "apply`, `jailbee review apply`, `jailbee outbox apply`) instead, authenticated "
+            "by the host's own `gh`, never this token. Valid only in the host-local file "
             "`~/.config/jailbee/repos/<container_prefix>.yaml`, which must then be mode "
-            "0600; wins over this repo's `api_tokens` entry."
+            "0600; wins over this repo's deprecated `api_tokens` entry."
         ),
     )
 

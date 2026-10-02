@@ -295,7 +295,7 @@ def test_load_config_rejects_github_enabled_with_empty_tokens(repo_and_global):
     global_path.chmod(0o600)
     _write(repo_path, {"container_prefix": "sampleapp"})
 
-    with pytest.raises(ConfigError, match=r"api_tokens is empty"):
+    with pytest.raises(ConfigError, match=r"no github.token is set"):
         load_config(repo_path)
 
 
@@ -563,7 +563,7 @@ def test_enabled_without_any_token_still_fails(repo_and_global):
     _write(global_path, {"github": {"enabled": True}})
     global_path.chmod(0o600)
     _write(repo_path, {"container_prefix": "myrepo"})
-    with pytest.raises(ConfigError, match=r"api_tokens is empty"):
+    with pytest.raises(ConfigError, match=r"no github.token is set"):
         load_config(repo_path)
 
 

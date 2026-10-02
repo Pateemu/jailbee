@@ -371,18 +371,17 @@ def test_repo_template_does_not_set_retired_keys(tmp_path):
 
 def test_global_template_contains_github_block():
     """The generated global template documents the github block, present
-    but disabled — real behaviour, not just an example comment (the old
-    hand-written template's `github_pat_...` placeholder text is gone along
-    with the rest of the hand-written prose; the schema's own description
-    of `api_tokens` is what ships now, checked structurally instead)."""
+    but disabled — real behaviour, not just an example comment. It does not
+    seed the deprecated `api_tokens` map: a fresh file must not start out
+    on a key `jailbee config migrate` would have to move again."""
     parsed = yaml.safe_load(render_global_template())
     assert "github" in parsed
-    assert "api_tokens" in parsed["github"]
+    assert "api_tokens" not in parsed["github"]
 
 
 def test_global_template_github_block_is_disabled_by_default():
     """Template ships with enabled: false so the file loads cleanly without
-    forcing the user to populate api_tokens before first use."""
+    a token configured."""
     parsed = yaml.safe_load(render_global_template())
     assert parsed["github"]["enabled"] is False
 

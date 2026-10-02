@@ -757,7 +757,7 @@ def load_config_from_layers(
     if isinstance(global_github, dict) and "token" in global_github:
         raise ConfigError(
             f"`github.token` in {global_from} is per-repo — set it in "
-            f"{local_config_path('<container_prefix>')}, or use `github.api_tokens` here."
+            f"{local_config_path('<container_prefix>')}."
         )
 
     merged = deep_merge(global_for_merge, repo_raw)
@@ -822,8 +822,8 @@ def load_config_from_layers(
         and cfg.github.token_for(cfg.container_prefix) is None
     ):
         raise ConfigError(
-            "github.enabled=true but github.api_tokens is empty and no github.token "
-            f"is set in {local_config_path(cfg.container_prefix)}. Set one of them."
+            "github.enabled=true but no github.token is set in "
+            f"{local_config_path(cfg.container_prefix)}. Set one there (mode 0600)."
         )
 
     if emit_hint:

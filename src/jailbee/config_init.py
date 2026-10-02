@@ -269,11 +269,11 @@ GLOBAL_SEED: dict[str, object] = {
     # working example and keeps Claude Code usable out of the box.
     "agents": {"claude": {"enabled": True, "plugins_enabled": True}},
     # Disabled by default (real behaviour, not just documentation): the
-    # file must load cleanly without forcing the user to populate
-    # `api_tokens` before first use. Present so the block — and the note
-    # that `api_tokens` may only live here, never in a repo config — is
-    # documented in every freshly generated file.
-    "github": {"enabled": False, "api_tokens": {}},
+    # file must load cleanly without a token configured. Present so the
+    # block is documented in every freshly generated file. The token itself
+    # is per repo and lives in the host-local file (`github.token`), so the
+    # deprecated `api_tokens` map is deliberately not seeded here.
+    "github": {"enabled": False},
     "host_mounts": [
         {"host": "~/.gitconfig", "container": "/home/dev/.gitconfig", "readonly": True}
     ],

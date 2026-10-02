@@ -491,7 +491,7 @@ def test_validate_catches_a_cross_field_rule_not_just_the_schema(opened):
     error = layers.validate(got, "global", [YamlChange(("github", "enabled"), True)])
 
     assert error is not None
-    assert "api_tokens" in error
+    assert "github.token" in error
 
 
 def test_validate_rejects_a_malformed_host_level_block(opened):

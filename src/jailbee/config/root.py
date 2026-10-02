@@ -288,7 +288,8 @@ class Config(BaseModel):
         description=(
             "GitHub CLI (`gh`) integration: injects a per-repo PAT and opens the "
             "GitHub API host in strict-mode egress while enabled. Off by default. "
-            "`api_tokens` may only be set in `~/.config/jailbee/global.yaml` — a repo's "
+            "The token (`token`) lives in the repo's host-local file "
+            "`~/.config/jailbee/repos/<container_prefix>.yaml` — a repo's "
             "`.jailbee/config.yaml` is rejected outright, since committing a repo file "
             "with a token would leak it."
         ),
