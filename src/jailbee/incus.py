@@ -778,7 +778,26 @@ class Incus:
         return [a["name"] for a in acls]
 
     def network_acl_exists(self, name: str) -> bool:
-        return name in self.network_acl_list()
+        """Return True if the network ACL ``name`` exists.
+
+        Asks for the one ACL, never the list: `network acl list` computes every
+        ACL's used-by set across all instances and took 1-4 s per call on a
+        19-instance host, while `show` answers in ~20 ms — and a single work
+        network switch makes about ten of these checks. Only Incus's own
+        not-found answer means absent; any other failure raises, so a daemon
+        error is never mistaken for a missing ACL.
+        """
+        if self.dry_run:
+            return False  # what the list-based check answered under dry-run
+        result = self._run(["network", "acl", "show", name], check=False)
+        if result.returncode == 0:
+            return True
+        if "not found" in (result.stderr or "").lower():
+            return False
+        raise IncusError(
+            f"`incus network acl show {name}` failed (exit {result.returncode}): "
+            f"{(result.stderr or '').strip()}"
+        )
 
     def network_acl_show(self, name: str) -> str:
         """Return the ACL's current state as YAML (raw stdout)."""

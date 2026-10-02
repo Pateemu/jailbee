@@ -1120,6 +1120,28 @@ def test_network_acl_list_returns_names(mocker):
     assert Incus().network_acl_list() == ["a-allowlist", "b-extra"]
 
 
+def test_network_acl_exists_asks_for_the_one_acl_not_the_list(incus, mocker):
+    # `network acl list` computes every ACL's used-by set and took 1-4 s per
+    # call on a 19-instance host; a switch made ~10 of these checks.
+    run = _mock_run(mocker, stdout="name: a-allowlist\n")
+    assert incus.network_acl_exists("a-allowlist") is True
+    assert run.call_args.args[0] == ["incus", "network", "acl", "show", "a-allowlist"]
+
+
+def test_network_acl_exists_false_when_incus_reports_not_found(incus, mocker):
+    # Verbatim Incus 6.0.5 stderr for a missing ACL.
+    _mock_run(mocker, returncode=1, stderr="Error: Network ACL not found\n")
+    assert incus.network_acl_exists("missing") is False
+
+
+def test_network_acl_exists_raises_on_other_failures(incus, mocker):
+    # A daemon error must not read as "absent": callers would create an ACL
+    # that exists, or drop one from the bridge.
+    _mock_run(mocker, returncode=1, stderr='Error: Get "http://unix.socket": EOF\n')
+    with pytest.raises(IncusError):
+        incus.network_acl_exists("a-allowlist")
+
+
 def _fake_incus(tmp_path):
     """An executable standing in for `incus`: runs whatever follows `--`.
 
