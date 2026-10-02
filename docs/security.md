@@ -114,10 +114,11 @@ other end is not at this host.
 
 While `restrict_host` is on, the commands that manage the host itself are
 refused in every mode, `full` and an allowlist naming them included:
-`config edit`/`init`, every `remote ...` command, `setup`, `init`, `apply`,
-`base build`/`prune`, `net install`/`refresh`/`unregister`, `net egress
-add`/`rm` (which accept the host's own and its LAN's addresses), `registry
-up`/`down`, `display up`/`down`, the `account` commands that write, `mount`,
+`config edit`/`init`/`migrate`, every `remote ...` command, `setup`, `init`,
+`apply`, `base build`/`prune`, `net install`/`migrate`/`refresh`/`unregister`,
+`net egress add`/`rm` (which accept the host's own and its LAN's addresses),
+`registry up`/`down`, `display up`/`down`, `litellm
+up`/`down`/`login`/`logout`/`logs`, the `account` commands that write, `mount`,
 `port to-container`, and the GUI launchers (`gui`, `ide`, the browsers, `apps
 run`). With `remote.ssh.gui` on, `ide`, the browsers and `apps run` are
 permitted and draw on the shared display instead; `gui` stays host-only.
@@ -177,7 +178,7 @@ The SSH protocol surface is also fail-closed:
   into another host branch (`--into`) or fetch into one (`--as`), and check
   it out on the host;
 - publishing to GitHub with the host's own `gh` (`pr`, `submodule pr`,
-  `review apply`, `issue apply`) stays available — the key holder is the
+  `review apply`, `issue apply`, `outbox apply`) stays available — the key holder is the
   human the outbox is reviewed by — but never with `--yes`, so each action
   is shown and confirmed; `--web`/`--open` are refused as host browsers;
 - a branch whose autostart config widens privileges (the escalation prompt
@@ -253,8 +254,12 @@ display (see [Remote GUI over SSH](remote-gui.md)):
   isolated from each other on this screen.
 - The display container uses the dev user's idmap, like the client containers,
   so the shared socket is owned by the same host user.
-- With SSH repository exclusions active, the GUI launchers are refused over
-  SSH regardless of this setting.
+- With SSH repository exclusions active, the GUI launchers (`ide`, the
+  browsers, `apps run`) are refused over SSH regardless of this setting.
+  `exec -d --gui` is not: it is admitted as a command scoped to one container
+  of a repo the session may see. That is not a hole in the exclusion — the
+  display itself is one screen shared by every container, excluded repos'
+  included, and any session allowed to forward to it sees all of it.
 
 ### Running an agent without prompts
 
@@ -265,7 +270,7 @@ rather than a corner you cut:
 
 - **Permission prompts** — `claude --dangerously-skip-permissions` (or
   `--permission-mode bypassPermissions`). JailBee itself runs Claude this
-  way for `jailbee pr`. Put it in `claude.command` and every container's
+  way for `jailbee pr`. Put it in `agents.claude.command` and every container's
   autostart window comes up in that mode.
 - **The agent's in-process sandbox** — a separate switch on the same axis
   (Claude Code's `dangerouslyDisableSandbox` opts a single bash command out
@@ -281,8 +286,11 @@ Everything in `host_mounts` — read-only entries can be read and used, and a
 read-only `~/.gnupg` plus the host gpg-agent socket means the agent can ask
 for signatures for as long as the container runs, even though it can never
 take the key. The shared state layer, which is *shared*: `<shared_dir>/claude`
-holds Claude's own credentials and the shared `~/.ssh` holds whatever you put
-there, and damage to either is not contained to one container. In `loose`
+holds Claude's settings and the shared `~/.ssh` holds whatever you put there,
+and damage to either is not contained to one container. Claude's login lives
+in that directory too, unless the repo is in a credential group — then it is
+the group's directory, mounted at `~/.claude-creds` and shared with every
+other repo in the group. In `loose`
 mode, the network — including a push to `origin`. With `github.enabled`, the
 container's own `GH_TOKEN` — see the limitation below.
 
@@ -291,7 +299,8 @@ The recommended fine-grained PAT (`github.token`, injected as
 `GH_TOKEN`) is read-only by design — Contents, Issues, Pull requests, and
 Metadata all set to Read — so that every GitHub write an in-container agent
 proposes must go through the host-side outbox (`jailbee issue apply` /
-`jailbee review apply`), reviewed and applied with the host's *own*,
+`jailbee review apply` / `jailbee outbox apply`), reviewed and applied with
+the host's *own*,
 independently authenticated `gh`. **jailbee cannot verify a fine-grained
 PAT's effective permissions** — `jailbee doctor` reminds you of the intended
 scope but never probes GitHub to check it. A PAT you (or an org policy)
@@ -305,6 +314,17 @@ exists to hold.
 containers and their shared dirs. `optional_mounts` you haven't attached with
 `jailbee mount`. Private keys, which never leave the host agent. In `strict`
 mode, every host not on the allowlist.
+
+**Shared across repos, by design.** Two things deliberately cross the
+per-repo line. A credential group shares one agent login between every repo
+in it (see [`credentials`](config.md#credentials)); an agent in any member
+repo can use, and spend, that account. And with `litellm.enabled`, every
+strict container of every repo reaches the one host-wide LiteLLM proxy
+through the `jailbee-services` ACL, holding a proxy key per account
+(`/etc/jailbee/litellm-<account>.key`); a container can spend those
+subscriptions and API keys through the proxy, though it never sees the
+provider tokens themselves. See
+[LiteLLM security and limitations](litellm.md#security-and-limitations).
 
 The practical shape, then: stay in `strict`, bind read-only what the build
 genuinely needs, leave sensitive `optional_mounts` detached, and take a
@@ -348,7 +368,9 @@ is one Incus `proxy` device, and Incus's forkproxy connects directly into
 (or out of) the container's network namespace rather than sending packets
 over the NIC. The ACL — applied in `strict` mode only — is deny-by-default
 on both egress and ingress (see `src/jailbee/network.py`), so neither
-direction of a forward is filtered by it.
+direction of a forward is filtered by it. On the optional `jailbee-work`
+network, loose mode attaches an ACL too (`<prefix>-work-loose`, scoped to the
+container's own address); a forward bypasses it in the same way.
 
 Both directions matter, and each bypasses a different half of that
 default-deny: a `to-container` forward (the `host_ports` case, e.g. the adb

@@ -78,8 +78,9 @@ apps are skipped, so `jb new` waits at most once.
 - One screen for all containers, and one shared clipboard.
 - `jb gui` (the Qt dashboard) stays a host command.
 - When SSH repository exclusions are active (`remote.ssh.excluded_repos` is
-  non-empty), the GUI launchers are refused over SSH even with `gui` on,
-  because the scoped command allow-list does not include them.
+  non-empty), the GUI launchers (`ide`, the browsers, `apps run`) are refused
+  over SSH even with `gui` on, because the scoped command allow-list does not
+  include them. `jb exec -d --gui` is in that list and still works.
 
 ## Security
 

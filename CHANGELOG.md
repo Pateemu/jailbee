@@ -128,7 +128,7 @@ before editing `## Unreleased`.
   commands (`config edit`, `remote ...`, `setup`, `apply`, `net egress add`,
   `port to-container`, GUI launchers, ...). The git bridge moves refs but never
   the host's checked-out tree. Publishing to GitHub (`pr`, `review apply`,
-  `issue apply`) needs each action confirmed (`--yes` refused), and a branch's
+  `issue apply`, `outbox apply`) needs each action confirmed (`--yes` refused), and a branch's
   privilege-widening autostart config cannot be approved remotely.
   `remote.ssh.restrict_host: false` lifts all of these host restrictions at
   once. `remote.ssh.excluded_repos` (in `global.yaml` only; requires
