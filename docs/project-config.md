@@ -188,10 +188,25 @@ only `claude` is exercised in production, the rest are untested starting
 points. See [Generic agent support](agents.md) for the full mechanism, the
 preset table, and how to write your own agent entry.
 
+If your project has rules for PR descriptions that no template or
+`CONTRIBUTING.md` states, commit them as `pr.prompt` so every container's
+`jailbee pr` writes descriptions the same way — see
+[Encoding a project's PR standard](config.md#encoding-a-projects-pr-standard).
+
+What is personal *and* specific to this repo — its GitHub token, a credential
+group, an extra egress host only you need — does not go in the committed file
+at all: `github`, `credentials` and `litellm` are rejected there. Put it in
+the host-local `~/.config/jailbee/repos/<container_prefix>.yaml`
+(`jailbee config edit --local`); see
+[Host-local overrides](config.md#host-local-overrides).
+
 ## 5. Define autostart steps
 
 Each step is a shell command run as the dev user inside the container.
-`on_create` fires on `jailbee new`; `on_start` fires on `jailbee start`.
+`on_create` fires once, on `jailbee new`; `on_start` fires on every start —
+`jailbee new` (after `on_create`), `jailbee start` and `jailbee restart`.
+Steps are grouped into **stages**; a stage owns the network mode and the
+`optional_mounts` for all of its steps.
 
 ```yaml
 autostart:
@@ -199,20 +214,25 @@ autostart:
   env:
     NODE_ENV: development
   on_create:
-    - name: setup
-      run: "make setup"
-    - name: server
-      run: "make run"
-      working_dir: backend
-      background: true
-      mounts: [aws]      # attach optional_mounts.aws for this step only
+    - stage: setup
+      steps:
+        - { name: setup, run: "make setup" }
+  on_start:
+    - stage: run
+      mounts: [aws]      # attach optional_mounts.aws for this stage only
+      steps:
+        - name: server
+          run: "make run"
+          working_dir: backend
+          background: true
 ```
 
 Auto-launching an IDE or a browser is configured **outside** the `autostart`
 block: set `jetbrains.ide` + `jetbrains.autostart`, and
 `browsers.chrome.autostart` / `browsers.firefox.autostart`, in your config
 (a plain `apps:` entry has its own `apps.<name>.autostart`). See
-[`config.md`](config.md) for the full step-field reference and those keys.
+[`config.md`](config.md#stages-and-chains) for stages, parallel chains and the
+full step-field reference, and [`config.md`](config.md) for those keys.
 
 ## 6. Build the image and create your first container
 

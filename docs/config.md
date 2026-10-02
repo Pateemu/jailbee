@@ -9,6 +9,9 @@ optional host-local per-repo override:
    `global.yaml`'s [`scratch`](#scratch) block instead. See that section for
    what changes.
 2. **Global:** `~/.config/jailbee/global.yaml` — optional, host-level only.
+3. **Host-local per-repo:** `~/.config/jailbee/repos/<container_prefix>.yaml` —
+   optional; this host's own settings for one repo, never committed. See
+   [Host-local overrides](#host-local-overrides).
 
 Run `jailbee config init` in a repo to generate a per-repo template.
 
@@ -129,9 +132,9 @@ spellings are scheduled for removal in 2.0.0).
 | List | Each higher-layer list appends to lower-layer lists (exception: `apps.<name>.command` replaces instead — see [`apps` layering](#apps-layering)) | `[]` in a higher layer replaces the accumulated list with an empty list |
 | Map / dict | Recursive deep-merge per key | No bulk reset — set an individual key to `null` to clear it (an empty `{}` is a no-op) |
 
-Example: a global `host_mounts` entry plus a repo-level one yields two mounts after merge. A higher layer that needs to *exclude* lower-layer entries must set `host_mounts: []` and re-list everything it wants. The local layer follows this rule too.
+Example: a global `host_mounts` entry plus a repo-level one yields two mounts after merge. A layer cannot both clear and re-list in one step — `[]` resets and any non-empty list appends — so to *exclude* lower-layer entries, put `host_mounts: []` in the layer that should start over and re-list the entries to keep in the layers above it. The local layer follows this rule too.
 
-Three keys are exempt from this pipeline — see [Keys that bypass the deep-merge pipeline](#keys-that-bypass-the-deep-merge-pipeline).
+Several keys are exempt from this pipeline — see [Keys that bypass the deep-merge pipeline](#keys-that-bypass-the-deep-merge-pipeline).
 
 ### Recommended placement
 
@@ -214,7 +217,9 @@ show --layer global` to see what the global file contributes.
 
 - `jailbee config show --layer global` — print the raw user-level YAML.
 - `jailbee config show --layer repo` — print the raw repo YAML.
+- `jailbee config show --layer local` — print the raw host-local file for this repo.
 - `jailbee config show` (or `--layer effective`) — print the merged result.
+- `jailbee config edit --local` — edit the host-local file interactively.
 
 ### Initialising both layers
 
@@ -853,6 +858,12 @@ profiles all live in code.
 | `strict` | Default-deny ACL; only `egress_allow` destinations reachable. |
 | `loose` | All egress permitted (dedicated `jailbee-loose` bridge). |
 
+The bridges above are the legacy network generation, still the default. The
+optional `jailbee-work` network gives each container a fixed address on one
+bridge and switches mode by swapping ACLs on its NIC; it is chosen per host
+with `jailbee net migrate`, not in this file. See
+[work-network activation](installation.md#optional-work-network-activation-and-rollback).
+
 #### `egress_allow`
 
 List of allowed egress destinations for **strict** mode. `loose` ignores
@@ -914,8 +925,11 @@ repo's, without touching `config.yaml` — useful for a host that only one
 developer needs, or for trying an entry before proposing it to the team.
 Container-scoped entries live in the container's own
 `user.jailbee.egress_extra` label, die with the container and are materialised
-as the command runs; repo-scoped ones are host-local state, not in git, and go
-live on the next `jailbee apply`. Overrides are additive only: they can
+as the command runs; repo-scoped ones are written to `egress_allow` in the
+repo's host-local file (`~/.config/jailbee/repos/<container_prefix>.yaml`), not
+in git, and go live on the next `jailbee apply`. `--repo` refuses while that
+file sets `egress_allow: []`, since an appended entry would silently undo the
+reset. Overrides are additive only: they can
 never narrow what this key grants, so reading `egress_allow` still tells you
 the minimum every container of the repo can reach — but not the maximum on a
 given machine, which is what `jailbee net egress ls` and `jailbee net status`
@@ -1334,12 +1348,13 @@ to share" rule, and a worked example live in
 | `update` | string \| null | `null` | Shell command run at `jailbee new` time when `install_check` succeeds and `auto_update` is true. |
 | `auto_update` | bool | `true` | `false` leaves an existing install untouched; a missing one is still installed. |
 | `install_network` | `strict` \| `loose` | `strict` | Network mode for the install/update step only. |
-| `shared` | list of `{subpath, path, type, seed}` | `[]` | Bind mounts from `<shared_dir>/<subpath>` to `<path>`. `type: dir` (default) or `file`; `seed` (file only) is written once if the target is absent. |
+| `shared` | list of `{subpath, path, type, seed, private}` | `[]` | Bind mounts from `<shared_dir>/<subpath>` to `<path>`. `type: dir` (default) or `file`; `seed` (file only) is written once if the target is absent; `private` (dir only) names subpaths inside the mount that stay per container — an IPC socket, a pid file, a lock. |
 | `egress_allow` | list[string] | `[]` | Strict-mode allowlist entries added while this agent is enabled. Same grammar as top-level [`egress_allow`](#egress_allow). |
 | `env` | map[string, string] | `{}` | Env vars passed to the install/update step and the autostart launch step. |
-| `headless` | string \| null | preset | One-shot command line `jailbee pr` runs to write PR text (see [`pr`](#pr)): run in a `bash -lc` login shell in the repo directory, with the prompt in `$JAILBEE_PR_PROMPT` and the model (empty when none applies) in `$JAILBEE_PR_MODEL`. Read both from the environment — never interpolate them. Presets set it for `claude`, `codex`, `gemini` and `opencode`; `aider` and `grok` have none. |
+| `headless` | string \| null | preset | One-shot command line `jailbee pr` runs to write PR text (see [`pr`](#pr)): run in a `bash -lc` login shell in the repo directory, with the prompt in `$JAILBEE_PR_PROMPT` and the model (empty when none applies) in `$JAILBEE_PR_MODEL`. Read both from the environment — never interpolate them. `$JAILBEE_PR_SESSION` carries a fresh UUID an agent may use as its session id, so a timed-out run's transcript can be named. Presets set it for `claude`, `codex`, `gemini` and `opencode`; `aider` and `grok` have none. |
 | `skills_dir` | string \| null | preset | Container-side directory the agent reads user-level skills from (`~/.codex/skills`, …). When set and covered by a `shared` mount, `jailbee new`/`apply` copy the bundled jailbee skills into the shared copy of it — see [the bundled skills](agents.md#10-the-bundled-jailbee-skills). The four skill-capable presets set it; leave unset for an agent with no skills mechanism. Rejected at load if empty or carrying a `.` / `..` segment — the value is joined onto a host-side path. |
 | `install_jailbee_skills` | bool | `true` | `false` keeps this agent's shared skills directory untouched by jailbee's bundled skills. Does nothing when `skills_dir` is unset or no `shared` mount covers it. A disabled agent gets nothing either way. The pre-1.0 `claude.install_gie_skills` name was retired in 1.1.0: a config still using it fails to load with an error naming this key. |
+| `global_instructions` | `{dir, file}` \| null | preset | Where the agent reads host-wide instructions: `~/.config/jailbee/AGENTS.md` is mounted read-only at `dir`, renamed to `file` — see [Agent-wide instructions](#agent-wide-instructions-configjailbeeagentsmd). Only Claude's preset sets it (`/etc/claude-code`, `CLAUDE.md`); constraints are in [agents.md](agents.md#4-writing-your-own-agent). |
 
 An agent name that matches one of the six shipped presets is deep-merged
 over that preset (preset → global.yaml → repo, same append/reset rules as
@@ -1366,7 +1381,8 @@ agents:
 Everything below applies identically under either spelling, and `claude`
 also carries the generic `agents` fields from the table above
 (`install`, `update`, `install_check`, `install_network`, `shared`,
-`egress_allow`, `env`, `skills_dir`, `install_jailbee_skills`) — not
+`egress_allow`, `env`, `headless`, `skills_dir`, `install_jailbee_skills`,
+`global_instructions`) — not
 repeated here since they mean the same thing
 for every agent. See [Generic agent support](agents.md#9-claude) for the
 short version of this same note.
@@ -1396,6 +1412,12 @@ claude:
   enabled: true
   plugins_enabled: true
 ```
+
+The claude shared caches are not present in the `shared_caches:` default
+list — they are auto-added by `Config.effective_shared_caches()` when
+`claude.enabled` is `true`. Manual entries in `shared_caches:` with names
+`claude` or `claude-install` suppress the auto-add (same precedent as
+`effective_host_mounts`).
 
 ### `pr`
 
@@ -1459,12 +1481,6 @@ pr:
 These instructions win over JailBee's generic guidance where the two
 disagree, which is why the block cannot break generation: the response
 format the agent has to return is stated after it and stays JailBee's.
-
-The claude shared caches are not present in the `shared_caches:` default
-list — they are auto-added by `Config.effective_shared_caches()` when
-`claude.enabled` is `true`. Manual entries in `shared_caches:` with names
-`claude` or `claude-install` suppress the auto-add (same precedent as
-`effective_host_mounts`).
 
 ### `terminal` / `terminal.kitty`
 
@@ -2105,7 +2121,8 @@ something has one" still applies to a hidden-by-config column, unlike
 
 **The two views have different built-in defaults.** `jailbee ls` is a
 one-shot listing and stays narrow: NAME, BASE, STATE, CREATED, NETWORK, WT,
-DIFF ±, ↑, ↓, MERGE. The dashboards add MEM, CPU, DOING and AGENT_COMPACT; the
+DIFF ±, ↑, ↓, MERGE, plus the dynamic columns below when they apply. The
+dashboards add MEM, CPU, DOING and AGENT_COMPACT; the
 compact agent status omits agent names to save width. The full AGENT column
 includes those names and is available by selecting it in dashboard settings.
 CPU and DOING are rates and have no value at all in a single reading, so `ls`
@@ -2113,10 +2130,12 @@ takes a second one when you name either in `--fields`. Either agent field
 needs a single reading. IP is off in both — enable it in the dashboard
 settings UI, or ask for it from `ls` with `--fields ip`.
 
-Four columns are dynamic and appear only when they have
+Six columns are dynamic and appear only when they have
 something to say: `job` (a background job is running), `ttl` (a container is
-in loose mode), `pr` (a container tracks a PR) and `mode` (a mount-mode
-container exists — on a clone-only host the column would be a constant).
+in loose mode), `pr` (a container tracks a PR), `mode` (a mount-mode
+container exists — on a clone-only host the column would be a constant),
+`issues` (a container has pending issue-outbox actions) and `group` (a
+container resolves to a credential group).
 
 **Table output only.** `jailbee ls --format json` always emits its own built-in
 field set (`FieldSpec.default_json`), regardless of `ls.fields`/`ls.hide` —
@@ -2196,8 +2215,8 @@ The two are independent on purpose: a wide Qt table and a narrow TUI is a
 supported setup. State lives in `state.sqlite`'s `view_prefs` table, one row
 per front-end — machine-written, so it stays out of your hand-edited config.
 
-Enabling a column means "show it when it has something to say": the four
-dynamic columns (`job`, `ttl`, `pr`, `mode`) still appear only when they
+Enabling a column means "show it when it has something to say": the six
+dynamic columns (`job`, `ttl`, `pr`, `mode`, `issues`, `group`) still appear only when they
 apply, and the overlay marks them so. This differs from `ls --fields`, where
 naming a column forces it on — there a name is a one-shot request, here it is
 a standing preference.
@@ -2588,7 +2607,7 @@ remote:
 | `shell` | bool | `true` | Permit the reserved `shell [--repo PREFIX]` entry point: a restricted interactive JailBee console, not a host shell. Console-local navigation remains available when command execution is disabled. |
 | `exec` | bool | `true` | Permit one-shot `--repo PREFIX COMMAND [ARGS...]` execution. This switch affects only the one-shot entry point. |
 | `default_entrypoint` | `help` \| `dashboard` \| `shell` | `help` | Route a commandless SSH login to this entry point. `help` prints the enabled remote forms; `dashboard` and `shell` require their corresponding entry point to be enabled and a PTY. An explicit `ssh jailbee@host help` always prints the list, even with a different default. |
-| `commands.mode` | `disabled` \| `allowlist` \| `full` | `full` | Policy for JailBee command execution in the console and dashboard. `disabled` blocks command-running dashboard actions while dashboard/console navigation remains available; `allowlist` accepts exact leaves from `commands.allow`; `full` accepts classified public leaves. In restricted sessions, unknown/unclassified command paths fail closed. In every mode a remote command may not set a path-typed option or argument (such as `--config`) nor `new --mount` — see [Security](security.md#remote-ssh). |
+| `commands.mode` | `disabled` \| `allowlist` \| `full` | `full` when the whole `commands` block is omitted; `disabled` when a `commands` block is written without `mode` | Policy for JailBee command execution in the console and dashboard. `disabled` blocks command-running dashboard actions while dashboard/console navigation remains available; `allowlist` accepts exact leaves from `commands.allow`; `full` accepts classified public leaves. In restricted sessions, unknown/unclassified command paths fail closed. In every mode a remote command may not set a path-typed option or argument (such as `--config`) nor `new --mount` — see [Security](security.md#remote-ssh). |
 | `restrict_host` | bool | `true` | Keep remote sessions off the host itself: no path-typed arguments (`--config`, ...) or `new --mount` on any command; no config editor, diff pager or GUI app launches in the dashboard (with `gui` on, `ide`, the browsers and `apps run` draw on the shared RDP display instead); a git bridge that moves refs but never the host's checked-out tree; no `shell`/`tmux`/`exec` into a mount-mode container (it shares the host's working tree); no approving a branch's privilege-widening autostart config; and no host-management command (`config edit`, `remote ...`, `setup`, `apply`, `net egress add`, `port to-container`, `gui`, ...) in any `commands.mode`, `full` included. `false` lifts all of these at once, so an allowed command behaves exactly as it does locally; the startup log then says `host restrictions: OFF`. A server started from inside a restricted session stays restricted whatever this says. See [Security](security.md#remote-ssh). |
 | `gui` | bool | `false` | Lets remote sessions launch GUI apps onto a shared RDP display (see [Remote GUI](remote-gui.md)). Opens SSH port forwarding to that display's port and nothing else. |
 | `excluded_repos` | list[string] | `[]` | Host-controlled exact registered `container_prefix` values unavailable through SSH. Filters repo routes, dashboard/console listings and supported aggregate views. Requires `restrict_host: true`; see [Security](security.md#remote-ssh). |
@@ -2660,20 +2679,25 @@ committed `.jailbee/config.yaml`. The computed `credential_group` is never a
 YAML key.
 
 ```yaml
+# ~/.config/jailbee/global.yaml
 credentials:
   group: work                    # default for every repo on this host
-  repos:                         # exceptions, keyed by container_prefix
-    my-side-project: personal
-    solo: null                   # opt this one repo out — keep its own credential
+```
+
+```yaml
+# ~/.config/jailbee/repos/my-side-project.yaml — one repo's exception
+credentials:
+  group: personal                # or null: keep this repo on its own credential
 ```
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `group` | `str \| None` | `None` (unset); `default` in a freshly generated `global.yaml` | Default credential group for every repo on the host. Absent means no sharing. |
-| `repos` | `dict[str, str \| None]` | `{}` | Per-repo override keyed by `container_prefix`. Wins over `group`, **including when the value is `null`** — that is the only way to keep one repo on its own credential while the rest of the host shares one. |
+| `group` (global) | `str \| None` | `None` (unset); `default` in a freshly generated `global.yaml` | Default credential group for every repo on the host. Absent means no sharing. |
+| `group` (host-local file) | `str \| None` | unset | This repo's group. Wins over everything below it, **including when the value is `null`**, which keeps the repo on its own credential while the rest of the host shares one. `jailbee account group set`/`unset` write it. |
+| `repos` (global) | `dict[str, str \| None]` | `{}` | **Deprecated; removed in 2.0.0.** The pre-1.6 per-repo map keyed by `container_prefix`; still honoured below a local `group`. |
 
-`credentials.repos` is deprecated and will be removed in 2.0.0. Migrate
-entries to each repo's local `credentials.group` using
+`credentials.repos` is deprecated. Migrate entries to each repo's local
+`credentials.group` using
 [`jailbee config migrate`](#migrating-older-per-repo-settings); new per-repo choices
 should not be added to this map.
 
@@ -2702,10 +2726,10 @@ in `agents.md` for the mechanism.
 
 > **Compatibility.** The old `claude_credentials:` spelling of this key is
 > still read, with a deprecation warning; setting both keys is an error.
-> Any write jailbee makes to `global.yaml` — `jailbee account group
-> set`/`unset`, or saving from `jailbee config edit --global` — renames the
-> key to `credentials:` in place, in the same write, even when the change
-> itself was to an unrelated key. `jailbee claude ...` remains as a hidden
+> Any write jailbee makes to `global.yaml` — saving from `jailbee config edit
+> --global`, or `jailbee account group set`/`unset` when they remove a legacy
+> `repos` entry for this repo — renames the key to `credentials:` in place, in
+> the same write, even when the change itself was to an unrelated key. `jailbee claude ...` remains as a hidden
 > alias for `jailbee account ...`, warning once per invocation. Both are
 > removed in 2.0.0.
 
@@ -2721,8 +2745,8 @@ one of the two logins can be shared and the other becomes unused, so
 * **this repo's login** — the group's copy is deleted and this repo's is
   moved in, which re-points *every* member repo at this account.
 * **cancel** — nothing changes and `apply` aborts. To keep this repo on
-  its own login instead, add it under `repos:` as `null` (the prompt prints
-  the exact block) and re-run `apply`.
+  its own login instead, set `credentials.group: null` in its host-local file
+  (or run `jailbee account group set none`) and re-run `apply`.
 
 The losing credential is deleted, not archived. The two are *independent*
 grants — two `/login`s to one account each mint their own refresh-token
@@ -2746,8 +2770,8 @@ If the file is absent, defaults apply silently. Invalid YAML → error.
 
 #### Per-container override: `jailbee account group`
 
-Everything above is the repo's *permanent* group, written to `global.yaml`
-and shared by every container of that repo. A single container can also
+Everything above is the repo's *permanent* group, set in `global.yaml` or the
+repo's host-local file and shared by every container of that repo. A single container can also
 carry a **temporary** override, stored in its own
 `user.jailbee.credential_group` instance label rather than in any file:
 
@@ -2762,8 +2786,9 @@ carry a **temporary** override, stored in its own
 
 **Precedence: container override beats the repo's `credentials` entry,
 which beats the host's `group` default.** A container with no override reads
-the repo's setting (`repos.<container_prefix>` if present, else `group`); a
-container with an override ignores both.
+the repo's setting: the host-local `credentials.group` if the key is present
+(even as `null`), else a deprecated `repos.<container_prefix>` entry, else the
+global `group`. A container with an override ignores all of them.
 
 **An override that names the repo's own group is dropped rather than kept.**
 Because the label outranks the repo, one that merely repeats it would look
@@ -2792,10 +2817,11 @@ themselves and what each holds, `jailbee account group create <name>` creates
 an empty group, and `jailbee account group rm <name>` removes one nothing uses
 (parking any login it holds rather than deleting it). `jailbee account
 group set <name>|none` and `jailbee account group unset` are the permanent,
-repo-wide equivalents of `use`/`reset` — they write `global.yaml`'s
-`credentials.repos.<container_prefix>` instead of a container label,
-so unlike `use`/`reset` they affect every container of the repo that has no
-override of its own.
+repo-wide equivalents of `use`/`reset` — they write `credentials.group` in
+the repo's host-local file (and drop any legacy `credentials.repos` entry for
+the repo from `global.yaml`) instead of a container label, so unlike
+`use`/`reset` they affect every container of the repo that has no override of
+its own.
 
 The override lives on the Incus instance, not in any file under version
 control: it **dies with the container**, a recreated same-named container
