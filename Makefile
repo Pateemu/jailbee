@@ -17,6 +17,11 @@ SHELL := /bin/bash
 install:
 	uv tool install '.[gui,ssh]' --force --reinstall
 	jailbee setup --yes
+	@# The SSH service runs the old code until restarted. try-restart is a
+	@# no-op when the unit is not running, so users without it are unaffected.
+	@if command -v systemctl >/dev/null 2>&1; then \
+		systemctl --user try-restart jailbee-ssh.service; \
+	fi
 
 # Alias for `make install` — kept for back-compat and discoverability now that
 # `make install` includes the optional Qt GUI and SSH extras by default.
