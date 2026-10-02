@@ -515,10 +515,10 @@ stays on your Claude login. Set `litellm.enabled: true` in `global.yaml`, then
 Yes. A route names any LiteLLM model string and the *name* of a variable in
 `~/.config/jailbee/litellm/secrets.env`; a profile maps tiers to routes. No
 ChatGPT subscription is needed once the built-in `codex` profile points at your
-routes too. A SuperGrok or X Premium+ subscription cannot serve routes yet;
-an xAI API key can.
+routes too. An xAI API key serves routes, and a SuperGrok or X Premium+
+subscription can too, experimentally (`oauth: true`).
 
-→ [Quick start by provider](litellm.md#quick-start-by-provider)
+→ [Quick start by provider](litellm.md#quick-start-by-provider), [xAI subscription](litellm.md#xai-subscription-experimental)
 
 ### A new model came out — do I wait for a JailBee release?
 

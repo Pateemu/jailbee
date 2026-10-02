@@ -120,7 +120,39 @@ litellm:
 ```
 
 The request is billed to the API key at xAI's token prices. A SuperGrok or
-X Premium+ subscription cannot serve routes yet.
+X Premium+ subscription can serve routes too, as
+[an experimental option](#xai-subscription-experimental).
+
+## xAI subscription (experimental)
+
+A SuperGrok or X Premium+ subscription can serve routes through LiteLLM's xAI
+OAuth provider. Mark the route `oauth: true` and give it an account:
+
+```yaml
+litellm:
+  routes:
+    grok: {model: xai/grok-4.3, oauth: true, context_window: 256000}
+  profiles:
+    grok: {account: default, opus: grok, sonnet: grok, haiku: grok}
+```
+
+Run `jailbee litellm up`, then `jailbee litellm login --provider xai` on the
+host: it prints a URL; open it in a browser on the same machine and approve.
+For the length of the login, jailbee forwards the host's `127.0.0.1:56121` to
+the proxy, where LiteLLM waits for the browser's callback (180 seconds). The
+token is stored in the state volume beside the account's ChatGPT login, so one
+account and one profile can use both.
+
+Without an xAI login the account's proxy still starts: only its `oauth` routes
+fail, and `jailbee litellm up`, `status` and `doctor` say so. `--provider` may
+be left out while the account's routes need only one kind of login.
+
+This is experimental: it follows LiteLLM's xAI OAuth provider and has not yet
+been verified by jailbee against a live subscription. Grok models LiteLLM's
+local model map does not list as reasoning models drop the `effort` setting.
+`oauth` is refused together with `api_key` or `api_base`, and secret names
+starting with `XAI_` are reserved (an `XAI_API_KEY` in the proxy would silently
+take precedence over the subscription).
 
 ## Routes and profiles
 
@@ -362,8 +394,9 @@ configured. The profile is `claude-jb`'s own selection, so the repo's
 
 ## Accounts
 
-Each entry in `litellm.accounts` is one ChatGPT login and one LiteLLM process
-(`jailbee-litellm@<account>`, its own port). A profile names the account that
+Each entry in `litellm.accounts` is one LiteLLM process
+(`jailbee-litellm@<account>`, its own port) and holds one ChatGPT login and one
+xAI login side by side. A profile names the account that
 serves it; the built-in `codex` profile uses `default`, so renaming that
 account means rebinding `codex`:
 
@@ -427,7 +460,7 @@ fragment that defines `jb-*` or `claude-*` models, sets
 `model_list` or `litellm_settings.callbacks` a non-list. Secrets it needs are
 referenced as `os.environ/NAME` and read from `secrets.env`; the names used as
 `environment_variables` keys or `os.environ/NAME` values must not be `PORT`,
-`PATH` or `HOME`, nor start with `LITELLM_`, `JAILBEE_`, `CHATGPT_`, `PYTHON` or
+`PATH` or `HOME`, nor start with `LITELLM_`, `JAILBEE_`, `CHATGPT_`, `XAI_`, `PYTHON` or
 `LD_`, or `up` refuses. Hosts its deployments reach go in `litellm.egress`. Setting
 `litellm_settings.turn_off_message_logging: false` there turns prompt logging
 back on; that is your choice.
@@ -490,6 +523,8 @@ On the host, `jailbee litellm up`, `login` and `jailbee apply` can report:
 | `... does not define NAME`, `... does not exist` or `... has insecure permissions` (about `secrets.env`) | Add `NAME=value` to `~/.config/jailbee/litellm/secrets.env`, `chmod 600` it, run `jailbee litellm up`. When a repo override adds a route or changes a route's `api_key` to the missing secret, the message adds `(named by .../repos/<prefix>.yaml)`; a secret named only in `global.yaml` is not attributed to any repo file. A missing secret there still blocks `up` and the proxy update in `apply` for every repo, since the proxy is shared. |
 | `cannot read ...` (about `secrets.env` or the `extra` file) | Make the file readable by your user and plain UTF-8 text, then run `jailbee litellm up`. |
 | `Several LiteLLM accounts are configured` | Name the account: `jailbee litellm login work`. |
+| `Cannot listen on 127.0.0.1:56121` (from `login --provider xai`) | Another program on the host uses the port; stop it and retry. |
+| `No route of account ... uses an xAI subscription` | Mark a route of that account's profiles `oauth: true`, run `jailbee litellm up`, then log in. |
 | `profile(s) ... have no proxy instance yet` (from `jailbee apply` or `jailbee new`) | Run `jailbee litellm up`, then `jailbee apply`. |
 
 On the host, use `jailbee litellm ls` (profiles, tiers, routes, efforts and

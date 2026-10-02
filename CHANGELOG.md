@@ -161,7 +161,9 @@ before editing `## Unreleased`.
   `jailbee apply` each repo. The built-in `codex` profile maps Claude Code's
   four tiers to ChatGPT-subscription models with fixed or minimum reasoning
   effort; routes can instead use any LiteLLM provider with an API key kept in
-  `~/.config/jailbee/litellm/secrets.env`. Several ChatGPT accounts run side by
+  `~/.config/jailbee/litellm/secrets.env`. An `xai/` route marked `oauth: true`
+  uses a SuperGrok or X Premium+ subscription instead
+  (`jailbee litellm login --provider xai`; experimental). Several ChatGPT accounts run side by
   side, one proxy instance each, and a profile names the account that serves
   it. A repo overrides routes, profiles, `default_profile` and `autostart` in its
   host-local file; `litellm.autostart` starts the Claude window with

@@ -699,8 +699,8 @@ restart, but retains host staging. Only Claude is wired today.
 ## Claude Code through LiteLLM — `claude-jb`
 
 On the host, enable `litellm.enabled: true` in `global.yaml`, then run
-`jailbee litellm up`, `jailbee litellm login [ACCOUNT]` (interactive ChatGPT
-device code), `jailbee litellm up` again (the first leaves an unlogged account
+`jailbee litellm up`, `jailbee litellm login [ACCOUNT] [--provider chatgpt|xai]`
+(ChatGPT device code; xAI in the host's browser, experimental), `jailbee litellm up` again (the first leaves an unlogged account
 stopped), `jailbee base build` per repo and `jailbee apply` per repo. Inside a
 container, `claude-jb` runs Claude Code through the proxy while plain `claude`
 remains native. Choose a gateway profile with `claude-jb --profile NAME`, then

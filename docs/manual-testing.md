@@ -88,6 +88,21 @@ state separately, without deleting any pre-existing Incus resources or real
 credentials. Do not count this recipe as executed merely because the mocked
 unit suite passes.
 
+### xAI subscription (needs a SuperGrok or X Premium+ account)
+
+1. Add `grok: {model: xai/grok-4.3, oauth: true, context_window: 256000}` as a
+   route and `grok: {account: default, opus: grok, sonnet: grok, haiku: grok}`
+   as a profile, then run `jailbee litellm up`. Expect
+   "Started without an xAI login: default".
+2. Run `jailbee litellm login --provider xai` and open the printed URL in a
+   browser on the same machine. Expect "Logged in."; afterwards
+   `incus config device show jailbee-litellm` has no `xai-login` device.
+3. `jailbee litellm status` shows `login (xai): logged in`, and `jailbee doctor`
+   passes.
+4. In a container, `claude-jb --profile grok -p "say hi"` answers.
+5. Record the answer or the error text, whether console.x.ai lists the request
+   as API usage, and the model name used.
+
 Checks that only a real daemon can settle, and that the mocked suite cannot:
 
 - The proxy container's ACL pins DNS to the `jailbee-loose` gateway and DHCP
