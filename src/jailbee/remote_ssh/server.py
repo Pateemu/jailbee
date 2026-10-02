@@ -531,12 +531,29 @@ async def serve_async(
             await asyncio.sleep(update_poll_seconds)
         update.stop()
 
+    def sftp_scope() -> RemoteRepoScope | None:
+        """The repository scope for one new SFTP channel, from a fresh policy load.
+
+        Like `handle_process`, this rereads global.yaml so `excluded_repos`
+        edits reach new channels without a restart. Fails closed: `None` (the
+        session sees nothing) when the policy cannot be established or file
+        transfer is no longer on.
+        """
+        try:
+            fresh, _ = load_global_config(default_global_config_path())
+            current = fresh.remote.ssh
+            if overrides is not None:
+                current = apply_ssh_overrides(current, overrides)
+        except Exception:
+            log.exception("SFTP: policy reload failed; refusing the session")
+            return None
+        if not current.files:
+            log.warning("SFTP: file transfer is off in the current policy; refusing the session")
+            return None
+        return RemoteRepoScope(frozenset(current.excluded_repos))
+
     sftp_service = (
-        SFTPService(
-            Incus(),
-            RemoteRepoScope(frozenset(config.excluded_repos)),
-            asyncio.Semaphore(MAX_CONCURRENT_EXECS),
-        )
+        SFTPService(Incus(), sftp_scope, asyncio.Semaphore(MAX_CONCURRENT_EXECS))
         if config.files
         else None
     )

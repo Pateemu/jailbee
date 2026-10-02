@@ -58,7 +58,8 @@ def make_server(incus: LocalIncus, excluded: tuple[str, ...] = ()) -> JailbeeSFT
         "peername": ("192.0.2.10", 43123),
         "jailbee_key_fingerprint": FINGERPRINT,
     }.get
-    service = SFTPService(incus, RemoteRepoScope(frozenset(excluded)), asyncio.Semaphore(8))
+    scope = RemoteRepoScope(frozenset(excluded))
+    service = SFTPService(incus, lambda: scope, asyncio.Semaphore(8))
     return JailbeeSFTPServer(chan, service)
 
 
@@ -134,6 +135,46 @@ def test_a_hidden_container_is_no_such_file(repo, hidden):
     srv = make_server(incus, excluded=("priv",))
     with pytest.raises(asyncssh.SFTPNoSuchFile):
         run(srv.stat(f"/{hidden}/a.txt".encode()))
+
+
+def test_a_mount_mode_container_is_not_offered(repo):
+    incus = LocalIncus(
+        [
+            raw_container("app-feat", repo_dir=str(repo)),
+            raw_container("app-mnt", repo_dir=str(repo), mode="mount"),
+            raw_container("app-clone", repo_dir=str(repo), mode="clone"),
+        ]
+    )
+    srv = make_server(incus)
+    assert run(names(srv, b"/")) == ["app-clone", "app-feat"]
+    with pytest.raises(asyncssh.SFTPNoSuchFile):
+        run(srv.stat(b"/app-mnt/a.txt"))
+
+
+def test_a_session_without_a_trustworthy_scope_sees_nothing(repo):
+    chan = Mock()
+    chan.get_extra_info.return_value = None
+    service = SFTPService(
+        LocalIncus([raw_container("app-feat", repo_dir=str(repo))]),
+        lambda: None,
+        asyncio.Semaphore(8),
+    )
+    srv = JailbeeSFTPServer(chan, service)
+    assert run(names(srv, b"/")) == []
+    with pytest.raises(asyncssh.SFTPNoSuchFile):
+        run(srv.stat(b"/app-feat/a.txt"))
+
+
+def test_an_internal_error_log_cannot_be_forged_by_the_container_name(caplog):
+    class Boom(LocalIncus):
+        def list_containers(self, **kw):
+            raise RuntimeError("boom")
+
+    srv = make_server(Boom())
+    with caplog.at_level(logging.ERROR), pytest.raises(asyncssh.SFTPFailure):
+        run(srv.stat(b"/evil\nforged/a"))
+    assert caplog.records
+    assert all("\n" not in r.getMessage() for r in caplog.records)
 
 
 def test_a_repo_directory_owned_by_root_is_refused(repo):
@@ -281,6 +322,22 @@ def test_rename_across_containers_is_refused(repo):
 def test_setstat_applies_permissions_and_ignores_ownership(server, repo):
     run(server.setstat(b"/app-feat/a.txt", SFTPAttrs(permissions=0o600, uid=0, gid=0)))
     assert stat_mod.S_IMODE((repo / "a.txt").stat().st_mode) == 0o600
+
+
+def test_setstat_size_cannot_grow_past_the_cap(server, repo, monkeypatch):
+    monkeypatch.setattr(sftp, "MAX_FILE_BYTES", 10)
+    with pytest.raises(asyncssh.SFTPFailure, match="too large"):
+        run(server.setstat(b"/app-feat/a.txt", SFTPAttrs(size=11)))
+    assert (repo / "a.txt").read_text() == "hello world"
+    run(server.setstat(b"/app-feat/a.txt", SFTPAttrs(size=5)))
+    assert (repo / "a.txt").read_text() == "hello"
+
+
+def test_a_rename_audit_line_names_the_new_path(server, repo, caplog):
+    with caplog.at_level(logging.INFO, logger="jailbee.remote_ssh.sftp"):
+        run(server.rename(b"/app-feat/a.txt", b"/app-feat/b.txt"))
+    line = next(r.getMessage() for r in caplog.records if "op=rename" in r.getMessage())
+    assert "path='/app-feat/a.txt'" in line and "new='/app-feat/b.txt'" in line
 
 
 def test_links_cannot_be_created(server):

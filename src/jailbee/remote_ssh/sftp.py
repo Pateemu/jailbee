@@ -144,7 +144,9 @@ class SFTPService:
     """What every SFTP session of one server run shares."""
 
     incus: Incus
-    scope: RemoteRepoScope
+    # Called once per SFTP channel. `None` means the policy could not be
+    # established (or file transfer is off now): that session sees nothing.
+    scope_source: Callable[[], RemoteRepoScope | None]
     gate: asyncio.Semaphore
 
     def server(self, chan: asyncssh.SSHServerChannel[bytes]) -> JailbeeSFTPServer:
@@ -154,7 +156,7 @@ class SFTPService:
 class _Catalog:
     """Which containers a session may see, and each one's `ContainerFS` (blocking calls)."""
 
-    def __init__(self, incus: Incus, scope: RemoteRepoScope) -> None:
+    def __init__(self, incus: Incus, scope: RemoteRepoScope | None) -> None:
         self._incus = incus
         self._scope = scope
         self._listed_at = float("-inf")
@@ -162,6 +164,8 @@ class _Catalog:
         self._fs: dict[str, ContainerFS] = {}
 
     def containers(self) -> dict[str, ContainerRef]:
+        if self._scope is None:
+            return {}  # fail closed: no trustworthy policy for this session
         if time.monotonic() - self._listed_at < _CATALOG_TTL_SECONDS:
             return self._refs
         refs: dict[str, ContainerRef] = {}
@@ -174,9 +178,12 @@ class _Catalog:
                 ),
                 None,
             )
-            repo_dir = (raw.get("config") or {}).get("user.jailbee.repo_dir")
+            config = raw.get("config") or {}
+            repo_dir = config.get("user.jailbee.repo_dir")
             if (
                 repo is None
+                # `--mount` containers bind the HOST checkout at the repo dir.
+                or config.get("user.jailbee.mode") == "mount"
                 or not isinstance(repo_dir, str)
                 or not repo_dir
                 or raw.get("status") != "Running"
@@ -287,7 +294,7 @@ class JailbeeSFTPServer(SFTPServer):
     def __init__(self, chan: asyncssh.SSHServerChannel[bytes], service: SFTPService) -> None:
         super().__init__(chan)
         self._service = service
-        self._catalog = _Catalog(service.incus, service.scope)
+        self._catalog = _Catalog(service.incus, service.scope_source())
 
     # ---- plumbing -----------------------------------------------------------
 
@@ -310,13 +317,17 @@ class JailbeeSFTPServer(SFTPServer):
         elif not isinstance(subject, bytes):
             vpath = "?"
         container = parts[0] if parts else None
+        new = "-"
+        if op in ("rename", "posix_rename") and len(args) > 1 and isinstance(args[1], bytes):
+            new = repr(args[1].decode("utf-8", "backslashreplace"))
         log.info(
-            "SFTP source=%r fingerprint=%s container=%r op=%s path=%r result=%s",
+            "SFTP source=%r fingerprint=%s container=%r op=%s path=%r new=%s result=%s",
             self.channel.get_extra_info("peername"),
             self.channel.get_extra_info("jailbee_key_fingerprint"),
             container,
             op,
             vpath,
+            new,
             result,
         )
 
@@ -335,7 +346,7 @@ class JailbeeSFTPServer(SFTPServer):
         except asyncssh.SFTPError:
             raise
         except Exception:
-            log.exception("SFTP internal error op=%s container=%s", op, container)
+            log.exception("SFTP internal error op=%s container=%r", op, container)
             raise SFTPFailure("internal error") from None
 
     @staticmethod
@@ -408,6 +419,8 @@ class JailbeeSFTPServer(SFTPServer):
         self._need_inside_repo(parts)
         mode = attrs.permissions & 0o7777 if attrs.permissions is not None else None
         size, atime, mtime = attrs.size, attrs.atime, attrs.mtime
+        if size is not None and size > MAX_FILE_BYTES:
+            raise SFTPFailure("file too large")
         if mode is None and size is None and atime is None and mtime is None:
             return  # ownership and the rest are ignored, never an error
         await self._on_container(

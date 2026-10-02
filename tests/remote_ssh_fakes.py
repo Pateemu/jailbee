@@ -19,10 +19,13 @@ def raw_container(
     repo: str = "app",
     repo_dir: str | None = None,
     status: str = "Running",
+    mode: str | None = None,
 ) -> dict[str, Any]:
     config: dict[str, str] = {}
     if repo_dir is not None:
         config["user.jailbee.repo_dir"] = repo_dir
+    if mode is not None:
+        config["user.jailbee.mode"] = mode
     return {
         "name": name,
         "status": status,

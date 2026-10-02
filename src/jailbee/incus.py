@@ -470,8 +470,8 @@ class Incus:
         contents are bytes, and the file-transfer scripts report their result
         as an exit status, so this returns both untouched. ``input_bytes`` goes
         through a private pipe (never argv, never the terminal). ``max_bytes``
-        bounds the stdout the caller is willing to hold; exceeding it is an
-        ``IncusError``.
+        is checked only after the whole output has been captured, so it limits
+        what is returned (exceeding it is an ``IncusError``), not memory use.
         """
         args = self._exec_args(name, cmd, uid=uid, gid=gid, cwd=cwd, env=None, init_groups=False)
         if self.dry_run:

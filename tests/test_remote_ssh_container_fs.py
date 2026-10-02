@@ -186,6 +186,13 @@ def test_setstat_changes_mode_mtime_and_size(fs, repo):
     assert kind_of(lambda: fs.setstat("", mode=0o777)) == "denied"
 
 
+def test_setstat_through_a_link_to_the_repo_root_is_refused(fs, repo):
+    os.symlink(".", repo / "self")
+    before = stat_mod.S_IMODE(repo.stat().st_mode)
+    assert kind_of(lambda: fs.setstat("self", mode=0o777)) == "denied"
+    assert stat_mod.S_IMODE(repo.stat().st_mode) == before
+
+
 def test_a_non_running_container_is_a_failure_not_a_crash(repo):
     class Down(LocalIncus):
         def exec_bytes(self, *a, **k):

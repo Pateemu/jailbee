@@ -124,7 +124,8 @@ printf '%s' "$t"
 # truncate resets mtime, which the caller may be setting explicitly.
 _SETSTAT = (
     _FOLLOW
-    + r"""if [ "$7" != - ]; then [ -f "$real" ] || exit 6; truncate -s "$7" -- "$real"; fi
+    + r"""[ "$real" != "$root" ] || exit 4
+if [ "$7" != - ]; then [ -f "$real" ] || exit 6; truncate -s "$7" -- "$real"; fi
 if [ "$4" != - ]; then chmod "$4" -- "$real"; fi
 if [ "$5" != - ]; then touch -m -d "@$5" -- "$real"; fi
 if [ "$6" != - ]; then touch -a -d "@$6" -- "$real"; fi
