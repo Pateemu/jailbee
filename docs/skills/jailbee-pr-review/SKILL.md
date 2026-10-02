@@ -94,9 +94,9 @@ by `jb submodule pr` for that submodule; its comments remain publishable with
   it becomes the manifest's `branch` field.
 
 **One rule is deliberately different here: running the test suite is
-allowed.** The in-container Claude run behind `jb pr` forbids it only
-because that run has a fixed 180-second budget and a test suite can eat all
-of it. Writing to the outbox has no such budget — run whatever you need to
+allowed.** The in-container agent run behind `jb pr` forbids it only
+because that run has a time budget (`pr.timeout`, 600 s by default) and a
+test suite can eat all of it. Writing to the outbox has no such budget — run whatever you need to
 describe the change accurately.
 
 ## The outbox contract

@@ -88,11 +88,11 @@ root — a path that isn't listed there is not a valid `repo` value.
   values exactly; do not paraphrase or guess them. This is not busywork: it
   is the host's only defense against applying your proposal on top of an
   issue someone else changed in the meantime.
-- A brand-new issue you plan to comment on, label, or edit further **within
-  the same manifest** does not have a number yet — give its `create` action
-  a local `ref` (e.g. `"ref": "new-timeout-bug"`) and point later actions in
-  that *same manifest* at it with `"issue_ref": "new-timeout-bug"` instead
-  of `"issue"`. A `ref` only resolves within the manifest file that defines
+- Every `create` action **must** carry a local `ref` (e.g.
+  `"ref": "new-timeout-bug"`), unique within the manifest; a `create`
+  without one is refused. A brand-new issue does not have a number yet, so
+  later actions in that *same manifest* that comment on, label or edit it
+  point at it with `"issue_ref": "new-timeout-bug"` instead of `"issue"`. A `ref` only resolves within the manifest file that defines
   it — it cannot be referenced from a different manifest.
 - The manifest format itself — envelope fields, every action type,
   defaults, and the caps — is normative and lives in

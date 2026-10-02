@@ -22,7 +22,7 @@ Common conventions:
 - [Setup & host (`setup`, `init`, `apply`, `doctor`, `base`, `registry`, `display`)](#setup--host)
 - [LiteLLM proxy (`litellm up|down|status|login|logout|logs`)](#litellm-proxy)
 - [Remote SSH (`remote ssh`)](#remote-ssh)
-- [Config (`config show|validate|init|edit`)](#config)
+- [Config (`config show|validate|init|edit|migrate`)](#config)
 - [Create & lifecycle (`new`, `start`, `stop`, `restart`, `destroy`, `autostart status|cancel`)](#create--lifecycle)
 - [Inspect (`ls`, `dashboard`, `job`, `disk-usage`, `prune`)](#inspect)
 - [Enter & run (`shell`, `tmux`, `exec`)](#enter--run)
@@ -30,9 +30,10 @@ Common conventions:
 - [PR publishing (`pr`)](#pr-publishing)
 - [PR review outbox (`review apply|ls|show|drop`)](#pr-review-outbox)
 - [Issue management outbox (`issue ls|show|apply|drop|resolve`)](#issue-management-outbox)
+- [Unified outbox (`outbox`, `outbox ls|show|drop|apply`)](#unified-outbox)
 - [Branch placement (`branch`)](#branch-placement)
 - [Submodules (`submodule pr`)](#submodules)
-- [Network (`net strict|loose|refresh|status|unregister|install`, `net egress ls|add|rm|export`)](#network)
+- [Network (`net strict|loose|refresh|status|unregister|install|migrate`, `net egress ls|add|rm|export`)](#network)
 - [Accounts (`account ls|use|park|rm`, `account group …`)](#accounts)
 - [GUI (`ide`, `chrome`, `firefox`, `browser`, `apps ls`, `apps run`, `exec --detach`)](#gui)
 - [Cache pools (`pool`, `chrome-pool`)](#cache-pools)
@@ -48,7 +49,7 @@ speculatively.
 |---|---|
 | `jailbee setup [--yes] [--status] [--only completions\|timer\|skills] [--shell bash\|zsh\|fish]` | Per-*machine* post-install steps, the counterpart to the per-repo `jailbee init`: completion scripts for `jailbee` and `jb`, the `jailbee-net-refresh` user timer, and — when `install_host_skills: true` is set in `~/.config/jailbee/global.yaml` (host-level, default `false`) — the bundled jailbee skills for every skill-capable agent found on the host (`claude`, `codex`, `gemini`, `opencode`), each into its own skills directory (`~/.claude/skills`, `~/.codex/skills`, …). Interactive by default (one question per step, defaulting to yes for a missing step and no for an installed one); `--yes` asks nothing and never edits a shell rc; `--status` reports each step's state and installs nothing (the only view showing all three, since `jailbee doctor` omits the timer). `--status` and `--yes` contradict each other and are rejected together. Idempotent — re-run after upgrading jailbee. Needs no repo config, so it works from any directory. On a terminal, `jailbee ls` and `jailbee dashboard` offer to run this when steps are missing, once; `jailbee new` / `jailbee shell` only print the same notice. Does **not** touch host prerequisites (Incus, firewall, UID delegation): `jailbee doctor` reports those. |
 | `jailbee init` | First-time setup: create per-repo Incus profiles, egress ACL, the `jailbee-loose` bridge, shared dirs; install the `jailbee-net-refresh` user timer. Errors if profiles already exist. |
-| `jailbee apply [-y] [--no-restart]` | Re-push current config (profiles, ACL, `/etc/hosts`, dockerd proxy) to running containers. Replaces the old `jailbee init --reapply` / `jailbee net refresh`. Idempotent; prompts to restart containers if profiles changed (`-y` to skip prompt, `--no-restart` to never restart). |
+| `jailbee apply [-y] [--no-restart]` | Re-push current config (profiles, ACL, `/etc/hosts`, dockerd proxy) to running containers. Replaces the old `jailbee init --reapply`. Idempotent; prompts to restart containers if profiles changed (`-y` to skip prompt, `--no-restart` to never restart). |
 | `jailbee base build` | Build the golden image from `install.d/` snippets. 10–15 min, one-time (re-run after changing `golden.*` or snippets). |
 | `jailbee base prune [--all] [--days N] [--yes-to-all]` | Remove superseded dated golden-image archives (`<alias>-YYYY-MM-DD`). Lists all candidates up front and confirms once — a single batch confirmation, not per-archive — printing the total count + size before prompting. The live base image is always kept; archives currently in use by a container are skipped (batch continues, exit 0). `--all` prunes archives for every registered repo, not just the current one. `--days N` limits removal to archives older than N days (omitted: every dated archive is a candidate). `--yes-to-all` skips the confirmation prompt entirely. |
 | `jailbee base usage [--all]` | Show disk usage of golden base images: each live base image and dated archive with its size, a per-repo subtotal, a prunable figure (archives only, i.e. what `jailbee base prune` would reclaim), and a grand total across images shown. `--all` includes every registered repo, not just the current one. |
@@ -169,14 +170,15 @@ start over SSH. The git bridge moves refs only: `git checkout`, host
 with a warning rather than cloned into the host tree,
 `shell`/`tmux`/`exec` and the GUI launchers refuse a mount-mode container
 (it shares the host's working tree), and a branch-autostart privilege widening is refused even with `--yes`.
-Host-management commands — `config edit`/`init`, `remote ...`, `setup`,
-`init`, `apply`, `base build`/`prune`, `net install`/`refresh`/`unregister`,
-`net egress add`/`rm`, `registry up`/`down`, `display up`/`down`, writing `account` commands,
+Host-management commands — `config edit`/`init`/`migrate`, `remote ...`, `setup`,
+`init`, `apply`, `base build`/`prune`, `net install`/`migrate`/`refresh`/`unregister`,
+`net egress add`/`rm`, `registry up`/`down`, `display up`/`down`,
+`litellm up`/`down`/`login`/`logout`/`logs`, writing `account` commands,
 `mount`, `port to-container`, `gui`/`ide`/browsers/`apps run` — are refused
 in every mode, `full` and allowlists included (except that `ide`, the browsers and `apps run`
 are permitted when `remote.ssh.gui` is on, and draw on the shared display); the startup log names any
 allowlisted one. Publishing (`pr`, `submodule pr`, `review apply`, `issue
-apply`) stays allowed but refuses `--yes`, and `pr --web`/`--open` are
+apply`, `outbox apply`) stays allowed but refuses `--yes`, and `pr --web`/`--open` are
 refused as host browsers. `remote.ssh.restrict_host: false` (or `serve
 --no-restrict-host`) lifts every one of these at once; a server started from
 inside a restricted session stays restricted regardless.
@@ -212,16 +214,25 @@ suggestions, in its own style, instead of a generic router message.
 | Command | What it does |
 |---|---|
 | `jailbee config init [--global]` | Write a fully-commented `.jailbee/config.yaml` (or `~/.config/jailbee/global.yaml` with `--global`). The template comments ARE the schema docs. |
-| `jailbee config show` | Print the merged effective config (global + per-repo) as YAML. Use to check active `push.default_*`, `new.background`, etc. Prints the resolved `agents:` block too — preset fields filled in whether or not the repo's own config mentions them, so it's the way to check what a `claude`/`codex`/… preset actually resolved to rather than re-deriving it by hand. |
+| `jailbee config show [--layer global\|repo\|local\|effective]` | Print the merged effective config (global + per-repo + host-local, the default `effective`) as YAML, or one layer's raw YAML. Use to check active `push.default_*`, `new.background`, etc. Prints the resolved `agents:` block too — preset fields filled in whether or not the repo's own config mentions them, so it's the way to check what a `claude`/`codex`/… preset actually resolved to rather than re-deriving it by hand. |
 | `jailbee config validate` | Schema + cross-field + runtime-path checks. Fail-closed: unknown keys, bad `container_prefix`, malformed `egress_allow`, reserved `provision_env` keys, duplicate autostart step names, and unknown `optional_mounts` references are rejected. |
+| `jailbee config migrate [--apply]` | Move deprecated spellings and storage to their current homes: `claude_credentials:` → `credentials:`, `agents.claude.ai_pr_*`/`pr_prompt` → `pr.*`, legacy `chrome:` → `browsers.chrome`, and `github.api_tokens`, `credentials.repos` and repo-scope egress overrides from `global.yaml`/`state.sqlite` into each repo's host-local file. Shows the diff only; `--apply` writes (keeping `.bak` copies). Conflicts are reported and left in place. Host-only. |
+
+The three layers, lowest first: `~/.config/jailbee/global.yaml` (personal,
+every repo), the committed `.jailbee/config.yaml`, and the host-local
+`~/.config/jailbee/repos/<container_prefix>.yaml` (personal, this repo,
+never committed — the home of `github.token`, a per-repo
+`credentials.group` and personal `egress_allow`). `github`, `credentials`
+and `litellm` are rejected in the committed file.
 
 ### `jailbee config edit`
 
-Interactive editor for either config layer, with each field's own help text.
+Interactive editor for any config layer, with each field's own help text.
 
 ```bash
 jailbee config edit                      # this repo's .jailbee/config.yaml
 jailbee config edit --global             # ~/.config/jailbee/global.yaml
+jailbee config edit --local              # this repo's host-local overrides
 jailbee config edit --config <path>      # a specific repo's config
 jailbee config edit --write regenerate   # override the write policy once
 ```
@@ -276,13 +287,12 @@ refused for the repo layer: its config is synthesized from `global.yaml`'s
 a config file that stops that layer being used at all. Run `jailbee config
 init` there first, or edit the global layer, where those settings live.
 
-`github.api_tokens` can be set from the editor but is never displayed: the
-key list shows a fixed mask, the input is hidden, and a token typed this
-session is redacted from the diff preview exactly like one already on disk.
-It is still blocked at the repo layer (plain `jailbee config edit`), but not
-as a secret — the whole `github` block is host-local and the config loader
-rejects it in a repo config, the same reason that blocks every other
-`github` field there. `scratch.config` has no schema to build a form from;
+`github.token` shows in the `--local` editor as a masked, read-only row: the
+editor never paints a token on a terminal, so edit the host-local file by
+hand and keep it at mode `0600`. The deprecated `github.api_tokens` map
+(global layer only) is masked the same way. The whole `github` block is
+blocked at the repo layer (plain `jailbee config edit`) because the config
+loader rejects it in a repo config. `scratch.config` has no schema to build a form from;
 it is edited as a YAML block and checked before it is staged.
 
 A repo config's lists are *appended* to the global ones by jailbee's merge
@@ -893,7 +903,7 @@ are `ask`. CLI flags always win.
 | `--merge` / `--rebase` | After transport, merge/rebase the pushed ref into the container's branch. Refuse on a dirty container tree; conflicts leave the container mid-op → resolve in `jailbee shell`. |
 | `--plain` | Transport only, no apply. |
 | `--ff` / `--no-ff` | How `--merge` merges; `--merge` only (exit 2 with `--rebase`/`--plain`/`--force`). `--no-ff` always writes a merge commit; `--ff` demands a fast-forward and fails on divergence. Default is neither: a fast-forward when the container is already on the pushed branch (which `--pr` always is), a merge commit otherwise — and when that fast-forward is impossible, JailBee prints both commit counts and asks whether to make a merge commit instead. Without a TTY it errors and names `--no-ff` rather than deciding. |
-| `--pr` | PR containers only: re-fetch the PR head from GitHub into `refs/jailbee/pr/<N>/head` and push that exact ref. The fetch runs host-side, so the container needs no `jailbee net loose`. Refused on non-PR containers, and requires an explicit NAME (the label it reads is the container's, so there is no picker). Mutually exclusive with `--from`, `--current`, `--from-origin` and `--from-local` (the ref is fixed). Both dashboards expose it as "Refresh from PR head". |
+| `--pr` | PR containers only: re-fetch the PR head from GitHub into `refs/jailbee/pr/<N>/head` and push that exact ref. The fetch runs host-side, so the container needs no `jailbee net loose`. Refused on non-PR containers. Without a NAME, a TTY offers a single-select list of the running clone-mode PR containers (or uses the only eligible one); scripts pass the name. Mutually exclusive with `--from`, `--current`, `--from-origin` and `--from-local` (the ref is fixed). Both dashboards expose it as "Refresh from PR head". |
 | `--from-local` | Push the host's local `refs/heads/<source>` and skip the host fetch. Use when the host has commits not yet pushed to origin. |
 | `--from-origin` | Force `refs/remotes/origin/<source>` (overrides `push.push_from: local` and the `--current` default). |
 | `--fetch` / `--no-fetch` | Run/skip `git fetch origin <source>` on the host before resolving. Default: `push.autofetch` (true). Only applies when pushing the origin ref. |
@@ -1284,6 +1294,22 @@ Prints the manifest's current proposal and journal state first, then —
 absent `-y` — a confirmation naming the exact action. Refuses off a TTY
 without `-y`.
 
+## Unified outbox
+
+`jailbee outbox` covers both outboxes of a container — PR review manifests
+and issue manifests — in one place. A proposal is named `pr/<manifest>.json`
+or `issue/<manifest>.json`. Inspection is local and never calls GitHub; over
+remote SSH it is read-only. See [Unified proposal
+management](../../../git-bridge.md#unified-proposal-management).
+
+| Command | What it does |
+|---|---|
+| `jailbee outbox [CONTAINER]` / `outbox browse [CONTAINER]` | Interactive browser on a TTY, an overview off one. `browse` is the unambiguous spelling for a container named like a subcommand. The Qt dashboard has a native window for it. |
+| `jailbee outbox ls [CONTAINER] [--all-repos] [-o table\|json]` | List proposals, including containers whose outbox cannot be read. |
+| `jailbee outbox show CONTAINER PROPOSAL [-o table\|json]` | The complete proposal, with zero-based action and inline-comment indices. |
+| `jailbee outbox drop CONTAINER PROPOSAL [--action N [--comment M]] [--with-dependents] [--archive-journal] [-y] [--revision TOKEN]` | Delete locally — the whole proposal, one action, or one inline review comment — after showing the exact scope. `--with-dependents` takes issue `create` actions others refer to; `--revision` refuses if the proposal changed since you inspected it. `-y` only confirms. |
+| `jailbee outbox apply CONTAINER PROPOSAL [--dry-run] [--force] [-y] [--revision TOKEN]` | Publish one whole manifest through the same gates as `review apply` / `issue apply`. `--force` is the PR stale-anchor override and invalid for issues. |
+
 ## Branch placement
 
 ### `jailbee branch [BRANCH] [--container NAME] [--submodules-only]`
@@ -1421,11 +1447,12 @@ its base."
 
 | Command | Behaviour |
 |---|---|
-| `jailbee net strict [NAME]` | Egress allowlist (default mode). Clears any loose TTL. **`github.com` intentionally blocked** — don't add it to the allowlist; use loose for pushes. |
-| `jailbee net loose [NAME] [--for DUR\|--no-revert]` | Full NAT (uses the `jailbee-loose` bridge). Auto-reverts to the previous mode after a TTL (default 5 min, `loose_auto_revert` config). `--for` sets that TTL for this switch only: `30s`/`45m`/`4h`, max 24h, or `never` (= `--no-revert`); the two flags are mutually exclusive and a bad value exits 2. With neither flag JailBee asks — only on a TTY, with `JAILBEE_NONINTERACTIVE` unset and the policy enabled; otherwise `loose_auto_revert.after` applies with no prompt. With `enabled: false` JailBee schedules no TTL and never asks, but an explicit `--for` is still honoured and still auto-reverts. |
+| `jailbee net strict [NAME]` | Egress allowlist (default mode). Clears any loose TTL. **No push to GitHub by design** — only HTTPS GitHub hosts are ever added (`api.github.com` with `github.enabled`, `github.com` with Claude's plugins) and the container's token is read-only; don't add `github.com:22`. Push from the host or use loose. |
+| `jailbee net loose [NAME] [--for DUR\|--no-revert]` | Full NAT (the `jailbee-loose` bridge; on the work network, a source-scoped ACL swap on the same NIC instead). Auto-reverts to the previous mode after a TTL (default 5 min, `loose_auto_revert` config). `--for` sets that TTL for this switch only: `30s`/`45m`/`4h`, max 24h, or `never` (= `--no-revert`); the two flags are mutually exclusive and a bad value exits 2. With neither flag JailBee asks — only on a TTY, with `JAILBEE_NONINTERACTIVE` unset and the policy enabled; otherwise `loose_auto_revert.after` applies with no prompt. With `enabled: false` JailBee schedules no TTL and never asks, but an explicit `--for` is still honoured and still auto-reverts. |
 | `jailbee net refresh [--json]` | Re-resolve `egress_allow` hostnames, merge into the per-repo pool, push ACL + `/etc/hosts`. Useful after CDN IP rotation. |
 | `jailbee net status` | Refresh-timer health, registered repos, per-repo pool sizes, per-container loose expiry, and (new) an "Egress overrides" section listing every host-local override on this host. |
 | `jailbee net unregister [--repo <path>]` | Remove the repo from the refresh registry. `jailbee apply` re-registers. |
+| `jailbee net migrate [--undo] [--yes]` | Host-wide opt-in to the `jailbee-work` network for **future** containers: a fixed IPv4 address per container on one bridge, strict/loose switched by swapping NIC ACLs. Asks first; `--yes` confirms an unverified host firewall setup. Existing containers stay on the legacy bridges; `--undo` makes legacy the default again (moves nothing). Host-only. |
 
 Switching a container's network while a detached autostart run is live
 (`jailbee ls` showing `autostart:<stage>`) warns and proceeds rather than

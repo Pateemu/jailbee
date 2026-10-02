@@ -65,7 +65,7 @@ body — inline or via `body_file` — is capped at 64 KiB.
 | Field | Rule |
 |---|---|
 | `repo` | As above. |
-| `ref` | A manifest-local identifier for this new issue (unique within the manifest), used by later actions' `issue_ref`. Not sent to GitHub. |
+| `ref` | Required, non-empty string. A manifest-local identifier for this new issue (unique within the manifest), used by later actions' `issue_ref`. Not sent to GitHub. |
 | `title` | Non-empty string. Required. |
 | `body` / `body_file` | Required (exactly one). |
 | `labels` | Optional list of non-empty, non-duplicate (case-insensitive) strings. Default `[]`. |

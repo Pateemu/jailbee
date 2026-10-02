@@ -104,6 +104,8 @@ command consumes the manifest:
   becomes the body's first non-blank line after stripping leading Markdown
   `#` markers; if the body has no such line, the source branch or container
   name is used. For example, a body starting `Why?` yields PR title `Why?`.
+  Either way, a title longer than 120 characters is cut to 119 plus `…` —
+  keep it shorter.
 - `jb review apply` (existing PR only): a missing or `null` title leaves the
   current title unchanged. It does not derive a title from the body.
 
