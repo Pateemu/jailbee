@@ -8,6 +8,8 @@ before editing `## Unreleased`.
 
 ## Unreleased
 
+## 1.6.0 - 2026-10-02
+
 ### Added
 
 - **`sftp` and `scp` into a container's repo, over the remote SSH service.**
