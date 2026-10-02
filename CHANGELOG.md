@@ -47,16 +47,16 @@ before editing `## Unreleased`.
   agent is shown whole below the table, and `!` with `--force` overrides it.
 
 - **Apply, diagnose, snapshot and mount from the terminal dashboard.** A
-  repo's menu gains **Apply config…** (with or without restarts; `apply`'s own
-  restart question is asked in the terminal), **Diagnostics →** (`doctor`,
-  paged locally — over remote SSH it prints and pauses — and `disk-usage`) and **Prune stale containers…**. A container's menu
-  gains **Snapshots…** (create with a timestamp or a typed tag; restore and
-  delete ask first, "No" preselected), **Mount…**/**Unmount…** for the repo's
+  repo's menu gains **Apply config...** (with or without restarts; `apply`'s
+  own restart question is asked in the terminal), **Diagnostics →** (`doctor`
+  and `disk-usage`; over remote SSH `doctor` prints and pauses instead of
+  paging) and **Prune stale containers...**. A container's menu gains
+  **Snapshots...** (create with a timestamp or a typed tag; restore and delete
+  ask first, "No" preselected), **Mount...**/**Unmount...** for the repo's
   `optional_mounts`, and, while it has an autostart run, **Autostart status**
-  and **Cancel autostart…**. Each entry runs the real `jailbee` command. Over
+  and **Cancel autostart...**. Each entry runs the real `jailbee` command. Over
   remote SSH an entry is shown only when the session's policy permits its
-  command, so `apply` and `mount`, which manage the host, stay hidden under
-  `restrict_host: true`.
+  command, so `apply` and `mount` stay hidden under `restrict_host: true`.
 
 - **Pick a PR container for `jb push --pr`.** On a TTY, omitting the name
   offers a single-select list of running clone-mode PR containers (or uses
@@ -88,94 +88,69 @@ before editing `## Unreleased`.
   `jailbee account ls|use|park|rm` and `jailbee account group
   ls|create|rm|set|unset|use|reset`, and configured with a host-level
   `credentials:` block (`group` plus per-repo `repos:`) whose name is
-  agent-agnostic — each enabled agent keeps its own login in the group, and a
+  agent-agnostic: each enabled agent keeps its own login in the group, and a
   holder can have one live login per agent. The `jailbee ls` column is
   `GROUP`, the `jailbee new` flag is `--credential-group`, and the container
-  label is `user.jailbee.credential_group`. Every account command takes an
-  optional `-a/--agent` (the `account group` subcommands take none, since a
-  group name is shared); omitting it acts on every enabled pooled agent,
-  while naming one explicitly reaches that agent's pool even in a repo that
-  keeps it disabled — the pool is host-wide. A typed account reference that
-  matches more than one agent is an error naming the `-a` values to pass
-  (Claude is the only pooled agent so far, so that case cannot arise yet, and
-  on a TTY a picker is offered instead). The
-  old spellings all keep working and are removed in 2.0.0. The three a user
-  types warn once per invocation: `jailbee claude …`, `--claude-group`, and a
-  `claude_credentials:` block in `global.yaml` — which any write jailbee makes
-  to the relevant config file (`jailbee account group set`/`unset` writes the
-  host-local repo file; `jailbee config edit --global` writes the global file)
-  also renames to `credentials:` in place. The two read out of
-  state nobody retypes are accepted silently: the
-  `user.jailbee.claude_group` container label (read, never written) and the
-  `claude` / `claude_group` column names. See
+  label is `user.jailbee.credential_group`. Account commands take an optional
+  `-a/--agent` (the `account group` subcommands take none, since a group name
+  is shared). Omitting it acts on every enabled pooled agent; naming one
+  reaches that agent's pool even in a repo that keeps it disabled, because the
+  pool is host-wide. A typed account reference that matches several agents is
+  an error naming the `-a` values to pass, or a picker on a TTY.
+
+  The old spellings keep working until 2.0.0. `jailbee claude ...`,
+  `--claude-group` and a `claude_credentials:` block in `global.yaml` warn once
+  per invocation, and any write jailbee makes to a config file renames the
+  block to `credentials:` in place. The `user.jailbee.claude_group` label and
+  the `claude` / `claude_group` column names are still read, silently. See
   [docs/config.md](https://jailbee.gisgro.io/docs/config/#credentials) and
   [docs/commands.md](https://jailbee.gisgro.io/docs/commands/).
 
 - **Optional authenticated SSH access to JailBee.** Install `jailbee[ssh]`,
-  authorize client public keys, and explicitly enable the per-user service with
-  `jb remote ssh enable` to reach the registered-repository dashboard, a
-  restricted interactive JailBee console, or policy-controlled one-shot
-  commands. All three entry points are enabled by default on
-  `127.0.0.1:8022`; the shared command policy defaults to `full`, with
-  fail-closed classification and host restrictions enabled. Password login, host shells, file transfer,
-  forwarding are not exposed, and client environment requests (`SendEnv`)
-  are accepted but ignored — never passed to the child. The remote
-  dashboard withholds what would reach the host itself: no config editor, no
-  diff pager and no GUI app launches, and every process the service starts
-  runs with `LESSSECURE=1`. No remote command, in any policy mode, may set a
-  path-typed option or argument (`--config`, ...) or `new --mount`, the git
-  bridge moves refs but never the host's checked-out tree, a mount-mode
-  container (which shares that tree) cannot be entered, host-management
+  authorize client public keys and run `jb remote ssh enable` to start the
+  per-user service on `127.0.0.1:8022`. It offers the dashboard of the
+  registered repositories, a restricted JailBee console and policy-controlled
+  one-shot commands. A commandless login lists the enabled forms;
+  `remote.ssh.default_entrypoint` can open the dashboard or console instead.
+  `jb remote ssh serve` takes one-off `--listen`, `--port`, `--dashboard`,
+  `--shell`, `--exec`, `--commands`, `--allow` and `--restrict-host` overrides
+  for trying a policy; the systemd service never passes them, and it restarts
+  itself when JailBee is upgraded under it.
+
+  What it does not expose: password login, host shells, file transfer and
+  forwarding. Client environment requests (`SendEnv`) are accepted but
+  ignored. The remote dashboard has no config editor, diff pager or GUI
+  launches, and every process the service starts runs with `LESSSECURE=1`.
+
+  What the command policy (default `full`, fail-closed) refuses, in every mode:
+  path-typed options and arguments (`--config`, ...) and `new --mount`; entering
+  a mount-mode container, which shares the host's tree; and host-management
   commands (`config edit`, `remote ...`, `setup`, `apply`, `net egress add`,
-  `port to-container`, GUI launchers, ...) are refused in every command
-  mode including `full`, publishing to GitHub (`pr`, `review apply`, `issue
-  apply`) needs each action confirmed (`--yes` refused), and a branch's
-  privilege-widening autostart config cannot be approved remotely, `--yes`
-  included. `remote.ssh.restrict_host: false` lifts all of these host restrictions at
-  once. `jb remote ssh serve` also takes one-off `--listen`/`--port`/
-   `--dashboard`/`--shell`/`--exec`/`--commands`/`--allow`/`--restrict-host`
-   overrides for trying a policy without editing `global.yaml`; the systemd
-   service never passes them. A commandless login shows the enabled remote
-   forms by default; `remote.ssh.default_entrypoint` can open the dashboard or
-   console instead, while an explicit SSH `help` always shows the forms. The
-   service restarts itself when JailBee is upgraded under it (checked on each
-   connection and every 30 seconds), so it never keeps enforcing an older
-   version's rules.
+  `port to-container`, GUI launchers, ...). The git bridge moves refs but never
+  the host's checked-out tree. Publishing to GitHub (`pr`, `review apply`,
+  `issue apply`) needs each action confirmed (`--yes` refused), and a branch's
+  privilege-widening autostart config cannot be approved remotely.
+  `remote.ssh.restrict_host: false` lifts all of these host restrictions at
+  once. `remote.ssh.excluded_repos` (in `global.yaml` only; requires
+  `restrict_host: true`) lists registered `container_prefix` values to hide
+  from SSH entirely: routes, listings and aggregate views. New channels pick
+  up edits; running sessions keep their snapshot.
 
-- **Host-gated GitHub issue management: containers stage issue actions, a
-  human applies them.** An in-container agent can now create, edit, comment
-  on, label, close, or reopen GitHub issues across the repo tree — the
-  superproject and any number of declared submodules, mixed freely within
-  one manifest — without ever writing to GitHub itself. Each action is
-  written to `~/.jailbee/issue-outbox/` as a JSON manifest (documented for
-  the container side in the new `jailbee-issue-management` skill), and the
-  new `jb issue ls|show|apply|drop|resolve` command group reviews and
-  publishes it from the host: `apply` builds one combined plan across every
-  selected manifest and every repository it touches, asks once, then
-  mutates GitHub. A stale `expected` block — the issue changed since the
-  container proposed the edit — refuses the whole batch, first while the
-  plan is built and again in a narrower recheck right before anything
-  mutates. A GitHub outcome that cannot be confirmed for certain is
-  journaled `uncertain` and blocks its manifest until `jb issue resolve
-  --applied|--retry` reconciles it; a fully applied manifest is logged,
-  deleted, and archived automatically, and `jb issue drop --archive-journal`
-  gives the same treatment to settled progress a human wants to abandon
-  instead. See [Issue
+- **Host-gated GitHub issue management: containers stage, a human applies.**
+  An in-container agent can create, edit, comment on, label, close or reopen
+  issues across the superproject and its declared submodules, without ever
+  writing to GitHub. Each action is staged as a JSON manifest in
+  `~/.jailbee/issue-outbox/` (the container side is documented in the new
+  `jailbee-issue-management` skill), and `jb issue ls|show|apply|drop|resolve`
+  reviews and publishes it from the host. `apply` builds one plan across every
+  selected manifest and repository and asks once. A stale `expected` block, meaning the issue changed
+  since it was proposed, refuses the whole batch, checked again right before
+  anything mutates. An outcome that cannot be confirmed is journaled
+  `uncertain` and blocks its manifest until `jb issue resolve
+  --applied|--retry`. See [Issue
   management](https://jailbee.gisgro.io/docs/git-bridge/#issue-management).
-  Pending manifests are also visible everywhere the PR outbox's `✉N` marker
-  already showed: a new ISSUES column in `jailbee ls`, an "Apply N issue
-  action(s)" entry in both dashboards, and a reason line in the pre-destroy
-  risk warning.
-
-  The GitHub PAT recipe for containers (`docs/config.md`, `docs/git-bridge.md`,
-  the `jailbee-repo-setup` skill) is corrected to read-only across
-  Contents/Issues/Pull requests/Metadata as part of the same safety
-  contract — it previously recommended Issues/Pull requests: Read and
-  write, which this feature's credential model requires it never be again:
-  the container's `gh` only ever reads, and every write goes through this
-  outbox (or the existing PR review one) instead. `jb doctor` now also
-  reports a fine-grained PAT's expected read-only scope as an informational
-  reminder, since it cannot verify a token's actual effective permissions.
+  Pending manifests show as an ISSUES column in `jailbee ls`, an "Apply N issue
+  action(s)" entry in both dashboards, and a line in the pre-destroy warning.
 
 - **Claude Code on other providers' models: `claude-jb` and
   `jailbee litellm`.** A LiteLLM proxy runs in a dedicated `jailbee-litellm`
@@ -294,6 +269,17 @@ before editing `## Unreleased`.
   git-bridge entries (`Git →`) come before the PR ones (`PR →`). The
   refresh-age counter (`↻ Ns/Ms`) is gone from the title.
 
+- **The container GitHub token recipe is now read-only.** The PAT guidance in
+  `docs/config.md`, `docs/git-bridge.md` and the `jailbee-repo-setup` skill
+  asks for read-only Contents, Issues, Pull requests and Metadata, because the
+  container's `gh` never writes: every write goes through the PR or issue
+  outbox. `jailbee doctor` shows a reminder of the expected scope; it cannot
+  verify a token's real permissions.
+
+- **`jailbee net egress add` and `rm` prompt when the entry is omitted** on a
+  TTY: `add` asks for the destination, `rm` lists the stored overrides to pick
+  from.
+
 ### Deprecated
 
 - `agents.claude.ai_pr_description`, `ai_pr_branch`, `ai_pr_model`,
@@ -337,6 +323,14 @@ before editing `## Unreleased`.
   place and name those containers; `jailbee git pull` used to do this only for
   the container it merged, and only when merging into its own base. A stopped
   container catches up when it starts.
+- **Claude autostart no longer fails with "No such file or directory" on
+  `claude update`.** `ensure-claude` could point the launcher at a partial or
+  non-executable file in the shared version store, such as another container's
+  download in flight. Only a runnable, semver-named release is linked now, and
+  the link is retried once if the release is pruned before the update runs.
+- **The dashboards no longer stop refreshing on a non-UTF-8 process name or
+  cgroup path.** The `CPU` and `DOING` sampling crashed on one; it now skips
+  what it cannot decode.
 
 ## 1.5.0 - 2026-09-21
 
