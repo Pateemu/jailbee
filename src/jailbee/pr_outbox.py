@@ -666,16 +666,17 @@ def plan_lines(
 def show_lines(manifest: Manifest) -> list[str]:
     """Every action of `manifest`, bodies in full. Pure — no printing.
 
-    The untruncated counterpart of `plan_lines`, and the same contract: plain
-    text lines, no Rich markup, the caller decides how they are rendered. It
+    The untruncated counterpart of `plan_lines`, and the same contract: lines
+    of text, no Rich markup (bodies are Markdown-rendered by `render_markdown`
+    when stdout is a terminal), printed by `outbox.markdown_view.print_lines`. It
     lives here for the same reason `plan_lines` does — `Action` is a closed
     union defined in this module, and the one command whose whole purpose is
     showing *everything* must not be the place a new variant silently goes
     missing.
 
     A body is split into its own lines rather than emitted as one embedded
-    block, so a caller printing line by line reproduces it exactly. An empty
-    body contributes nothing, which is what it is.
+    block, so a caller printing line by line reproduces it (off a terminal,
+    exactly). An empty body contributes nothing, which is what it is.
     """
     lines: list[str] = [
         f"{manifest.name}  {manifest.repo}  "

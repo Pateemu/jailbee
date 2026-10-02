@@ -1141,10 +1141,11 @@ manifests only (no stopped-container note).
 
 ### `jailbee review show [NAME] [MANIFEST]`
 
-Print every pending manifest's action bodies **verbatim**, exactly as the
-container wrote them — markup and long lines are never re-wrapped or
-cropped, so this is the way to actually read a comment before deciding to
-publish it. Omit `MANIFEST` for every pending manifest in the container.
+Print every pending manifest's action bodies in full — never truncated, so
+this is the way to actually read a comment before deciding to publish it. On
+a terminal the Markdown is wrapped to the window and coloured, with HTML tags
+and image URLs shown as text rather than hidden; piped output is the raw text
+exactly as the container wrote it. Omit `MANIFEST` for every pending manifest in the container.
 
 ### `jailbee review drop [NAME] [MANIFEST] [-y]`
 
@@ -1230,8 +1231,8 @@ comma-separated from `container, manifest, actions, repos, state, error`
 ### `jailbee issue show NAME [MANIFEST]`
 
 Print every pending manifest's validated proposal and host journal state,
-verbatim — no truncation, no markup interpretation, and never a GitHub
-read. Omit `MANIFEST` for every manifest pending in that container.
+in full — never truncated, bodies Markdown-rendered on a terminal (HTML and
+image URLs shown as text) and raw when piped, and never a GitHub read. Omit `MANIFEST` for every manifest pending in that container.
 
 ### `jailbee issue apply [NAME] [--manifest NAME] [-y] [--dry-run]`
 

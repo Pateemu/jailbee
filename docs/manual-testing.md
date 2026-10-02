@@ -1800,8 +1800,8 @@ jailbee review ls
 #         001-review.json, ACTIONS "review:1", STATE ok
 jailbee review show feat-outboxsmoke
 # expect: "Smoke-testing the outbox." and "manual outbox smoke comment"
-#         printed verbatim (this is `show`'s whole job: no truncation, no
-#         Rich markup interpretation)
+#         printed in full (this is `show`'s whole job: no truncation, no
+#         hidden text; on a terminal the Markdown is rendered, piped it is raw)
 jailbee review apply feat-outboxsmoke --dry-run
 # expect: the plan (PR #<N>, repo, head sha, the one comment), then
 #         "1 action will be published to GitHub as <your-gh-login>.",

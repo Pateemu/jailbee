@@ -12128,11 +12128,11 @@ def _print_manifest_bodies(manifest: "Manifest") -> None:
     """Print one manifest's actions, every body in full.
 
     The rendering is `pr_outbox.show_lines`; this only decides how the lines
-    reach the terminal. ``markup=False`` keeps a ``[note]`` in a
-    container-written body from being read as a style tag and silently
-    dropped, and ``soft_wrap=True`` keeps a long line from being re-wrapped or
-    cropped — `jailbee review show` exists precisely so the text can be read
-    as written before it is published.
+    reach the terminal. `print_lines` keeps a ``[note]`` in a container-written
+    body from being read as a style tag and silently dropped, and shows the
+    Markdown bodies laid out without hiding any of their text — `jailbee
+    review show` exists precisely so the text can be read before it is
+    published.
     """
     from jailbee import pr_outbox
     from jailbee.outbox.markdown_view import print_lines
@@ -12151,7 +12151,7 @@ def review_show_cmd(
     ] = None,
     config: ConfigOption = None,
 ) -> None:
-    """Print every pending body in full, exactly as the container wrote it."""
+    """Print every pending body in full: rendered on a terminal, raw when piped."""
     from jailbee import pr_outbox
     from jailbee.lifecycle import short_name
 

@@ -548,8 +548,8 @@ def _action_lines(
             lines.extend(_prose("title before", action.expected_title))
             lines.extend(_prose("title after", action.title))
         if action.has_expected_body:
-            lines.extend(_prose("body before", action.expected_body, markdown=True))
-            lines.extend(_prose("body after", action.body, markdown=True))
+            lines.extend(_prose("body before", action.expected_body))
+            lines.extend(_prose("body after", action.body))
     elif isinstance(action, CommentAction):
         lines.extend(_prose("body", action.body, markdown=True))
     elif isinstance(action, LabelsAction):

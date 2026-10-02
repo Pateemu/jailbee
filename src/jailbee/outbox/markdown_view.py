@@ -5,15 +5,22 @@ paragraphs that are one line long. Printed verbatim they run off the terminal
 and the structure (lists, code, headings) is lost. `render_markdown` lays a
 body out for a terminal of a given width using Rich's Markdown renderer.
 
-The body is untrusted, so it is stripped of terminal controls *before*
-rendering (`safe_text`) and links are shown as text rather than OSC 8
-hyperlinks. Rich then writes the colour and style codes itself, from text that
-can no longer carry any, and those lines are marked `AnsiLine`. The renderers
-that produce lines stay pure and keep returning ``list[str]``; `print_lines`
-is where an `AnsiLine` is told apart from an ordinary line, which still gets
-`safe_text` and no markup. A mark lost along the way (an f-string, a
-concatenation) degrades to a plain line whose escapes are stripped — never to
-an unsanitised one.
+The body is untrusted, and `jb review show` / the apply plans exist so a human
+reads what will be published, so the rendering must not hide anything GitHub
+would show. Three rules follow:
+
+* HTML is switched off in the parser, so a tag or block is shown as the text
+  it is instead of silently dropped, and an image shows its URL next to its alt
+  text.
+* Terminal controls are removed from the *rendered* segments, after the parser
+  has decoded entities (``&#x202e;`` becomes a bidi override only at that
+  point), so the escape codes in the output are only ever Rich's own styling.
+  Links are shown as text, never as OSC 8 hyperlinks.
+* Those lines are marked `AnsiLine`. The renderers that produce lines stay pure
+  and keep returning ``list[str]``; `print_lines` is where an `AnsiLine` is told
+  apart from an ordinary line, which still gets `safe_text` and no markup. A
+  mark lost along the way (an f-string, a concatenation) degrades to a plain
+  line whose escapes are stripped — never to an unsanitised one.
 """
 
 from __future__ import annotations
@@ -23,8 +30,10 @@ import shutil
 import sys
 from collections.abc import Iterable
 
+from markdown_it import MarkdownIt
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.segment import Segment, Segments
 
 # Never wrap narrower than this, however deep the indent: a few columns of
 # text per line is less readable than a long line.
@@ -36,6 +45,21 @@ class AnsiLine(str):
     """A line of Rich-generated ANSI output; only `render_markdown` creates one."""
 
     __slots__ = ()
+
+
+class _VerbatimMarkdown(Markdown):
+    """Rich's Markdown, minus the two places it hides what the author wrote."""
+
+    def __init__(self, markup: str) -> None:
+        super().__init__(markup, hyperlinks=False)
+        # Rich's own parser has HTML on, and Rich then renders no HTML token at all.
+        parser = MarkdownIt("commonmark", {"html": False}).enable("strikethrough").enable("table")
+        self.parsed = parser.parse(markup)
+        for token in self.parsed:
+            for child in token.children or []:
+                if child.type == "image":
+                    src = str(child.attrs.get("src", ""))
+                    child.content = f"{child.content} ({src})"
 
 
 def _terminal_width() -> int | None:
@@ -59,11 +83,12 @@ def render_markdown(text: str, *, indent: str = "", width: int | None = None) ->
     # Imported here: `outbox.inspect` imports `pr_outbox`, which imports this module.
     from jailbee.outbox.inspect import safe_text
 
-    clean = safe_text(text)
+    if not text:
+        return []
     if width is None:
         width = _terminal_width()
     if width is None:
-        return [f"{indent}{line}" for line in clean.split("\n")]
+        return [f"{indent}{safe_text(line)}" for line in text.split("\n")]
     buffer = io.StringIO()
     console = Console(
         file=buffer,
@@ -75,7 +100,13 @@ def render_markdown(text: str, *, indent: str = "", width: int | None = None) ->
         color_system="auto",
         highlight=False,
     )
-    console.print(Markdown(clean, hyperlinks=False))
+    # Sanitise what the parser produced, not what it was given: entities decode late.
+    segments = [
+        Segment(safe_text(segment.text), segment.style)
+        for segment in console.render(_VerbatimMarkdown(text))
+        if not segment.control
+    ]
+    console.print(Segments(segments), end="")
     lines = [line.rstrip() for line in buffer.getvalue().split("\n")]
     while lines and not lines[-1]:
         lines.pop()
