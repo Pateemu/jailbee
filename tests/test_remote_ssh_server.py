@@ -1637,7 +1637,9 @@ def test_files_off_leaves_sftp_and_scp_refused(listener):
 
 def _reloaded(excluded=(), files=True):
     return (
-        GlobalConfig(remote=RemoteConfig(ssh=RemoteSSHConfig(files=files, excluded_repos=excluded))),
+        GlobalConfig(
+            remote=RemoteConfig(ssh=RemoteSSHConfig(files=files, excluded_repos=excluded))
+        ),
         None,
     )
 
@@ -1645,9 +1647,7 @@ def _reloaded(excluded=(), files=True):
 def _sftp_factory(listener, mocker, **kwargs):
     _, listen = listener
     mocker.patch.object(server, "load_global_config", return_value=_reloaded(**kwargs))
-    asyncio.run(
-        server.serve_async(RemoteSSHConfig(listen="127.0.0.2", port=8123, files=True))
-    )
+    asyncio.run(server.serve_async(RemoteSSHConfig(listen="127.0.0.2", port=8123, files=True)))
     return listen.call_args.kwargs["sftp_factory"]
 
 
