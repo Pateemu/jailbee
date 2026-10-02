@@ -2483,7 +2483,7 @@ host-local per-repo file may carry a narrower override (`routes`, `profiles`,
 | `version` | pinned `1.103.1` | LiteLLM version. An explicit version bypasses the bundled hash lock and warns. |
 | `default_profile` | `codex` | Profile used by `claude-jb` unless overridden by its `--profile` or `JAILBEE_LITELLM_PROFILE`. |
 | `autostart` | `false` | Start the Claude autostart window with `claude-jb` instead of `claude`. A repo's host-local file can override it. See [Autostart](litellm.md#autostart). |
-| `accounts` | `[default]` | ChatGPT logins, one proxy instance each. The built-in `codex` profile uses `default`. |
+| `accounts` | `[default]` | Logins (ChatGPT or xAI), one proxy instance each. The built-in `codex` profile uses `default`. |
 | `egress` | `[]` | Extra `host[:port]` the proxy may reach, for `extra` deployments. Changing it needs `jailbee litellm up`; `jailbee apply` does not apply an egress-only edit. |
 | `extra` | none | Path to a raw LiteLLM config fragment merged into every instance last. |
 | `routes` | four built-in routes | Named models; same-name entries overlay the built-in route field by field. |

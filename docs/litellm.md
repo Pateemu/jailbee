@@ -133,8 +133,13 @@ litellm:
   routes:
     grok: {model: xai/grok-4.3, oauth: true, context_window: 256000}
   profiles:
-    grok: {account: default, opus: grok, sonnet: grok, haiku: grok}
+    grok: {account: default, fable: grok, opus: grok, sonnet: grok, haiku: grok}
+    codex: {fable: grok, opus: grok, sonnet: grok, haiku: grok}   # no ChatGPT subscription
 ```
+
+Remapping `codex` keeps the built-in `default` account from also needing a
+ChatGPT login: an account is held back until it has a login for every provider
+its profiles use.
 
 Run `jailbee litellm up`, then `jailbee litellm login --provider xai` on the
 host: it prints a URL; open it in a browser on the same machine and approve.
@@ -145,7 +150,8 @@ account and one profile can use both.
 
 Without an xAI login the account's proxy still starts: only its `oauth` routes
 fail, and `jailbee litellm up`, `status` and `doctor` say so. `--provider` may
-be left out while the account's routes need only one kind of login.
+be left out here, since no route of `default` needs a ChatGPT login; an account
+whose profiles use both providers needs `--provider chatgpt` or `--provider xai`.
 
 This is experimental: it follows LiteLLM's xAI OAuth provider and has not yet
 been verified by jailbee against a live subscription. Grok models LiteLLM's
@@ -477,7 +483,8 @@ back on; that is your choice.
   `~/.local/share/jailbee/litellm/` remains, holding the port map, each
   account's proxy key (`0600`) and its `applied.sha256` and `applied-hot.sha256` stamps. Dev containers get only the proxy keys, one
   `/etc/jailbee/litellm-<account>.key` (`0640`, readable by the dev group) per
-  account. `jailbee litellm logout [ACCOUNT]` deletes that account's token.
+  account. `jailbee litellm logout [ACCOUNT] [--provider chatgpt|xai]` deletes that
+  account's token for that provider.
 - The proxy has default-deny egress restricted to the hosts the routes need
   (see [Other providers](#other-providers-and-api-keys)) plus `litellm.egress`
   after installation. During installation and reinstall,
@@ -534,9 +541,10 @@ per skipped file), unreadable LiteLLM inputs (`secrets.env`,
 `extra`), one `litellm version` row for the installed-versus-configured
 version, and per account an instance row (not set up, or unhealthy) and a login
 row. A missing login fails doctor only for the account that serves the default
-profile, and only when that profile maps a `chatgpt/` route; for another account
+profile, and only when that profile maps a `chatgpt/` route (missing ChatGPT login) or
+an `oauth` xAI route (missing xAI login); for another account
 whose profiles need a login the row passes and names those profiles. A login
 state that cannot be read always fails. Doctor also checks the services ACL and
 upstream reachability; `jailbee litellm up` re-resolves the proxy's provider
-allowlist when upstream addresses change. `jailbee litellm login [ACCOUNT]`
+allowlist when upstream addresses change. `jailbee litellm login [ACCOUNT] [--provider chatgpt|xai]`
 refreshes a missing login.

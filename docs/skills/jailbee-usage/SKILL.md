@@ -710,7 +710,7 @@ supports `jailbee litellm ls` (profiles and routes as `claude-jb` uses them,
 globally and per repo override; read-only; allowed over remote SSH in the default commands mode, but refused when
 `remote.ssh.excluded_repos` is set),
 `jailbee litellm status`, `logs [ACCOUNT] [-f]`,
-`logout [ACCOUNT]` and `down [--purge]`. After `down`, run `jailbee apply` to
+`logout [ACCOUNT] [--provider chatgpt|xai]` and `down [--purge]`. After `down`, run `jailbee apply` to
 remove stale proxy settings from running dev containers. Several ChatGPT
 accounts (`litellm.accounts`, one per profile via `profiles.<p>.account`) and
 API-key providers (keys in the host's `~/.config/jailbee/litellm/secrets.env`)

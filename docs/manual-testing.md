@@ -92,7 +92,9 @@ unit suite passes.
 
 1. Add `grok: {model: xai/grok-4.3, oauth: true, context_window: 256000}` as a
    route and `grok: {account: default, opus: grok, sonnet: grok, haiku: grok}`
-   as a profile, then run `jailbee litellm up`. Expect
+   as a profile (and, unless the rig already has a ChatGPT login for `default`,
+   remap the built-in `codex` profile's four tiers to `grok` too, or `default`
+   also needs a ChatGPT login and is held back), then run `jailbee litellm up`. Expect
    "Started without an xAI login: default".
 2. Run `jailbee litellm login --provider xai` and open the printed URL in a
    browser on the same machine. Expect "Logged in."; afterwards
