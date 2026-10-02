@@ -211,6 +211,7 @@ def test_a_non_utf8_extra_file_is_an_input_error_without_its_bytes(tmp_path: Pat
         ("router_settings: fast\n", "router_settings must be a mapping"),
         ("environment_variables: [X]\n", "environment_variables must be a mapping"),
         ("environment_variables: {CHATGPT_TOKEN_DIR: /tmp}\n", "reserved"),
+        ("environment_variables: {XAI_API_KEY: x}\n", "reserved"),
         ("model_list: {}\n", "model_list must be a list"),
         ("litellm_settings: {callbacks: mine.handler}\n", "callbacks must be a list"),
     ],

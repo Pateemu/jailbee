@@ -63,7 +63,8 @@ REPO_REFUSED_KEYS: tuple[str, ...] = ("enabled", "version", "accounts", "egress"
 proxy container and its logins, which every repo on the host shares."""
 
 SUBSCRIPTION_PROVIDERS: frozenset[str] = frozenset({"chatgpt"})
-"""Providers that log in with `jailbee litellm login` instead of taking an API key."""
+"""Providers whose every route logs in with `jailbee litellm login`; `xai` routes
+do only with `oauth: true`."""
 
 PROVIDER_HOSTS: dict[str, tuple[str, ...]] = {
     "chatgpt": ("chatgpt.com", "auth.openai.com"),
@@ -75,6 +76,10 @@ PROVIDER_HOSTS: dict[str, tuple[str, ...]] = {
 }
 """Hosts (port 443) the proxy must reach, per LiteLLM provider prefix. A provider
 missing here needs `api_base` or `egress` on its route: never a silent allow."""
+
+XAI_AUTH_HOST = "auth.x.ai"
+"""The xAI OAuth issuer; every endpoint in its discovery document lives here.
+An `oauth: true` route needs it besides `PROVIDER_HOSTS["xai"]`."""
 
 KNOWN_CONTEXT_WINDOWS: dict[str, int] = {
     "chatgpt/gpt-6-astra": 272_000,
@@ -100,16 +105,21 @@ PARAMS_DENYLIST: frozenset[str] = frozenset(
         "litellm_credential_name",
         "azure_ad_token",
         "model_info",
+        "use_xai_oauth",
     }
 )
 """`params` keys that change which provider, endpoint or credential a deployment
 uses. `api_key` and `api_base` have their own validated route fields; raw
 params would bypass the egress table derived from them and could send the
-login token to another host."""
+login token to another host. `use_xai_oauth` has its own route field, `oauth`,
+which also binds the route to an account and opens `auth.x.ai`."""
 
 _SECRET_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
 _RESERVED_SECRET_NAMES = frozenset({"PORT", "PATH", "HOME"})
-_RESERVED_SECRET_PREFIXES = ("LITELLM_", "JAILBEE_", "CHATGPT_", "PYTHON", "LD_")
+# `XAI_`: `XAI_API_KEY` in the proxy's environment silently overrides every
+# `oauth` route's subscription login, and `XAI_API_BASE` / `XAI_OAUTH_API_BASE`
+# would send the OAuth token to another host.
+_RESERVED_SECRET_PREFIXES = ("LITELLM_", "JAILBEE_", "CHATGPT_", "XAI_", "PYTHON", "LD_")
 
 INSTRUCTIONS_MAX_BYTES = 64 * 1024
 """Cap on `LiteLLMProfile.instructions`, in UTF-8 bytes. Linux limits one argv
@@ -277,6 +287,13 @@ class LiteLLMRoute(BaseModel):
         default_factory=dict,
         description="Raw `litellm_params` merged into this route's deployment.",
     )
+    oauth: bool | None = Field(
+        default=None,
+        description=(
+            "Use the account's xAI subscription login (`jailbee litellm login --provider "
+            "xai`) instead of an API key. Only on `xai/` models; experimental."
+        ),
+    )
 
     @field_validator("api_key")
     @classmethod
@@ -400,14 +417,27 @@ class ResolvedRoute:
     api_key: str | None = None
     api_base: str | None = None
     egress: tuple[str, ...] = ()
+    oauth: bool = False
 
     @property
     def provider(self) -> str:
         return provider_of(self.model)
 
     @property
+    def chatgpt(self) -> bool:
+        """The ChatGPT subscription backend, whose quirks the renderer and callback handle."""
+        return self.provider == "chatgpt"
+
+    @property
+    def login_provider(self) -> str | None:
+        """The login this route's account must hold: `chatgpt`, `xai`, or None for an API key."""
+        if self.provider in SUBSCRIPTION_PROVIDERS:
+            return self.provider
+        return "xai" if self.oauth else None
+
+    @property
     def subscription(self) -> bool:
-        return self.provider in SUBSCRIPTION_PROVIDERS
+        return self.login_provider is not None
 
 
 @dataclass(frozen=True)
@@ -589,6 +619,14 @@ class LiteLLMConfig(BaseModel):
                     f"route '{name}': `{provider}/` routes log in with `jailbee litellm "
                     "login`; `api_key` and `api_base` are not allowed on them"
                 )
+            oauth = raw.get("oauth") is True
+            if oauth and provider != "xai":
+                raise ValueError(f"route '{name}': `oauth` is only supported on `xai/` routes")
+            if oauth and (api_key or api_base):
+                raise ValueError(
+                    f"route '{name}': `oauth` routes log in with `jailbee litellm login "
+                    "--provider xai`; `api_key` and `api_base` are not allowed on them"
+                )
             if provider not in PROVIDER_HOSTS and not api_base and not egress:
                 what = f"provider {provider!r}" if provider else f"model {model!r}"
                 raise ValueError(
@@ -619,6 +657,7 @@ class LiteLLMConfig(BaseModel):
                 api_key=api_key,
                 api_base=api_base,
                 egress=tuple(str(e) for e in egress),
+                oauth=oauth,
             )
         return out
 
@@ -658,8 +697,8 @@ class LiteLLMConfig(BaseModel):
                 routes[r].subscription for r in profile.tiers.values()
             ):
                 raise ValueError(
-                    f"profile '{profile.name}' maps a subscription (`chatgpt/`) route, so it "
-                    "must name an `account`"
+                    f"profile '{profile.name}' maps a subscription route (`chatgpt/` or "
+                    "`oauth: true`), so it must name an `account`"
                 )
         if self.default_profile not in profiles:
             raise ValueError(f"default_profile '{self.default_profile}' is not a profile")

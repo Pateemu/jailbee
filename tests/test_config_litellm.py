@@ -507,3 +507,78 @@ def test_instructions_are_capped_at_64_kib_of_utf8():
     # Bytes, not characters: 32769 two-byte characters are 65538 bytes.
     with pytest.raises(ValidationError, match="64 KiB"):
         LiteLLMConfig.model_validate({"profiles": {"codex": {"instructions": "ä" * 32769}}})
+
+
+_GROK = {"model": "xai/grok-4.3", "oauth": True, "context_window": 256_000}
+
+
+def test_an_oauth_route_is_an_xai_subscription_route():
+    cfg = LiteLLMConfig.model_validate(
+        {"routes": {"grok": _GROK}, "profiles": {"g": {"account": "default", "opus": "grok"}}}
+    )
+    route = cfg.effective_routes()["grok"]
+    assert route.oauth is True
+    assert route.login_provider == "xai"
+    assert route.subscription is True
+    assert route.chatgpt is False
+
+
+def test_route_kinds_report_their_login_provider():
+    routes = LiteLLMConfig.model_validate(
+        {
+            "routes": {
+                "keyed": {
+                    "model": "xai/grok-4.3",
+                    "context_window": 256_000,
+                    "api_key": "GROK_KEY",
+                }
+            }
+        }
+    ).effective_routes()
+    assert (routes["sol-high"].login_provider, routes["sol-high"].chatgpt) == ("chatgpt", True)
+    assert (routes["keyed"].login_provider, routes["keyed"].subscription) == (None, False)
+
+
+def test_oauth_is_only_for_xai_models():
+    with pytest.raises(ValidationError, match="`oauth` is only supported on `xai/` routes"):
+        LiteLLMConfig.model_validate(
+            {"routes": {"r": {"model": "openai/gpt-6", "oauth": True, "context_window": 1000}}}
+        )
+
+
+@pytest.mark.parametrize(
+    "extra", [{"api_key": "GROK_KEY"}, {"api_base": "https://api.x.ai/v1"}], ids=["key", "base"]
+)
+def test_oauth_refuses_api_key_and_api_base(extra):
+    with pytest.raises(ValidationError, match="--provider xai"):
+        LiteLLMConfig.model_validate({"routes": {"grok": {**_GROK, **extra}}})
+
+
+def test_a_profile_of_oauth_routes_must_name_an_account():
+    with pytest.raises(ValidationError, match="must name an `account`"):
+        LiteLLMConfig.model_validate(
+            {"routes": {"grok": _GROK}, "profiles": {"g": {"opus": "grok"}}}
+        )
+
+
+def test_use_xai_oauth_is_refused_in_params():
+    with pytest.raises(ValidationError, match="use_xai_oauth"):
+        LiteLLMConfig.model_validate(
+            {
+                "routes": {
+                    "r": {
+                        "model": "xai/grok-4.3",
+                        "context_window": 1000,
+                        "params": {"use_xai_oauth": True},
+                    }
+                }
+            }
+        )
+
+
+@pytest.mark.parametrize("name", ["XAI_API_KEY", "XAI_API_BASE", "XAI_OAUTH_TOKEN_DIR"])
+def test_xai_secret_names_are_reserved(name):
+    with pytest.raises(ValidationError, match="reserved"):
+        LiteLLMConfig.model_validate(
+            {"routes": {"r": {"model": "xai/grok-4.3", "context_window": 1000, "api_key": name}}}
+        )
