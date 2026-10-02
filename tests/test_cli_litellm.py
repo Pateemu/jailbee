@@ -208,6 +208,7 @@ _TWO = {"accounts": ["personal", "work"], "profiles": {"codex": {"account": "per
 
 @pytest.mark.parametrize("command", ["login", "logout", "logs"])
 def test_an_unknown_account_is_rejected_before_side_effects(mocker, context, command):
+    mocker.patch("jailbee.litellm.login_providers", return_value=())
     target = {"login": "litellm_login", "logout": "litellm_logout", "logs": "litellm_logs"}[command]
     called = mocker.patch(f"jailbee.litellm.{target}")
     result = runner.invoke(app, ["litellm", command, "nope"])
@@ -218,6 +219,7 @@ def test_an_unknown_account_is_rejected_before_side_effects(mocker, context, com
 
 @pytest.mark.parametrize("command", ["login", "logout", "logs"])
 def test_several_accounts_need_a_name(mocker, context, command):
+    mocker.patch("jailbee.litellm.login_providers", return_value=())
     _accounts(context, **_TWO)
     result = runner.invoke(app, ["litellm", command])
     assert result.exit_code == 2
@@ -232,6 +234,7 @@ def test_a_named_account_is_passed_through(mocker, context):
 
 
 def test_login_returns_device_flow_exit_code(mocker, context):
+    mocker.patch("jailbee.litellm.login_providers", return_value=())
     login = mocker.patch("jailbee.litellm.litellm_login", return_value=19)
     result = runner.invoke(app, ["litellm", "login"])
     assert result.exit_code == 19
@@ -239,12 +242,14 @@ def test_login_returns_device_flow_exit_code(mocker, context):
 
 
 def test_logout(mocker, context):
+    mocker.patch("jailbee.litellm.login_providers", return_value=())
     mocker.patch("jailbee.litellm.litellm_logout", return_value=True)
     result = runner.invoke(app, ["litellm", "logout"])
     assert result.exit_code == 0 and "Logged out" in result.output
 
 
 def test_logout_without_existing_auth(mocker, context):
+    mocker.patch("jailbee.litellm.login_providers", return_value=())
     mocker.patch("jailbee.litellm.litellm_logout", return_value=False)
     result = runner.invoke(app, ["litellm", "logout"])
     assert result.exit_code == 0 and "Not logged in" in result.output
@@ -266,6 +271,7 @@ def test_down_purge_is_passed_through(mocker, context):
 
 
 def test_logout_needs_a_running_proxy(mocker, context):
+    mocker.patch("jailbee.litellm.login_providers", return_value=())
     mocker.patch(
         "jailbee.litellm.litellm_logout", side_effect=RuntimeError("run jailbee litellm up")
     )
@@ -319,3 +325,82 @@ def test_up_prints_an_issue_with_brackets_verbatim(mocker, context):
     )
     result = runner.invoke(app, ["litellm", "up"])
     assert " ".join(issue.split()) in " ".join(result.output.split())
+
+
+def test_login_with_the_only_needed_provider_runs_the_xai_flow(mocker, context):
+    mocker.patch("jailbee.litellm.login_providers", return_value=("xai",))
+    login = mocker.patch("jailbee.litellm.litellm_login_xai", return_value=0)
+    chatgpt = mocker.patch("jailbee.litellm.litellm_login")
+    result = runner.invoke(app, ["litellm", "login"])
+    assert result.exit_code == 0, result.output
+    login.assert_called_once_with(
+        context.return_value[0], context.return_value[1].litellm, "default"
+    )
+    chatgpt.assert_not_called()
+
+
+def test_login_without_any_needed_provider_keeps_the_chatgpt_flow(mocker, context):
+    mocker.patch("jailbee.litellm.login_providers", return_value=())
+    login = mocker.patch("jailbee.litellm.litellm_login", return_value=0)
+    assert runner.invoke(app, ["litellm", "login"]).exit_code == 0
+    login.assert_called_once_with(context.return_value[0], "default")
+
+
+def test_login_with_both_providers_needed_requires_a_flag(mocker, context):
+    mocker.patch("jailbee.litellm.login_providers", return_value=("chatgpt", "xai"))
+    login = mocker.patch("jailbee.litellm.litellm_login")
+    xai = mocker.patch("jailbee.litellm.litellm_login_xai")
+    result = runner.invoke(app, ["litellm", "login"])
+    assert result.exit_code == 2
+    assert "--provider" in result.output
+    login.assert_not_called()
+    xai.assert_not_called()
+
+
+def test_an_unknown_provider_is_exit_2(mocker, context):
+    mocker.patch("jailbee.litellm.login_providers", return_value=())
+    result = runner.invoke(app, ["litellm", "login", "--provider", "grok"])
+    assert result.exit_code == 2 and "chatgpt, xai" in result.output
+
+
+def test_logout_passes_the_provider(mocker, context):
+    mocker.patch("jailbee.litellm.login_providers", return_value=("chatgpt", "xai"))
+    logout = mocker.patch("jailbee.litellm.litellm_logout", return_value=True)
+    result = runner.invoke(app, ["litellm", "logout", "--provider", "xai"])
+    assert result.exit_code == 0, result.output
+    logout.assert_called_once_with(context.return_value[0], "default", "xai")
+
+
+def test_up_names_accounts_started_without_their_xai_login(mocker, context):
+    mocker.patch(
+        "jailbee.litellm.litellm_up",
+        return_value=ll.UpResult(
+            ip="10.0.0.3",
+            ports={"default": 4100},
+            restarted=[],
+            retired=[],
+            installed=False,
+            missing_xai_login=["default"],
+        ),
+    )
+    result = runner.invoke(app, ["litellm", "up"])
+    out = " ".join(result.output.split())
+    assert result.exit_code == 0, result.output
+    assert "without an xAI login: default" in out
+    assert "jailbee litellm login default --provider xai" in out
+
+
+def test_status_shows_the_xai_login_line_only_when_needed(mocker, context):
+    def status(xai):
+        return ll.LiteLLMStatus(
+            ll.ContainerState.RUNNING,
+            "10.0.0.3",
+            "1.103.1",
+            [ll.InstanceStatus("default", 4100, True, True, "present", xai_login=xai)],
+        )
+
+    mocker.patch("jailbee.litellm.litellm_status", return_value=status(None))
+    assert "login (xai)" not in runner.invoke(app, ["litellm", "status"]).output
+    mocker.patch("jailbee.litellm.litellm_status", return_value=status("missing"))
+    out = runner.invoke(app, ["litellm", "status"]).output
+    assert "login (xai): not logged in" in out and "--provider xai" in out

@@ -10842,6 +10842,36 @@ def _account_arg(gcfg: GlobalConfig, account: str | None) -> str:
     return account
 
 
+def _provider_arg(gcfg: GlobalConfig, account: str, provider: str | None) -> str:
+    """The login provider to act on; exit 2 before any side effect when it is ambiguous."""
+    from jailbee import litellm as ll
+
+    if provider is not None:
+        if provider not in ll.LOGIN_PROVIDERS:
+            error(
+                f"Unknown login provider '{provider}'. Use one of: {', '.join(ll.LOGIN_PROVIDERS)}."
+            )
+            raise typer.Exit(2)
+        return provider
+    needed = ll.login_providers(gcfg.litellm, account)
+    if len(needed) > 1:
+        error(
+            f"Account '{account}' needs both a ChatGPT and an xAI login; "
+            "pass --provider chatgpt or --provider xai."
+        )
+        raise typer.Exit(2)
+    return needed[0] if needed else "chatgpt"
+
+
+_ProviderOption = Annotated[
+    str | None,
+    typer.Option(
+        "--provider",
+        help="chatgpt or xai; optional when the account's routes need only one of them.",
+    ),
+]
+
+
 @litellm_app.command("up")
 def litellm_up_cmd(
     reinstall: Annotated[
@@ -10872,6 +10902,16 @@ def litellm_up_cmd(
         warn_plain(
             f"Not started, no ChatGPT login yet: {', '.join(result.awaiting_login)}. Run "
             "`jailbee litellm login <account>`, then `jailbee litellm up` again."
+        )
+    if result.missing_xai_login:
+        warn_plain(
+            "Started without an xAI login: "
+            f"{', '.join(result.missing_xai_login)}. Requests to their `oauth` routes fail "
+            "until you run "
+            + ", ".join(
+                f"`jailbee litellm login {a} --provider xai`" for a in result.missing_xai_login
+            )
+            + "."
         )
     if result.restarted:
         info(
@@ -10949,6 +10989,15 @@ def litellm_status_cmd() -> None:
             typer.echo("login: unknown (could not read it; see jailbee litellm logs)")
         else:
             typer.echo("login: not logged in — run jailbee litellm login")
+        if instance.xai_login == "present":
+            typer.echo("login (xai): logged in")
+        elif instance.xai_login == "unknown":
+            typer.echo("login (xai): unknown (could not read it; see jailbee litellm logs)")
+        elif instance.xai_login == "missing":
+            typer.echo(
+                f"login (xai): not logged in — run jailbee litellm login {instance.account} "
+                "--provider xai"
+            )
     if (
         status.container != ll.ContainerState.RUNNING
         or not status.instances
@@ -10984,15 +11033,20 @@ def litellm_login_cmd(
         str | None,
         typer.Argument(help="Account from `litellm.accounts`; optional when there is only one."),
     ] = None,
+    provider: _ProviderOption = None,
 ) -> None:
-    """Log an account in to ChatGPT with LiteLLM's interactive device-code flow."""
+    """Log an account in: ChatGPT by device code, xAI (experimental) in the host's browser."""
     from jailbee import litellm as ll
     from jailbee.incus import IncusError
 
     incus, gcfg = _litellm_context()
     resolved = _account_arg(gcfg, account)
+    chosen = _provider_arg(gcfg, resolved, provider)
     try:
-        exit_code = ll.litellm_login(incus, resolved)
+        if chosen == "xai":
+            exit_code = ll.litellm_login_xai(incus, gcfg.litellm, resolved)
+        else:
+            exit_code = ll.litellm_login(incus, resolved)
     except (RuntimeError, IncusError) as exc:
         error(str(exc))
         raise typer.Exit(1) from exc
@@ -11007,15 +11061,16 @@ def litellm_logout_cmd(
         str | None,
         typer.Argument(help="Account from `litellm.accounts`; optional when there is only one."),
     ] = None,
+    provider: _ProviderOption = None,
 ) -> None:
-    """Delete the ChatGPT token in the proxy's state volume, keeping its settings."""
+    """Delete the account's ChatGPT or xAI token, keeping its settings."""
     from jailbee import litellm as ll
     from jailbee.incus import IncusError
 
     incus, gcfg = _litellm_context()
     resolved = _account_arg(gcfg, account)
     try:
-        removed = ll.litellm_logout(incus, resolved)
+        removed = ll.litellm_logout(incus, resolved, _provider_arg(gcfg, resolved, provider))
     except (RuntimeError, IncusError) as exc:
         error(str(exc))
         raise typer.Exit(1) from exc

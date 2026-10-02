@@ -41,7 +41,9 @@ def _block(title: str, cfg: LiteLLMConfig, scope: str | None) -> list[str]:
                 tier,
                 tier_alias(scope, name, tier),
                 route,
-                routes[route].model,
+                f"{routes[route].model} (subscription)"
+                if routes[route].oauth
+                else routes[route].model,
                 _effort(routes[route]),
             )
             for tier, route in profile.tiers.items()

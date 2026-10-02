@@ -62,3 +62,15 @@ def test_floor_efforts_and_profile_session_effort_are_shown():
     repo_part = text.split("repo r")[1]
     assert ">= high" in repo_part
     assert "session effort low" in repo_part
+
+
+def test_an_oauth_route_is_marked_as_a_subscription():
+    cfg = LiteLLMConfig.model_validate(
+        {
+            "enabled": True,
+            "routes": {"grok": {"model": "xai/grok-4.3", "oauth": True, "context_window": 256_000}},
+            "profiles": {"g": {"account": "default", "opus": "grok"}},
+        }
+    )
+    text = "\n".join(listing_lines(cfg, [], global_origin="/c/global.yaml"))
+    assert "xai/grok-4.3 (subscription)" in text

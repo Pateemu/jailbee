@@ -715,6 +715,11 @@ def _reconcile_litellm_or_warn(
             f"LiteLLM instance(s) {', '.join(result.awaiting_login)} not started: no login yet; "
             "run `jailbee litellm login <account>`, then `jailbee litellm up`."
         )
+    if result.missing_xai_login:
+        warn_plain(
+            f"LiteLLM instance(s) {', '.join(result.missing_xai_login)} started without an xAI "
+            "login; run `jailbee litellm login <account> --provider xai`."
+        )
     # No flag is named: `jailbee new` skips restarts for a scratch bootstrap too.
     waiting = [a for a in result.pending if a not in result.stopped]
     if waiting:
