@@ -500,6 +500,42 @@ inside.
 
 → [What this does](agents.md#1-what-this-does)
 
+### Can Claude Code run on my ChatGPT (Codex) subscription?
+
+Yes, through `claude-jb`: a LiteLLM proxy in its own container maps Claude
+Code's four tiers to GPT models on your subscription, while plain `claude`
+stays on your Claude login. Set `litellm.enabled: true` in `global.yaml`, then
+`jailbee litellm up`, `jailbee litellm login`, `jailbee litellm up`, and
+`jailbee base build` + `jailbee apply` per repo.
+
+→ [Claude Code through LiteLLM](litellm.md#setup)
+
+### Can `claude-jb` use OpenRouter, Grok or another API key instead?
+
+Yes. A route names any LiteLLM model string and the *name* of a variable in
+`~/.config/jailbee/litellm/secrets.env`; a profile maps tiers to routes. No
+ChatGPT subscription is needed once the built-in `codex` profile points at your
+routes too. A SuperGrok or X Premium+ subscription cannot serve routes yet;
+an xAI API key can.
+
+→ [Quick start by provider](litellm.md#quick-start-by-provider)
+
+### A new model came out — do I wait for a JailBee release?
+
+No. Give a built-in route the new model (`routes: {sol-high: {model: …,
+context_window: …}}`) or add a route and remap a tier, then `jailbee apply`:
+the proxy reloads without a restart and open sessions move to the new model.
+
+→ [Adding a new model](litellm.md#adding-a-new-model)
+
+### Why does `/effort` do nothing in `claude-jb`?
+
+The tier's route fixes its effort (`effort:`), which is how Opus and Sonnet
+differ when both run the same model. Use `min_effort:` for a floor that
+`/effort` can go above.
+
+→ [Routes and profiles](litellm.md#routes-and-profiles)
+
 ### How do I make `gh` work for an agent inside a container?
 
 Put a fine-grained PAT per GitHub owner in `~/.config/jailbee/global.yaml`

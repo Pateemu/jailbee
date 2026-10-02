@@ -24,8 +24,10 @@ committed `.jailbee/config.yaml`. See [Configuration](config.md#litellm) and
 
 2. Run `jailbee litellm up`, then `jailbee litellm login [ACCOUNT]`, then
    `jailbee litellm up` again. The first `up` sets up the container but leaves an
-   account without a login stopped (LiteLLM would wait in its own device-code
-   prompt and never answer its health probe); the second starts it. `login`
+   account whose routes need a ChatGPT login stopped until it has one (LiteLLM
+   would wait in its own device-code prompt and never answer its health probe);
+   the second starts it. An account that serves only API-key routes needs no
+   login and starts on the first `up`. `login`
    starts LiteLLM's interactive ChatGPT device-code login for that account (the
    name may be omitted while there is only one account, `default` by default).
 3. Run `jailbee base build` in each repo that needs `claude-jb` (the wrapper is
@@ -44,6 +46,81 @@ Run `jailbee apply` in each affected repo afterward: it
 removes stale dev-container proxy settings, and `claude-jb` then fails clearly
 instead of silently falling back to native Claude. Bring the proxy back with
 `jailbee litellm up` and re-apply to restore access.
+
+## Quick start by provider
+
+Each recipe goes into the host's `~/.config/jailbee/global.yaml` and is
+followed by the [Setup](#setup) steps; check the result with `jailbee litellm
+ls` (what `claude-jb` will use) and `jailbee litellm status`.
+
+### ChatGPT subscription (Codex)
+
+The built-in `codex` profile needs nothing but `enabled: true`:
+
+```yaml
+litellm:
+  enabled: true
+```
+
+`jailbee litellm up`, `jailbee litellm login`, `jailbee litellm up`, then in a
+container `claude-jb -p 'say hi' --model haiku`. The tiers it maps are in
+[Routes and profiles](#routes-and-profiles); a second ChatGPT account is in
+[Accounts](#accounts).
+
+### OpenRouter
+
+Put the key in `~/.config/jailbee/litellm/secrets.env` and `chmod 600` it:
+
+```sh
+OPENROUTER_API_KEY=sk-or-...
+```
+
+Then name it in a route; the config holds the variable's name, never the key:
+
+```yaml
+litellm:
+  enabled: true
+  default_profile: openrouter
+  routes:
+    kimi:
+      model: openrouter/moonshotai/kimi-k3   # openrouter/<model id from openrouter.ai>
+      context_window: 262144                 # the model's input limit
+      api_key: OPENROUTER_API_KEY
+  profiles:
+    openrouter: {fable: kimi, opus: kimi, sonnet: kimi, haiku: kimi}
+    # Without a ChatGPT subscription, point the built-in profile here as well:
+    # while it maps chatgpt/ routes, its account waits for a ChatGPT login.
+    codex: {fable: kimi, opus: kimi, sonnet: kimi, haiku: kimi}
+```
+
+`jailbee litellm up` starts the proxy straight away (no login), then
+`jailbee base build` and `jailbee apply` per repo as in [Setup](#setup).
+Different OpenRouter models per tier are just more routes.
+
+### xAI (Grok) with an API key
+
+Same shape, with the key from console.x.ai:
+
+```sh
+GROK_API_KEY=xai-...
+```
+
+```yaml
+litellm:
+  enabled: true
+  default_profile: grok
+  routes:
+    grok:
+      model: xai/grok-4.3        # xai/<model name from docs.x.ai>
+      context_window: 256000     # the model's input limit, from its model page
+      api_key: GROK_API_KEY
+  profiles:
+    grok: {fable: grok, opus: grok, sonnet: grok, haiku: grok}
+    codex: {fable: grok, opus: grok, sonnet: grok, haiku: grok}   # no ChatGPT subscription
+```
+
+The request is billed to the API key at xAI's token prices. A SuperGrok or
+X Premium+ subscription cannot serve routes yet.
 
 ## Routes and profiles
 
@@ -149,6 +226,55 @@ larger value would compact only after the backend had refused the prompt. A new
 model needs an explicit `context_window`; the wrapper exports
 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` as the largest window among the selected
 profile's mapped routes.
+
+## Adding a new model
+
+New models usually appear before a jailbee release knows them, and nothing
+waits for one: a route is a LiteLLM model string, so any model LiteLLM can
+reach is a config edit away.
+
+1. **Find the model string**: `<provider>/<model>`, as in LiteLLM's
+   [provider list](https://docs.litellm.ai/docs/providers), with the model name
+   the provider publishes (`chatgpt/…`, `openrouter/<vendor>/<model>`,
+   `xai/…`).
+2. **Find its context window**: the most *input* the backend accepts, which
+   for a subscription backend can be well below the API's advertised total.
+   A model jailbee does not know needs `context_window`; too large a value makes
+   Claude Code compact only after the backend has refused the prompt.
+3. **Point a tier at it.** Either give a built-in route a new model, which keeps
+   the route's name and effort:
+
+   ```yaml
+   litellm:
+     routes:
+       sol-high: {model: chatgpt/gpt-6.2-sol, context_window: 272000}
+       sol-medium: {model: chatgpt/gpt-6.2-sol, context_window: 272000}
+   ```
+
+   or add a route and remap the tier:
+
+   ```yaml
+   litellm:
+     routes:
+       nova: {model: chatgpt/gpt-7-nova, effort: high, context_window: 400000}
+     profiles:
+       codex: {opus: nova}   # other tiers keep their routes
+   ```
+
+4. **Apply it**: `jailbee apply` in any repo loads route and profile edits into
+   the running proxy without a restart, and open `claude-jb` sessions continue
+   on the new model, since they hold tier names, not route names. A new route
+   to another provider widens the egress allowlist in the same run, and a new
+   secret restarts the instance; only an edit that changes nothing but
+   `egress` needs `jailbee litellm up` ([details](#per-repo-overrides)).
+5. **Check it**: `jailbee litellm ls` shows each tier's model, effort and
+   window; `claude-jb -p 'say hi' --model opus` sends one request.
+
+If LiteLLM itself does not know the model or provider yet, a newer LiteLLM
+may: set `litellm.version` and run `jailbee litellm up`. That installs without
+the hash lock and warns every time. When a jailbee release later changes a
+built-in route, your override still wins; drop it once `jailbee litellm ls`
+shows the built-in has caught up.
 
 ## Per-repo overrides
 
@@ -261,7 +387,8 @@ it.
 
 ## Other providers and API keys
 
-Any LiteLLM model string works as a route. API keys live in
+Any LiteLLM model string works as a route ([quick starts](#quick-start-by-provider)
+for OpenRouter and xAI). API keys live in
 `~/.config/jailbee/litellm/secrets.env` (mode `0600`, `NAME=value` lines; `export NAME=value` and quoted values are
 accepted, but a value may not contain a quote, backslash or NUL); the config
 names the variable, never the key:
