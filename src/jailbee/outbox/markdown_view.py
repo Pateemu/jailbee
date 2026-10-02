@@ -58,8 +58,11 @@ class _VerbatimMarkdown(Markdown):
         for token in self.parsed:
             for child in token.children or []:
                 if child.type == "image":
+                    # Rich lifts an image out of its line into a block of its own, which
+                    # reorders the text; show its Markdown source in place instead.
                     src = str(child.attrs.get("src", ""))
-                    child.content = f"{child.content} ({src})"
+                    child.type, child.tag, child.children = "text", "", None
+                    child.content = f"![{child.content}]({src})"
 
 
 def _terminal_width() -> int | None:

@@ -116,6 +116,17 @@ def test_image_url_is_shown() -> None:
     assert "logo" in out and "http://track/p.png" in out
 
 
+def test_image_keeps_its_place_in_the_line() -> None:
+    assert plain(render_markdown("before ![y](http://t/y) after", width=60)) == [
+        "before ![y](http://t/y) after"
+    ]
+
+
+def test_image_in_a_table_cell_stays_in_the_cell() -> None:
+    out = "\n".join(plain(render_markdown("| a |\n|---|\n| ![i](http://t/i) |", width=60)))
+    assert out.index("![i](http://t/i)") > out.index("──")
+
+
 def test_entities_cannot_reintroduce_format_or_control_characters() -> None:
     lines = render_markdown("a &#x202e;b &#x200b;c &#x7;d &#27;[31me", width=60)
     out = "\n".join(plain(lines))
