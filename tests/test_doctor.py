@@ -288,6 +288,55 @@ def test_an_unreadable_login_fails(mocker):
     assert not _rows(gcfg)["litellm default login"].ok
 
 
+_GROK_DOCTOR = {
+    "routes": {"grok": {"model": "xai/grok-4.3", "oauth": True, "context_window": 256_000}},
+    "profiles": {"g": {"account": "default", "opus": "grok"}},
+}
+
+
+def test_litellm_doctor_fails_a_missing_xai_login_the_default_profile_needs(mocker):
+    from jailbee import litellm as ll
+
+    gcfg = _litellm_up(
+        mocker,
+        [ll.InstanceStatus("default", 4100, True, True, "present", xai_login="missing")],
+        **_GROK_DOCTOR,
+        default_profile="g",
+    )
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    rows = _rows(gcfg)
+    row = rows["litellm default login (xai)"]
+    assert not row.ok and "--provider xai" in row.detail
+    assert "litellm default login" not in rows  # the ChatGPT login is present
+
+
+def test_litellm_doctor_passes_a_missing_xai_login_no_default_profile_needs(mocker):
+    from jailbee import litellm as ll
+
+    gcfg = _litellm_up(
+        mocker,
+        [ll.InstanceStatus("default", 4100, True, True, "present", xai_login="missing")],
+        **_GROK_DOCTOR,
+    )
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    row = _rows(gcfg)["litellm default login (xai)"]
+    assert row.ok and "only profiles g need it" in row.detail
+
+
+def test_litellm_doctor_does_not_count_an_xai_route_as_needing_chatgpt(mocker):
+    from jailbee import litellm as ll
+
+    gcfg = _litellm_up(
+        mocker,
+        [ll.InstanceStatus("default", 4100, True, True, "missing", xai_login="present")],
+        routes=_GROK_DOCTOR["routes"],
+        profiles={"codex": {"fable": None, "opus": None, "sonnet": None, "haiku": "grok"}},
+    )
+    mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)
+    rows = _rows(gcfg)
+    assert all(r.ok for n, r in rows.items() if n.startswith("litellm default login"))
+
+
 def test_the_version_row_appears_once_for_several_instances(mocker):
     from jailbee import litellm as ll
     from jailbee.doctor import _check_litellm

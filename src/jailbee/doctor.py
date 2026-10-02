@@ -132,13 +132,20 @@ def _check_litellm(incus: Incus, gcfg: GlobalConfig) -> list[CheckResult]:
         )
     routes = cfg.effective_routes()
     profiles = cfg.effective_profiles()
-    needing: dict[str, list[str]] = {}
+    needing: dict[str, dict[str, list[str]]] = {"chatgpt": {}, "xai": {}}
     for profile_name, profile in profiles.items():
-        if any(routes[r].subscription for r in profile.tiers.values()):
-            needing.setdefault(cfg.instance_account(profile), []).append(profile_name)
+        providers = {routes[r].login_provider for r in profile.tiers.values()}
+        for provider in (p for p in providers if p is not None):
+            needing[provider].setdefault(cfg.instance_account(profile), []).append(profile_name)
     default = profiles[cfg.default_profile]
     default_account = cfg.instance_account(default)
-    blocking = default_account if cfg.default_profile in needing.get(default_account, []) else None
+
+    def blocking(provider: str) -> str | None:
+        return (
+            default_account
+            if cfg.default_profile in needing[provider].get(default_account, [])
+            else None
+        )
 
     for instance in status.instances:
         name = f"litellm {instance.account}"
@@ -171,9 +178,9 @@ def _check_litellm(incus: Incus, gcfg: GlobalConfig) -> list[CheckResult]:
                     f"'jailbee litellm logs {instance.account}'",
                 )
             )
-        elif instance.login == "missing" and instance.account in needing:
-            names = ", ".join(needing[instance.account])
-            if instance.account == blocking:
+        elif instance.login == "missing" and instance.account in needing["chatgpt"]:
+            names = ", ".join(needing["chatgpt"][instance.account])
+            if instance.account == blocking("chatgpt"):
                 rows.append(
                     CheckResult(login_row, False, f"not logged in (profiles: {names}) — {fix}")
                 )
@@ -183,6 +190,34 @@ def _check_litellm(incus: Incus, gcfg: GlobalConfig) -> list[CheckResult]:
                         login_row, True, f"not logged in; only profiles {names} need it — {fix}"
                     )
                 )
+        if instance.xai_login is not None:
+            xai_row = f"{name} login (xai)"
+            xai_fix = f"run 'jailbee litellm login {instance.account} --provider xai'"
+            if instance.xai_login == "unknown":
+                rows.append(
+                    CheckResult(
+                        xai_row,
+                        False,
+                        "could not read the login state — see "
+                        f"'jailbee litellm logs {instance.account}'",
+                    )
+                )
+            elif instance.xai_login == "missing":
+                xai_names = ", ".join(needing["xai"].get(instance.account, []))
+                if instance.account == blocking("xai"):
+                    rows.append(
+                        CheckResult(
+                            xai_row, False, f"not logged in (profiles: {xai_names}) — {xai_fix}"
+                        )
+                    )
+                else:
+                    rows.append(
+                        CheckResult(
+                            xai_row,
+                            True,
+                            f"not logged in; only profiles {xai_names} need it — {xai_fix}",
+                        )
+                    )
     missing = litellm.bridges_missing_services_acl(incus)
     if missing:
         rows.append(
