@@ -195,6 +195,16 @@ section {
   height: 24px;
 }
 
+/* The wordmark as the hero's lockup sets it: amber, with "ai" apart. */
+.topbar__brand span {
+  color: var(--amber);
+}
+
+.topbar__brand em {
+  color: var(--text);
+  font-style: normal;
+}
+
 /* Where the docs have their search box. Padded to the docs bar's 20px
    edge, which it reaches alone below 960px, once the source box goes. */
 .topbar__link {
