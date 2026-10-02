@@ -479,8 +479,8 @@ def _reset_deprecation_notices():
     """
     from jailbee import notices
     from jailbee.config.loader import (
-        _warn_legacy_chrome_block,
         _warn_insecure_perms,
+        _warn_legacy_chrome_block,
         _warn_legacy_credentials_block,
         _warn_legacy_per_repo_entry,
         _warn_legacy_pr_keys,
