@@ -630,6 +630,13 @@ def test_pr_publishes_selected_all_actions_and_full_plain_text(env, capsys):
     assert env[7].identity is None
 
 
+def test_issue_plan_is_printed_through_the_shared_markdown_printer(env, mocker):
+    printed = mocker.patch("jailbee.outbox.publish.print_lines")
+    assert selected(env, "issue", dry_run=True) == 0
+    (lines,) = printed.call_args.args
+    assert "Host GitHub login: alice" in lines
+
+
 @pytest.mark.parametrize("kind", ["issue", "pr"])
 @pytest.mark.parametrize("mode", ["cancel", "dry_run", "off_tty"])
 def test_no_approval_or_dry_run_never_mutates(env, kind, mode):

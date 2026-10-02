@@ -1141,8 +1141,10 @@ container narrows the listing to it; omitting it does **not** open a
 picker the way most `jailbee` commands do — it lists everything at once. A
 stopped container's outbox cannot be read at all, so it is named in a note
 under the table rather than shown as empty. `jailbee issue show` prints a
-manifest's full proposed text and journal state verbatim — no truncation,
-no markup — for actually reading a body before deciding.
+manifest's full proposed text and journal state, never truncated, for
+actually reading a body before deciding. On a terminal the Markdown bodies are
+wrapped to the window and coloured; HTML tags and image URLs are shown as text
+rather than hidden, and piped output is the raw text.
 
 Pending manifests are also visible without running `issue ls`:
 `jailbee ls`'s ISSUES column (right after PR) shows `✉N`, both dashboards add

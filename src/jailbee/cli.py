@@ -12185,18 +12185,18 @@ def _print_manifest_bodies(manifest: "Manifest") -> None:
     """Print one manifest's actions, every body in full.
 
     The rendering is `pr_outbox.show_lines`; this only decides how the lines
-    reach the terminal. ``markup=False`` keeps a ``[note]`` in a
-    container-written body from being read as a style tag and silently
-    dropped, and ``soft_wrap=True`` keeps a long line from being re-wrapped or
-    cropped — `jailbee review show` exists precisely so the text can be read
-    as written before it is published.
+    reach the terminal. `print_lines` keeps a ``[note]`` in a container-written
+    body from being read as a style tag and silently dropped, and shows the
+    Markdown bodies laid out without hiding any of their text — `jailbee
+    review show` exists precisely so the text can be read before it is
+    published.
     """
     from jailbee import pr_outbox
+    from jailbee.outbox.markdown_view import print_lines
     from jailbee.tui import console
 
     console.print()
-    for line in pr_outbox.show_lines(manifest):
-        console.print(line, markup=False, highlight=False, soft_wrap=True)
+    print_lines(pr_outbox.show_lines(manifest))
 
 
 @review_app.command("show")
@@ -12208,7 +12208,7 @@ def review_show_cmd(
     ] = None,
     config: ConfigOption = None,
 ) -> None:
-    """Print every pending body in full, exactly as the container wrote it."""
+    """Print every pending body in full: rendered on a terminal, raw when piped."""
     from jailbee import pr_outbox
     from jailbee.lifecycle import short_name
 
@@ -12693,6 +12693,7 @@ def issue_show_cmd(
     from jailbee import issue_outbox
     from jailbee.issue_manifest import IssueManifestError, parse_manifest
     from jailbee.lifecycle import short_name
+    from jailbee.outbox.markdown_view import print_lines
     from jailbee.outbox_io import JournalError, JournalStore, container_identity, journal_key
     from jailbee.tui import console
 
@@ -12727,8 +12728,7 @@ def issue_show_cmd(
             failed = True
             continue
         console.print()
-        for line in issue_outbox.show_lines(parsed, journal, short):
-            console.print(line, markup=False, highlight=False, soft_wrap=True)
+        print_lines(issue_outbox.show_lines(parsed, journal, short))
     if failed:
         raise typer.Exit(1)
 
@@ -12766,8 +12766,8 @@ def issue_apply_cmd(
     """
     from jailbee import issue_outbox
     from jailbee.lifecycle import _stdin_is_interactive, short_name
+    from jailbee.outbox.markdown_view import print_lines
     from jailbee.outbox_io import JournalStore
-    from jailbee.tui import console
 
     cfg = _load_or_exit(config)
     incus, container = _resolve_issue_container(cfg, name)
@@ -12790,8 +12790,7 @@ def issue_apply_cmd(
         error_plain(str(e))
         raise typer.Exit(1) from e
 
-    for line in issue_outbox.plan_lines(batch):
-        console.print(line, markup=False, highlight=False, soft_wrap=True)
+    print_lines(issue_outbox.plan_lines(batch))
 
     if dry_run:
         return
@@ -13015,6 +13014,7 @@ def issue_resolve_cmd(
     from jailbee import issue_outbox
     from jailbee.issue_manifest import CreateAction, IssueManifestError, parse_manifest
     from jailbee.lifecycle import _stdin_is_interactive, short_name
+    from jailbee.outbox.markdown_view import print_lines
     from jailbee.outbox_io import (
         JournalError,
         JournalStore,
@@ -13080,8 +13080,7 @@ def issue_resolve_cmd(
         raise typer.Exit(1) from e
 
     console.print()
-    for line in issue_outbox.show_lines(parsed, journal, short):
-        console.print(line, markup=False, highlight=False, soft_wrap=True)
+    print_lines(issue_outbox.show_lines(parsed, journal, short))
 
     resolution: issue_outbox.Resolution
     if retry:

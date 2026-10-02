@@ -635,6 +635,44 @@ def test_show_prints_the_manifest_body(mocker, tmp_path):
     assert long_body in result.output.replace("\n", "")
 
 
+def test_show_renders_bodies_to_the_terminal_width(mocker, monkeypatch, tmp_path):
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    mocker.patch("jailbee.outbox.markdown_view._terminal_width", return_value=40)
+    text = _manifest_text(
+        actions=[{"type": "comment", "repo": ".", "issue": 42, "body": "**bold** " + "word " * 40}]
+    )
+    _setup(mocker, tmp_path, files={"001.json": text})
+    mocker.patch("jailbee.outbox_io.container_identity", return_value=_IDENTITY)
+    mocker.patch("jailbee.outbox_io.JournalStore.load", return_value=None)
+
+    result = runner.invoke(app, ["issue", "show", "feat-foo"])
+
+    assert result.exit_code == 0, result.output
+    body_lines = [
+        line for line in result.output.splitlines() if line.strip().startswith(("bold", "word"))
+    ]
+    assert len(body_lines) > 1 and all(len(line) <= 40 for line in body_lines)
+    assert "\x1b" not in result.output  # a raw print of the styled lines would leak escapes
+
+
+def test_apply_prints_the_plan_through_the_shared_markdown_printer(mocker, tmp_path):
+    from jailbee.outbox.markdown_view import AnsiLine
+
+    _setup(mocker, tmp_path, files={"001.json": _manifest_text()})
+    mocker.patch("jailbee.lifecycle.list_containers", return_value=[_running_ci()])
+    mocker.patch("jailbee.issue_outbox.prepare_batch", return_value=_prepared_batch(tmp_path))
+    mocker.patch(
+        "jailbee.issue_outbox.plan_lines", return_value=[AnsiLine("\x1b[1mstyled plan\x1b[0m")]
+    )
+
+    result = runner.invoke(app, ["issue", "apply", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "styled plan" in result.output
+    assert "\x1b" not in result.output  # a raw print of the line would leak the escape
+
+
 def test_show_never_touches_github(mocker, tmp_path):
     """Patches `_run_api`, the module's sole subprocess boundary -- see `ls`'s
     equivalent test for why."""

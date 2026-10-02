@@ -39,6 +39,7 @@ from jailbee.issue_manifest import (
 )
 from jailbee.outbox import io as store_io
 from jailbee.outbox.cleanup import exclusive_body_names
+from jailbee.outbox.markdown_view import render_markdown
 from jailbee.outbox.models import OutboxExecutionError, StoreSnapshot
 from jailbee.outbox_io import (
     ContainerIdentity,
@@ -493,7 +494,9 @@ def revalidate_batch(batch: PreparedBatch) -> None:
         raise IssueStaleError("\n".join(refusals))
 
 
-def _prose(label: str, text: str | None) -> list[str]:
+def _prose(label: str, text: str | None, *, markdown: bool = False) -> list[str]:
+    if markdown and text:
+        return [f"  {label}:", *render_markdown(text, indent="    ")]
     return [f"  {label}:", *(f"    {line}" for line in (text or "[empty]").split("\n"))]
 
 
@@ -536,7 +539,7 @@ def _action_lines(
         if issue.number is not None:
             lines.append(f"  create ref: {action.ref}")
         lines.extend(_prose("title", action.title))
-        lines.extend(_prose("body", action.body))
+        lines.extend(_prose("body", action.body, markdown=True))
         lines.append(
             f"  labels: {', '.join(action.labels if labels is None else labels) or '[empty]'}"
         )
@@ -548,7 +551,7 @@ def _action_lines(
             lines.extend(_prose("body before", action.expected_body))
             lines.extend(_prose("body after", action.body))
     elif isinstance(action, CommentAction):
-        lines.extend(_prose("body", action.body))
+        lines.extend(_prose("body", action.body, markdown=True))
     elif isinstance(action, LabelsAction):
         added = (
             action.add

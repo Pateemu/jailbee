@@ -32,6 +32,7 @@ from jailbee.github_repo import github_slug
 from jailbee.incus import Incus, IncusError
 from jailbee.outbox.cleanup import exclusive_body_names
 from jailbee.outbox.io import PrManagement
+from jailbee.outbox.markdown_view import print_lines, render_markdown
 from jailbee.outbox.models import (
     OutboxChanged,
     OutboxError,
@@ -665,16 +666,17 @@ def plan_lines(
 def show_lines(manifest: Manifest) -> list[str]:
     """Every action of `manifest`, bodies in full. Pure — no printing.
 
-    The untruncated counterpart of `plan_lines`, and the same contract: plain
-    text lines, no Rich markup, the caller decides how they are rendered. It
+    The untruncated counterpart of `plan_lines`, and the same contract: lines
+    of text, no Rich markup (bodies are Markdown-rendered by `render_markdown`
+    when stdout is a terminal), printed by `outbox.markdown_view.print_lines`. It
     lives here for the same reason `plan_lines` does — `Action` is a closed
     union defined in this module, and the one command whose whole purpose is
     showing *everything* must not be the place a new variant silently goes
     missing.
 
     A body is split into its own lines rather than emitted as one embedded
-    block, so a caller printing line by line reproduces it exactly. An empty
-    body contributes nothing, which is what it is.
+    block, so a caller printing line by line reproduces it (off a terminal,
+    exactly). An empty body contributes nothing, which is what it is.
     """
     lines: list[str] = [
         f"{manifest.name}  {manifest.repo}  "
@@ -684,14 +686,14 @@ def show_lines(manifest: Manifest) -> list[str]:
         lines.append("")
         if isinstance(action, ReviewAction):
             lines.append(f"action {index} · REVIEW ({action.event})")
-            lines.extend(action.body.splitlines())
+            lines.extend(render_markdown(action.body))
             for comment in action.comments:
                 lines.append("")
                 lines.append(f"  {_comment_anchor(comment)}")
-                lines.extend(comment.body.splitlines())
+                lines.extend(render_markdown(comment.body))
         elif isinstance(action, ReplyAction):
             lines.append(f"action {index} · REPLY to review comment #{action.comment_id}")
-            lines.extend(action.body.splitlines())
+            lines.extend(render_markdown(action.body))
         elif isinstance(action, CommentAction):
             reply = (
                 f", replying to general comment #{action.reply_to}"
@@ -699,14 +701,14 @@ def show_lines(manifest: Manifest) -> list[str]:
                 else ""
             )
             lines.append(f"action {index} · COMMENT (general){reply}")
-            lines.extend(action.body.splitlines())
+            lines.extend(render_markdown(action.body))
         elif isinstance(action, DescriptionAction):
             lines.append(f"action {index} · DESCRIPTION")
             if action.title is not None:
                 lines.append(f"  title: {action.title}")
             if action.branch is not None:
                 lines.append(f"  branch: {action.branch}")
-            lines.extend(action.body.splitlines())
+            lines.extend(render_markdown(action.body))
         else:
             assert_never(action)
     return lines
@@ -2274,8 +2276,7 @@ def _offer_locked(
             )
             console.print(f"Container: {safe_text(container)}", markup=False, highlight=False)
             console.print(f"Head: {safe_text(target.pr.head_sha)}", markup=False, highlight=False)
-            for line in show_lines(displayed):
-                console.print(safe_text(line), markup=False, highlight=False, soft_wrap=True)
+            print_lines(show_lines(displayed))
             if progress.applied:
                 console.print(f"Already published (skipped): {sorted(progress.applied)}")
             if target.stale:

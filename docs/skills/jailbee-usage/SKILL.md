@@ -1254,7 +1254,7 @@ the **jailbee-pr-review** skill, not here. What matters on the host:
 
 ```bash
 jailbee review ls                    # every running container's pending manifests
-jailbee review show <name>           # print every pending body verbatim, as written
+jailbee review show <name>           # print every pending body in full (rendered on a terminal)
 jailbee review apply <name> --dry-run   # print the plan, publish nothing
 jailbee review apply <name>          # ask once, then publish to GitHub
 jailbee review drop <name>           # delete pending manifests unapplied

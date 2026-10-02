@@ -838,6 +838,25 @@ def test_show_prints_bodies_whole(mocker, tmp_path):
     assert long_body in result.output.replace("\n", "")
 
 
+def test_show_renders_bodies_to_the_terminal_width(mocker, monkeypatch, tmp_path):
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    mocker.patch("jailbee.outbox.markdown_view._terminal_width", return_value=40)
+    body = "**bold** " + "word " * 40
+    _setup(
+        mocker,
+        tmp_path,
+        files={"001-x.json": _manifest_text(actions=[{"type": "comment", "body": body}])},
+    )
+
+    result = runner.invoke(app, ["review", "show", "feat-foo"])
+
+    assert result.exit_code == 0, result.output
+    body_lines = [line for line in result.output.splitlines() if line.startswith(("bold", "word"))]
+    assert len(body_lines) > 1 and all(len(line) <= 40 for line in body_lines)
+    assert "\x1b" not in result.output  # a raw print of the styled lines would leak escapes
+
+
 def test_show_can_select_one_manifest(mocker, tmp_path):
     _setup(
         mocker,
