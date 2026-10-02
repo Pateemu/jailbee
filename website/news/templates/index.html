@@ -2,8 +2,9 @@
 {% set description = "JailBee releases and announcements." %}
 {% block content %}
 <div class="news-index">
-  <h1>News</h1>
+  <h1>{{ heading }}</h1>
   <p class="news-summary">Releases and announcements from JailBee.</p>
+  {% if heading != "News" %}<p><a href="/news/">← All news</a></p>{% endif %}
   {% if not posts %}<p>No news yet. Check back for updates.</p>{% endif %}
   {% for post in posts %}
   <article class="news-card">

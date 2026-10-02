@@ -99,8 +99,23 @@ def _hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()[:8]
 
 
-def _archive_url(page: int) -> str:
-    return "/news/" if page == 1 else f"/news/page/{page}/"
+def _archive_url(base: str, page: int) -> str:
+    """URL of one page of the archive at `base` ("/news/", "/news/2026/10/", ...)."""
+    return base if page == 1 else f"{base}page/{page}/"
+
+
+def _periods(posts: list[Post]) -> dict[str, tuple[str, list[Post]]]:
+    """The year, month and day archives that have posts: base URL -> (label, posts)."""
+    periods: dict[str, tuple[str, list[Post]]] = {}
+    for post in posts:
+        d = post.date
+        for base, label in (
+            (f"/news/{d:%Y}/", f"{d:%Y}"),
+            (f"/news/{d:%Y/%m}/", f"{d:%B %Y}"),
+            (f"/news/{d:%Y/%m/%d}/", f"{d.day} {d:%B %Y}"),
+        ):
+            periods.setdefault(base, (label, []))[1].append(post)
+    return periods
 
 
 def _feed(posts: list[Post], path: Path) -> None:
@@ -237,27 +252,38 @@ def build(website_dir: Path, site_dir: Path) -> None:
         "news_hash": _hash(website_dir / "assets" / "news.css"),
     }
     _home(website_dir, site_dir, posts[0] if posts else None)
-    archives = [posts[start : start + 10] for start in range(0, len(posts), 10)] or [[]]
     sitemap_urls = []
-    for number, page_posts in enumerate(archives, 1):
-        url = _archive_url(number)
-        sitemap_urls.append(url)
-        target = output if number == 1 else output / "page" / str(number)
-        target.mkdir(parents=True, exist_ok=True)
-        (target / "index.html").write_text(
-            env.get_template("index.html").render(
-                posts=page_posts,
-                previous=_archive_url(number - 1) if number > 1 else None,
-                next=_archive_url(number + 1) if number < len(archives) else None,
-                canonical=f"{URL}{url}",
-                title="News — JailBee" if number == 1 else f"News, page {number} — JailBee",
-                og_title="JailBee News",
-                og_type="website",
-                **_social_image(website_dir, None),
-                **shared,
-            ),
-            encoding="utf-8",
-        )
+
+    def write_archive(base: str, label: str | None, entries: list[Post]) -> None:
+        pages = [entries[start : start + 10] for start in range(0, len(entries), 10)] or [[]]
+        name = "News" if label is None else f"News, {label}"
+        for number, page_posts in enumerate(pages, 1):
+            url = _archive_url(base, number)
+            target = site_dir / url.removeprefix("/")
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "index.html").write_text(
+                env.get_template("index.html").render(
+                    posts=page_posts,
+                    heading=name,
+                    previous=_archive_url(base, number - 1) if number > 1 else None,
+                    next=_archive_url(base, number + 1) if number < len(pages) else None,
+                    canonical=f"{URL}{url}",
+                    title=f"{name} — JailBee"
+                    if number == 1
+                    else f"{name}, page {number} — JailBee",
+                    og_title="JailBee News",
+                    og_type="website",
+                    **_social_image(website_dir, None),
+                    **shared,
+                ),
+                encoding="utf-8",
+            )
+            if label is None:
+                sitemap_urls.append(url)
+
+    write_archive("/news/", None, posts)
+    for base, (label, entries) in _periods(posts).items():
+        write_archive(base, label, entries)
     for post in posts:
         sitemap_urls.append(post.path)
         target = site_dir / post.path.removeprefix("/")

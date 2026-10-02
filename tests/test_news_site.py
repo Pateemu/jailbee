@@ -343,3 +343,40 @@ def test_cli_returns_path_specific_diagnostic_on_invalid_article(site: tuple[Pat
     assert result.returncode != 0
     assert "2026-09-28-bad.md" in result.stderr
     assert "date" in result.stderr
+
+
+def test_year_month_and_day_archives_list_only_their_posts(site: tuple[Path, Path]) -> None:
+    website, output = site
+    _add(website, "2026-10-02-a.md", "title: Alpha\ndate: 2026-10-02\nsummary: s\n")
+    _add(website, "2026-10-15-b.md", "title: Beta\ndate: 2026-10-15\nsummary: s\n")
+    _add(website, "2025-12-31-c.md", "title: Gamma\ndate: 2025-12-31\nsummary: s\n")
+    build(website, output)
+
+    def titles(*parts: str) -> list[str]:
+        html = (output.joinpath("news", *parts, "index.html")).read_text()
+        return re.findall(r"<h2><a [^>]*>([^<]*)</a></h2>", html)
+
+    assert titles("2026") == ["Beta", "Alpha"]
+    assert titles("2026", "10") == ["Beta", "Alpha"]
+    assert titles("2026", "10", "02") == ["Alpha"]
+    assert titles("2025") == ["Gamma"]
+    assert not (output / "news" / "2026" / "11").exists()
+    month = (output / "news" / "2026" / "10" / "index.html").read_text()
+    assert "<h1>News, October 2026</h1>" in month
+    assert '<link rel="canonical" href="https://jailbee.gisgro.io/news/2026/10/"' in month
+    article = (output / "news" / "2026" / "10" / "02" / "a" / "index.html").read_text()
+    for href in ("/news/2026/", "/news/2026/10/", "/news/2026/10/02/"):
+        assert f'href="{href}"' in article
+
+
+def test_period_archives_paginate_and_stay_out_of_the_sitemap(site: tuple[Path, Path]) -> None:
+    website, output = site
+    for number in range(11):
+        _add(website, f"2026-09-28-post-{number:02}.md", META)
+    build(website, output)
+
+    page = output / "news" / "2026" / "09" / "page" / "2" / "index.html"
+    assert page.read_text().count('class="news-card"') == 1
+    assert 'href="/news/2026/09/"' in page.read_text()
+    sitemap = (output / "sitemap.xml").read_text()
+    assert "/news/2026/09/<" not in sitemap and "/news/2026/<" not in sitemap
