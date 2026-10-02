@@ -24,6 +24,7 @@ import yaml
 from jailbee import litellm_state
 from jailbee.config import CONTAINER_USERNAME
 from jailbee.config.local_layer import local_litellm_scopes, scope_files
+from jailbee.config.models_litellm import XAI_AUTH_HOST
 from jailbee.incus import IncusError
 from jailbee.litellm_inputs import load_host_inputs
 from jailbee.litellm_render import (
@@ -31,6 +32,7 @@ from jailbee.litellm_render import (
     CONTAINER_STATE_DIR,
     HOT_FILE,
     InstanceFiles,
+    account_login_providers,
     container_key_file,
     container_profiles,
     egress_hosts,
@@ -63,6 +65,12 @@ _WAIT_SECONDS = 60
 _ACK_POLLS = 20
 _ACK_INTERVAL = 0.5
 _PY = "/opt/litellm/bin/python"
+LoginState = Literal["missing", "present", "unknown"]
+LOGIN_PROVIDERS: tuple[str, ...] = ("chatgpt", "xai")
+_AUTH_DIRS = {"chatgpt": "auth", "xai": "xai-auth"}
+XAI_LOGIN_DEVICE = "xai-login"
+XAI_CALLBACK_PORT = 56121
+"""LiteLLM's fixed loopback callback port for the xAI login (`litellm/llms/xai/oauth.py`)."""
 _PACKAGE_ENDPOINTS = (
     "pypi.org:443",
     "files.pythonhosted.org:443",
@@ -110,7 +118,9 @@ class InstanceStatus:
     port: int | None
     active: bool
     healthy: bool
-    login: Literal["missing", "present", "unknown"]
+    login: LoginState
+    # None: no route of this account uses an xAI subscription.
+    xai_login: LoginState | None = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +142,8 @@ class UpResult:
     # Left stopped: its routes need a ChatGPT login it lacks, and the proxy would block at startup
     # on LiteLLM's own device-code prompt, never answering its health probe.
     awaiting_login: list[str] = field(default_factory=list)
+    # Started, but their `oauth` routes fail until `jailbee litellm login --provider xai`.
+    missing_xai_login: list[str] = field(default_factory=list)
     # Route changes loaded into a running proxy without a restart.
     reloaded: list[str] = field(default_factory=list)
     # Why a live reload did not take; the account is then in `restarted`.
@@ -495,6 +507,7 @@ class Converged:
     restarted: list[str] = field(default_factory=list)
     reloaded: list[str] = field(default_factory=list)
     awaiting_login: list[str] = field(default_factory=list)
+    missing_xai_login: list[str] = field(default_factory=list)
     # Accounts whose instance needed a restart but was not allowed one (`allow_restart=False`).
     unreloaded: list[str] = field(default_factory=list)
     # Why a live reload did not take; the account is then in `restarted` or `unreloaded`.
@@ -533,6 +546,10 @@ def _converge(
             )
             done.awaiting_login.append(account)
             continue
+        if "xai" in instance.login_providers and auth_state(incus, account, "xai") == "missing":
+            # Unlike ChatGPT, LiteLLM reads the xAI token per request: the proxy
+            # starts and stays healthy, and only its `oauth` routes fail.
+            done.missing_xai_login.append(account)
         cold, hot = instance.digest(callback_source), instance.hot_digest()
         restart = (
             force or not litellm_state.config_applied(account, cold) or not _active(incus, account)
@@ -689,6 +706,7 @@ def litellm_up(
         installed=needs_install,
         issues=issues,
         awaiting_login=done.awaiting_login,
+        missing_xai_login=done.missing_xai_login,
         reloaded=done.reloaded,
         fallbacks=done.fallbacks,
     )
@@ -720,6 +738,8 @@ class ReconcileResult:
     issues: list[str] = field(default_factory=list)
     # Skipped, not started: no login yet (see `UpResult.awaiting_login`).
     awaiting_login: list[str] = field(default_factory=list)
+    # Started, but their `oauth` routes fail until `jailbee litellm login --provider xai`.
+    missing_xai_login: list[str] = field(default_factory=list)
     reloaded: list[str] = field(default_factory=list)
     # Why a live reload did not take; the account is then in `restarted` or `pending`.
     fallbacks: dict[str, str] = field(default_factory=dict)
@@ -826,6 +846,7 @@ def litellm_reconcile(
         stopped=stopped,
         issues=issues,
         awaiting_login=done.awaiting_login,
+        missing_xai_login=done.missing_xai_login,
         fallbacks=done.fallbacks,
     )
 
@@ -944,7 +965,8 @@ def litellm_status(incus: Incus, gcfg: GlobalConfig) -> LiteLLMStatus:
     if info.get("status") != "Running":
         return LiteLLMStatus(ContainerState.STOPPED, ip, None, [])
     instances: list[InstanceStatus] = []
-    for account in gcfg.litellm.accounts:
+    cfg = gcfg.litellm
+    for account in cfg.accounts:
         port = litellm_state.known_port(account)
         instances.append(
             InstanceStatus(
@@ -953,6 +975,11 @@ def litellm_status(incus: Incus, gcfg: GlobalConfig) -> LiteLLMStatus:
                 active=_active(incus, account),
                 healthy=port is not None and _healthy(incus, port),
                 login=auth_state(incus, account),
+                xai_login=(
+                    auth_state(incus, account, "xai")
+                    if "xai" in login_providers(cfg, account)
+                    else None
+                ),
             )
         )
     return LiteLLMStatus(ContainerState.RUNNING, ip, _installed_version(incus), instances)
@@ -964,9 +991,16 @@ def _require_running(incus: Incus) -> None:
         raise RuntimeError(f"{LITELLM_CONTAINER} is not running. Run `jailbee litellm up` first.")
 
 
-def auth_state(incus: Incus, account: str) -> Literal["missing", "present", "unknown"]:
-    """Whether the account holds a ChatGPT login; never reads token material out."""
-    path = f"{CONTAINER_STATE_DIR}/{litellm_state.check_account(account)}/auth/auth.json"
+def login_providers(cfg: LiteLLMConfig, account: str) -> tuple[str, ...]:
+    """The logins the account's instance needs, repo overrides included."""
+    scopes, _issues = local_litellm_scopes(cfg)
+    return account_login_providers(cfg, account, scopes)
+
+
+def auth_state(incus: Incus, account: str, provider: str = "chatgpt") -> LoginState:
+    """Whether the account holds the provider's login; never reads token material out."""
+    account_dir = litellm_state.check_account(account)
+    path = f"{CONTAINER_STATE_DIR}/{account_dir}/{_AUTH_DIRS[provider]}/auth.json"
     try:
         out = incus.exec(LITELLM_CONTAINER, [_PY, "-c", _AUTH_PROBE, path], timeout=15).strip()
     except IncusError:
@@ -974,12 +1008,11 @@ def auth_state(incus: Incus, account: str) -> Literal["missing", "present", "unk
     return "present" if out == "present" else "missing"
 
 
-def litellm_logout(incus: Incus, account: str) -> bool:
-    """Delete the account's token in the volume; True if there was one."""
+def litellm_logout(incus: Incus, account: str, provider: str = "chatgpt") -> bool:
+    """Delete the provider's token in the volume; True if there was one."""
     _require_running(incus)
-    path = shlex.quote(
-        f"{CONTAINER_STATE_DIR}/{litellm_state.check_account(account)}/auth/auth.json"
-    )
+    account_dir = litellm_state.check_account(account)
+    path = shlex.quote(f"{CONTAINER_STATE_DIR}/{account_dir}/{_AUTH_DIRS[provider]}/auth.json")
     script = f"if [ -e {path} ]; then rm -f -- {path}; echo removed; fi"
     return incus.exec(LITELLM_CONTAINER, ["bash", "-c", script], timeout=15).strip() == "removed"
 
@@ -997,6 +1030,67 @@ def litellm_login(incus: Incus, account: str) -> int:
         f'Authenticator().get_access_token(); print("Logged in.")\''
     )
     return incus.exec_interactive(LITELLM_CONTAINER, ["bash", "-c", script])
+
+
+_XAI_DISCOVERY_PROBE = (
+    "import json, urllib.parse, urllib.request\n"
+    "doc = json.load(urllib.request.urlopen("
+    "'https://auth.x.ai/.well-known/openid-configuration', timeout=15))\n"
+    "print(urllib.parse.urlsplit(doc.get('token_endpoint') or '').hostname or '')\n"
+)
+
+
+def litellm_login_xai(incus: Incus, cfg: LiteLLMConfig, account: str) -> int:
+    """Run LiteLLM's xAI browser login, its loopback callback forwarded from the host.
+
+    LiteLLM listens on 127.0.0.1:56121 inside the proxy; a proxy device makes
+    the same address on the host reach it while the login runs, and only then.
+    """
+    _require_running(incus)
+    if "xai" not in login_providers(cfg, account):
+        raise RuntimeError(
+            f"No route of account {account} uses an xAI subscription (`oauth: true`). "
+            "Add one, run `jailbee litellm up`, then log in."
+        )
+    try:
+        token_host = incus.exec(
+            LITELLM_CONTAINER, [_PY, "-c", _XAI_DISCOVERY_PROBE], timeout=30
+        ).strip()
+    except IncusError as exc:
+        raise RuntimeError(
+            f"The proxy cannot reach {XAI_AUTH_HOST}; run `jailbee litellm up` and retry ({exc})."
+        ) from exc
+    if token_host != XAI_AUTH_HOST:
+        raise RuntimeError(
+            f"xAI moved its token endpoint to {token_host or '(none)'}, which the proxy may "
+            "not reach; please report this to jailbee."
+        )
+    env_file = shlex.quote(f"{CONTAINER_STATE_DIR}/{account}/instance.env")
+    auth_dir = shlex.quote(f"{CONTAINER_STATE_DIR}/{account}/{_AUTH_DIRS['xai']}")
+    script = (
+        f"set -e; umask 0077; test -r {env_file}; "
+        "unset XAI_OAUTH_TOKEN_DIR XAI_OAUTH_AUTH_FILE XAI_API_KEY XAI_API_BASE "
+        "XAI_OAUTH_API_BASE; "
+        f"set -a; . {env_file}; set +a; "
+        f'test "${{XAI_OAUTH_TOKEN_DIR:-}}" = {auth_dir}; '
+        f"exec {_PY} -c 'from litellm.llms.xai.oauth import XAIOAuthAuthenticator; "
+        f'XAIOAuthAuthenticator().login(no_browser=True); print("Logged in.")\''
+    )
+    endpoint = f"tcp:127.0.0.1:{XAI_CALLBACK_PORT}"
+    incus.config_device_remove(LITELLM_CONTAINER, XAI_LOGIN_DEVICE, missing_ok=True)
+    try:
+        incus.config_device_add(
+            LITELLM_CONTAINER, XAI_LOGIN_DEVICE, "proxy", {"listen": endpoint, "connect": endpoint}
+        )
+    except IncusError as exc:
+        raise RuntimeError(
+            f"Cannot listen on 127.0.0.1:{XAI_CALLBACK_PORT} on the host for the xAI login "
+            f"callback: {exc}"
+        ) from exc
+    try:
+        return incus.exec_interactive(LITELLM_CONTAINER, ["bash", "-c", script])
+    finally:
+        incus.config_device_remove(LITELLM_CONTAINER, XAI_LOGIN_DEVICE)
 
 
 def litellm_logs(incus: Incus, account: str, *, follow: bool, lines: int = 200) -> int:

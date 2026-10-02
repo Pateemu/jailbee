@@ -1783,3 +1783,136 @@ def test_a_hot_only_change_still_rewrites_the_egress_allowlist(xdg, monkeypatch,
     assert (result.reloaded, result.restarted) == (["default"], [])
     assert seen
     assert seen[-1] == expected and any("llm.example.com" in h for h in expected)
+
+
+_GROK_ROUTES = {"grok": {"model": "xai/grok-4.3", "oauth": True, "context_window": 256_000}}
+_GROK_ONLY = {
+    "routes": _GROK_ROUTES,
+    "profiles": {
+        "codex": {
+            "account": "default",
+            "fable": None,
+            "opus": None,
+            "sonnet": None,
+            "haiku": "grok",
+        },
+    },
+}
+
+
+def _xai_state(incus: MagicMock, state: str) -> None:
+    base = incus.exec.side_effect
+
+    def exec_(name, cmd, **kw):
+        if "xai-auth/auth.json" in " ".join(cmd):
+            return f"{state}\n"
+        return base(name, cmd, **kw)
+
+    incus.exec.side_effect = exec_
+
+
+def test_up_starts_an_xai_account_without_its_login_and_says_so():
+    incus = _incus(present=True, login="present")
+    _xai_state(incus, "missing")
+    result = ll.litellm_up(incus, _gcfg(**_GROK_ONLY))
+    assert result.awaiting_login == [] and result.restarted == ["default"]
+    assert result.missing_xai_login == ["default"]
+
+
+def test_up_still_holds_back_a_chatgpt_account_without_its_login():
+    incus = _incus(present=True, login="missing")
+    result = ll.litellm_up(incus, _gcfg())
+    assert result.awaiting_login == ["default"] and result.missing_xai_login == []
+
+
+def test_auth_state_and_logout_use_the_provider_directory():
+    incus = _incus(present=True)
+    ll.auth_state(incus, "default", "xai")
+    assert "/var/lib/jailbee-litellm/default/xai-auth/auth.json" in _execs(incus)[-1]
+    ll.litellm_logout(incus, "default", "xai")
+    assert "/var/lib/jailbee-litellm/default/xai-auth/auth.json" in incus.exec.call_args.args[1][-1]
+    ll.litellm_logout(incus, "default")
+    assert "/var/lib/jailbee-litellm/default/auth/auth.json" in incus.exec.call_args.args[1][-1]
+
+
+def test_status_reports_the_xai_login_only_where_it_is_needed(xdg):
+    incus = _incus(present=True, login="present")
+    ll.litellm_up(incus, _gcfg())
+    assert ll.litellm_status(incus, _gcfg()).instances[0].xai_login is None
+    _xai_state(incus, "missing")
+    assert ll.litellm_status(incus, _gcfg(**_GROK_ONLY)).instances[0].xai_login == "missing"
+
+
+def _xai_login_incus(token_host: str = "auth.x.ai") -> MagicMock:
+    incus = _incus(present=True)
+    base = incus.exec.side_effect
+
+    def exec_(name, cmd, **kw):
+        if "openid-configuration" in " ".join(cmd):
+            return f"{token_host}\n"
+        return base(name, cmd, **kw)
+
+    incus.exec.side_effect = exec_
+    incus.exec_interactive.return_value = 0
+    return incus
+
+
+def test_xai_login_forwards_the_callback_port_for_the_login_only():
+    incus = _xai_login_incus()
+    assert ll.litellm_login_xai(incus, _gcfg(**_GROK_ONLY).litellm, "default") == 0
+    incus.config_device_add.assert_called_once_with(
+        ll.LITELLM_CONTAINER,
+        "xai-login",
+        "proxy",
+        {"listen": "tcp:127.0.0.1:56121", "connect": "tcp:127.0.0.1:56121"},
+    )
+    removes = [c for c in incus.config_device_remove.call_args_list if c.args[1] == "xai-login"]
+    assert len(removes) == 2  # a stale one first (missing_ok), then ours
+    script = incus.exec_interactive.call_args.args[1][-1]
+    assert "XAIOAuthAuthenticator().login(no_browser=True)" in script
+    assert 'test "${XAI_OAUTH_TOKEN_DIR:-}" = /var/lib/jailbee-litellm/default/xai-auth' in script
+
+
+def test_xai_login_removes_the_device_even_when_the_login_raises():
+    incus = _xai_login_incus()
+    incus.exec_interactive.side_effect = KeyboardInterrupt
+    with pytest.raises(KeyboardInterrupt):
+        ll.litellm_login_xai(incus, _gcfg(**_GROK_ONLY).litellm, "default")
+    removes = [c for c in incus.config_device_remove.call_args_list if c.args[1] == "xai-login"]
+    # The stale-device sweep first, then the cleanup; the sweep alone must not satisfy this.
+    assert len(removes) == 2 and removes[-1].kwargs == {}
+
+
+def test_xai_login_refuses_an_account_without_an_oauth_route():
+    incus = _xai_login_incus()
+    with pytest.raises(RuntimeError, match="oauth: true"):
+        ll.litellm_login_xai(incus, _gcfg().litellm, "default")
+    incus.config_device_add.assert_not_called()
+
+
+def test_xai_login_names_a_moved_token_endpoint():
+    incus = _xai_login_incus(token_host="accounts.x.ai")
+    with pytest.raises(RuntimeError, match=r"accounts\.x\.ai"):
+        ll.litellm_login_xai(incus, _gcfg(**_GROK_ONLY).litellm, "default")
+    incus.config_device_add.assert_not_called()
+
+
+def test_xai_login_explains_a_taken_host_port():
+    incus = _xai_login_incus()
+    incus.config_device_add.side_effect = IncusError("address already in use")
+    with pytest.raises(RuntimeError, match=r"127\.0\.0\.1:56121.*address already in use"):
+        ll.litellm_login_xai(incus, _gcfg(**_GROK_ONLY).litellm, "default")
+    incus.exec_interactive.assert_not_called()
+
+
+def test_xai_login_script_refuses_a_foreign_token_dir(tmp_path: Path):
+    incus = _xai_login_incus()
+    ll.litellm_login_xai(incus, _gcfg(**_GROK_ONLY).litellm, "default")
+    command = incus.exec_interactive.call_args.args[1][-1]
+    env_file = tmp_path / "instance.env"
+    env_file.write_text("XAI_OAUTH_TOKEN_DIR=/tmp/elsewhere\n")
+    marker = tmp_path / "authenticator-invoked"
+    script = command.replace("/var/lib/jailbee-litellm/default/instance.env", str(env_file))
+    script = script.split("exec ", 1)[0] + f"exec touch {marker}"
+    result = subprocess.run(["bash", "-c", script], check=False, capture_output=True)
+    assert result.returncode != 0 and not marker.exists()
