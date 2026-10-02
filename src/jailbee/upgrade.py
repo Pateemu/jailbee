@@ -218,8 +218,9 @@ UPGRADE_NOTES: tuple[UpgradeNote, ...] = (
             "`jailbee apply`/`jailbee new` sync the bundled skills, including the "
             "new `jailbee-issue-management`, into every enabled skill-capable "
             "agent's shared skills directory (`codex`, `gemini`, `opencode`, not "
-            "just `claude`); existing containers pick them up on the next `apply` "
-            "or on re-creation"
+            "just `claude`), and the `opencode` preset stops sharing its config and "
+            "data homes, whose session database holds auth tokens; existing "
+            "containers pick both up on the next `apply` or on re-creation"
         ),
     ),
     UpgradeNote(

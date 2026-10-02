@@ -261,6 +261,13 @@ The `aider` preset is the worked example. Aider writes four things into
   whichever agent happens to read it, and vice versa — a cross-container leak
   with no relation to the agent you meant to configure.
 
+A login is worth sharing only when the agent keeps it apart from per-session
+state. opencode does not: its sessions, auth tokens included, live in one
+SQLite database under `~/.config/opencode` / `~/.local/share/opencode`, so the
+preset shares neither (only its skills directory) and each container logs in
+on its own. A shared database would also have several containers writing one
+SQLite file through a bind mount.
+
 When you write your own `agents.<name>.shared` list, ask "does this file hold
 something I'd lose by re-authenticating, or is it a cache/history/log the
 agent would happily regenerate?" Only the former belongs in `shared`.
@@ -310,7 +317,7 @@ run, because the devices are per-container rather than part of the binds
 profile.
 
 `jailbee doctor` reports any socket it finds in a shared agent mount that is
-not already carved out. The `gemini`, `opencode` and `grok` presets share a
+not already carved out. The `gemini` and `grok` presets share a
 whole home directory too and ship unverified (see [§8](#8-the-five-templates)); that doctor row is
 what tells you if one of them grows a daemon.
 
@@ -357,7 +364,7 @@ has been running for weeks.
 | `codex` | `OPENAI_API_KEY` | The ChatGPT login (`codex login`, a device-code flow) works too: the preset allows the hosts it needs — `auth.openai.com` for the code and the token refreshes, `chatgpt.com` for the backend it then talks to. The credentials land in the shared `~/.codex`, so one login covers every container of the repo. |
 | `gemini` | `GEMINI_API_KEY` | API-key path only — the OAuth/Code Assist path uses a different set of hosts (see the table below) and has no key. |
 | `aider` | provider-dependent (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) | Aider proxies whichever model backend you configure; the key follows that backend, not aider itself. |
-| `opencode` | provider-dependent, via `opencode auth login` → `~/.local/share/opencode/auth.json` | |
+| `opencode` | provider-dependent, via `opencode auth login` | **Per container, not shared.** opencode keeps its whole session, auth tokens included, in a SQLite database in its config/data homes, so sharing them would hand every container the others' credentials. Each container configures and logs in on its own. To run ChatGPT or other providers' models across containers with one login, use `claude-jb` ([Claude Code through LiteLLM](litellm.md)) instead. |
 | `grok` | `XAI_API_KEY` | Verified against vendor docs. A third-party guide claims `GROK_CODE_XAI_API_KEY` instead — the vendor's own spelling wins; this exact discrepancy is why presets are templates, not guarantees. |
 
 Only the `grok` row above was checked directly against vendor documentation
@@ -390,7 +397,7 @@ path in sections 2–4 above is what makes shipping them acceptable.
 | `codex` | `curl -fsSL https://chatgpt.com/codex/install.sh \| CODEX_NON_INTERACTIVE=1 sh` — **not npm** | `~/.codex` (dir — config, auth, sessions, logs, **and the binary**), with `app-server-control/` and `app-server-daemon/` private per container | `api.openai.com:443` (API-key path); `auth.openai.com:443` (device-code sign-in + token refresh); `chatgpt.com:443` (the ChatGPT-plan backend a signed-in CLI talks to, `/backend-api/codex/...`). `install_network: loose` for the installer's own hosts (`chatgpt.com`, `releases.openai.com`, with an `api.github.com` / `github.com` release fallback) | Install verified end-to-end in a container with no Node.js: the binary lands in `~/.local/bin/codex` as a symlink into `~/.codex/packages/standalone/current`. Sign-in hosts are undocumented upstream and were read off a live strict-mode container instead: with `api.openai.com` alone, `codex login` hangs on "Requesting a one-time code..." and ends in `failed to request device code` against `auth.openai.com/api/accounts/deviceauth/usercode`. Telemetry (`ab.chatgpt.com`) is left out on purpose. |
 | `gemini` | `npm i -g @google/gemini-cli` | `~/.gemini` (dir) | `generativelanguage.googleapis.com:443` (API-key path), `cloudcode-pa.googleapis.com:443` (OAuth / Code Assist path), `oauth2.googleapis.com:443`, `accounts.google.com:443` | Install + config dir verified; **no authoritative complete host list exists** — upstream issue #4552 is open with no list, and Google's own Code Assist network doc names only `cloudcode-pa.googleapis.com`. |
 | `aider` | `uv tool install --with pip aider-chat@latest` | `~/.aider.conf.yml` (**file** type) and nothing else | provider-dependent | Install + config filename + HOME surface verified. |
-| `opencode` | `curl -fsSL https://opencode.ai/v2/install \| bash -s -- --no-modify-path` — **not npm** — followed by a `~/.local/bin/opencode` symlink | `~/.opencode` (dir — **the binary**), `~/.config/opencode` (dir), `~/.local/share/opencode` (dir, holds `auth.json`) | `opencode.ai:443` (the built-in "zen" gateway at `/zen/v1/...`, and the version pointer a self-update reads); `models.dev:443` (the model catalogue fetched at startup). **Provider hosts are yours to add** — opencode is a multi-provider client, so which inference host it needs follows the provider you configure, not opencode itself. `install_network: loose` for the installer's own hosts (`opencode.ai`, `registry.npmjs.org`) | Install verified end-to-end against the live installer (v2.0.9): it runs non-interactively, drops a 198MB static binary in `~/.opencode/bin`, and the preset's `~/.local/bin/opencode` link resolves to it; the `~/.local/bin` link, the already-installed short-circuit and the failed-download check are covered by unit tests. Not exercised against a real account — the runtime host list is best-effort like the rest of this table. |
+| `opencode` | `curl -fsSL https://opencode.ai/v2/install \| bash -s -- --no-modify-path` — **not npm** — followed by a `~/.local/bin/opencode` symlink | `~/.opencode` (dir — **the binary**) and `~/.config/opencode/skills` (dir) are shared; `~/.config/opencode` and `~/.local/share/opencode` are deliberately **not** — they hold the session database, auth tokens included, so each container keeps its own | `opencode.ai:443` (the built-in "zen" gateway at `/zen/v1/...`, and the version pointer a self-update reads); `models.dev:443` (the model catalogue fetched at startup). **Provider hosts are yours to add** — opencode is a multi-provider client, so which inference host it needs follows the provider you configure, not opencode itself. `install_network: loose` for the installer's own hosts (`opencode.ai`, `registry.npmjs.org`) | Install verified end-to-end against the live installer (v2.0.9): it runs non-interactively, drops a 198MB static binary in `~/.opencode/bin`, and the preset's `~/.local/bin/opencode` link resolves to it; the `~/.local/bin` link, the already-installed short-circuit and the failed-download check are covered by unit tests. Used with a real account, which is how the shared session database was found to carry auth tokens; the runtime host list is still best-effort like the rest of this table. |
 | `grok` | `curl -fsSL https://x.ai/cli/install.sh \| bash` — **not npm** | `~/.grok` (dir — `config.toml`, `auth.json`) | `api.x.ai:443` (API-key path); `x.ai:443` (installer); `auth.x.ai:443` (OIDC device-code + refresh); `cli-chat-proxy.grok.com:443` (SuperGrok inference and hosted web_search). `install_network: loose` because the installer's redirect target is undocumented. This list is runtime hosts only — it does not open arbitrary HTTPS for `web_fetch`. | Install + config dir verified against vendor docs. SuperGrok hosts checked against a live device-auth session in a strict-mode container: without the chat proxy, inference retries `https://cli-chat-proxy.grok.com/v1/responses` until it fails. API key env var is `XAI_API_KEY` per vendor docs; a third-party guide claims `GROK_CODE_XAI_API_KEY` — the vendor spelling wins, and that discrepancy is exactly why presets are templates. |
 
 Source of truth for the exact values: `src/jailbee/agent_presets.py`.
@@ -605,7 +612,7 @@ them for every enabled agent that has a skills mechanism, not just Claude:
 | `claude` | `~/.claude/skills` | `claude` |
 | `codex` | `~/.codex/skills` | `codex` |
 | `gemini` | `~/.gemini/skills` | `gemini` |
-| `opencode` | `~/.config/opencode/skills` | `opencode-config` |
+| `opencode` | `~/.config/opencode/skills` | `opencode-skills` (the skills directory itself) |
 | `aider`, `grok` | — (no skills mechanism) | — |
 
 The copy happens on the *host* side, into `<shared_dir>/<subpath>/skills/`:

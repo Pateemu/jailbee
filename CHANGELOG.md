@@ -278,6 +278,18 @@ before editing `## Unreleased`.
   outbox. `jailbee doctor` shows a reminder of the expected scope; it cannot
   verify a token's real permissions.
 
+- **The `opencode` preset no longer shares opencode's config and data
+  directories between containers.** opencode keeps its whole session state,
+  auth tokens included, in a SQLite database under `~/.config/opencode` and
+  `~/.local/share/opencode`, so the shared mounts handed every container of a
+  repo the others' sessions and credentials. Only the binary store and the
+  skills directory (`~/.config/opencode/skills`) are shared now, so each
+  container configures opencode and logs in on its own. `jailbee apply` drops
+  the old mounts; the shared copies stay in `<shared_dir>/opencode-config` and
+  `<shared_dir>/opencode-data` until you delete them, which you should, since
+  they hold tokens. To use ChatGPT or other providers' models with one login
+  across containers, run Claude Code through `claude-jb` instead.
+
 - **`jailbee net egress add` and `rm` prompt when the entry is omitted** on a
   TTY: `add` asks for the destination, `rm` lists the stored overrides to pick
   from.

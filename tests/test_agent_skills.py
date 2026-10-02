@@ -157,9 +157,15 @@ def test_sync_copies_to_every_enabled_agents_skills_dir(tmp_path: Path, monkeypa
         },
     )
     agent_skills.sync_agent_skills(cfg)
-    # opencode's ~/.config/opencode mount is the "opencode-config" subpath.
-    for subpath in ("claude", "codex", "gemini", "opencode-config"):
-        skills = shared / subpath / "skills"
+    # opencode shares only its skills directory itself (`opencode-skills`),
+    # so the copy lands at that subpath's root rather than in a `skills/`
+    # child of a wider config mount.
+    for skills in (
+        shared / "claude" / "skills",
+        shared / "codex" / "skills",
+        shared / "gemini" / "skills",
+        shared / "opencode-skills",
+    ):
         assert (skills / "jailbee-usage" / "SKILL.md").read_text() == "usage skill\n"
         assert (skills / "jailbee-repo-setup" / "SKILL.md").is_file()
 

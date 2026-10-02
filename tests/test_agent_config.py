@@ -433,6 +433,20 @@ _FAKE_OPENCODE_INSTALLER = (
 )
 
 
+def test_opencode_preset_shares_no_session_or_auth_state():
+    """opencode keeps its whole session, auth tokens included, in a SQLite
+    database under its config/data homes. Sharing either across a repo's
+    containers would hand each container the others' credentials, so only the
+    binary store and the skills directory may be shared."""
+    from jailbee.agent_presets import AGENT_PRESETS
+
+    shared = AGENT_PRESETS["opencode"]["shared"]
+    assert isinstance(shared, list)
+    paths = {m["path"] for m in shared}
+
+    assert paths == {"~/.opencode", "~/.config/opencode/skills"}
+
+
 def _seed_shared_binary(tmp_path):
     binary = tmp_path / "home/.opencode/bin/opencode"
     binary.parent.mkdir(parents=True)

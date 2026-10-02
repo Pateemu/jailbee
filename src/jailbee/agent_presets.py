@@ -218,13 +218,23 @@ AGENT_PRESETS: dict[str, dict[str, object]] = {
         # than once per branch. It holds only `bin/` today; if a future release puts a
         # control socket in there, `jailbee doctor` reports it and the fix is a
         # `private:` carve-out, exactly as for codex.
+        #
+        # Neither `~/.config/opencode` nor `~/.local/share/opencode` is shared:
+        # opencode keeps its whole session state, auth tokens included, in a
+        # SQLite database there, so one shared copy would hand every container
+        # of the repo the others' sessions and credentials, and concurrent
+        # writers to one SQLite file over a bind mount are not safe. Each
+        # container therefore configures and logs in on its own — a real cost,
+        # and the reason `claude-jb` (Claude Code through `jailbee litellm`)
+        # is the supported way to run other providers' models. Only the skills
+        # subdirectory is shared, so jailbee's skills still reach every
+        # container without exposing anything else under the config home.
         "shared": [
             {"subpath": "opencode-install", "path": "~/.opencode"},
-            {"subpath": "opencode-config", "path": "~/.config/opencode"},
-            {"subpath": "opencode-data", "path": "~/.local/share/opencode"},
+            {"subpath": "opencode-skills", "path": "~/.config/opencode/skills"},
         ],
         # Where opencode reads user-level skills (`~/.config/opencode/skills`),
-        # inside the `opencode-config` mount above. It also scans
+        # the `opencode-skills` mount above. It also scans
         # Claude-compatible `~/.claude/skills`, but its own directory is the
         # canonical one — relying on claude's mount would break the moment
         # claude is not enabled.
