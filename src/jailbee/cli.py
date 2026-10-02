@@ -11050,8 +11050,10 @@ def litellm_login_cmd(
     except (RuntimeError, IncusError) as exc:
         error(str(exc))
         raise typer.Exit(1) from exc
-    if exit_code == 0:
-        info(f"Logged in. Run `jailbee litellm up` to (re)start the {resolved} instance.")
+    if exit_code == 0 and chosen != "xai":
+        # LiteLLM's login already printed "Logged in."; a ChatGPT login still
+        # needs the proxy (re)started, an xAI token is read per request.
+        info(f"Run `jailbee litellm up` to (re)start the {resolved} instance.")
     raise typer.Exit(exit_code)
 
 

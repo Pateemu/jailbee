@@ -337,13 +337,16 @@ def test_login_with_the_only_needed_provider_runs_the_xai_flow(mocker, context):
         context.return_value[0], context.return_value[1].litellm, "default"
     )
     chatgpt.assert_not_called()
+    assert "litellm up" not in result.output and "Logged in" not in result.output
 
 
 def test_login_without_any_needed_provider_keeps_the_chatgpt_flow(mocker, context):
     mocker.patch("jailbee.litellm.login_providers", return_value=())
     login = mocker.patch("jailbee.litellm.litellm_login", return_value=0)
-    assert runner.invoke(app, ["litellm", "login"]).exit_code == 0
+    result = runner.invoke(app, ["litellm", "login"])
+    assert result.exit_code == 0
     login.assert_called_once_with(context.return_value[0], "default")
+    assert "jailbee litellm up" in result.output and "Logged in" not in result.output
 
 
 def test_login_with_both_providers_needed_requires_a_flag(mocker, context):

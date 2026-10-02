@@ -1812,11 +1812,19 @@ def _xai_state(incus: MagicMock, state: str) -> None:
 
 
 def test_up_starts_an_xai_account_without_its_login_and_says_so():
-    incus = _incus(present=True, login="present")
+    incus = _incus(present=True, login="missing")
     _xai_state(incus, "missing")
     result = ll.litellm_up(incus, _gcfg(**_GROK_ONLY))
     assert result.awaiting_login == [] and result.restarted == ["default"]
     assert result.missing_xai_login == ["default"]
+
+
+def test_up_holds_back_a_mixed_account_without_either_login():
+    mixed = {**_GROK_ONLY, "profiles": {"codex": {"account": "default", "haiku": "grok"}}}
+    incus = _incus(present=True, login="missing")
+    _xai_state(incus, "missing")
+    result = ll.litellm_up(incus, _gcfg(**mixed))
+    assert result.awaiting_login == ["default"] and result.missing_xai_login == []
 
 
 def test_up_still_holds_back_a_chatgpt_account_without_its_login():
