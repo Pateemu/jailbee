@@ -32,6 +32,7 @@ from jailbee.github_repo import github_slug
 from jailbee.incus import Incus, IncusError
 from jailbee.outbox.cleanup import exclusive_body_names
 from jailbee.outbox.io import PrManagement
+from jailbee.outbox.markdown_view import render_markdown
 from jailbee.outbox.models import (
     OutboxChanged,
     OutboxError,
@@ -684,14 +685,14 @@ def show_lines(manifest: Manifest) -> list[str]:
         lines.append("")
         if isinstance(action, ReviewAction):
             lines.append(f"action {index} · REVIEW ({action.event})")
-            lines.extend(action.body.splitlines())
+            lines.extend(render_markdown(action.body))
             for comment in action.comments:
                 lines.append("")
                 lines.append(f"  {_comment_anchor(comment)}")
-                lines.extend(comment.body.splitlines())
+                lines.extend(render_markdown(comment.body))
         elif isinstance(action, ReplyAction):
             lines.append(f"action {index} · REPLY to review comment #{action.comment_id}")
-            lines.extend(action.body.splitlines())
+            lines.extend(render_markdown(action.body))
         elif isinstance(action, CommentAction):
             reply = (
                 f", replying to general comment #{action.reply_to}"
@@ -699,14 +700,14 @@ def show_lines(manifest: Manifest) -> list[str]:
                 else ""
             )
             lines.append(f"action {index} · COMMENT (general){reply}")
-            lines.extend(action.body.splitlines())
+            lines.extend(render_markdown(action.body))
         elif isinstance(action, DescriptionAction):
             lines.append(f"action {index} · DESCRIPTION")
             if action.title is not None:
                 lines.append(f"  title: {action.title}")
             if action.branch is not None:
                 lines.append(f"  branch: {action.branch}")
-            lines.extend(action.body.splitlines())
+            lines.extend(render_markdown(action.body))
         else:
             assert_never(action)
     return lines
