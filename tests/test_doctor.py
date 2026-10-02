@@ -256,7 +256,7 @@ def test_missing_login_blocks_only_the_default_profiles_account(mocker):
             ll.InstanceStatus("work", 4101, True, True, "missing"),
         ],
         accounts=["personal", "work"],
-        routes={"sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "low"}},
+        routes={"sol-low": {"model": "chatgpt/gpt-6.1-sol", "effort": "low"}},
         profiles={"codex": {"account": "personal"}, "w": {"account": "work", "opus": "sol-low"}},
     )
     mocker.patch("jailbee.litellm.upstream_reachable", return_value=True)

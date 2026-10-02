@@ -2491,7 +2491,7 @@ host-local per-repo file may carry a narrower override (`routes`, `profiles`,
 
 Routes accept `model` (required for new routes), `effort` (fixed),
 `min_effort` (floor; mutually exclusive with `effort`), `context_window`
-(required for unknown models, default `922000` for built-in GPT-6 models),
+(required for unknown models, default `272000` for `gpt-6-astra` and `gpt-6.1-sol`, `1050000` for `gpt-6-luna`),
 `api_key` (name of a variable in `~/.config/jailbee/litellm/secrets.env`, never
 the key; not allowed on `chatgpt/` routes), `api_base` (endpoint URL; its host
 joins the egress allowlist; not allowed on `chatgpt/` routes), `egress` (extra

@@ -119,7 +119,7 @@ Checks that only a real daemon can settle, and that the mocked suite cannot:
 Use a throwaway `XDG_CONFIG_HOME`/`XDG_DATA_HOME` exactly as above.
 
 1. Set `accounts: [a, b]` and `profiles: {codex: {account: a}, cb: {account: b,
-   opus: sol-xhigh, haiku: luna-high}}` in the rig's `global.yaml`, then run
+   opus: sol-high, haiku: luna-high}}` in the rig's `global.yaml`, then run
    `jailbee litellm up`. Expect two ports in `jailbee litellm status`, and
    `incus storage volume list default` showing `jailbee-litellm-state`.
 2. `incus config show jailbee-litellm --expanded | grep -c raw.idmap` prints

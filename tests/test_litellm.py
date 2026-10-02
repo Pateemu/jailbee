@@ -52,7 +52,7 @@ _KIMI = {
 }
 _TWO = {
     "accounts": ["personal", "work"],
-    "routes": {"sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "low"}},
+    "routes": {"sol-low": {"model": "chatgpt/gpt-6.1-sol", "effort": "low"}},
     "profiles": {"codex": {"account": "personal"}, "work": {"account": "work", "opus": "sol-low"}},
 }
 
@@ -1379,7 +1379,7 @@ def test_sync_payload_names_profiles_whose_account_has_no_instance():
     ll.litellm_up(incus, _gcfg())  # only `default` exists
     cfg = _gcfg(
         accounts=["default", "work"],
-        routes={"sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "low"}},
+        routes={"sol-low": {"model": "chatgpt/gpt-6.1-sol", "effort": "low"}},
         profiles={"work": {"account": "work", "opus": "sol-low"}},
     )
     payload = ll.container_sync_payload(incus, cfg)
@@ -1421,17 +1421,17 @@ def _repo(xdg: Path, prefix: str, litellm: dict) -> Path:
 
 
 def test_up_renders_every_repo_scope(xdg):
-    _repo(xdg, "myrepo", {"routes": {"sol-xhigh": {"effort": "max"}}})
+    _repo(xdg, "myrepo", {"routes": {"sol-high": {"effort": "max"}}})
     incus = _incus(present=True)
     ll.litellm_up(incus, _gcfg())
     config = yaml.safe_load(_pushed(incus)[f"{ll.CONTAINER_STATE_DIR}/default/config.yaml"])
     names = {m["model_name"] for m in config["model_list"]}
-    assert {"jb-default-sol-xhigh", "jb-myrepo.sol-xhigh"} <= names
+    assert {"jb-default-sol-high", "jb-myrepo.sol-high"} <= names
 
 
 def test_up_skips_a_broken_override_and_reports_it(xdg):
     broken = _repo(xdg, "broken", {"profiles": {"codex": {"opus": "gone"}}})
-    _repo(xdg, "good", {"routes": {"sol-xhigh": {"effort": "max"}}})
+    _repo(xdg, "good", {"routes": {"sol-high": {"effort": "max"}}})
     incus = _incus(present=True)
     result = ll.litellm_up(incus, _gcfg())
     names = {
@@ -1440,7 +1440,7 @@ def test_up_skips_a_broken_override_and_reports_it(xdg):
             "model_list"
         ]
     }
-    assert "jb-good.sol-xhigh" in names
+    assert "jb-good.sol-high" in names
     assert not any(n.startswith("jb-broken.") for n in names)
     assert len(result.issues) == 1 and str(broken) in result.issues[0]
 
@@ -1471,7 +1471,7 @@ def test_sync_payload_for_a_repo_view_uses_its_scope_and_default_profile():
         config=host.with_overlay(
             LiteLLMRepoOverlay.model_validate(
                 {
-                    "routes": {"sol-xhigh": {"effort": "max"}},
+                    "routes": {"sol-high": {"effort": "max"}},
                     "profiles": {"lean": {"account": "default", "opus": "sol-medium"}},
                     "default_profile": "lean",
                 }
@@ -1566,12 +1566,12 @@ def test_reconcile_names_the_repo_file_behind_a_missing_secret(xdg, monkeypatch)
 def test_reconcile_picks_up_a_new_repo_scope(xdg):
     incus = _incus(present=True)
     ll.litellm_up(incus, _gcfg())
-    _repo(xdg, "myrepo", {"routes": {"sol-xhigh": {"effort": "max"}}})
+    _repo(xdg, "myrepo", {"routes": {"sol-high": {"effort": "max"}}})
     incus.reset_mock(return_value=False, side_effect=False)
     result = ll.litellm_reconcile(incus, _gcfg())
     assert (result.reloaded, result.restarted) == (["default"], [])
     config = _pushed(incus)[f"{ll.CONTAINER_STATE_DIR}/default/config.yaml"]
-    assert "jb-myrepo.sol-xhigh" in config
+    assert "jb-myrepo.sol-high" in config
 
 
 def test_reconcile_without_restart_touches_nothing_and_stays_pending(xdg):
@@ -1625,7 +1625,7 @@ def test_reconcile_reports_a_broken_override_and_still_applies_the_rest(xdg):
     ll.litellm_up(incus, _gcfg())
     broken = _repo(xdg, "broken", {"profiles": {"codex": {"opus": "gone"}}})
     incus.reset_mock(return_value=False, side_effect=False)
-    result = ll.litellm_reconcile(incus, _gcfg(routes={"sol-xhigh": {"effort": "max"}}))
+    result = ll.litellm_reconcile(incus, _gcfg(routes={"sol-high": {"effort": "max"}}))
     assert result.reloaded == ["default"]
     assert len(result.issues) == 1 and str(broken) in result.issues[0]
 
@@ -1635,7 +1635,7 @@ def test_reconcile_leaves_a_detached_state_volume_to_up(xdg):
     ll.litellm_up(incus, _gcfg())
     incus.reset_mock(return_value=False, side_effect=False)
     incus.config_show.return_value = yaml.safe_dump({"devices": {}})
-    changed = _gcfg(routes={"sol-xhigh": {"effort": "max"}})
+    changed = _gcfg(routes={"sol-high": {"effort": "max"}})
     result = ll.litellm_reconcile(incus, changed)
     assert result.needs_up is not None and "state volume" in result.needs_up
     assert result.restarted == [] and result.pending == []
@@ -1651,7 +1651,7 @@ def test_up_reloads_instead_of_restarting_when_only_routes_changed(xdg):
     incus = _incus(present=True)
     ll.litellm_up(incus, _gcfg())
     incus.exec.reset_mock()
-    result = ll.litellm_up(incus, _gcfg(routes={"sol-xhigh": {"effort": "max"}}))
+    result = ll.litellm_up(incus, _gcfg(routes={"sol-high": {"effort": "max"}}))
     assert (result.restarted, result.reloaded) == ([], ["default"])
     assert not any("systemctl restart" in e for e in _execs(incus))
 
@@ -1671,7 +1671,7 @@ def test_up_restarts_when_the_callback_source_changed(xdg, monkeypatch):
 def test_up_falls_back_to_a_restart_when_the_reload_is_not_confirmed(xdg, ack):
     ll.litellm_up(_incus(present=True), _gcfg())
     incus = _incus(present=True, ack=ack)
-    result = ll.litellm_up(incus, _gcfg(routes={"sol-xhigh": {"effort": "max"}}))
+    result = ll.litellm_up(incus, _gcfg(routes={"sol-high": {"effort": "max"}}))
     assert (result.restarted, result.reloaded) == (["default"], [])
     assert ("refused" if ack == "error" else "did not acknowledge") in result.fallbacks["default"]
     assert sum("systemctl restart" in e for e in _execs(incus)) == 1
@@ -1680,7 +1680,7 @@ def test_up_falls_back_to_a_restart_when_the_reload_is_not_confirmed(xdg, ack):
 def test_up_keeps_polling_until_the_ack_matches(xdg):
     ll.litellm_up(_incus(present=True), _gcfg())
     incus = _incus(present=True, ack="late")
-    result = ll.litellm_up(incus, _gcfg(routes={"sol-xhigh": {"effort": "max"}}))
+    result = ll.litellm_up(incus, _gcfg(routes={"sol-high": {"effort": "max"}}))
     assert (result.restarted, result.reloaded, result.fallbacks) == ([], ["default"], {})
     assert sum(e.endswith("/applied.json") for e in _execs(incus)) == 2
 
@@ -1695,11 +1695,11 @@ def test_a_restart_records_the_hot_stamp_so_the_next_run_is_quiet(xdg):
 
 
 def test_reconcile_reloads_only_the_account_whose_routes_changed(xdg):
-    two = {**_TWO, "routes": {"sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "low"}}}
+    two = {**_TWO, "routes": {"sol-low": {"model": "chatgpt/gpt-6.1-sol", "effort": "low"}}}
     incus = _incus(present=True)
     ll.litellm_up(incus, _gcfg(**two))
     incus.reset_mock(return_value=False, side_effect=False)
-    changed = {**two, "routes": {"sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "high"}}}
+    changed = {**two, "routes": {"sol-low": {"model": "chatgpt/gpt-6.1-sol", "effort": "high"}}}
     result = ll.litellm_reconcile(incus, _gcfg(**changed))
     assert (result.reloaded, result.restarted) == (["work"], [])
     assert _restarts(incus) == []
@@ -1711,7 +1711,7 @@ def test_reconcile_without_restart_still_reloads(xdg):
     ll.litellm_up(incus, _gcfg())
     incus.reset_mock(return_value=False, side_effect=False)
     result = ll.litellm_reconcile(
-        incus, _gcfg(routes={"sol-xhigh": {"effort": "max"}}), restart=False
+        incus, _gcfg(routes={"sol-high": {"effort": "max"}}), restart=False
     )
     assert (result.reloaded, result.pending, result.restarted) == (["default"], [], [])
     assert _restarts(incus) == []
@@ -1719,7 +1719,7 @@ def test_reconcile_without_restart_still_reloads(xdg):
 
 def test_reconcile_without_restart_leaves_an_unconfirmed_reload_pending_then_retries(xdg):
     ll.litellm_up(_incus(present=True), _gcfg())
-    changed = _gcfg(routes={"sol-xhigh": {"effort": "max"}})
+    changed = _gcfg(routes={"sol-high": {"effort": "max"}})
     stuck = _incus(present=True, ack="none")
     first = ll.litellm_reconcile(stuck, changed, restart=False)
     assert (first.pending, first.reloaded) == (["default"], [])
@@ -1735,7 +1735,7 @@ def test_reverting_after_an_unconfirmed_reload_pushes_the_old_routes_again(xdg):
     ll.litellm_up(_incus(present=True), _gcfg())
     stuck = _incus(present=True, ack="none")
     pending = ll.litellm_reconcile(
-        stuck, _gcfg(routes={"sol-xhigh": {"effort": "max"}}), restart=False
+        stuck, _gcfg(routes={"sol-high": {"effort": "max"}}), restart=False
     )
     assert (pending.pending, pending.restarted) == (["default"], [])
     reverted = ll.litellm_reconcile(_incus(present=True), _gcfg(), restart=False)

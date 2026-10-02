@@ -207,7 +207,7 @@ def test_a_pasted_key_in_an_overlay_is_never_echoed_or_chained():
 def test_view_scope_is_the_prefix_only_when_routes_or_profiles_change():
     host = LiteLLMConfig()
     own = local_litellm_overlay(
-        {"litellm": {"routes": {"sol-xhigh": {"effort": "max"}}}}, "/tmp/a.yaml"
+        {"litellm": {"routes": {"sol-high": {"effort": "max"}}}}, "/tmp/a.yaml"
     )
     shared = local_litellm_overlay({"litellm": {"autostart": True}}, "/tmp/b.yaml")
     assert repo_litellm_view(host, "a", own, "/tmp/a.yaml").scope == "a"
@@ -226,7 +226,7 @@ def test_an_overlay_that_does_not_fit_names_its_file_and_global_yaml():
 
 
 def test_all_views_skip_a_broken_file_and_keep_the_rest():
-    _write_local("good", {"litellm": {"routes": {"sol-xhigh": {"effort": "max"}}}})
+    _write_local("good", {"litellm": {"routes": {"sol-high": {"effort": "max"}}}})
     _write_local("plain", {"egress_allow": ["x.org"]})
     broken = _write_local("broken", {"litellm": {"profiles": {"codex": {"opus": "gone"}}}})
     views, issues = all_local_litellm_views(LiteLLMConfig())
@@ -234,11 +234,11 @@ def test_all_views_skip_a_broken_file_and_keep_the_rest():
     assert len(issues) == 1 and str(broken) in issues[0] and "skipped" in issues[0].lower()
     scopes, _ = local_litellm_scopes(LiteLLMConfig())
     assert list(scopes) == ["good"]
-    assert scopes["good"].effective_routes()["sol-xhigh"].effort == "max"
+    assert scopes["good"].effective_routes()["sol-high"].effort == "max"
 
 
 def test_a_yaml_syntax_error_reports_path_and_line_never_the_snippet():
-    _write_local("good", {"litellm": {"routes": {"sol-xhigh": {"effort": "max"}}}})
+    _write_local("good", {"litellm": {"routes": {"sol-high": {"effort": "max"}}}})
     path = local_config_path("bad")
     path.write_text("egress_allow: []\ntoken: ghp_SECRETSECRET: x\n")
     views, issues = all_local_litellm_views(LiteLLMConfig())

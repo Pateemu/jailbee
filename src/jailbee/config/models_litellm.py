@@ -9,7 +9,7 @@ An account is one subscription login and one LiteLLM process: LiteLLM reads
 `CHATGPT_TOKEN_DIR` once per process (spike, spec §3). Jailbee ships the
 `codex` profile, its routes and the `default` account; a user entry with the
 same name overlays the built-in one field by field (`model_fields_set` decides
-what was written), so `routes: {sol-xhigh: {effort: max}}` keeps the built-in
+what was written), so `routes: {sol-high: {effort: max}}` keeps the built-in
 model.
 
 Validation never reads `secrets.env` or the `extra` fragment: those are host
@@ -77,15 +77,14 @@ PROVIDER_HOSTS: dict[str, tuple[str, ...]] = {
 missing here needs `api_base` or `egress` on its route: never a silent allow."""
 
 KNOWN_CONTEXT_WINDOWS: dict[str, int] = {
-    "chatgpt/gpt-6-astra": 922_000,
-    "chatgpt/gpt-6-sol": 922_000,
-    "chatgpt/gpt-6-luna": 922_000,
+    "chatgpt/gpt-6-astra": 272_000,
+    "chatgpt/gpt-6.1-sol": 272_000,
+    "chatgpt/gpt-6-luna": 1_050_000,
 }
-"""Window Claude Code manages per model. This is the subscription backend's
-maximum *input*, not the API's 1.05M total: the 2026-09-29 spike saw 903k
-accepted and denser prompts over ~922k rejected. Claude Code compacts a fixed
-reserve below this value, so a larger one would compact after the backend has
-already refused the prompt."""
+"""Window Claude Code manages per model. Claude Code compacts a fixed reserve
+below this value, so one above what the subscription backend accepts would
+compact after the backend has already refused the prompt. The sol and astra
+windows are the subscription backend's input limit, not the API's 1.05M."""
 
 PARAMS_DENYLIST: frozenset[str] = frozenset(
     {
@@ -119,16 +118,16 @@ argument next to the user's own `--append-system-prompt`, so half of that is
 the most a profile may take."""
 
 _BUILTIN_ROUTES: dict[str, dict[str, object]] = {
-    "astra": {"model": "chatgpt/gpt-6-astra"},
-    "sol-xhigh": {"model": "chatgpt/gpt-6-sol", "effort": "xhigh"},
-    "sol-medium": {"model": "chatgpt/gpt-6-sol", "effort": "medium"},
+    "astra": {"model": "chatgpt/gpt-6-astra", "effort": "high"},
+    "sol-high": {"model": "chatgpt/gpt-6.1-sol", "effort": "high"},
+    "sol-medium": {"model": "chatgpt/gpt-6.1-sol", "effort": "medium"},
     "luna-high": {"model": "chatgpt/gpt-6-luna", "effort": "high"},
 }
 _BUILTIN_PROFILES: dict[str, dict[str, object]] = {
     "codex": {
         "account": DEFAULT_ACCOUNT,
         "fable": "astra",
-        "opus": "sol-xhigh",
+        "opus": "sol-high",
         "sonnet": "sol-medium",
         "haiku": "luna-high",
     },
@@ -222,7 +221,7 @@ class LiteLLMRoute(BaseModel):
     model: str | None = Field(
         default=None,
         description=(
-            "LiteLLM model string, e.g. `chatgpt/gpt-6-sol` or "
+            "LiteLLM model string, e.g. `chatgpt/gpt-6.1-sol` or "
             "`openrouter/moonshotai/kimi-k3`. Required for a route jailbee does not ship."
         ),
     )
@@ -247,7 +246,8 @@ class LiteLLMRoute(BaseModel):
         description=(
             "Context window in tokens that Claude Code manages (use the backend's "
             "maximum input). Passed to Claude Code as `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. "
-            "Defaults to 922000 for `chatgpt/gpt-6-*`; required for any other model."
+            "Defaults to 272000 for `chatgpt/gpt-6-astra` and `chatgpt/gpt-6.1-sol`, "
+            "1050000 for `chatgpt/gpt-6-luna`; required for any other model."
         ),
     )
     api_key: str | None = Field(
@@ -475,7 +475,7 @@ class LiteLLMConfig(BaseModel):
         default_factory=dict,
         description=(
             "Named models. An entry named like a built-in route (`astra`, "
-            "`sol-xhigh`, `sol-medium`, `luna-high`) overrides it field by field."
+            "`sol-high`, `sol-medium`, `luna-high`) overrides it field by field."
         ),
     )
     profiles: dict[str, LiteLLMProfile] = Field(

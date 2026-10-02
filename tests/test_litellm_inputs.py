@@ -322,7 +322,7 @@ def test_a_secret_named_only_by_the_host_is_not_blamed_on_a_repo_file(config_hom
     """A scope is host + overlay, so the host's own route shows up in every scope."""
     _write_secrets("OTHER=x\n")
     host = _kimi_cfg()
-    scope = _overlay_scope(host, {"sol-xhigh": {"effort": "max"}})
+    scope = _overlay_scope(host, {"sol-high": {"effort": "max"}})
     with pytest.raises(LiteLLMInputError, match="does not define OPENROUTER_API_KEY") as caught:
         load_host_inputs(host, [scope], ["/r/app.yaml"])
     assert "/r/app.yaml" not in str(caught.value)

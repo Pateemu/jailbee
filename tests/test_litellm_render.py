@@ -32,8 +32,8 @@ def _by_name(cfg: dict) -> dict[str, dict]:
 
 
 def test_alias_shape():
-    assert alias(None, "sol-xhigh") == "jb-default-sol-xhigh"
-    assert alias("myrepo", "sol-xhigh") == "jb-myrepo.sol-xhigh"
+    assert alias(None, "sol-high") == "jb-default-sol-high"
+    assert alias("myrepo", "sol-high") == "jb-myrepo.sol-high"
 
 
 @pytest.mark.parametrize(
@@ -78,7 +78,7 @@ def test_instance_config_serves_every_route_every_profile_tier_and_the_catch_all
     models = _by_name(rendered)
     assert set(models) == {
         "jb-default-astra",
-        "jb-default-sol-xhigh",
+        "jb-default-sol-high",
         "jb-default-sol-medium",
         "jb-default-luna-high",
         "jb.codex.most-capable",
@@ -87,23 +87,23 @@ def test_instance_config_serves_every_route_every_profile_tier_and_the_catch_all
         "jb.codex.cheap",
         CATCH_ALL,
     }
-    assert models["jb.codex.capable"]["litellm_params"] == {"model": "chatgpt/gpt-6-sol"}
+    assert models["jb.codex.capable"]["litellm_params"] == {"model": "chatgpt/gpt-6.1-sol"}
     capable = {k: v for k, v in models["jb.codex.capable"]["model_info"].items() if k != "id"}
-    sol_info = {k: v for k, v in models["jb-default-sol-xhigh"]["model_info"].items() if k != "id"}
+    sol_info = {k: v for k, v in models["jb-default-sol-high"]["model_info"].items() if k != "id"}
     assert capable == sol_info
-    sol = models["jb-default-sol-xhigh"]
-    assert sol["litellm_params"] == {"model": "chatgpt/gpt-6-sol"}
+    sol = models["jb-default-sol-high"]
+    assert sol["litellm_params"] == {"model": "chatgpt/gpt-6.1-sol"}
     assert sol["model_info"] == {
         "mode": "responses",
-        "max_input_tokens": 922_000,
-        "id": deployment_id("jb-default-sol-xhigh"),
+        "max_input_tokens": 272_000,
+        "id": deployment_id("jb-default-sol-high"),
     }
 
 
 def test_effort_is_not_put_in_litellm_params():
     """Claude Code sends its own effort; the callback applies configured effort."""
     models = _by_name(render_instance_config(LiteLLMConfig(), "default"))
-    assert "reasoning_effort" not in models["jb-default-sol-xhigh"]["litellm_params"]
+    assert "reasoning_effort" not in models["jb-default-sol-high"]["litellm_params"]
 
 
 def test_route_params_pass_through():
@@ -123,7 +123,7 @@ def test_catch_all_targets_default_profiles_haiku_route():
 def test_catch_all_falls_back_to_sonnet_when_haiku_unmapped():
     cfg = LiteLLMConfig.model_validate({"profiles": {"codex": {"haiku": None}}})
     models = _by_name(render_instance_config(cfg, "default"))
-    assert models[CATCH_ALL]["litellm_params"] == {"model": "chatgpt/gpt-6-sol"}
+    assert models[CATCH_ALL]["litellm_params"] == {"model": "chatgpt/gpt-6.1-sol"}
 
 
 def test_proxy_settings_always_set():
@@ -138,14 +138,14 @@ def test_proxy_settings_always_set():
 
 def test_callback_data_marks_chatgpt_and_efforts():
     data = render_callback_data(LiteLLMConfig(), "default")
-    assert data["aliases"]["jb-default-sol-xhigh"] == {
+    assert data["aliases"]["jb-default-sol-high"] == {
         "chatgpt": True,
-        "effort": "xhigh",
+        "effort": "high",
         "min_effort": None,
     }
     assert data["aliases"]["jb-default-astra"] == {
         "chatgpt": True,
-        "effort": None,
+        "effort": "high",
         "min_effort": None,
     }
     assert data["catch_all"] == {"chatgpt": True, "effort": "high", "min_effort": None}
@@ -191,7 +191,7 @@ def test_container_profiles():
                 "sonnet": "jb.codex.standard",
                 "haiku": "jb.codex.cheap",
             },
-            "context_window": 922_000,
+            "context_window": 1_050_000,
         }
     }
 
@@ -205,7 +205,7 @@ def test_profile_context_window_is_the_largest_of_the_profiles_routes():
     )
     profiles = container_profiles(cfg, base_urls={"default": "u"})
     assert profiles["small"]["context_window"] == 400_000
-    assert profiles["codex"]["context_window"] == 922_000
+    assert profiles["codex"]["context_window"] == 1_050_000
 
 
 def test_container_profiles_carry_the_profile_instructions():
@@ -233,7 +233,7 @@ def _two_accounts() -> LiteLLMConfig:
         {
             "accounts": ["personal", "work"],
             "default_profile": "codex",
-            "routes": {"kimi": _KIMI, "sol-low": {"model": "chatgpt/gpt-6-sol", "effort": "low"}},
+            "routes": {"kimi": _KIMI, "sol-low": {"model": "chatgpt/gpt-6.1-sol", "effort": "low"}},
             "profiles": {
                 "codex": {"account": "personal"},
                 "work": {"account": "work", "opus": "sol-low", "haiku": "kimi"},
@@ -247,7 +247,7 @@ def test_subscription_routes_are_served_by_their_accounts_and_api_key_routes_eve
     cfg = _two_accounts()
     assert set(served_routes(cfg, "personal")) == {
         "astra",
-        "sol-xhigh",
+        "sol-high",
         "sol-medium",
         "luna-high",
         "kimi",
@@ -427,17 +427,17 @@ def _scope(**overlay: object) -> LiteLLMConfig:
 
 
 def test_every_scope_is_rendered_beside_the_host_routes():
-    scopes = {"myrepo": _scope(routes={"sol-xhigh": {"effort": "max"}})}
+    scopes = {"myrepo": _scope(routes={"sol-high": {"effort": "max"}})}
     models = _by_name(render_instance_config(LiteLLMConfig(), "default", scopes=scopes))
-    assert "jb-default-sol-xhigh" in models and "jb-myrepo.sol-xhigh" in models
+    assert "jb-default-sol-high" in models and "jb-myrepo.sol-high" in models
     assert "jb-myrepo.astra" in models
     table = render_callback_data(LiteLLMConfig(), "default", scopes=scopes)["aliases"]
-    assert table["jb-myrepo.sol-xhigh"]["effort"] == "max"
-    assert table["jb-default-sol-xhigh"]["effort"] == "xhigh"
+    assert table["jb-myrepo.sol-high"]["effort"] == "max"
+    assert table["jb-default-sol-high"]["effort"] == "high"
 
 
 def test_the_catch_all_stays_the_hosts():
-    scopes = {"myrepo": _scope(routes={"luna-high": {"model": "chatgpt/gpt-6-sol"}})}
+    scopes = {"myrepo": _scope(routes={"luna-high": {"model": "chatgpt/gpt-6.1-sol"}})}
     models = _by_name(render_instance_config(LiteLLMConfig(), "default", scopes=scopes))
     assert models[CATCH_ALL]["litellm_params"]["model"] == "chatgpt/gpt-6-luna"
 
@@ -451,12 +451,12 @@ def test_a_scope_serves_its_subscription_routes_only_on_its_profiles_account():
     }
     on_work = _by_name(render_instance_config(host, "work", scopes=scopes))
     on_default = _by_name(render_instance_config(host, "default", scopes=scopes))
-    assert "jb-myrepo.sol-xhigh" in on_work and "jb-myrepo.sol-xhigh" not in on_default
-    assert "jb-default-sol-xhigh" in on_default and "jb-default-sol-xhigh" not in on_work
+    assert "jb-myrepo.sol-high" in on_work and "jb-myrepo.sol-high" not in on_default
+    assert "jb-default-sol-high" in on_default and "jb-default-sol-high" not in on_work
 
 
 def test_container_profiles_use_the_scope_tier_aliases():
-    cfg = _scope(routes={"sol-xhigh": {"effort": "max"}})
+    cfg = _scope(routes={"sol-high": {"effort": "max"}})
     profiles = container_profiles(cfg, base_urls={"default": "u"}, scope="myrepo")
     assert profiles["codex"]["tiers"]["opus"] == "jb-myrepo.codex.capable"
     host = container_profiles(LiteLLMConfig(), base_urls={"default": "u"})
@@ -487,7 +487,7 @@ def test_instance_files_digest_changes_when_a_scope_is_added():
         "default",
         port=4100,
         master_key="k",
-        scopes={"myrepo": _scope(routes={"sol-xhigh": {"effort": "max"}})},
+        scopes={"myrepo": _scope(routes={"sol-high": {"effort": "max"}})},
     )
     # A scope only adds routes, which are hot.
     assert base.hot_digest() != scoped.hot_digest()
@@ -504,7 +504,7 @@ def test_scopes_whose_prefix_and_route_names_interleave_stay_apart_on_one_instan
         "a": _scope(routes={"b-c": _api_route("openrouter/m-a-bc", "high")}),
         "default": _scope(
             routes={
-                "sol-xhigh": {
+                "sol-high": {
                     "model": "chatgpt/gpt-6-other",
                     "context_window": 200000,
                     "effort": "max",
@@ -519,16 +519,16 @@ def test_scopes_whose_prefix_and_route_names_interleave_stay_apart_on_one_instan
     models = _by_name(rendered)
     assert models["jb-a-b.c"]["litellm_params"]["model"] == "openrouter/m-ab-c"
     assert models["jb-a.b-c"]["litellm_params"]["model"] == "openrouter/m-a-bc"
-    assert models["jb-default.sol-xhigh"]["litellm_params"]["model"] == "chatgpt/gpt-6-other"
-    assert models["jb-default-sol-xhigh"]["litellm_params"]["model"] == "chatgpt/gpt-6-sol"
+    assert models["jb-default.sol-high"]["litellm_params"]["model"] == "chatgpt/gpt-6-other"
+    assert models["jb-default-sol-high"]["litellm_params"]["model"] == "chatgpt/gpt-6.1-sol"
 
     table = render_callback_data(host, "default", scopes=scopes)["aliases"]
-    for name in ("jb-a-b.c", "jb-a.b-c", "jb-default.sol-xhigh", "jb-default-sol-xhigh"):
+    for name in ("jb-a-b.c", "jb-a.b-c", "jb-default.sol-high", "jb-default-sol-high"):
         assert name in table
     assert table["jb-a-b.c"]["effort"] == "low"
     assert table["jb-a.b-c"]["effort"] == "high"
-    assert table["jb-default.sol-xhigh"]["effort"] == "max"
-    assert table["jb-default-sol-xhigh"]["effort"] == "xhigh"
+    assert table["jb-default.sol-high"]["effort"] == "max"
+    assert table["jb-default-sol-high"]["effort"] == "high"
     assert set(table) == set(names) - {CATCH_ALL}
 
 
@@ -547,21 +547,21 @@ def test_a_renamed_route_keeps_the_tier_alias_a_running_session_holds():
     before = LiteLLMConfig()
     after = LiteLLMConfig.model_validate(
         {
-            "routes": {"sol-max": {"model": "chatgpt/gpt-6-sol", "effort": "max"}},
+            "routes": {"sol-max": {"model": "chatgpt/gpt-6.1-sol", "effort": "max"}},
             "profiles": {"codex": {"opus": "sol-max"}},
         }
     )
     held = container_profiles(before, base_urls={"default": "u"})["codex"]["tiers"]["opus"]
     models = _by_name(render_instance_config(after, "default"))
-    assert models[held]["litellm_params"] == {"model": "chatgpt/gpt-6-sol"}
+    assert models[held]["litellm_params"] == {"model": "chatgpt/gpt-6.1-sol"}
     assert render_callback_data(after, "default")["aliases"][held]["effort"] == "max"
 
 
 def test_a_repo_scope_serves_its_profile_tiers_under_its_prefix():
-    scopes = {"myrepo": _scope(routes={"sol-xhigh": {"effort": "max"}})}
+    scopes = {"myrepo": _scope(routes={"sol-high": {"effort": "max"}})}
     table = render_callback_data(LiteLLMConfig(), "default", scopes=scopes)["aliases"]
     assert table["jb-myrepo.codex.capable"]["effort"] == "max"
-    assert table["jb.codex.capable"]["effort"] == "xhigh"
+    assert table["jb.codex.capable"]["effort"] == "high"
 
 
 def _files(**kw):
@@ -602,7 +602,7 @@ def test_hot_json_carries_the_callback_table_and_the_model_list():
 
 def test_digest_ignores_routes_and_effort_but_not_what_the_proxy_reads_at_start():
     base = _files()
-    maxed = _files(cfg=LiteLLMConfig.model_validate({"routes": {"sol-xhigh": {"effort": "max"}}}))
+    maxed = _files(cfg=LiteLLMConfig.model_validate({"routes": {"sol-high": {"effort": "max"}}}))
     assert maxed.digest("cb") == base.digest("cb")
     assert maxed.hot_digest() != base.hot_digest()
     settings = _files(extra={"router_settings": {"num_retries": 2}})

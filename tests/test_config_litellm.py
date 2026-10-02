@@ -26,7 +26,7 @@ def test_defaults_are_disabled_with_builtin_codex_profile():
     assert cfg.default_profile == "codex"
     assert cfg.effective_profiles()["codex"] == ResolvedProfile(
         name="codex",
-        tiers={"fable": "astra", "opus": "sol-xhigh", "sonnet": "sol-medium", "haiku": "luna-high"},
+        tiers={"fable": "astra", "opus": "sol-high", "sonnet": "sol-medium", "haiku": "luna-high"},
         effort=None,
         account="default",
         instructions=None,
@@ -38,23 +38,23 @@ def test_builtin_routes_carry_spec_models_and_efforts():
     assert routes["astra"] == ResolvedRoute(
         name="astra",
         model="chatgpt/gpt-6-astra",
-        effort=None,
+        effort="high",
         min_effort=None,
-        context_window=922_000,
+        context_window=272_000,
         params={},
     )
-    assert (routes["sol-xhigh"].model, routes["sol-xhigh"].effort) == ("chatgpt/gpt-6-sol", "xhigh")
+    assert (routes["sol-high"].model, routes["sol-high"].effort) == ("chatgpt/gpt-6.1-sol", "high")
     assert (routes["sol-medium"].model, routes["sol-medium"].effort) == (
-        "chatgpt/gpt-6-sol",
+        "chatgpt/gpt-6.1-sol",
         "medium",
     )
     assert (routes["luna-high"].model, routes["luna-high"].effort) == ("chatgpt/gpt-6-luna", "high")
 
 
 def test_partial_override_of_builtin_route_keeps_its_model():
-    cfg = LiteLLMConfig.model_validate({"routes": {"sol-xhigh": {"effort": "max"}}})
-    route = cfg.effective_routes()["sol-xhigh"]
-    assert route.model == "chatgpt/gpt-6-sol"
+    cfg = LiteLLMConfig.model_validate({"routes": {"sol-high": {"effort": "max"}}})
+    route = cfg.effective_routes()["sol-high"]
+    assert route.model == "chatgpt/gpt-6.1-sol"
     assert route.effort == "max"
 
 
@@ -74,13 +74,17 @@ def test_new_route_without_model_is_rejected_by_name():
 def test_effort_and_min_effort_are_mutually_exclusive():
     with pytest.raises(ValidationError, match="both `effort` and `min_effort`"):
         LiteLLMConfig.model_validate(
-            {"routes": {"x": {"model": "chatgpt/gpt-6-sol", "effort": "high", "min_effort": "low"}}}
+            {
+                "routes": {
+                    "x": {"model": "chatgpt/gpt-6.1-sol", "effort": "high", "min_effort": "low"}
+                }
+            }
         )
 
 
 def test_unknown_effort_level_is_rejected():
     with pytest.raises(ValidationError):
-        LiteLLMConfig.model_validate({"routes": {"sol-xhigh": {"effort": "ultra"}}})
+        LiteLLMConfig.model_validate({"routes": {"sol-high": {"effort": "ultra"}}})
 
 
 @pytest.mark.parametrize(
@@ -110,9 +114,14 @@ def test_route_params_still_accept_sampling_settings():
     assert cfg.effective_routes()["astra"].params == {"temperature": 0.2, "max_tokens": 4096}
 
 
-def test_builtin_gpt6_context_window_is_the_backend_input_limit():
-    routes = LiteLLMConfig().effective_routes()
-    assert {r.context_window for r in routes.values()} == {922_000}
+def test_builtin_gpt6_context_windows():
+    windows = {n: r.context_window for n, r in LiteLLMConfig().effective_routes().items()}
+    assert windows == {
+        "astra": 272_000,
+        "sol-high": 272_000,
+        "sol-medium": 272_000,
+        "luna-high": 1_050_000,
+    }
 
 
 def test_unknown_chatgpt_model_needs_context_window():
@@ -133,7 +142,7 @@ def test_partial_profile_override_keeps_other_tiers():
     cfg = LiteLLMConfig.model_validate({"profiles": {"codex": {"sonnet": "luna-high"}}})
     tiers = cfg.effective_profiles()["codex"].tiers
     assert tiers["sonnet"] == "luna-high"
-    assert tiers["opus"] == "sol-xhigh"
+    assert tiers["opus"] == "sol-high"
 
 
 def test_profile_tier_can_be_unset_with_null():
@@ -180,7 +189,7 @@ def test_explicit_null_clears_builtin_model_and_is_rejected():
 def test_custom_route_and_profile_with_params_and_effort():
     cfg = LiteLLMConfig.model_validate(
         {
-            "routes": {"custom": {"model": "chatgpt/gpt-6-sol", "params": {"temperature": 0.6}}},
+            "routes": {"custom": {"model": "chatgpt/gpt-6.1-sol", "params": {"temperature": 0.6}}},
             "profiles": {"mine": {"account": "default", "opus": "custom", "effort": "max"}},
             "default_profile": "mine",
         }
@@ -340,16 +349,16 @@ def test_route_names_are_alias_safe(name):
     """No `.`: a host alias (`jb-default-<route>`) must never equal a repo one
     (`jb-<prefix>.<route>`)."""
     with pytest.raises(ValidationError, match="invalid route name"):
-        LiteLLMConfig.model_validate({"routes": {name: {"model": "chatgpt/gpt-6-sol"}}})
+        LiteLLMConfig.model_validate({"routes": {name: {"model": "chatgpt/gpt-6.1-sol"}}})
 
 
 @pytest.mark.parametrize("name", ["co.dex", "Codex", "-codex", "a" * 65, "co dex"])
 def test_profile_names_are_alias_safe(name):
     """No `.`: a profile name is part of its tiers' aliases (`jb.<profile>.<level>`)."""
     with pytest.raises(ValidationError, match="invalid profile name"):
-        LiteLLMConfig.model_validate({"profiles": {name: {"opus": "sol-xhigh"}}})
+        LiteLLMConfig.model_validate({"profiles": {name: {"opus": "sol-high"}}})
     with pytest.raises(ValidationError, match="invalid profile name"):
-        _overlay(profiles={name: {"opus": "sol-xhigh"}})
+        _overlay(profiles={name: {"opus": "sol-high"}})
 
 
 def test_builtin_route_names_satisfy_the_rule():
@@ -361,15 +370,15 @@ def test_autostart_defaults_off():
 
 
 def test_overlay_stacks_on_the_global_route_field_by_field():
-    host = LiteLLMConfig.model_validate({"routes": {"sol-xhigh": {"effort": "max"}}})
-    merged = host.with_overlay(_overlay(routes={"sol-xhigh": {"context_window": 500_000}}))
-    route = merged.effective_routes()["sol-xhigh"]
+    host = LiteLLMConfig.model_validate({"routes": {"sol-high": {"effort": "max"}}})
+    merged = host.with_overlay(_overlay(routes={"sol-high": {"context_window": 500_000}}))
+    route = merged.effective_routes()["sol-high"]
     assert (route.model, route.effort, route.context_window) == (
-        "chatgpt/gpt-6-sol",
+        "chatgpt/gpt-6.1-sol",
         "max",
         500_000,
     )
-    assert host.effective_routes()["sol-xhigh"].context_window == 922_000
+    assert host.effective_routes()["sol-high"].context_window == 272_000
 
 
 def test_overlay_params_and_egress_replace_the_global_value():
@@ -396,7 +405,7 @@ def test_overlay_null_tier_unmaps_and_keeps_the_rest_of_the_profile():
     merged = LiteLLMConfig().with_overlay(_overlay(profiles={"codex": {"fable": None}}))
     codex = merged.effective_profiles()["codex"]
     assert "fable" not in codex.tiers
-    assert codex.tiers["opus"] == "sol-xhigh"
+    assert codex.tiers["opus"] == "sol-high"
     assert codex.account == "default"
 
 
@@ -469,7 +478,7 @@ def test_profile_instructions_reach_the_resolved_profile_and_keep_the_builtin_ti
     )
     codex = cfg.effective_profiles()["codex"]
     assert codex.instructions == "Prefer cheap tiers."
-    assert codex.tiers["opus"] == "sol-xhigh"
+    assert codex.tiers["opus"] == "sol-high"
 
 
 def test_overlay_replaces_instructions_whole_and_null_removes_them():

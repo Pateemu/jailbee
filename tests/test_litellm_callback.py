@@ -17,7 +17,7 @@ import pytest
 
 TABLE = {
     "aliases": {
-        "jb-default-sol-xhigh": {"chatgpt": True, "effort": "xhigh", "min_effort": None},
+        "jb-default-sol-high": {"chatgpt": True, "effort": "xhigh", "min_effort": None},
         "jb-default-luna-floor": {"chatgpt": True, "effort": None, "min_effort": "high"},
         "jb-default-astra": {"chatgpt": True, "effort": None, "min_effort": None},
     },
@@ -144,12 +144,12 @@ def test_non_chatgpt_alias_keeps_system_but_applies_effort(cb):
 
 
 def test_fixed_effort_overrides_request(cb):
-    out = cb.transform(_req("jb-default-sol-xhigh", output_config={"effort": "low"}), TABLE)
+    out = cb.transform(_req("jb-default-sol-high", output_config={"effort": "low"}), TABLE)
     assert out["output_config"] == {"effort": "xhigh"}
 
 
 def test_fixed_effort_set_when_request_has_none(cb):
-    out = cb.transform(_req("jb-default-sol-xhigh"), TABLE)
+    out = cb.transform(_req("jb-default-sol-high"), TABLE)
     assert out["output_config"] == {"effort": "xhigh"}
 
 
@@ -179,7 +179,7 @@ def test_floor_orders_all_supported_efforts(cb, requested, expected):
 
 def test_other_output_config_keys_survive(cb):
     out = cb.transform(
-        _req("jb-default-sol-xhigh", output_config={"effort": "low", "format": {"type": "json"}}),
+        _req("jb-default-sol-high", output_config={"effort": "low", "format": {"type": "json"}}),
         TABLE,
     )
     assert out["output_config"] == {"effort": "xhigh", "format": {"type": "json"}}
@@ -188,7 +188,7 @@ def test_other_output_config_keys_survive(cb):
 def test_transform_leaves_input_unchanged(cb):
     system = [{"type": "text", "text": "a"}]
     config = {"effort": "low", "format": {"type": "json"}}
-    req = _req("jb-default-sol-xhigh", system=system, output_config=config)
+    req = _req("jb-default-sol-high", system=system, output_config=config)
     out = cb.transform(req, TABLE)
     assert out["system"] == "a"
     assert out["output_config"]["effort"] == "xhigh"
@@ -208,7 +208,7 @@ def test_unknown_model_untouched(cb):
 
 
 def test_hook_delegates_to_transform(cb):
-    data = _req("jb-default-sol-xhigh")
+    data = _req("jb-default-sol-high")
     out = asyncio.run(
         cb.proxy_handler_instance.async_pre_call_hook(None, None, data, "anthropic_messages")
     )
@@ -216,7 +216,7 @@ def test_hook_delegates_to_transform(cb):
 
 
 def test_hook_ignores_other_call_types(cb):
-    data = _req("jb-default-sol-xhigh", system=[{"type": "text", "text": "a"}])
+    data = _req("jb-default-sol-high", system=[{"type": "text", "text": "a"}])
     for call_type in ("acompletion", "aresponses", "embeddings", None):
         out = asyncio.run(
             cb.proxy_handler_instance.async_pre_call_hook(None, None, dict(data), call_type)
@@ -230,7 +230,7 @@ def test_hook_accepts_the_enum_shaped_call_type(cb):
 
     out = asyncio.run(
         cb.proxy_handler_instance.async_pre_call_hook(
-            None, None, _req("jb-default-sol-xhigh"), CallType()
+            None, None, _req("jb-default-sol-high"), CallType()
         )
     )
     assert out["output_config"] == {"effort": "xhigh"}

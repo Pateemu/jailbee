@@ -51,9 +51,9 @@ The built-in `codex` profile maps Claude Code tiers to these routes:
 
 | Tier | Route | Model | Effort |
 |---|---|---|---|
-| Fable | `astra` | `chatgpt/gpt-6-astra` | Follows Claude Code's session effort |
-| Opus | `sol-xhigh` | `chatgpt/gpt-6-sol` | Fixed `xhigh` |
-| Sonnet | `sol-medium` | `chatgpt/gpt-6-sol` | Fixed `medium` |
+| Fable | `astra` | `chatgpt/gpt-6-astra` | Fixed `high` |
+| Opus | `sol-high` | `chatgpt/gpt-6.1-sol` | Fixed `high` |
+| Sonnet | `sol-medium` | `chatgpt/gpt-6.1-sol` | Fixed `medium` |
 | Haiku | `luna-high` | `chatgpt/gpt-6-luna` | Fixed `high` |
 
 Override only the fields you need in the host's `global.yaml`. A same-named
@@ -65,7 +65,7 @@ litellm:
   enabled: true
   default_profile: fast
   routes:
-    sol-xhigh: {effort: max} # keeps the built-in chatgpt/gpt-6-sol model
+    sol-high: {effort: max} # keeps the built-in chatgpt/gpt-6.1-sol model
     luna-floor: {model: chatgpt/gpt-6-luna, min_effort: medium}
   profiles:
     codex: {haiku: luna-floor} # other codex tiers keep their defaults
@@ -141,9 +141,10 @@ The proxy also serves every route under its own name, `jb-default-<route>`,
 for `/model` and for sessions started before tier names existed. Profile names
 follow the same rule as route names (`[a-z0-9][a-z0-9_-]{0,63}`).
 
-The three built-in GPT-6 models default to a **922,000-token context window**:
-the ChatGPT subscription backend's maximum input, not the API's 1.05M total.
-Claude Code compacts a fixed reserve below the window it is told about, so a
+The built-in models default to a **272,000-token context window** (`astra`,
+`sol-*`) and **1,050,000 tokens** (`luna-high`). For the sol and astra models
+that is the ChatGPT subscription backend's maximum input, not the API's 1.05M
+total. Claude Code compacts a fixed reserve below the window it is told about, so a
 larger value would compact only after the backend had refused the prompt. A new
 model needs an explicit `context_window`; the wrapper exports
 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` as the largest window among the selected
@@ -246,7 +247,7 @@ litellm:
   accounts: [personal, work]
   profiles:
     codex: {account: personal}
-    codex-work: {account: work, fable: astra, opus: sol-xhigh, sonnet: sol-medium, haiku: luna-high}
+    codex-work: {account: work, fable: astra, opus: sol-high, sonnet: sol-medium, haiku: luna-high}
 ```
 
 Log each account in once: `jailbee litellm login personal`, `jailbee litellm

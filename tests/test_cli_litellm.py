@@ -281,7 +281,7 @@ def test_ls_lists_host_and_repo_blocks(mocker, tmp_path, monkeypatch):
     repos = tmp_path / "jailbee" / "repos"
     repos.mkdir(parents=True)
     (repos / "myrepo.yaml").write_text(
-        yaml.safe_dump({"litellm": {"routes": {"sol-xhigh": {"effort": "max"}}}})
+        yaml.safe_dump({"litellm": {"routes": {"sol-high": {"effort": "max"}}}})
     )
     (repos / "broken.yaml").write_text(yaml.safe_dump({"litellm": {"default_profile": "nope"}}))
     mocker.patch(

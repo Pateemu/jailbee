@@ -21,7 +21,7 @@ PAYLOAD = {
             "base_url": "http://10.0.0.3:4100",
             "key_file": "KEYFILE",
             "effort": None,
-            "tiers": {"opus": "jb-default-sol-xhigh", "haiku": "jb-default-luna-high"},
+            "tiers": {"opus": "jb-default-sol-high", "haiku": "jb-default-luna-high"},
             "context_window": 1050000,
         },
         "deep": {
@@ -85,7 +85,7 @@ def test_default_profile_env(script, env):
     lines = _lines(r.stdout)
     assert "ANTHROPIC_BASE_URL=http://10.0.0.3:4100" in lines
     assert "ANTHROPIC_AUTH_TOKEN=sk-jb-secret" in lines
-    assert "ANTHROPIC_DEFAULT_OPUS_MODEL=jb-default-sol-xhigh" in lines
+    assert "ANTHROPIC_DEFAULT_OPUS_MODEL=jb-default-sol-high" in lines
     assert "ANTHROPIC_DEFAULT_HAIKU_MODEL=jb-default-luna-high" in lines
     assert not any(line.startswith("ANTHROPIC_DEFAULT_SONNET_MODEL=") for line in lines)
     assert "CLAUDE_CODE_MAX_CONTEXT_TOKENS=1050000" in lines
@@ -123,7 +123,7 @@ def test_env_var_selects_profile(script, env):
 
 def test_flag_beats_env_var(script, env):
     r = _run(script, {**env, "JAILBEE_LITELLM_PROFILE": "deep"}, "--profile", "codex")
-    assert "ANTHROPIC_DEFAULT_OPUS_MODEL=jb-default-sol-xhigh" in _lines(r.stdout)
+    assert "ANTHROPIC_DEFAULT_OPUS_MODEL=jb-default-sol-high" in _lines(r.stdout)
 
 
 def test_user_effort_wins_over_profile_effort(script, env):
