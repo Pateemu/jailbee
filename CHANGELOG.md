@@ -10,6 +10,13 @@ before editing `## Unreleased`.
 
 ### Added
 
+- **`sftp` and `scp` into a container's repo, over the remote SSH service.**
+  `remote.ssh.files: true` (or `jb remote ssh serve --files` for one run) lets
+  an authorized key browse the running containers and read and write files
+  under each one's repository directory with stock `sftp` and `scp`. It is off
+  by default and one switch covers both directions. Nothing outside the repo is
+  reachable: not the host, not the rest of the container, and a symlink that
+  leaves the repo is refused rather than followed. Rsync is not supported.
 - **`jailbee pr` can use any agent, not just Claude.** A new `pr:` block
   (`agent`, `ai_description`, `ai_branch`, `model`, `prompt`, `timeout`) says
   how the PR title, body and branch name are written. `pr.agent: auto`, the
