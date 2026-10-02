@@ -65,13 +65,13 @@ def test_article_has_body_brand_and_canonical_url(site: tuple[Path, Path]) -> No
     )
     build(website, output)
 
-    html = (output / "news" / "release" / "index.html").read_text()
+    html = (output / "news" / "2026" / "09" / "28" / "release" / "index.html").read_text()
     assert html.count("<h1") == 1
     assert "<h1>JailBee 1.5</h1>" in html
     assert "<h2>What changed</h2>" in html
     assert "<li>Faster start</li>" in html
     assert '<a href="/docs/">Read docs</a>' in html
-    assert '<link rel="canonical" href="https://jailbee.gisgro.io/news/release/"' in html
+    assert '<link rel="canonical" href="https://jailbee.gisgro.io/news/2026/09/28/release/"' in html
     assert "2026-09-28" in html
     assert "Release notes" in html
     assert "topbar" in html and "footer" in html
@@ -89,7 +89,7 @@ def test_every_news_page_carries_the_home_pages_top_bar(site: tuple[Path, Path])
     assert version is not None
     for page in (
         output / "news" / "index.html",
-        output / "news" / "release" / "index.html",
+        output / "news" / "2026" / "09" / "28" / "release" / "index.html",
     ):
         html = page.read_text()
         assert html.count('<header class="topbar">') == 1
@@ -99,7 +99,7 @@ def test_every_news_page_carries_the_home_pages_top_bar(site: tuple[Path, Path])
         )[0].count("<svg")
         assert f'class="topbar__version">{version.group(1)}<' in html
         assert 'href="https://github.com/VRTFinland/jailbee"' in html
-        # Links resolve from /news/<slug>/, so none may stay relative.
+        # Links resolve from /news/YYYY/MM/DD/<slug>/, so none may stay relative.
         header = html[html.index('<header class="topbar">') : html.index("</header>")]
         assert 'href="/"' in header and 'href="/news/"' in header and 'href="/docs/"' in header
         assert 'src="/assets/img/jailbee-mark.png"' in header
@@ -115,11 +115,11 @@ def test_the_newest_title_is_in_the_bar_of_every_page_and_the_home_page(
     _add(website, "2026-10-02-new.md", "title: Newer <1>\ndate: 2026-10-02\nsummary: s\n")
     build(website, output)
 
-    article = (output / "news" / "old" / "index.html").read_text()
-    assert 'class="topbar__latest" href="/news/new/"' in article
+    article = (output / "news" / "2026" / "09" / "01" / "old" / "index.html").read_text()
+    assert 'class="topbar__latest" href="/news/2026/10/02/new/"' in article
     assert "Newer &lt;1&gt;" in article and "Older</a>" not in article.split("</header>")[0]
     home = (output / "index.html").read_text()
-    assert 'class="topbar__latest" href="news/new/"' in home
+    assert 'class="topbar__latest" href="news/2026/10/02/new/"' in home
     assert home.count("topbar__latest") == 1
     # The committed page stays chip-free; the chip is a build product.
     assert "topbar__latest" not in (website / "index.html").read_text()
@@ -145,7 +145,7 @@ def test_link_previews_get_a_sized_image_a_plain_title_and_the_right_type(
     _add(website, "2026-09-29-plain.md", "title: Plain\ndate: 2026-09-29\nsummary: s\n")
     build(website, output)
 
-    article = (output / "news" / "release" / "index.html").read_text()
+    article = (output / "news" / "2026" / "09" / "28" / "release" / "index.html").read_text()
     assert '<meta property="og:title" content="JailBee 1.5" />' in article
     assert '<meta property="og:type" content="article" />' in article
     assert '<meta property="article:published_time" content="2026-09-28" />' in article
@@ -154,7 +154,7 @@ def test_link_previews_get_a_sized_image_a_plain_title_and_the_right_type(
     assert 'property="og:image:height" content="630"' in article
     assert 'property="og:image:alt" content="A hive"' in article
 
-    plain = (output / "news" / "plain" / "index.html").read_text()
+    plain = (output / "news" / "2026" / "09" / "29" / "plain" / "index.html").read_text()
     assert "/assets/img/jailbee-og.png" in plain  # the default card
     assert 'property="og:image:alt" content="JailBee' in plain
     assert "og:image:width" not in plain  # the fixture ships no default image to measure
@@ -174,7 +174,7 @@ def test_feature_image_and_metadata_are_escaped(site: tuple[Path, Path]) -> None
     )
     build(website, output)
 
-    article = (output / "news" / "release" / "index.html").read_text()
+    article = (output / "news" / "2026" / "09" / "28" / "release" / "index.html").read_text()
     archive = (output / "news" / "index.html").read_text()
     for page in (article, archive):
         assert "A &amp; &lt;B&gt;" in page
@@ -217,7 +217,7 @@ def test_code_examples_are_not_treated_as_raw_html_or_headings(site: tuple[Path,
         '`<img src="example">` is only an example.\n',
     )
     build(website, output)
-    html = (output / "news" / "release" / "index.html").read_text()
+    html = (output / "news" / "2026" / "09" / "28" / "release" / "index.html").read_text()
     assert html.count("<h1") == 1
     assert "&lt;img src=" in html
     assert "# this is a shell comment" in html
@@ -264,10 +264,10 @@ def test_rss_is_valid_ordered_and_discoverable(site: tuple[Path, Path]) -> None:
     items = tree.findall("./channel/item")
     assert [item.findtext("title") for item in items] == ["New & <important>", "JailBee 1.5"]
     assert [item.findtext("link") for item in items] == [
-        "https://jailbee.gisgro.io/news/new/",
-        "https://jailbee.gisgro.io/news/old/",
+        "https://jailbee.gisgro.io/news/2026/09/28/new/",
+        "https://jailbee.gisgro.io/news/2026/09/27/old/",
     ]
-    assert items[0].findtext("guid") == "https://jailbee.gisgro.io/news/new/"
+    assert items[0].findtext("guid") == "https://jailbee.gisgro.io/news/2026/09/28/new/"
     assert items[0].findtext("description") == "A & B"
     assert items[0].findtext("pubDate") == "Mon, 28 Sep 2026 00:00:00 GMT"
     html = (output / "news" / "index.html").read_text()
@@ -290,7 +290,7 @@ def test_sitemap_contains_only_current_news_pages(site: tuple[Path, Path]) -> No
         "https://jailbee.gisgro.io/",
         "https://jailbee.gisgro.io/news/",
         "https://jailbee.gisgro.io/news/page/2/",
-        *(f"https://jailbee.gisgro.io/news/post-{number:02}/" for number in range(11)),
+        *(f"https://jailbee.gisgro.io/news/2026/09/28/post-{number:02}/" for number in range(11)),
     }
 
     (output / "index.html").write_text("Home")
@@ -305,11 +305,11 @@ def test_sitemap_contains_only_current_news_pages(site: tuple[Path, Path]) -> No
     assert "topbar__latest" in (output / "index.html").read_text()
     assert docs.read_text() == "Docs"
     assert not (output / "news" / "page" / "2").exists()
-    assert not (output / "news" / "post-01").exists()
+    assert not (output / "news" / "2026" / "09" / "28" / "post-01").exists()
     assert _sitemap_urls(output) == {
         "https://jailbee.gisgro.io/",
         "https://jailbee.gisgro.io/news/",
-        "https://jailbee.gisgro.io/news/post-00/",
+        "https://jailbee.gisgro.io/news/2026/09/28/post-00/",
     }
 
 

@@ -23,6 +23,11 @@ class Post:
     image_alt: str | None
     body_md: str
 
+    @property
+    def path(self) -> str:
+        """Site-root-relative permalink, WordPress style: /news/YYYY/MM/DD/slug/."""
+        return f"/news/{self.date:%Y/%m/%d}/{self.slug}/"
+
 
 def asset_path(value: str, assets_dir: Path, source: Path) -> Path:
     """Resolve a site-root-relative asset without allowing traversal or symlinks out."""
@@ -84,12 +89,5 @@ def parse_post(path: Path, assets_dir: Path) -> Post:
 def load_posts(posts_dir: Path, assets_dir: Path) -> list[Post]:
     if not posts_dir.exists():
         return []
-    posts = []
-    slugs: set[str] = set()
-    for source in sorted(posts_dir.glob("*.md")):
-        post = parse_post(source, assets_dir)
-        if post.slug in slugs:
-            raise ValueError(f"{source}: duplicate news slug: {post.slug}")
-        slugs.add(post.slug)
-        posts.append(post)
+    posts = [parse_post(source, assets_dir) for source in sorted(posts_dir.glob("*.md"))]
     return sorted(posts, key=lambda post: (-post.date.toordinal(), post.slug))

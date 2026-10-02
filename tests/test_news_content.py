@@ -95,14 +95,21 @@ def test_rejects_invalid_posts_with_source_path(
     assert problem in str(error.value)
 
 
-def test_rejects_duplicate_slugs_across_dates(tmp_path: Path) -> None:
+def test_permalink_carries_the_publication_date(tmp_path: Path) -> None:
+    source = _post(tmp_path / "posts", "2026-09-07-release.md", VALID.replace("09-28", "09-07"))
+
+    assert parse_post(source, tmp_path / "assets").path == "/news/2026/09/07/release/"
+
+
+def test_same_slug_on_different_dates_is_allowed(tmp_path: Path) -> None:
     posts = tmp_path / "posts"
     _post(posts, "2026-09-28-release.md", VALID)
     _post(posts, "2026-09-27-release.md", VALID.replace("2026-09-28", "2026-09-27"))
 
-    # Alphabetical source order reads the 27th first; the 28th is the duplicate.
-    with pytest.raises(ValueError, match=r"2026-09-28-release\.md"):
-        load_posts(posts, tmp_path / "assets")
+    assert [p.path for p in load_posts(posts, tmp_path / "assets")] == [
+        "/news/2026/09/28/release/",
+        "/news/2026/09/27/release/",
+    ]
 
 
 def test_rejects_feature_image_symlink_outside_asset_directory(tmp_path: Path) -> None:

@@ -114,7 +114,7 @@ def _feed(posts: list[Post], path: Path) -> None:
         ET.SubElement(channel, tag).text = value
     for post in posts:
         item = ET.SubElement(channel, "item")
-        canonical = f"{URL}/news/{post.slug}/"
+        canonical = f"{URL}{post.path}"
         for tag, value in (
             ("title", post.title),
             ("link", canonical),
@@ -149,7 +149,7 @@ def _with_latest(header: str, post: Post | None, prefix: str) -> str:
     if post is None or _NEWS_LINK not in header:
         return header
     chip = (
-        f'<a class="topbar__latest" href="{prefix}news/{post.slug}/">'
+        f'<a class="topbar__latest" href="{prefix}{post.path.removeprefix("/")}">'
         f"<span>Latest</span> {escape(post.title)}</a>\n        "
     )
     return header.replace(_NEWS_LINK, chip + _NEWS_LINK, 1)
@@ -259,14 +259,14 @@ def build(website_dir: Path, site_dir: Path) -> None:
             encoding="utf-8",
         )
     for post in posts:
-        sitemap_urls.append(f"/news/{post.slug}/")
-        target = output / post.slug
+        sitemap_urls.append(post.path)
+        target = site_dir / post.path.removeprefix("/")
         target.mkdir(parents=True, exist_ok=True)
         (target / "index.html").write_text(
             env.get_template("article.html").render(
                 post=post,
                 body_html=_content(post, website_dir / "assets"),
-                canonical=f"{URL}/news/{post.slug}/",
+                canonical=f"{URL}{post.path}",
                 title=f"{post.title} — JailBee",
                 og_title=post.title,
                 og_type="article",

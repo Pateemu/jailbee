@@ -21,9 +21,10 @@ The opening paragraph gives the reader context without repeating the summary.
 ```
 
 `title`, `date` and `summary` are required. Use a real ISO calendar date that
-matches the filename prefix. The `slug` part of the filename determines the
-permanent `/news/<slug>/` URL; keep it lowercase, ASCII, and hyphen-separated.
-Do not reuse an existing slug or use `page`. A date does **not** schedule a
+matches the filename prefix. The date and the `slug` part of the filename determine
+the permanent `/news/YYYY/MM/DD/<slug>/` URL; keep the slug lowercase, ASCII,
+and hyphen-separated, and never use `page`. Changing either later breaks
+published links. A date does **not** schedule a
 post: merging it to `main` makes it public on the next Pages deployment.
 
 The feature image is optional. If present, store the file under

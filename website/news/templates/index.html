@@ -7,10 +7,10 @@
   {% if not posts %}<p>No news yet. Check back for updates.</p>{% endif %}
   {% for post in posts %}
   <article class="news-card">
-    {% if post.image %}<a href="/news/{{ post.slug }}/"><img src="{{ post.image }}" alt="{{ post.image_alt }}" /></a>{% endif %}
+    {% if post.image %}<a href="{{ post.path }}"><img src="{{ post.image }}" alt="{{ post.image_alt }}" /></a>{% endif %}
     <div>
       <time datetime="{{ post.date.isoformat() }}">{{ post.date.isoformat() }}</time>
-      <h2><a href="/news/{{ post.slug }}/">{{ post.title }}</a></h2>
+      <h2><a href="{{ post.path }}">{{ post.title }}</a></h2>
       <p>{{ post.summary }}</p>
     </div>
   </article>
