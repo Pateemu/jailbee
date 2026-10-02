@@ -158,7 +158,7 @@ def git_segments(cc: CardContent) -> list[tuple[str, str]]:
         segs.append((f"↓{behind_count}", "ahead"))
     target_diff = card_field(cc, "target_diff")
     if target_diff not in (None, "clean"):
-        segs.append((target_diff, "diff"))  # type: ignore[arg-type]  # not-None narrowed by the check
+        segs.append((target_diff, "diff"))
     wt = card_field(cc, "wt")
     if wt not in (None, "clean"):
         segs.append((f"wt {wt}", "diff"))
