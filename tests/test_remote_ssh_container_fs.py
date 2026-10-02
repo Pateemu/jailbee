@@ -214,3 +214,72 @@ def test_scripts_are_constants_and_receive_values_only_as_arguments(fs, repo):
     assert "marker-xyz" not in cmd[2]  # the script text never contains client input
     assert cmd[-1] == "marker-xyz"  # ...it arrives as an argument
     assert (uid, gid) == (1000, 1000)
+
+
+@pytest.fixture
+def repo_with_linkdir(tmp_path: Path) -> Path:
+    """Repo with a symlinked parent directory pointing outside."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "a.txt").write_text("hello world")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_text("SECRET")
+    os.symlink("../outside", repo / "linkdir")
+    return repo
+
+
+@pytest.fixture
+def fs_with_linkdir(repo_with_linkdir: Path) -> ContainerFS:
+    return ContainerFS(LocalIncus(), "app-feat", str(repo_with_linkdir), 1000, 1000)
+
+
+def test_open_through_symlinked_parent_is_denied(fs_with_linkdir, repo_with_linkdir):
+    outside = repo_with_linkdir.parent / "outside"
+    assert (
+        kind_of(
+            lambda: fs_with_linkdir.open(
+                "linkdir/new", create=True, truncate=False, exclusive=False
+            )
+        )
+        == "denied"
+    )
+    assert not (outside / "new").exists()
+
+
+def test_mkdir_through_symlinked_parent_is_denied(fs_with_linkdir, repo_with_linkdir):
+    outside = repo_with_linkdir.parent / "outside"
+    assert kind_of(lambda: fs_with_linkdir.mkdir("linkdir/d", 0o755)) == "denied"
+    assert not (outside / "d").exists()
+
+
+def test_remove_through_symlinked_parent_is_denied(fs_with_linkdir, repo_with_linkdir):
+    outside = repo_with_linkdir.parent / "outside"
+    assert kind_of(lambda: fs_with_linkdir.remove("linkdir/secret")) == "denied"
+    assert (outside / "secret").read_text() == "SECRET"
+
+
+def test_stat_of_file_through_symlinked_parent_is_denied_even_lstat(
+    fs_with_linkdir, repo_with_linkdir
+):
+    assert kind_of(lambda: fs_with_linkdir.stat("linkdir/secret", follow=False)) == "denied"
+
+
+def test_listdir_of_symlinked_parent_is_denied(fs_with_linkdir):
+    assert kind_of(lambda: fs_with_linkdir.listdir("linkdir")) == "denied"
+
+
+def test_rename_to_symlinked_parent_is_denied(fs_with_linkdir, repo_with_linkdir):
+    outside = repo_with_linkdir.parent / "outside"
+    assert kind_of(lambda: fs_with_linkdir.rename("a.txt", "linkdir/x", overwrite=True)) == "denied"
+    assert (repo_with_linkdir / "a.txt").exists()
+    assert not (outside / "x").exists()
+
+
+def test_rename_from_symlinked_parent_is_denied(fs_with_linkdir, repo_with_linkdir):
+    outside = repo_with_linkdir.parent / "outside"
+    assert (
+        kind_of(lambda: fs_with_linkdir.rename("linkdir/secret", "x", overwrite=True)) == "denied"
+    )
+    assert (outside / "secret").read_text() == "SECRET"
+    assert not (repo_with_linkdir / "x").exists()
