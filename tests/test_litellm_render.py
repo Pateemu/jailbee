@@ -644,3 +644,83 @@ def test_a_repo_scope_can_make_an_account_need_a_login():
         LiteLLMRepoOverlay.model_validate({"profiles": {"kimi": {"opus": "luna-high"}}})
     )
     assert account_login_providers(host, "keys", {"myrepo": scoped}) == ("chatgpt",)
+
+
+_GROK_CFG = {
+    "routes": {"grok": {"model": "xai/grok-4.3", "oauth": True, "context_window": 256_000}},
+    "profiles": {"grok": {"account": "default", "opus": "grok", "haiku": "grok"}},
+}
+
+
+def test_an_oauth_deployment_uses_the_subscription_login():
+    models = _by_name(render_instance_config(LiteLLMConfig.model_validate(_GROK_CFG), "default"))
+    grok = models["jb-default-grok"]
+    assert grok["litellm_params"] == {"model": "xai/grok-4.3", "use_xai_oauth": True}
+    assert "mode" not in grok["model_info"]  # `mode: responses` is the ChatGPT backend's
+
+
+def test_the_callback_does_not_treat_an_oauth_route_as_chatgpt():
+    data = render_callback_data(LiteLLMConfig.model_validate(_GROK_CFG), "default")
+    assert data["aliases"]["jb-default-grok"]["chatgpt"] is False
+    assert data["aliases"]["jb-default-sol-high"]["chatgpt"] is True
+
+
+def test_oauth_routes_open_the_xai_auth_host():
+    hosts = egress_hosts(LiteLLMConfig.model_validate(_GROK_CFG))
+    assert "auth.x.ai:443" in hosts and "api.x.ai:443" in hosts
+
+
+def test_an_account_without_oauth_routes_renders_todays_env():
+    files = render_instance_files(LiteLLMConfig(), "default", port=4100, master_key="k")
+    assert "XAI_" not in files.instance_env
+    assert files.instance_env == render_instance_env(port=4100, master_key="k", account="default")
+    assert files.login_providers == ("chatgpt",)
+
+
+def test_an_account_serving_an_oauth_route_gets_the_xai_token_dir():
+    files = render_instance_files(
+        LiteLLMConfig.model_validate(_GROK_CFG), "default", port=4100, master_key="k"
+    )
+    assert "XAI_OAUTH_TOKEN_DIR=/var/lib/jailbee-litellm/default/xai-auth\n" in files.instance_env
+    assert files.login_providers == ("chatgpt", "xai")
+
+
+def test_a_mixed_account_needs_both_logins_and_both_token_dirs():
+    cfg = LiteLLMConfig.model_validate(
+        {
+            **_GROK_CFG,
+            "profiles": {"mix": {"account": "default", "opus": "grok", "haiku": "luna-high"}},
+        }
+    )
+    assert account_login_providers(cfg, "default") == ("chatgpt", "xai")
+    env = render_instance_files(cfg, "default", port=4100, master_key="k").instance_env
+    assert "CHATGPT_TOKEN_DIR=" in env and "XAI_OAUTH_TOKEN_DIR=" in env
+
+
+def test_an_api_key_only_account_needs_no_login():
+    cfg = LiteLLMConfig.model_validate(
+        {
+            "accounts": ["default", "keys"],
+            "routes": {
+                "kimi": {
+                    "model": "openrouter/moonshotai/kimi-k3",
+                    "context_window": 262144,
+                    "api_key": "OPENROUTER_API_KEY",
+                }
+            },
+            "profiles": {"kimi": {"account": "keys", "opus": "kimi"}},
+        }
+    )
+    assert account_login_providers(cfg, "keys") == ()
+
+
+def test_an_oauth_route_in_a_repo_scope_needs_the_xai_login():
+    host = LiteLLMConfig()
+    scoped = host.with_overlay(LiteLLMRepoOverlay.model_validate(_GROK_CFG))
+    assert account_login_providers(host, "default") == ("chatgpt",)
+    assert account_login_providers(host, "default", {"myrepo": scoped}) == ("chatgpt", "xai")
+    files = render_instance_files(
+        host, "default", port=4100, master_key="k", scopes={"myrepo": scoped}
+    )
+    assert "XAI_OAUTH_TOKEN_DIR=" in files.instance_env
+    assert "auth.x.ai:443" in egress_hosts(host, scopes={"myrepo": scoped})

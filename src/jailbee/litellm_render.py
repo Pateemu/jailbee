@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from jailbee.config.models_litellm import PROVIDER_HOSTS, api_base_endpoint
+from jailbee.config.models_litellm import PROVIDER_HOSTS, XAI_AUTH_HOST, api_base_endpoint
 from jailbee.egress import parse_egress_entry
 
 if TYPE_CHECKING:
@@ -113,14 +113,14 @@ def served_routes(cfg: LiteLLMConfig, account: str) -> dict[str, ResolvedRoute]:
 def account_login_providers(
     cfg: LiteLLMConfig, account: str, scopes: Scopes | None = None
 ) -> tuple[str, ...]:
-    """The subscription logins the account's instance needs, over every scope."""
+    """The logins (`chatgpt`, `xai`) the account's instance needs, over every scope."""
     return tuple(
         sorted(
             {
-                route.provider
+                route.login_provider
                 for _, view in _scoped(cfg, scopes)
                 for route in served_routes(view, account).values()
-                if route.subscription
+                if route.login_provider is not None
             }
         )
     )
@@ -181,11 +181,13 @@ def _deployment(model_name: str, route: ResolvedRoute) -> dict[str, object]:
         params["api_key"] = f"os.environ/{route.api_key}"
     if route.api_base:
         params["api_base"] = route.api_base
+    if route.oauth:
+        params["use_xai_oauth"] = True
     info: dict[str, object] = {
         "id": deployment_id(model_name),
         "max_input_tokens": route.context_window,
     }
-    if route.subscription:
+    if route.chatgpt:
         info = {"mode": "responses", **info}
     return {"model_name": model_name, "litellm_params": params, "model_info": info}
 
@@ -255,7 +257,7 @@ def render_instance_config(
 
 def _entry(route: ResolvedRoute) -> dict[str, object]:
     # The callback's key stays `chatgpt`: it flattens `system` for that backend only.
-    return {"chatgpt": route.subscription, "effort": route.effort, "min_effort": route.min_effort}
+    return {"chatgpt": route.chatgpt, "effort": route.effort, "min_effort": route.min_effort}
 
 
 def render_callback_data(
@@ -269,18 +271,27 @@ def render_callback_data(
 
 
 def render_instance_env(
-    *, port: int, master_key: str, account: str, secrets: Mapping[str, str] | None = None
+    *,
+    port: int,
+    master_key: str,
+    account: str,
+    secrets: Mapping[str, str] | None = None,
+    xai_oauth: bool = False,
 ) -> str:
     """systemd `EnvironmentFile` that `jailbee litellm login` also sources with bash.
 
     Single quotes mean the same thing to both parsers only without a quote,
     backslash or newline inside; `litellm_inputs` refuses such values first.
+
+    `XAI_OAUTH_TOKEN_DIR` only when the account serves an `oauth` route, so every
+    other instance's environment — and its restart digest — stays as it was.
     """
     base = f"{CONTAINER_STATE_DIR}/{account}"
     lines = [
         f"PORT={port}",
         f"LITELLM_MASTER_KEY={master_key}",
         f"CHATGPT_TOKEN_DIR={base}/auth",
+        *([f"XAI_OAUTH_TOKEN_DIR={base}/xai-auth"] if xai_oauth else []),
         f"JAILBEE_LITELLM_HOT_FILE={base}/{HOT_FILE}",
         f"JAILBEE_LITELLM_ACK_FILE={base}/{ACK_FILE}",
         "LITELLM_LOCAL_MODEL_COST_MAP=True",
@@ -340,6 +351,7 @@ def render_instance_files(
         "callback": render_callback_data(cfg, account, scopes=scopes),
         "models": config["model_list"],
     }
+    providers = account_login_providers(cfg, account, scopes)
     return InstanceFiles(
         account=account,
         config_yaml=yaml.safe_dump(config, sort_keys=False),
@@ -348,9 +360,13 @@ def render_instance_files(
         ),
         hot_json=json.dumps(hot, indent=2, default=str) + "\n",
         instance_env=render_instance_env(
-            port=port, master_key=master_key, account=account, secrets=secrets
+            port=port,
+            master_key=master_key,
+            account=account,
+            secrets=secrets,
+            xai_oauth="xai" in providers,
         ),
-        login_providers=account_login_providers(cfg, account, scopes),
+        login_providers=providers,
     )
 
 
@@ -380,6 +396,8 @@ def _route_egress(route: ResolvedRoute) -> list[str]:
         hosts = [api_base_endpoint(route.api_base)]
     else:
         hosts = [f"{h}:443" for h in PROVIDER_HOSTS.get(route.provider, ())]
+    if route.oauth:
+        hosts.append(f"{XAI_AUTH_HOST}:443")
     return [*hosts, *route.egress]
 
 
