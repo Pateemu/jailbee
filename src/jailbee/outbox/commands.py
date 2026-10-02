@@ -13,6 +13,7 @@ from jailbee.lifecycle import list_containers
 from jailbee.outbox.delete import DeletePlan, DeleteSelection, plan_delete
 from jailbee.outbox.inspect import detail_json, overview_json, safe_text
 from jailbee.outbox.io import READ_TIMEOUT
+from jailbee.outbox.markdown_view import print_lines
 from jailbee.outbox.models import (
     ContainerView,
     OutboxChanged,
@@ -227,13 +228,6 @@ def apply_selected(
         expected_revision=view.revision,
         raise_errors=True,
     )
-
-
-def print_lines(lines: Sequence[str]) -> None:
-    from jailbee.tui import console
-
-    for line in lines:
-        console.print(safe_text(line), markup=False, highlight=False, soft_wrap=True)
 
 
 def show_overview(

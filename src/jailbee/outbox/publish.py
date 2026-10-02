@@ -10,6 +10,7 @@ from jailbee import issue_outbox, pr, pr_outbox
 from jailbee.incus import IncusError
 from jailbee.outbox.inspect import build_views, safe_text
 from jailbee.outbox.io import PrManagement
+from jailbee.outbox.markdown_view import print_lines
 from jailbee.outbox.models import (
     ContainerView,
     OutboxChanged,
@@ -26,7 +27,7 @@ from jailbee.outbox_io import (
     OutboxReadError,
     journal_key,
 )
-from jailbee.tui import console, error_plain, info_plain, success_plain
+from jailbee.tui import error_plain, info_plain, success_plain
 
 if TYPE_CHECKING:
     from jailbee.config import Config
@@ -126,11 +127,6 @@ def print_issue_outcome(
             info_plain(safe_text(line.text))
 
 
-def _print_lines(lines: list[str] | tuple[str, ...]) -> None:
-    for line in lines:
-        console.print(safe_text(line), markup=False, highlight=False, soft_wrap=True)
-
-
 def publish_selected(
     cfg: Config,
     incus: Incus,
@@ -225,7 +221,7 @@ def publish_selected(
                 revision,
                 raise_errors=raise_errors,
             )
-            _print_lines(issue_outbox.plan_lines(batch))
+            print_lines(issue_outbox.plan_lines(batch))
             if options.dry_run:
                 info_plain("Dry run: nothing was published.")
                 return 0

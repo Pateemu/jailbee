@@ -5,11 +5,15 @@ paragraphs that are one line long. Printed verbatim they run off the terminal
 and the structure (lists, code, headings) is lost. `render_markdown` lays a
 body out for a terminal of a given width using Rich's Markdown renderer.
 
-The output is plain text, never ANSI: the body is untrusted, so it is
-stripped of terminal controls *before* rendering (`safe_text`), links are
-shown as text rather than OSC 8 hyperlinks, and no colour is emitted. That is
-also why the result is a list of lines — the outbox renderers stay pure and
-their callers keep printing line by line.
+The body is untrusted, so it is stripped of terminal controls *before*
+rendering (`safe_text`) and links are shown as text rather than OSC 8
+hyperlinks. Rich then writes the colour and style codes itself, from text that
+can no longer carry any, and those lines are marked `AnsiLine`. The renderers
+that produce lines stay pure and keep returning ``list[str]``; `print_lines`
+is where an `AnsiLine` is told apart from an ordinary line, which still gets
+`safe_text` and no markup. A mark lost along the way (an f-string, a
+concatenation) degrades to a plain line whose escapes are stripped — never to
+an unsanitised one.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from __future__ import annotations
 import io
 import shutil
 import sys
+from collections.abc import Iterable
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -24,6 +29,13 @@ from rich.markdown import Markdown
 # Never wrap narrower than this, however deep the indent: a few columns of
 # text per line is less readable than a long line.
 _MIN_WIDTH = 20
+_ROWS = 25
+
+
+class AnsiLine(str):
+    """A line of Rich-generated ANSI output; only `render_markdown` creates one."""
+
+    __slots__ = ()
 
 
 def _terminal_width() -> int | None:
@@ -56,8 +68,11 @@ def render_markdown(text: str, *, indent: str = "", width: int | None = None) ->
     console = Console(
         file=buffer,
         width=max(width - len(indent), _MIN_WIDTH),
-        force_terminal=False,
-        color_system=None,
+        # Rich ignores an explicit width on a dumb terminal unless the height is
+        # given too; the height is otherwise irrelevant to a Markdown render.
+        height=_ROWS,
+        force_terminal=True,
+        color_system="auto",
         highlight=False,
     )
     console.print(Markdown(clean, hyperlinks=False))
@@ -66,4 +81,18 @@ def render_markdown(text: str, *, indent: str = "", width: int | None = None) ->
         lines.pop()
     while lines and not lines[0]:
         lines.pop(0)
-    return [f"{indent}{line}" if line else "" for line in lines]
+    return [AnsiLine(f"{indent}{line}") if line else "" for line in lines]
+
+
+def print_lines(lines: Iterable[str]) -> None:
+    """Print outbox lines: `AnsiLine`s as the styled text they are, the rest as inert text."""
+    from rich.text import Text
+
+    from jailbee.outbox.inspect import safe_text
+    from jailbee.tui import console
+
+    for line in lines:
+        if isinstance(line, AnsiLine):
+            console.print(Text.from_ansi(line), highlight=False, soft_wrap=True)
+        else:
+            console.print(safe_text(line), markup=False, highlight=False, soft_wrap=True)

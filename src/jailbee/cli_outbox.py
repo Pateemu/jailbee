@@ -148,10 +148,10 @@ def browse(
         apply_selected,
         discover,
         drop_selected,
-        print_lines,
         show_overview,
     )
     from jailbee.outbox.delete import DeletePlan
+    from jailbee.outbox.markdown_view import print_lines
     from jailbee.outbox.models import OutboxChanged, ProposalId
     from jailbee.outbox.publish import PublishOptions
     from jailbee.outbox_io import JournalStore
@@ -306,8 +306,9 @@ def drop(
     config: ConfigOption = None,
 ) -> None:
     """Delete locally after displaying exact scope; selectors are zero-based."""
-    from jailbee.outbox.commands import drop_selected, print_lines
+    from jailbee.outbox.commands import drop_selected
     from jailbee.outbox.delete import DeletePlan, DeleteSelection
+    from jailbee.outbox.markdown_view import print_lines
     from jailbee.outbox.models import ProposalId
     from jailbee.outbox_io import JournalStore
 

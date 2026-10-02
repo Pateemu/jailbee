@@ -32,7 +32,7 @@ from jailbee.github_repo import github_slug
 from jailbee.incus import Incus, IncusError
 from jailbee.outbox.cleanup import exclusive_body_names
 from jailbee.outbox.io import PrManagement
-from jailbee.outbox.markdown_view import render_markdown
+from jailbee.outbox.markdown_view import print_lines, render_markdown
 from jailbee.outbox.models import (
     OutboxChanged,
     OutboxError,
@@ -2275,8 +2275,7 @@ def _offer_locked(
             )
             console.print(f"Container: {safe_text(container)}", markup=False, highlight=False)
             console.print(f"Head: {safe_text(target.pr.head_sha)}", markup=False, highlight=False)
-            for line in show_lines(displayed):
-                console.print(safe_text(line), markup=False, highlight=False, soft_wrap=True)
+            print_lines(show_lines(displayed))
             if progress.applied:
                 console.print(f"Already published (skipped): {sorted(progress.applied)}")
             if target.stale:
