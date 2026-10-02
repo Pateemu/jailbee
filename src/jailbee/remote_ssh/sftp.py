@@ -11,11 +11,14 @@ and sends the real work to ``ContainerFS``.
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
 import logging
+import stat as stat_mod
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import asyncssh
 from asyncssh import (
@@ -32,6 +35,13 @@ from asyncssh import (
     SFTPPermissionDenied,
     SFTPServer,
 )
+from asyncssh.constants import (
+    FILEXFER_TYPE_DIRECTORY,
+    FILEXFER_TYPE_REGULAR,
+    FILEXFER_TYPE_SPECIAL,
+    FILEXFER_TYPE_SYMLINK,
+    FILEXFER_TYPE_UNKNOWN,
+)
 
 from jailbee.remote_ssh.container_fs import ContainerFS, FileStat, FSError
 
@@ -42,6 +52,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 T = TypeVar("T")
+F = TypeVar("F", bound=Callable[..., Any])
 
 # Largest file one upload may grow to, and the largest single read served.
 MAX_FILE_BYTES = 2 * 1024**3
@@ -50,6 +61,10 @@ MAX_READ_BYTES = 1024 * 1024
 _CATALOG_TTL_SECONDS = 5.0
 # Concurrent `incus exec` calls this service lets through, across every session.
 MAX_CONCURRENT_EXECS = 8
+
+
+class _InvalidPath(SFTPFailure):
+    """A client path that cannot name anything here (audited as `invalid`)."""
 
 
 def split_path(path: bytes) -> tuple[str, ...]:
@@ -61,9 +76,9 @@ def split_path(path: bytes) -> tuple[str, ...]:
     try:
         text = path.decode("utf-8")
     except UnicodeDecodeError:
-        raise SFTPFailure("file names must be UTF-8") from None
+        raise _InvalidPath("file names must be UTF-8") from None
     if "\0" in text:
-        raise SFTPFailure("invalid file name")
+        raise _InvalidPath("invalid file name")
     parts: list[str] = []
     for part in text.split("/"):
         if part in ("", "."):
@@ -76,14 +91,35 @@ def split_path(path: bytes) -> tuple[str, ...]:
     return tuple(parts)
 
 
+def _file_type(mode: int) -> int:
+    """asyncssh's `FILEXFER_TYPE_*` for a stat mode; its SCP server reads `.type`."""
+    kind = stat_mod.S_IFMT(mode)
+    if kind == stat_mod.S_IFREG:
+        return FILEXFER_TYPE_REGULAR
+    if kind == stat_mod.S_IFDIR:
+        return FILEXFER_TYPE_DIRECTORY
+    if kind == stat_mod.S_IFLNK:
+        return FILEXFER_TYPE_SYMLINK
+    return FILEXFER_TYPE_SPECIAL if kind else FILEXFER_TYPE_UNKNOWN
+
+
 def _virtual_dir_attrs() -> SFTPAttrs:
     now = int(time.time())
-    return SFTPAttrs(size=0, uid=0, gid=0, permissions=0o040555, atime=now, mtime=now)
+    mode = 0o040555
+    return SFTPAttrs(
+        type=_file_type(mode), size=0, uid=0, gid=0, permissions=mode, atime=now, mtime=now
+    )
 
 
 def _attrs(st: FileStat) -> SFTPAttrs:
     return SFTPAttrs(
-        size=st.size, uid=st.uid, gid=st.gid, permissions=st.mode, atime=st.atime, mtime=st.mtime
+        type=_file_type(st.mode),
+        size=st.size,
+        uid=st.uid,
+        gid=st.gid,
+        permissions=st.mode,
+        atime=st.atime,
+        mtime=st.mtime,
     )
 
 
@@ -179,6 +215,74 @@ class _Handle:
     append: bool
 
 
+def _result_of(exc: BaseException) -> str:
+    if isinstance(exc, _InvalidPath):
+        return "invalid"
+    if isinstance(exc, SFTPNoSuchFile):
+        return "not_found"
+    if isinstance(exc, SFTPPermissionDenied):
+        return "denied"
+    if isinstance(exc, SFTPOpUnsupported):
+        return "unsupported"
+    if isinstance(exc, SFTPFailure):
+        return "failed"
+    return "error" if isinstance(exc, Exception) else "aborted"
+
+
+def _audited(op: str) -> Callable[[F], F]:
+    """Audit one SFTP operation exactly once, whatever way it ends.
+
+    The subject is the first argument: a path, or a handle. Sync, async and
+    async-generator methods keep their kind, since asyncssh accepts all three.
+    """
+
+    def decorate(fn: F) -> F:
+        if inspect.isasyncgenfunction(fn):
+
+            @functools.wraps(fn)
+            async def agen(self: JailbeeSFTPServer, *args: Any) -> AsyncIterator[Any]:
+                result = "ok"
+                try:
+                    async for item in fn(self, *args):
+                        yield item
+                except BaseException as exc:
+                    result = _result_of(exc)
+                    raise
+                finally:
+                    self._audit(op, args, result)
+
+            return cast("F", agen)
+        if inspect.iscoroutinefunction(fn):
+
+            @functools.wraps(fn)
+            async def coro(self: JailbeeSFTPServer, *args: Any) -> Any:
+                result = "ok"
+                try:
+                    return await fn(self, *args)
+                except BaseException as exc:
+                    result = _result_of(exc)
+                    raise
+                finally:
+                    self._audit(op, args, result)
+
+            return cast("F", coro)
+
+        @functools.wraps(fn)
+        def sync(self: JailbeeSFTPServer, *args: Any) -> Any:
+            result = "ok"
+            try:
+                return fn(self, *args)
+            except BaseException as exc:
+                result = _result_of(exc)
+                raise
+            finally:
+                self._audit(op, args, result)
+
+        return cast("F", sync)
+
+    return decorate
+
+
 class JailbeeSFTPServer(SFTPServer):
     def __init__(self, chan: asyncssh.SSHServerChannel[bytes], service: SFTPService) -> None:
         super().__init__(chan)
@@ -191,9 +295,23 @@ class JailbeeSFTPServer(SFTPServer):
         async with self._service.gate:
             return await asyncio.to_thread(fn, *args)
 
-    def _audit(self, op: str, container: str | None, vpath: str, result: str) -> None:
+    def _audit(self, op: str, args: tuple[Any, ...], result: str) -> None:
+        subject = args[0] if args else None
+        parts: tuple[str, ...] | None = None
+        if isinstance(subject, _Handle):
+            parts = subject.parts
+        elif isinstance(subject, bytes):
+            try:
+                parts = split_path(subject)
+            except SFTPFailure:
+                vpath = subject.decode("utf-8", "backslashreplace")
+        if parts is not None:
+            vpath = "/" + "/".join(parts)
+        elif not isinstance(subject, bytes):
+            vpath = "?"
+        container = parts[0] if parts else None
         log.info(
-            "SFTP source=%r fingerprint=%s container=%s op=%s path=%r result=%s",
+            "SFTP source=%r fingerprint=%s container=%r op=%s path=%r result=%s",
             self.channel.get_extra_info("peername"),
             self.channel.get_extra_info("jailbee_key_fingerprint"),
             container,
@@ -205,9 +323,7 @@ class JailbeeSFTPServer(SFTPServer):
     async def _on_container(
         self, op: str, parts: tuple[str, ...], call: Callable[[ContainerFS, str], T]
     ) -> T:
-        vpath = "/" + "/".join(parts)
         container = parts[0] if parts else None
-        result = "ok"
         try:
             ref = (await self._blocking(self._catalog.containers)).get(parts[0]) if parts else None
             if ref is None:
@@ -215,17 +331,12 @@ class JailbeeSFTPServer(SFTPServer):
             fs = await self._blocking(self._catalog.fs, ref)
             return await self._blocking(call, fs, "/".join(parts[1:]))
         except FSError as exc:
-            result = exc.kind
             raise _sftp_error(exc) from None
         except asyncssh.SFTPError:
-            result = "refused"
             raise
         except Exception:
-            result = "error"
             log.exception("SFTP internal error op=%s container=%s", op, container)
             raise SFTPFailure("internal error") from None
-        finally:
-            self._audit(op, container, vpath, result)
 
     @staticmethod
     def _need_inside_repo(parts: tuple[str, ...]) -> None:
@@ -234,6 +345,7 @@ class JailbeeSFTPServer(SFTPServer):
 
     # ---- metadata -----------------------------------------------------------
 
+    @_audited("stat")
     async def stat(self, path: bytes) -> SFTPAttrs:
         parts = split_path(path)
         if not parts:
@@ -242,6 +354,7 @@ class JailbeeSFTPServer(SFTPServer):
             await self._on_container("stat", parts, lambda fs, rel: fs.stat(rel, follow=True))
         )
 
+    @_audited("lstat")
     async def lstat(self, path: bytes) -> SFTPAttrs:
         parts = split_path(path)
         if not parts:
@@ -250,6 +363,7 @@ class JailbeeSFTPServer(SFTPServer):
             await self._on_container("lstat", parts, lambda fs, rel: fs.stat(rel, follow=False))
         )
 
+    @_audited("fstat")
     async def fstat(self, file_obj: object) -> SFTPAttrs:
         handle = _as_handle(file_obj)
         return _attrs(
@@ -258,6 +372,7 @@ class JailbeeSFTPServer(SFTPServer):
             )
         )
 
+    @_audited("scandir")
     async def scandir(self, path: bytes) -> AsyncIterator[SFTPName]:
         parts = split_path(path)
         for dots in (b".", b".."):
@@ -274,15 +389,18 @@ class JailbeeSFTPServer(SFTPServer):
     def realpath(self, path: bytes) -> bytes:
         return ("/" + "/".join(split_path(path))).encode()
 
+    @_audited("readlink")
     async def readlink(self, path: bytes) -> bytes:
         parts = split_path(path)
         self._need_inside_repo(parts)
         target = await self._on_container("readlink", parts, lambda fs, rel: fs.readlink(rel))
         return target.encode()
 
+    @_audited("setstat")
     async def setstat(self, path: bytes, attrs: SFTPAttrs) -> None:
         await self._setstat("setstat", split_path(path), attrs)
 
+    @_audited("fsetstat")
     async def fsetstat(self, file_obj: object, attrs: SFTPAttrs) -> None:
         await self._setstat("fsetstat", _as_handle(file_obj).parts, attrs)
 
@@ -306,6 +424,7 @@ class JailbeeSFTPServer(SFTPServer):
 
     # ---- file content -------------------------------------------------------
 
+    @_audited("open")
     async def open(self, path: bytes, pflags: int, attrs: SFTPAttrs) -> object:
         parts = split_path(path)
         self._need_inside_repo(parts)
@@ -324,6 +443,7 @@ class JailbeeSFTPServer(SFTPServer):
         )
         return _Handle(parts, writable, bool(pflags & FXF_APPEND))
 
+    @_audited("read")
     async def read(self, file_obj: object, offset: int, size: int) -> bytes:
         handle = _as_handle(file_obj)
         wanted = min(size, MAX_READ_BYTES)
@@ -331,6 +451,7 @@ class JailbeeSFTPServer(SFTPServer):
             "read", handle.parts, lambda fs, rel: fs.read(rel, offset, wanted)
         )
 
+    @_audited("write")
     async def write(self, file_obj: object, offset: int, data: bytes) -> int:
         handle = _as_handle(file_obj)
         if not handle.writable:
@@ -354,25 +475,30 @@ class JailbeeSFTPServer(SFTPServer):
 
     # ---- namespace changes --------------------------------------------------
 
+    @_audited("mkdir")
     async def mkdir(self, path: bytes, attrs: SFTPAttrs) -> None:
         parts = split_path(path)
         self._need_inside_repo(parts)
         mode = attrs.permissions if attrs.permissions is not None else 0o755
         await self._on_container("mkdir", parts, lambda fs, rel: fs.mkdir(rel, mode & 0o777))
 
+    @_audited("remove")
     async def remove(self, path: bytes) -> None:
         parts = split_path(path)
         self._need_inside_repo(parts)
         await self._on_container("remove", parts, lambda fs, rel: fs.remove(rel))
 
+    @_audited("rmdir")
     async def rmdir(self, path: bytes) -> None:
         parts = split_path(path)
         self._need_inside_repo(parts)
         await self._on_container("rmdir", parts, lambda fs, rel: fs.rmdir(rel))
 
+    @_audited("rename")
     async def rename(self, oldpath: bytes, newpath: bytes) -> None:
         await self._rename("rename", oldpath, newpath, overwrite=False)
 
+    @_audited("posix_rename")
     async def posix_rename(self, oldpath: bytes, newpath: bytes) -> None:
         await self._rename("posix_rename", oldpath, newpath, overwrite=True)
 
@@ -389,27 +515,35 @@ class JailbeeSFTPServer(SFTPServer):
 
     # ---- refused or unsupported ----------------------------------------------
 
+    @_audited("symlink")
     def symlink(self, oldpath: bytes, newpath: bytes) -> None:
         raise SFTPPermissionDenied("links cannot be created")
 
+    @_audited("link")
     def link(self, oldpath: bytes, newpath: bytes) -> None:
         raise SFTPPermissionDenied("links cannot be created")
 
+    @_audited("lsetstat")
     def lsetstat(self, path: bytes, attrs: SFTPAttrs) -> None:
         raise SFTPPermissionDenied("links cannot be modified")
 
+    @_audited("statvfs")
     def statvfs(self, path: bytes) -> Any:
         raise SFTPOpUnsupported("statvfs is not supported")
 
+    @_audited("fstatvfs")
     def fstatvfs(self, file_obj: object) -> Any:
         raise SFTPOpUnsupported("statvfs is not supported")
 
+    @_audited("lock")
     def lock(self, file_obj: object, offset: int, length: int, flags: int) -> None:
         raise SFTPOpUnsupported("byte range locks are not supported")
 
+    @_audited("unlock")
     def unlock(self, file_obj: object, offset: int, length: int) -> None:
         raise SFTPOpUnsupported("byte range locks are not supported")
 
+    @_audited("open56")
     def open56(self, path: bytes, desired_access: int, flags: int, attrs: SFTPAttrs) -> Any:
         raise SFTPOpUnsupported("only SFTP version 3 is supported")
 

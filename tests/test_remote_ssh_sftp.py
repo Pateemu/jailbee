@@ -21,6 +21,12 @@ from asyncssh import (
     SFTPAttrs,
     SFTPServer,
 )
+from asyncssh.constants import (
+    FILEXFER_TYPE_DIRECTORY,
+    FILEXFER_TYPE_REGULAR,
+    FILEXFER_TYPE_SYMLINK,
+)
+from asyncssh.sftp import SFTPServerFS
 
 from jailbee.remote_ssh import sftp
 from jailbee.remote_ssh.repo_scope import RemoteRepoScope
@@ -337,6 +343,60 @@ def test_every_operation_is_audited_with_the_key_and_the_result(server, caplog):
             run(server.stat(b"/app-feat/nope"))
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("SFTP ")]
     assert len(lines) == 2
-    assert FINGERPRINT in lines[0] and "container=app-feat" in lines[0]
+    assert FINGERPRINT in lines[0] and "container='app-feat'" in lines[0]
     assert "op=stat" in lines[0] and "result=ok" in lines[0]
     assert "result=not_found" in lines[1]
+
+
+def _sftp_lines(caplog):
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("SFTP ")]
+
+
+@pytest.mark.parametrize(
+    ("call", "op", "result"),
+    [
+        (lambda s: s.mkdir(b"/new", SFTPAttrs()), "mkdir", "denied"),
+        (lambda s: s.remove(b"/app-feat"), "remove", "denied"),
+        (lambda s: s.rename(b"/app-a/a.txt", b"/app-b/a.txt"), "rename", "denied"),
+        (lambda s: s.write(object(), 0, b"x"), "write", "failed"),
+        (lambda s: s.symlink(b"/x", b"/app-feat/y"), "symlink", "denied"),
+        (lambda s: s.statvfs(b"/app-feat"), "statvfs", "unsupported"),
+        (lambda s: s.stat(b"/app-feat/a\x00b"), "stat", "invalid"),
+        (lambda s: s.setstat(b"/", SFTPAttrs()), "setstat", "denied"),
+        (lambda s: names(s, b"/"), "scandir", "ok"),
+        (lambda s: s.stat(b"/"), "stat", "ok"),
+    ],
+)
+def test_every_operation_incl_refusals_is_audited_exactly_once(repo, caplog, call, op, result):
+    incus = LocalIncus(
+        [raw_container("app-a", repo_dir=str(repo)), raw_container("app-b", repo_dir=str(repo))]
+    )
+    srv = make_server(incus)
+    with caplog.at_level(logging.INFO, logger="jailbee.remote_ssh.sftp"):
+        try:
+            run(_awaited(call(srv)))
+        except asyncssh.SFTPError:
+            pass
+    lines = _sftp_lines(caplog)
+    assert len(lines) == 1
+    assert f"op={op} " in lines[0] and f"result={result}" in lines[0]
+
+
+def test_a_newline_in_the_container_name_cannot_forge_an_audit_line(server, caplog):
+    with caplog.at_level(logging.INFO, logger="jailbee.remote_ssh.sftp"):
+        with pytest.raises(asyncssh.SFTPNoSuchFile):
+            run(server.stat(b"/evil\nSFTP forged result=ok/a"))
+    lines = _sftp_lines(caplog)
+    assert len(lines) == 1 and "\n" not in lines[0]
+
+
+# ---- file types: asyncssh's SCP server reads SFTPAttrs.type ----------------
+
+
+def test_attrs_carry_a_file_type_for_the_in_process_scp_server(server):
+    fs = SFTPServerFS(server)
+    assert run(fs.isdir(b"/")) and run(fs.isdir(b"/app-feat")) and run(fs.isdir(b"/app-feat/sub"))
+    assert run(fs.exists(b"/app-feat/a.txt")) and not run(fs.isdir(b"/app-feat/a.txt"))
+    assert run(fs.stat(b"/app-feat/a.txt")).type == FILEXFER_TYPE_REGULAR
+    assert run(fs.stat(b"/app-feat/sub")).type == FILEXFER_TYPE_DIRECTORY
+    assert run(server.lstat(b"/app-feat/ok")).type == FILEXFER_TYPE_SYMLINK
