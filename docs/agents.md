@@ -10,10 +10,10 @@ entry for the same agent would produce two duplicate entries instead of one
 adjusted one; as a mapping, the repo layer can tweak a single field of an
 agent the global layer already defined.
 
-Six presets ship built in (`claude`, `codex`, `gemini`, `aider`, `opencode`,
-`grok`), and you can define an agent that isn't one of them from scratch.
-**Only `claude` is exercised in production.** The other five are untested
-templates — see [The five templates](#8-the-five-templates) below.
+Seven presets ship built in (`claude`, `codex`, `gemini`, `aider`, `opencode`,
+`pi`, `grok`), and you can define an agent that isn't one of them from scratch.
+**Only `claude` is exercised in production.** The other six are untested
+templates — see [The six templates](#8-the-six-templates) below.
 
 ## 1. What this does
 
@@ -182,7 +182,7 @@ of re-deriving it by hand from `agent_presets.py`.
 
 ## 4. Writing your own agent
 
-An agent name that isn't one of the six shipped presets skips the preset
+An agent name that isn't one of the seven shipped presets skips the preset
 merge entirely — your config is used as-is, no base layer, no forced
 append/reset semantics.
 
@@ -266,7 +266,9 @@ state. opencode does not: its sessions, auth tokens included, live in one
 SQLite database under `~/.config/opencode` / `~/.local/share/opencode`, so the
 preset shares neither (only its skills directory) and each container logs in
 on its own. A shared database would also have several containers writing one
-SQLite file through a bind mount.
+SQLite file through a bind mount. pi is the opposite case: one JSONL file per
+session, and `auth.json` written under a `mkdir`-based lock that holds across
+containers, so its preset shares the whole `~/.pi/agent`.
 
 When you write your own `agents.<name>.shared` list, ask "does this file hold
 something I'd lose by re-authenticating, or is it a cache/history/log the
@@ -317,8 +319,8 @@ run, because the devices are per-container rather than part of the binds
 profile.
 
 `jailbee doctor` reports any socket it finds in a shared agent mount that is
-not already carved out. The `gemini` and `grok` presets share a
-whole home directory too and ship unverified (see [§8](#8-the-five-templates)); that doctor row is
+not already carved out. The `gemini`, `pi` and `grok` presets share a
+whole home directory too and ship unverified (see [§8](#8-the-six-templates)); that doctor row is
 what tells you if one of them grows a daemon.
 
 ## 6. Finding an agent's hosts
@@ -365,6 +367,7 @@ has been running for weeks.
 | `gemini` | `GEMINI_API_KEY` | API-key path only — the OAuth/Code Assist path uses a different set of hosts (see the table below) and has no key. |
 | `aider` | provider-dependent (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) | Aider proxies whichever model backend you configure; the key follows that backend, not aider itself. |
 | `opencode` | provider-dependent, via `opencode auth login` | **Per container, not shared.** opencode keeps its whole session, auth tokens included, in a SQLite database in its config/data homes, so sharing them would hand every container the others' credentials. Each container configures and logs in on its own. To run ChatGPT or other providers' models across containers with one login, use `claude-jb` ([Claude Code through LiteLLM](litellm.md)) instead. |
+| `pi` | provider-dependent, via `/login` or the provider's own env var | pi is a multi-provider client: `/login` stores API keys and subscription OAuth tokens in `~/.pi/agent/auth.json`, which the preset shares, so one login covers every container of the repo. A model on the host (e.g. Ollama) needs no login at all — see [§8](#8-the-six-templates). |
 | `grok` | `XAI_API_KEY` | Verified against vendor docs. A third-party guide claims `GROK_CODE_XAI_API_KEY` instead — the vendor's own spelling wins; this exact discrepancy is why presets are templates, not guarantees. |
 
 Only the `grok` row above was checked directly against vendor documentation
@@ -384,9 +387,9 @@ agents:
       OPENAI_API_KEY: sk-...
 ```
 
-## 8. The five templates
+## 8. The six templates
 
-Package names, config paths, and — especially — host lists in the five
+Package names, config paths, and — especially — host lists in the six
 non-`claude` presets are **best-effort**. The maintainer holds no accounts
 with any of these vendors; each preset is a documented starting point for
 whoever adopts it to correct, not a maintained integration. The override
@@ -398,6 +401,7 @@ path in sections 2–4 above is what makes shipping them acceptable.
 | `gemini` | `npm i -g @google/gemini-cli` | `~/.gemini` (dir) | `generativelanguage.googleapis.com:443` (API-key path), `cloudcode-pa.googleapis.com:443` (OAuth / Code Assist path), `oauth2.googleapis.com:443`, `accounts.google.com:443` | Install + config dir verified; **no authoritative complete host list exists** — upstream issue #4552 is open with no list, and Google's own Code Assist network doc names only `cloudcode-pa.googleapis.com`. |
 | `aider` | `uv tool install --with pip aider-chat@latest` | `~/.aider.conf.yml` (**file** type) and nothing else | provider-dependent | Install + config filename + HOME surface verified. |
 | `opencode` | `curl -fsSL https://opencode.ai/v2/install \| bash -s -- --no-modify-path` — **not npm** — followed by a `~/.local/bin/opencode` symlink | `~/.opencode` (dir — **the binary**) and `~/.config/opencode/skills` (dir) are shared; `~/.config/opencode` and `~/.local/share/opencode` are deliberately **not** — they hold the session database, auth tokens included, so each container keeps its own | `opencode.ai:443` (the built-in "zen" gateway at `/zen/v1/...`, and the version pointer a self-update reads); `models.dev:443` (the model catalogue fetched at startup). **Provider hosts are yours to add** — opencode is a multi-provider client, so which inference host it needs follows the provider you configure, not opencode itself. `install_network: loose` for the installer's own hosts (`opencode.ai`, `registry.npmjs.org`) | Install verified end-to-end against the live installer (v2.0.9): it runs non-interactively, drops a 198MB static binary in `~/.opencode/bin`, and the preset's `~/.local/bin/opencode` link resolves to it; the `~/.local/bin` link, the already-installed short-circuit and the failed-download check are covered by unit tests. Used with a real account, which is how the shared session database was found to carry auth tokens; the runtime host list is still best-effort like the rest of this table. |
+| `pi` | `npm install -g --ignore-scripts --prefix ~/.local/share/pi @earendil-works/pi-coding-agent`, followed by a `~/.local/bin/pi` symlink — **not** the vendor's `pi.dev/install.sh`, which prompts on `/dev/tty` and would block the install step's tmux window until `step_timeout`. Needs the node stack (Node ≥ 22.19) | `~/.pi/agent` (dir — settings, `models.json`, `auth.json`, sessions, skills) and `~/.local/share/pi` (dir — the npm prefix, so the package is downloaded once per repo) | `pi.dev:443` (latest-version check, install telemetry). **Provider hosts are yours to add**, as for opencode. A model served on the host needs a [`host_ports`](config.md#host_ports) forward instead — `{ name: ollama, port: 11434 }` puts Ollama at `localhost:11434` inside the container, and pi's `models.json` points an `openai-completions` provider at `http://localhost:11434/v1`. `install_network: loose` for `registry.npmjs.org` | Install verified end-to-end against pi 1.0.0: the first container fills the shared prefix, a second one only relinks (0.6s). Interactive use and the `headless` one-shot (`pi -p`, with and without `--model`) verified against a local Ollama model through `host_ports`. No socket in `~/.pi/agent`. Not exercised against a cloud provider's `/login`; the host list is best-effort like the rest of this table. |
 | `grok` | `curl -fsSL https://x.ai/cli/install.sh \| bash` — **not npm** | `~/.grok` (dir — `config.toml`, `auth.json`) | `api.x.ai:443` (API-key path); `x.ai:443` (installer); `auth.x.ai:443` (OIDC device-code + refresh); `cli-chat-proxy.grok.com:443` (SuperGrok inference and hosted web_search). `install_network: loose` because the installer's redirect target is undocumented. This list is runtime hosts only — it does not open arbitrary HTTPS for `web_fetch`. | Install + config dir verified against vendor docs. SuperGrok hosts checked against a live device-auth session in a strict-mode container: without the chat proxy, inference retries `https://cli-chat-proxy.grok.com/v1/responses` until it fails. API key env var is `XAI_API_KEY` per vendor docs; a third-party guide claims `GROK_CODE_XAI_API_KEY` — the vendor spelling wins, and that discrepancy is exactly why presets are templates. |
 
 Source of truth for the exact values: `src/jailbee/agent_presets.py`.
@@ -418,11 +422,11 @@ jailbee exec <container> -- tmux capture-pane -p -t autostart:install-gemini
 
 | Preset | Needs | Which is present when |
 | --- | --- | --- |
-| `gemini` | `npm` | [`golden.stacks.node`](config.md#stacks-goldenstacks) is on |
+| `gemini`, `pi` | `npm` (pi: Node ≥ 22.19) | [`golden.stacks.node`](config.md#stacks-goldenstacks) is on |
 | `aider` | `uv` | your own `install.d/` snippet installs it — jailbee's golden image does not ship `uv` |
 | `claude`, `codex`, `opencode`, `grok` | nothing | always — each installs a static binary through the vendor's own installer |
 
-For `gemini`, add the stack and rebuild the base image:
+For `gemini` or `pi`, add the stack and rebuild the base image:
 
 ```yaml
 golden:
@@ -443,7 +447,7 @@ new one.
 
 ### Pinning an install step back to strict
 
-`codex`, `opencode` and `grok` ask for `install_network: loose` because their
+`codex`, `opencode`, `pi` and `grok` ask for `install_network: loose` because their
 installers' hosts are CDN-fronted and rotate their IPs, which is the case the
 strict ACL's resolve-at-apply-time pooling handles worst on a first run. To
 keep a step strict instead, name the hosts yourself and accept that the first
@@ -613,6 +617,7 @@ them for every enabled agent that has a skills mechanism, not just Claude:
 | `codex` | `~/.codex/skills` | `codex` |
 | `gemini` | `~/.gemini/skills` | `gemini` |
 | `opencode` | `~/.config/opencode/skills` | `opencode-skills` (the skills directory itself) |
+| `pi` | `~/.pi/agent/skills` | `pi` |
 | `aider`, `grok` | — (no skills mechanism) | — |
 
 The copy happens on the *host* side, into `<shared_dir>/<subpath>/skills/`:
@@ -624,7 +629,7 @@ run it, so a jailbee upgrade reaches existing containers on the next
 
 Two per-agent fields govern it (both in the
 [§4 table](#4-writing-your-own-agent)): `skills_dir` names the
-container-side directory (the presets set it for the four agents above;
+container-side directory (the presets set it for the five agents above;
 set it yourself on a from-scratch agent whose mount layout differs), and
 `install_jailbee_skills: false` opts one agent out. Both spellings a mount
 path accepts work on either side — `~/.mine/skills` is covered by a mount
@@ -635,7 +640,7 @@ that agent rather than failing. So is one that falls inside a
 per-container directory mounted over it would hide the copy from every
 agent, so that too is warned and skipped.
 
-The agents' own compatibility is what makes this one table: all four read
+The agents' own compatibility is what makes this one table: all five read
 the same `SKILL.md` frontmatter format, and opencode additionally scans
 Claude-compatible `~/.claude/skills` — jailbee still writes each agent's
 own directory, so the skills survive an agent being disabled or removed.

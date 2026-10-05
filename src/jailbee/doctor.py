@@ -1727,8 +1727,8 @@ def _check_shared_agent_sockets(cfg: Config) -> list[CheckResult]:
     listening on it can be driven from a container it does not belong to, and
     the working directory it is handed resolves against the wrong rootfs.
     Codex's app-server is the case that motivated this; the `gemini`,
-    `opencode` and `grok` presets also share a whole home directory and ship
-    unverified, which is why this looks rather than assumes.
+    `opencode`, `pi` and `grok` presets also share a whole home directory and
+    ship unverified, which is why this looks rather than assumes.
 
     Subpaths already named in `private` are skipped: those are mounted over
     per container, so a socket there is the carve-out working.

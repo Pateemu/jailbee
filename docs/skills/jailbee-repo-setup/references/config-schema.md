@@ -797,11 +797,11 @@ Generic hook for terminal coding agents. A mapping keyed by agent name
 (`{codex: {...}, gemini: {...}}`), not a list — this is what lets the repo
 layer tweak one field of an agent the global layer already turned on
 without the deep-merge pipeline's list-append rule producing a duplicate
-entry. Six presets ship built in: `claude`, `codex`, `gemini`, `aider`,
-`opencode`, `grok`. **Only `claude` is exercised in production** — the
-other five are untested templates, correct as needed.
+entry. Seven presets ship built in: `claude`, `codex`, `gemini`, `aider`,
+`opencode`, `pi`, `grok`. **Only `claude` is exercised in production** — the
+other six are untested templates, correct as needed.
 
-An agent name matching one of the six presets is deep-merged over that
+An agent name matching one of the seven presets is deep-merged over that
 preset, with the same append/reset rules as every other list field; any
 other name is used as-is with no preset base. Two merges, not three:
 global.yaml and the repo config combine with each other first, and the
@@ -947,7 +947,7 @@ The agent runs its `agents.<name>.headless` command: a one-shot command line run
 a `bash -lc` login shell in the repo directory, with the prompt in
 `$JAILBEE_PR_PROMPT` and the model (empty when none applies) in `$JAILBEE_PR_MODEL`
 — read both from the environment, never interpolate them. Presets set it for
-`claude`, `codex`, `gemini` and `opencode` (only Claude's is exercised in
+`claude`, `codex`, `gemini`, `opencode` and `pi` (only Claude's is exercised in
 production); `aider` and `grok` have none.
 
 Example global config, picking the agent for every repo:

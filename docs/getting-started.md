@@ -200,7 +200,7 @@ What turning it on gets you:
 - **The agents know JailBee.** JailBee's own `jailbee-usage`,
   `jailbee-repo-setup` and `jailbee-pr-review` skills are copied into the
   shared skills directory of every enabled agent that has one (claude, codex,
-  gemini, opencode), so the in-container agents can drive `jailbee` commands
+  gemini, opencode, pi), so the in-container agents can drive `jailbee` commands
   for you.
 - **AI-written PRs.** `jailbee pr <name>` asks the container's own agent —
   the one the repo autostarts, or whichever `pr.agent` names — for the title,

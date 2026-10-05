@@ -1329,8 +1329,8 @@ host-wide app.
 
 ### `agents`
 
-Generic hook for terminal coding agents — Claude Code plus five untested
-templates (`codex`, `gemini`, `aider`, `opencode`, `grok`), or one you define
+Generic hook for terminal coding agents — Claude Code plus six untested
+templates (`codex`, `gemini`, `aider`, `opencode`, `pi`, `grok`), or one you define
 yourself. A mapping keyed by agent name, valid at both this file and
 `~/.config/jailbee/global.yaml`, and it merges over a shipped preset
 (deep-merge — see [Merge rules](#merge-rules) above) rather than needing
@@ -1449,7 +1449,8 @@ simply off — not an error. A pinned agent that is unusable *is* reported.
 
 Only Claude is exercised in production. The `codex`, `gemini` and `opencode`
 `headless` commands are taken from each tool's docs and have never been run
-against a live agent; if one is wrong, override it for that agent
+against a live agent; `pi`'s was run against pi 1.0.0 with a local model, but
+not through `jailbee pr` itself. If one is wrong, override it for that agent
 (`agents.<name>.headless`) — see [agents.md](agents.md#4-writing-your-own-agent).
 
 ```yaml
@@ -3080,7 +3081,7 @@ install_host_skills: false      # false (default) | true
 
 | Key | Default | Description |
 |---|---|---|
-| `install_host_skills` | `false` | `true` makes the `skills` step of `jailbee setup` detect every skill-capable agent on the host (`claude`, `codex`, `gemini`, `opencode` — found via `shutil.which`) and copy the bundled skills into each one's own skills directory (`~/.claude/skills`, `~/.codex/skills`, …). `jailbee doctor` then verifies them. A host with none of these agents owes nothing, and `false` reports the step as opted out rather than missing. |
+| `install_host_skills` | `false` | `true` makes the `skills` step of `jailbee setup` detect every skill-capable agent on the host (`claude`, `codex`, `gemini`, `opencode`, `pi` — found via `shutil.which`) and copy the bundled skills into each one's own skills directory (`~/.claude/skills`, `~/.codex/skills`, …). `jailbee doctor` then verifies them. A host with none of these agents owes nothing, and `false` reports the step as opted out rather than missing. |
 
 The containers' skills are independent of this key and always installed
 for every enabled skill-capable agent — see
