@@ -1346,7 +1346,7 @@ to share" rule, and a worked example live in
 | `install` | string \| null | `null` | Shell command run at `jailbee new` time when `install_check` fails. |
 | `install_check` | string \| null | `null` | Probe deciding install-vs-update. Defaults to `command -v <first token of command>`. |
 | `update` | string \| null | `null` | Shell command run at `jailbee new` time when `install_check` succeeds and `auto_update` is true. |
-| `auto_update` | bool | `true` | `false` leaves an existing install untouched; a missing one is still installed. |
+| `auto_update` | bool | `true` | `false` leaves an existing install untouched; a missing one is still installed. Exported to the install/update step as `JAILBEE_AUTO_UPDATE`. |
 | `install_network` | `strict` \| `loose` | `strict` | Network mode for the install/update step only. |
 | `shared` | list of `{subpath, path, type, seed, private}` | `[]` | Bind mounts from `<shared_dir>/<subpath>` to `<path>`. `type: dir` (default) or `file`; `seed` (file only) is written once if the target is absent; `private` (dir only) names subpaths inside the mount that stay per container — an IPC socket, a pid file, a lock. |
 | `egress_allow` | list[string] | `[]` | Strict-mode allowlist entries added while this agent is enabled. Same grammar as top-level [`egress_allow`](#egress_allow). |

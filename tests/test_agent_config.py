@@ -522,54 +522,6 @@ def test_opencode_update_fails_loudly_when_the_download_fails(tmp_path):
     assert result.returncode != 0
 
 
-def _run_pi_step(which, tmp_path, *, npm_exit=0):
-    """Run the pi preset's install/update line in a real bash.
-
-    `npm` is a stub on PATH that logs its arguments and, unless `npm_exit` is
-    non-zero, drops an executable at `<--prefix>/bin/pi` as the real package
-    does. Returns the completed process, the fake HOME, and the logged npm
-    invocations.
-    """
-    import os
-    import subprocess
-
-    from jailbee.agent_presets import AGENT_PRESETS
-
-    home = tmp_path / "home"
-    home.mkdir(exist_ok=True)
-    stub_bin = tmp_path / "stub-bin"
-    stub_bin.mkdir()
-    npm_log = tmp_path / "npm.log"
-    npm = stub_bin / "npm"
-    npm.write_text(
-        "#!/bin/sh\n"
-        f'echo "$*" >> "{npm_log}"\n'
-        f"[ {npm_exit} -eq 0 ] || exit {npm_exit}\n"
-        'while [ "$1" != --prefix ]; do shift; done\n'
-        'mkdir -p "$2/bin"; printf "#!/bin/sh\\n" > "$2/bin/pi"; chmod 755 "$2/bin/pi"\n'
-    )
-    npm.chmod(0o755)
-
-    command = AGENT_PRESETS["pi"][which]
-    assert isinstance(command, str)
-    result = subprocess.run(
-        ["bash", "-c", command],
-        env={"HOME": str(home), "PATH": f"{stub_bin}:{os.environ['PATH']}"},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    calls = npm_log.read_text().splitlines() if npm_log.exists() else []
-    return result, home, calls
-
-
-def _seed_shared_pi(tmp_path):
-    binary = tmp_path / "home/.local/share/pi/bin/pi"
-    binary.parent.mkdir(parents=True)
-    binary.write_text("#!/bin/sh\n")
-    binary.chmod(0o755)
-
-
 def test_pi_preset_shares_the_agent_home_and_the_install_store():
     from jailbee.agent_presets import AGENT_PRESETS
 
@@ -582,54 +534,11 @@ def test_pi_preset_shares_the_agent_home_and_the_install_store():
     }
 
 
-def test_pi_install_links_the_shared_prefix_onto_path(tmp_path):
-    result, home, calls = _run_pi_step("install", tmp_path)
+def test_pi_installs_and_updates_through_one_script():
+    """With a per-container launcher every fresh container takes `install`, so
+    the update decision has to live in the script, not in the install/update
+    split. ensure-pi.sh's behaviour is in test_provision_ensure_pi.py."""
+    from jailbee.agent_presets import AGENT_PRESETS
 
-    assert result.returncode == 0, result.stderr
-    assert len(calls) == 1
-    assert "--ignore-scripts" in calls[0]
-    assert calls[0].endswith(" @earendil-works/pi-coding-agent")
-    link = home / ".local/bin/pi"
-    assert link.is_symlink()
-    assert link.resolve() == home / ".local/share/pi/bin/pi"
-
-
-def test_pi_install_skips_npm_when_the_shared_store_has_it(tmp_path):
-    """The prefix is shared across a repo's containers, so a second branch
-    must only relink. The stub npm fails outright: reaching it is the bug."""
-    _seed_shared_pi(tmp_path)
-
-    result, home, calls = _run_pi_step("install", tmp_path, npm_exit=1)
-
-    assert result.returncode == 0, result.stderr
-    assert calls == []
-    assert (home / ".local/bin/pi").is_symlink()
-
-
-def test_pi_update_reinstalls_latest(tmp_path):
-    _seed_shared_pi(tmp_path)
-
-    result, home, calls = _run_pi_step("update", tmp_path)
-
-    assert result.returncode == 0, result.stderr
-    assert len(calls) == 1
-    assert calls[0].endswith(" @earendil-works/pi-coding-agent@latest")
-    assert (home / ".local/bin/pi").is_symlink()
-
-
-def test_pi_install_fails_loudly_when_npm_fails(tmp_path):
-    result, home, _calls = _run_pi_step("install", tmp_path, npm_exit=1)
-
-    assert result.returncode != 0
-    assert not (home / ".local/bin/pi").exists()
-
-
-def test_pi_update_fails_loudly_when_npm_fails(tmp_path):
-    """The previous release is still in the shared store, so only `set -e`
-    keeps a failed update from reporting success."""
-    _seed_shared_pi(tmp_path)
-
-    result, _home, calls = _run_pi_step("update", tmp_path, npm_exit=1)
-
-    assert len(calls) == 1
-    assert result.returncode != 0
+    assert AGENT_PRESETS["pi"]["install"] == "__bundled__:ensure-pi.sh"
+    assert AGENT_PRESETS["pi"]["update"] == "__bundled__:ensure-pi.sh"

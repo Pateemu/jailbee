@@ -46,25 +46,6 @@ _OPENCODE_LINK = (
     '[ -x "$HOME/.local/bin/opencode" ]'
 )
 
-# pi is a Node app installed with npm into a shared prefix, not through its
-# vendor installer: `pi.dev/install.sh` opens /dev/tty and prompts (install
-# Node? edit PATH? start pi now?), with no env switch to skip them, and the
-# install step's tmux window has a tty — so `jailbee new` would block on the
-# first prompt until `autostart.step_timeout`. Without a tty it installs nothing
-# either: it needs Node >= 22.19 already on PATH, which is `golden.stacks.node`.
-# `--ignore-scripts` is the vendor's own recommended npm invocation.
-#
-# The prefix lives in the shared `pi-install` mount, so the download happens
-# once per repo and later containers only make the per-container link — the
-# same split as claude's `claude-install` and opencode's `~/.opencode`.
-_PI_PREFIX = "$HOME/.local/share/pi"
-_PI_NPM = f'npm install -g --ignore-scripts --prefix "{_PI_PREFIX}" @earendil-works/pi-coding-agent'
-_PI_LINK = (
-    'mkdir -p "$HOME/.local/bin"; '
-    f'ln -sfn "{_PI_PREFIX}/bin/pi" "$HOME/.local/bin/pi"; '
-    '[ -x "$HOME/.local/bin/pi" ]'
-)
-
 AGENT_PRESETS: dict[str, dict[str, object]] = {
     "codex": {
         "command": "codex",
@@ -277,8 +258,18 @@ AGENT_PRESETS: dict[str, dict[str, object]] = {
     },
     "pi": {
         "command": "pi",
-        "install": f'set -e; [ -x "{_PI_PREFIX}/bin/pi" ] || {_PI_NPM}; {_PI_LINK}',
-        "update": f"set -e; {_PI_NPM}@latest; {_PI_LINK}",
+        # A Node app installed with npm into the shared `pi-install` store, not
+        # through its vendor installer: `pi.dev/install.sh` opens /dev/tty and
+        # prompts (install Node? edit PATH? start pi now?), with no env switch
+        # to skip them, and the install step's tmux window has a tty — so
+        # `jailbee new` would block on the first prompt until
+        # `autostart.step_timeout`. Without a tty it installs nothing either: it
+        # needs Node >= 22.19 already on PATH, which is `golden.stacks.node`.
+        #
+        # Install and update are the same script, which decides from the store
+        # and `JAILBEE_AUTO_UPDATE` — see its header for the release layout.
+        "install": "__bundled__:ensure-pi.sh",
+        "update": "__bundled__:ensure-pi.sh",
         # registry.npmjs.org is CDN-fronted and round-robins its IPs — the
         # case the ACL's resolve-at-apply-time pooling handles worst — and is on
         # the strict allowlist only incidentally, when claude's plugins are on.
