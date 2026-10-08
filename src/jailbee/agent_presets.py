@@ -12,40 +12,6 @@ docs/agents.md for how to correct one.
 
 from jailbee.constants import CLAUDE_API_HOSTS
 
-# opencode's vendor installer. Not interactive (unlike codex's, which needs
-# `CODEX_NON_INTERACTIVE=1`) and it never prompts, so it needs no env guard.
-#
-# `--no-modify-path` because its PATH edit is dead weight here: the installer
-# appends `export PATH=$HOME/.opencode/bin:$PATH` to the END of ~/.bashrc, and
-# Debian's ~/.bashrc returns early when the shell isn't interactive — which
-# every shell jailbee runs an agent under is (`bash -lc`). The symlink below is
-# what actually puts the binary on PATH.
-_OPENCODE_INSTALLER = "curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path"
-
-# The installer hardcodes `INSTALL_DIR=$HOME/.opencode/bin` with no env
-# override, and nothing in the golden image puts that directory on PATH — so
-# without this link `command -v opencode` fails, `_check_installed` reports
-# "not installed" forever (re-downloading 88MB on every `jailbee new`) and the
-# autostart window dies with `opencode: not found`. ~/.local/bin is on PATH via
-# /etc/profile.d/local-bin.sh, and it is per container while ~/.opencode is
-# shared — so the link is re-made on every install/update, exactly as codex's
-# installer re-makes its own ~/.local/bin/codex.
-#
-# The trailing test is the step's real verdict on an *install*: `curl … | bash`
-# exits 0 when curl fails (bash just reads an empty script), so without it a
-# failed download would look like a successful install step. It cannot serve an
-# *update*, where the previous release is still on disk and passes the test — so
-# both lines also run under `set -o pipefail`, which is what makes curl's own
-# exit status the pipeline's. Only the update line's `pipefail` is testable:
-# on the install line the pipe runs only when no binary exists, and then the
-# `-x` test below fails anyway (`ln -sfn` makes a dangling symlink happily).
-# It is there for symmetry — one spelling for both lines.
-_OPENCODE_LINK = (
-    'mkdir -p "$HOME/.local/bin"; '
-    'ln -sfn "$HOME/.opencode/bin/opencode" "$HOME/.local/bin/opencode"; '
-    '[ -x "$HOME/.local/bin/opencode" ]'
-)
-
 AGENT_PRESETS: dict[str, dict[str, object]] = {
     "codex": {
         "command": "codex",
@@ -188,16 +154,12 @@ AGENT_PRESETS: dict[str, dict[str, object]] = {
         # `golden.stacks.node` is on, so the npm line made enabling this preset
         # a silent no-op on every image without the node stack. The installer
         # drops a single static binary and needs no toolchain — only `curl` and
-        # `tar`, both in the base image.
+        # `tar`, both in the base image. Unlike codex's, it never prompts.
         #
-        # Install skips the download when the shared store already holds the
-        # binary (a second branch container of the same repo); update always
-        # re-runs the installer, which is how it upgrades.
-        "install": (
-            f'set -eo pipefail; [ -x "$HOME/.opencode/bin/opencode" ] || {_OPENCODE_INSTALLER}; '
-            f"{_OPENCODE_LINK}"
-        ),
-        "update": f"set -eo pipefail; {_OPENCODE_INSTALLER}; {_OPENCODE_LINK}",
+        # Install and update are the same script, which decides from the store
+        # and `JAILBEE_AUTO_UPDATE` — see its header.
+        "install": "__bundled__:ensure-opencode.sh",
+        "update": "__bundled__:ensure-opencode.sh",
         # One-shot mode for `jailbee pr`: `opencode run` takes the message as an
         # argument and exits when the turn ends. `--model` wants
         # `provider/model`, which is the user's to put in `pr.model`. From the
