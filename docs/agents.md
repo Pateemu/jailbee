@@ -319,9 +319,10 @@ run, because the devices are per-container rather than part of the binds
 profile.
 
 `jailbee doctor` reports any socket it finds in a shared agent mount that is
-not already carved out. The `gemini`, `pi` and `grok` presets share a
-whole home directory too and ship unverified (see [§8](#8-the-six-templates)); that doctor row is
-what tells you if one of them grows a daemon.
+not already carved out. The `gemini` and `grok` presets share a whole home
+directory too and ship unverified (see [§8](#8-the-six-templates)); `pi`'s
+was checked against pi 1.0.0 and holds no socket. That doctor row is what
+tells you if one of them grows a daemon.
 
 ## 6. Finding an agent's hosts
 

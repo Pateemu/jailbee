@@ -3081,7 +3081,7 @@ install_host_skills: false      # false (default) | true
 
 | Key | Default | Description |
 |---|---|---|
-| `install_host_skills` | `false` | `true` makes the `skills` step of `jailbee setup` detect every skill-capable agent on the host (`claude`, `codex`, `gemini`, `opencode`, `pi` — found via `shutil.which`) and copy the bundled skills into each one's own skills directory (`~/.claude/skills`, `~/.codex/skills`, …). `jailbee doctor` then verifies them. A host with none of these agents owes nothing, and `false` reports the step as opted out rather than missing. |
+| `install_host_skills` | `false` | `true` makes the `skills` step of `jailbee setup` detect every skill-capable agent on the host (`claude`, `codex`, `gemini`, `opencode`, `pi` — found via `shutil.which` on the binary's name alone, so an unrelated binary of the same name, such as Debian's `pi` digit calculator, counts too) and copy the bundled skills into each one's own skills directory (`~/.claude/skills`, `~/.codex/skills`, …). `jailbee doctor` then verifies them. A host with none of these agents owes nothing, and `false` reports the step as opted out rather than missing. |
 
 The containers' skills are independent of this key and always installed
 for every enabled skill-capable agent — see
