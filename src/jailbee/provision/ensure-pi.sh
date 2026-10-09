@@ -23,6 +23,11 @@ STORE="${HOME}/.local/share/pi"
 RELEASES="${STORE}/releases"
 BIN="${HOME}/.local/bin/pi"
 
+if ! command -v node >/dev/null || ! command -v npm >/dev/null; then
+    echo "==> ensure-pi: ERROR: pi needs Node.js and none is on PATH: set golden.stacks.node and rebuild the base image" >&2
+    exit 1
+fi
+
 mkdir -p "${HOME}/.local/bin" "${RELEASES}"
 
 # Serialize concurrent jailbee-new runs sharing this directory. Every writer
@@ -59,6 +64,23 @@ prune_releases() {
     done
 }
 
+# npm only warns (EBADENGINE) when Node is older than the package's `engines`,
+# so without this an install on an old image succeeds and pi crashes at first
+# use. Checked after linking, against the release in use, so it also catches a
+# container whose image is older than the one that filled the store. Only a
+# plain `>=X.Y.Z` is understood; anything else is not checked.
+require_node() {
+    local manifest="${STORE}/current/lib/node_modules/${PKG}/package.json" want have
+    want="$(node -p "(require(process.argv[1]).engines || {}).node || ''" "${manifest}" 2>/dev/null || true)"
+    want="$(sed -n 's/^>=[[:space:]]*\([0-9][0-9.]*\)$/\1/p' <<<"${want}")"
+    [ -n "${want}" ] || return 0
+    have="$(node -p process.versions.node)"
+    if [ "$(printf '%s\n%s\n' "${want}" "${have}" | sort -V | head -n 1)" != "${want}" ]; then
+        echo "==> ensure-pi: ERROR: pi $(current_release) needs Node >= ${want}, this container has ${have}: raise golden.stacks.node and rebuild the base image" >&2
+        return 1
+    fi
+}
+
 CURRENT="$(current_release)"
 STATUS=0
 
@@ -86,4 +108,5 @@ if [ ! -x "${BIN}" ]; then
     echo "==> ensure-pi: ERROR: ${BIN} missing/not executable" >&2
     exit 1
 fi
+require_node || exit 1
 exit "${STATUS}"
